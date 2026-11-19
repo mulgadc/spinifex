@@ -542,6 +542,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	a := newAgent(Config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go a.pollAssignments(ctx, map[string]bool{})
 
 	deadline := time.After(time.Second)

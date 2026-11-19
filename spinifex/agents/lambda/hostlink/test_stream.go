@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -39,47 +40,67 @@ type frame struct {
 type TestStream struct {
 	rw    io.ReadWriter
 	conn  net.Conn // rw when it is a net.Conn; results are written only then
-	in    chan frame
 	wslot chan struct{}
 
 	// closed is set, under the write slot, once the connection was closed
 	// with a result possibly half sent.
 	closed atomic.Bool
 
-	err error // set before in is closed
+	// The reader queues frames without waiting on the owner, so a closed
+	// connection always ends it; wake is closed and replaced on each change.
+	mu    sync.Mutex
+	queue []frame
+	err   error
+	wake  chan struct{}
 }
 
 var _ Link = (*TestStream)(nil)
 
 // NewTestStream starts reading frames from rw.
 func NewTestStream(rw io.ReadWriter) *TestStream {
-	s := &TestStream{rw: rw, in: make(chan frame), wslot: make(chan struct{}, 1)}
+	s := &TestStream{rw: rw, wslot: make(chan struct{}, 1), wake: make(chan struct{})}
 	s.conn, _ = rw.(net.Conn)
 	go s.readLoop()
 	return s
 }
 
 func (s *TestStream) readLoop() {
-	defer close(s.in)
 	for {
 		f, err := readFrame(s.rw)
+		s.mu.Lock()
 		if err != nil {
 			s.err = err
+		} else {
+			s.queue = append(s.queue, f)
+		}
+		close(s.wake)
+		s.wake = make(chan struct{})
+		s.mu.Unlock()
+		if err != nil {
 			return
 		}
-		s.in <- f
 	}
 }
 
 func (s *TestStream) recv(ctx context.Context) (frame, error) {
-	select {
-	case f, ok := <-s.in:
-		if !ok {
-			return frame{}, s.err
+	for {
+		s.mu.Lock()
+		q, err, wake := s.queue, s.err, s.wake
+		if len(q) > 0 {
+			s.queue = q[1:]
 		}
-		return f, nil
-	case <-ctx.Done():
-		return frame{}, ctx.Err()
+		s.mu.Unlock()
+		if len(q) > 0 {
+			return q[0], nil
+		}
+		if err != nil {
+			return frame{}, err
+		}
+		select {
+		case <-wake:
+		case <-ctx.Done():
+			return frame{}, ctx.Err()
+		}
 	}
 }
 

@@ -5,11 +5,14 @@ package hostlink
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // pair returns the guest carrier and the raw host end of a pipe.
@@ -70,4 +73,28 @@ func TestShutdownSurfaced(t *testing.T) {
 	go func() { _ = hostEnd.HostShutdown() }()
 	_, err := guest.Next(context.Background())
 	require.ErrorIs(t, err, ErrShutdown)
+}
+
+// The reader ends on close even with frames the owner never took.
+func TestReaderExitsOnCloseWithUnreadFrames(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	g, h := net.Pipe()
+	NewTestStream(g)
+	host := NewTestStream(h)
+	sent := make(chan error, 1)
+	go func() {
+		var err error
+		for i := 0; i < 8 && err == nil; i++ {
+			err = host.HostSend(Request{})
+		}
+		sent <- errors.Join(err, host.HostShutdown())
+	}()
+	select {
+	case err := <-sent:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader stopped taking frames")
+	}
+	require.NoError(t, g.Close())
+	require.NoError(t, h.Close())
 }

@@ -114,33 +114,27 @@ func (r *bucketReaper) abortUploads(ctx context.Context, bucket, accountID strin
 	return nil
 }
 
-// deleteObjects empties the bucket by both paths, because they cover
-// different states and neither subsumes the other.
+// deleteObjects empties the bucket by whichever path can empty it, which the
+// versioning status decides. The two are not interchangeable.
 //
 // The version sweep is the only way to remove a retained version or a delete
 // marker, and on a versioned bucket a versionless delete adds a marker instead
-// of removing anything. The object loop is the only way to clear a listing row
-// whose placement is gone, which has no version to name and still refuses the
-// bucket delete.
+// of removing anything. Removing a key's last version also drops its listing
+// row, so the sweep alone empties a versioned bucket.
 //
-// The sweep goes last for that first reason: a versionless delete on a
-// versioned bucket writes a marker, so a sweep that ran first would be undone
-// by the loop that followed it. Reversed, the markers the loop writes are
-// listed by the sweep and removed with everything else.
+// The object loop is the only way to clear a listing row whose placement is
+// gone. It has no version to name, a version listing shows nothing for it, and
+// the bucket delete still refuses on it.
 func (r *bucketReaper) deleteObjects(ctx context.Context, bucket, accountID string) error {
 	status, err := r.store.GetBucketVersioning(ctx, bucket, accountID)
 	if err != nil {
 		return ignoreAlreadyGone(err)
 	}
 
-	if err := r.deleteCurrentObjects(ctx, bucket, accountID); err != nil {
-		return err
+	if status == s3.BucketVersioningStatusEnabled || status == s3.BucketVersioningStatusSuspended {
+		return r.deleteVersions(ctx, bucket, accountID)
 	}
-
-	if status != s3.BucketVersioningStatusEnabled && status != s3.BucketVersioningStatusSuspended {
-		return nil
-	}
-	return r.deleteVersions(ctx, bucket, accountID)
+	return r.deleteCurrentObjects(ctx, bucket, accountID)
 }
 
 // deleteVersions removes every retained version and delete marker a page at a

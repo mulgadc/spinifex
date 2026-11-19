@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +46,10 @@ type fakeBuckets struct {
 	versioning map[string]string
 	// versions maps bucket to the stored versions of each key, oldest first.
 	versions map[string][]fakeVersion
+	// nextKeyMarker and nextVersionMarker are the pair the last truncated
+	// version page returned, which the next request must carry back.
+	nextKeyMarker     string
+	nextVersionMarker string
 	// strandedRows maps bucket to listing rows whose placement is gone. They
 	// are invisible to a version listing and still refuse a bucket delete, so
 	// only the versionless object loop can clear them.
@@ -187,8 +192,10 @@ func (f *fakeBuckets) DeleteObject(_ context.Context, input *s3.DeleteObjectInpu
 		return nil, err
 	}
 
-	// A delete naming a version removes that version, and nothing else: the
-	// listing key may point at a different one.
+	// A delete naming a version removes that version and then points the
+	// listing row at the newest surviving one, dropping the row when nothing
+	// is left or the newest is a marker. That is predastore's reconcileCurrent,
+	// and it is why the version sweep alone empties a versioned bucket.
 	if versionID != "" {
 		f.deleted = append(f.deleted, bucket+"/"+key+"@"+versionID)
 		kept := make([]fakeVersion, 0, len(f.versions[bucket]))
@@ -198,6 +205,7 @@ func (f *fakeBuckets) DeleteObject(_ context.Context, input *s3.DeleteObjectInpu
 			}
 		}
 		f.versions[bucket] = kept
+		f.reconcileCurrent(bucket, key)
 		return &s3.DeleteObjectOutput{}, nil
 	}
 
@@ -237,6 +245,29 @@ func (f *fakeBuckets) DeleteObject(_ context.Context, input *s3.DeleteObjectInpu
 	return &s3.DeleteObjectOutput{}, nil
 }
 
+// reconcileCurrent restores the key's listing row from its surviving versions,
+// the way predastore does after a named-version delete. The newest surviving
+// version is current, and a marker at the front hides the key instead.
+func (f *fakeBuckets) reconcileCurrent(bucket, key string) {
+	var newest *fakeVersion
+	for i, version := range f.versions[bucket] {
+		if version.key == key {
+			newest = &f.versions[bucket][i]
+		}
+	}
+
+	listed := newest != nil && !newest.deleteMarker
+	present := slices.Contains(f.objects[bucket], key)
+	switch {
+	case listed && !present:
+		f.objects[bucket] = append(f.objects[bucket], key)
+	case !listed && present:
+		f.objects[bucket] = slices.DeleteFunc(f.objects[bucket], func(existing string) bool {
+			return existing == key
+		})
+	}
+}
+
 // ListObjectVersions reports the stored versions and markers of a bucket. A
 // listing row whose placement is gone has no version, so it appears nowhere
 // here while still refusing the bucket delete.
@@ -255,26 +286,37 @@ func (f *fakeBuckets) ListObjectVersions(_ context.Context, input *s3.ListObject
 
 	stored := f.versions[bucket]
 
-	start := 0
-	if marker := aws.StringValue(input.VersionIdMarker); marker != "" {
-		for i, version := range stored {
-			if version.versionID == marker {
-				start = i + 1
-				break
-			}
+	// A truncated page has to be continued with both markers it returned, and
+	// nothing else. The sweep deletes every row on a page before asking for
+	// the next, so what is left always starts at the front: a position taken
+	// from the surviving rows would let a reaper that dropped its markers page
+	// correctly by accident, and that is the defect worth catching.
+	gotKey, gotVersion := aws.StringValue(input.KeyMarker), aws.StringValue(input.VersionIdMarker)
+	switch {
+	case gotKey != "" || gotVersion != "":
+		if gotKey != f.nextKeyMarker || gotVersion != f.nextVersionMarker {
+			return nil, awserr.New("InvalidArgument",
+				"key-marker/version-id-marker is not the pair the previous page returned", nil)
 		}
+	case f.nextKeyMarker != "" || f.nextVersionMarker != "":
+		return nil, awserr.New("InvalidArgument",
+			"a truncated page must be continued with both of its markers", nil)
 	}
+	f.nextKeyMarker, f.nextVersionMarker = "", ""
 
 	end := len(stored)
-	if f.pageSize > 0 && start+f.pageSize < end {
-		end = start + f.pageSize
+	if f.pageSize > 0 && f.pageSize < end {
+		end = f.pageSize
 	}
 
 	out := &s3.ListObjectVersionsOutput{IsTruncated: aws.Bool(end < len(stored))}
 	if end < len(stored) && end > 0 {
-		out.NextKeyMarker = aws.String(stored[end-1].key)
-		out.NextVersionIdMarker = aws.String(stored[end-1].versionID)
+		f.nextKeyMarker = stored[end-1].key
+		f.nextVersionMarker = stored[end-1].versionID
+		out.NextKeyMarker = aws.String(f.nextKeyMarker)
+		out.NextVersionIdMarker = aws.String(f.nextVersionMarker)
 	}
+	start := 0
 	for _, version := range stored[start:end] {
 		if version.deleteMarker {
 			out.DeleteMarkers = append(out.DeleteMarkers, &s3.DeleteMarkerEntry{
@@ -570,22 +612,6 @@ func TestBucketReaperClearsAListingRowWithNoPlacement(t *testing.T) {
 	assert.Contains(t, fake.deleted, "bucket:tenant-data")
 }
 
-// The same row inside a versioned bucket, which is the case a unified loop
-// would strand: the version sweep cannot see it, so the object loop has to run
-// as well.
-func TestBucketReaperClearsAStrandedRowInAVersionedBucket(t *testing.T) {
-	fake := newFakeBuckets()
-	fake.seedVersioned("tenant-data", "a.txt")
-	fake.strandedRows["tenant-data"] = []string{"stranded.txt"}
-
-	require.NoError(t, newBucketReaper(fake).Delete(testCtx(t), "000000000042",
-		Resource{Kind: "s3-bucket", ID: "tenant-data"}, false))
-
-	assert.Empty(t, fake.versions["tenant-data"])
-	assert.Empty(t, fake.strandedRows["tenant-data"])
-	assert.Contains(t, fake.deleted, "bucket:tenant-data")
-}
-
 // A version listing that pages must be followed to the end, or the bucket is
 // left holding everything past the first page.
 func TestBucketReaperPagesTheVersionListing(t *testing.T) {
@@ -604,27 +630,50 @@ func TestBucketReaperPagesTheVersionListing(t *testing.T) {
 // because a bucket name is recyclable. The fake refuses a request that does not
 // assert the owner, so a sweep that dropped the account anywhere in the middle
 // fails here. It does not prove the gate enforces the precondition, which is
-// what predastore's own host test covers.
+// what predastore's own host test covers. The gate does not check it on the
+// versioning read at all.
+// Both bucket kinds, because the versioning status decides which emptying path
+// runs and each issues requests the other never does.
 func TestBucketReaperAssertsTheOwnerOnEveryRequest(t *testing.T) {
-	fake := newFakeBuckets()
-	fake.own("000000000042", "tenant-data")
-	fake.seedVersioned("tenant-data", "a.txt", "b.txt")
-	fake.strandedRows["tenant-data"] = []string{"stranded.txt"}
-	fake.uploads["tenant-data"] = []objectstore.MultipartUploadRef{
-		{Bucket: "tenant-data", Key: "big.img", UploadID: "u-1"},
+	tests := []struct {
+		name      string
+		versioned bool
+		wantCalls []string
+	}{
+		{
+			name:      "versioned",
+			versioned: true,
+			wantCalls: []string{"ListUploads", "AbortUpload", "GetVersioning", "ListVersions", "DeleteObject", "DeleteBucket"},
+		},
+		{
+			name:      "unversioned",
+			wantCalls: []string{"ListUploads", "AbortUpload", "GetVersioning", "ListObjects", "DeleteObject", "DeleteBucket"},
+		},
 	}
 
-	require.NoError(t, newBucketReaper(fake).Delete(testCtx(t), "000000000042",
-		Resource{Kind: "s3-bucket", ID: "tenant-data"}, false))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeBuckets()
+			fake.own("000000000042", "tenant-data")
+			if tt.versioned {
+				fake.seedVersioned("tenant-data", "a.txt", "b.txt")
+			} else {
+				fake.objects["tenant-data"] = []string{"a.txt", "b.txt"}
+			}
+			fake.uploads["tenant-data"] = []objectstore.MultipartUploadRef{
+				{Bucket: "tenant-data", Key: "big.img", UploadID: "u-1"},
+			}
 
-	assert.Contains(t, fake.deleted, "bucket:tenant-data")
-	// Named individually so a request that stops being issued is not silently
-	// counted as one that asserted the owner.
-	for _, call := range []string{
-		"ListUploads", "AbortUpload", "GetVersioning", "ListObjects", "DeleteObject",
-		"ListVersions", "DeleteBucket",
-	} {
-		assert.Contains(t, fake.calls, call, "no %s was issued, so nothing asserted the owner on it", call)
+			require.NoError(t, newBucketReaper(fake).Delete(testCtx(t), "000000000042",
+				Resource{Kind: "s3-bucket", ID: "tenant-data"}, false))
+
+			assert.Contains(t, fake.deleted, "bucket:tenant-data")
+			// Named individually so a request that stops being issued is not
+			// silently counted as one that asserted the owner.
+			for _, call := range tt.wantCalls {
+				assert.Contains(t, fake.calls, call, "no %s was issued, so nothing asserted the owner on it", call)
+			}
+		})
 	}
 }
 
@@ -695,4 +744,53 @@ func TestBucketReaperStuckBucketKeepsTheAccountAndNamesTheCause(t *testing.T) {
 	}
 	assert.True(t, named, "the stuck report must name the bucket and the cause: %+v", result.Stages)
 	assert.Positive(t, backoffs, "the loop must retry the bucket rather than give up on the first pass")
+}
+
+// seedHidden is the state prod account 18 was left in: versioning enabled, a
+// retained version of each key and a delete marker on top of it, so nothing
+// lists as a current object and nothing can be removed without naming a
+// version.
+func (f *fakeBuckets) seedHidden(bucket string, keys ...string) {
+	f.versioning[bucket] = "Enabled"
+	for i, key := range keys {
+		f.versions[bucket] = append(f.versions[bucket],
+			fakeVersion{key: key, versionID: fmt.Sprintf("v%d", i+1)},
+			fakeVersion{key: key, versionID: fmt.Sprintf("m%d", i+1), deleteMarker: true},
+		)
+	}
+}
+
+// The prod failure as the job found it, through the engine rather than the
+// reaper: the markers are already written, the object listing is empty, and
+// the account only finishes if the versions behind the markers are deleted by
+// id. Driving the engine is what makes the account record part of the
+// assertion rather than the bucket alone.
+func TestVersionedBucketHiddenBehindMarkersFinishesTheAccount(t *testing.T) {
+	fake := newFakeBuckets()
+	fake.own(testAccountID, "tenant-data")
+	fake.seedHidden("tenant-data", "a.txt", "b.txt")
+
+	// The state the job starts from: empty by object, full by version.
+	listed, err := fake.ListObjectsV2(testCtx(t), &s3.ListObjectsV2Input{
+		Bucket:              aws.String("tenant-data"),
+		ExpectedBucketOwner: aws.String(testAccountID),
+	})
+	require.NoError(t, err)
+	require.Empty(t, listed.Contents, "every key must already be hidden")
+	require.Len(t, fake.versions["tenant-data"], 4)
+
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts, S3Reapers(fake)...)
+	// Counted rather than waited out, so a regression ends on the budget this
+	// test set instead of sleeping through the real backoff first.
+	engine.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+	result, err := engine.Teardown(context.Background(), request())
+	require.NoError(t, err)
+
+	assert.True(t, result.AccountDeleted, "the account must finish: %+v", result.Stages)
+	assert.True(t, accounts.deleted)
+	assert.Empty(t, fake.versions["tenant-data"], "versions or markers were left behind")
+	assert.Contains(t, fake.deleted, "bucket:tenant-data")
+	assert.Zero(t, result.StuckCount())
 }

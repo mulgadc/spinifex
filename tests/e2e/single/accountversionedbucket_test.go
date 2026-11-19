@@ -16,9 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// versionedKeys is more than one listing page's worth once each key carries a
-// version and a delete marker, so the sweep has to follow the markers rather
-// than trust the first page.
+// versionedKeys is enough keys for the sweep to be doing real work and few
+// enough to seed quickly. It is well inside predastore's 1000-entry default
+// page, so this test does not exercise pagination; the hermetic paging test
+// owns that, because making a real listing truncate would mean seeding over a
+// thousand versions.
 const versionedKeys = 12
 
 // runAccountVersionedBucketTeardown tears down an account owning a versioned
@@ -69,18 +71,31 @@ func runAccountVersionedBucketTeardown(t *testing.T, fix *Fixture) {
 	removed = true
 
 	harness.Step(t, "3. the bucket is gone, not merely emptied")
-	_, err = cli.ListObjectVersions(&s3.ListObjectVersionsInput{Bucket: aws.String(bucket)})
+	// Asserted with the admin credential, not the tenant's. The tenant's keys
+	// die with the account, so every request under them answers an
+	// authorization error and a surviving bucket would look identical to a
+	// deleted one.
+	admin, err := harness.PredastoreS3Admin(host)
+	require.NoError(t, err)
+	_, err = admin.ListObjectVersions(&s3.ListObjectVersionsInput{Bucket: aws.String(bucket)})
 	requireBucketGone(t, err)
 
 	// A FAILED job is never picked up by the resumer, which selects only
-	// expired RUNNING jobs, so the rerun is the operator's own action. Running
-	// the delete a second time is that rerun, and it has to be a success on an
-	// account that is already gone rather than an error the operator has to
-	// interpret.
+	// expired RUNNING jobs, so a rerun is the operator's own action. This runs
+	// it against an account already torn down, which is the shape of the
+	// rerun and not its starting state: reaching a recorded FAILED job needs
+	// an injected failure the deployed path has no seam for.
 	harness.Step(t, "4. the operator's rerun on an account already torn down")
 	out := harness.SpxRunBestEffort(t, "admin", "account", "delete",
 		account.AccountID, "--yes", "--name", account.AccountName)
 	t.Logf("rerun: %s", out)
+	assert.NotContains(t, out, "BucketNotEmpty",
+		"a rerun must not report the bucket this test deleted as still holding data")
+
+	// The bucket stays gone, so the rerun neither resurrected it nor reported
+	// a failure against it.
+	_, err = admin.ListObjectVersions(&s3.ListObjectVersionsInput{Bucket: aws.String(bucket)})
+	requireBucketGone(t, err)
 }
 
 // seedHiddenVersions creates a versioned bucket, writes every key once and
@@ -115,9 +130,10 @@ func seedHiddenVersions(t *testing.T, cli *s3.S3, bucket string) {
 	}
 }
 
-// requireBucketGone accepts either answer a removed bucket can give. The
-// account's credential is revoked with the account, so the request may be
-// refused before the bucket is looked up at all.
+// requireBucketGone requires the bucket to be absent. Called with the admin
+// credential, so an authorization error is a failure rather than the expected
+// answer: it would mean the test proved nothing about whether the bucket is
+// still there.
 func requireBucketGone(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err, "the bucket must not survive its owner")
@@ -126,6 +142,6 @@ func requireBucketGone(t *testing.T, err error) {
 	if !assert.ErrorAs(t, err, &awsErr) {
 		return
 	}
-	assert.Contains(t, []string{"NoSuchBucket", "AccessDenied", "InvalidAccessKeyId"}, awsErr.Code(),
-		"unexpected error for a bucket whose account is gone: %v", err)
+	assert.Equal(t, "NoSuchBucket", awsErr.Code(),
+		"a bucket whose account is gone must be absent, not merely unreachable: %v", err)
 }

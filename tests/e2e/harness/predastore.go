@@ -65,6 +65,15 @@ func newPredastoreS3(host string) (*s3.S3, error) {
 	return s3.New(sess), nil
 }
 
+// PredastoreS3Admin builds an S3 client for predastore on host signing as the
+// admin identity. A test asserting that a tenant's bucket is gone needs a
+// credential that outlives the tenant: the account's own keys are revoked with
+// it, so every request answers an authorization error whether or not the
+// bucket is still there.
+func PredastoreS3Admin(host string) (*s3.S3, error) {
+	return newPredastoreS3(host)
+}
+
 // PredastoreS3WithCreds builds an S3 client for predastore on host that signs
 // as one principal, so a test can assert what that principal's grant allows.
 func PredastoreS3WithCreds(host, accessKey, secretKey string) (*s3.S3, error) {

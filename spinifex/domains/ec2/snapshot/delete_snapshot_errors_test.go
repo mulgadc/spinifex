@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
@@ -67,21 +68,103 @@ func TestDeleteSnapshot_UnreadableOwnVolumeRecordIsNamed(t *testing.T) {
 	requireSnapshotSurvives(t, svc, snapshotID)
 }
 
-// Another account's unreadable volume blocks the delete without its ID
-// reaching the caller.
-func TestDeleteSnapshot_UnreadableForeignVolumeRecordIsNotNamed(t *testing.T) {
+// A tenant snapshot cannot be reached from another account, so another
+// account's unreadable volume record is not consulted and cannot block it.
+func TestDeleteSnapshot_ForeignUnreadableVolumeRecordDoesNotBlockATenantSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
 	require.NoError(t, err)
 	putCorruptDocument(t, store, key)
 
-	err = deleteSnapshot(svc, snapshotID)
-	code, message := clientErrorDetail(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, code)
-	assert.Equal(t, "Cannot confirm that snapshot '"+snapshotID+"' is not in use: 1 volume record(s) could not be read", message)
-	assert.NotContains(t, message, "vol-foreign-corrupt")
+	require.NoError(t, deleteSnapshot(svc, snapshotID))
+}
+
+// deleteSnapshotAs is deleteSnapshot for a caller other than testAccountID,
+// which the global account has to be for the system-snapshot case.
+func deleteSnapshotAs(svc *SnapshotServiceImpl, snapshotID, accountID string) error {
+	_, err := svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, accountID)
+	return err
+}
+
+// promotedResidue seeds the state PromoteSystemImage leaves when its final
+// delete of the tenant-keyed document fails: the snapshot resolves under both
+// the promoting tenant and the global account.
+func promotedResidue(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore) string {
+	t.Helper()
+	snapshotID := unreferencedSnapshot(t, svc, store)
+	seedSnapshotDocument(t, store, ebsmetadata.Snapshot{
+		SnapshotID: snapshotID,
+		OwnerID:    awsidentifiers.GlobalAccountID,
+		VolumeSize: 50,
+	})
+	return snapshotID
+}
+
+// A snapshot that also resolves under the global account can have been launched
+// by any account, so every prefix is still read and a foreign clone refuses it.
+func TestDeleteSnapshot_PromotedResidueStillScansEveryAccount(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := promotedResidue(t, svc, store)
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-foreign-clone", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: snapshotID,
+	})
+
+	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
 	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
+// The same, with no AMI naming the snapshot. Deregistering the promoted AMI
+// must not narrow the scan while the residue and its clones are both still
+// there, which is why breadth comes from the global document and not the AMI.
+func TestDeleteSnapshot_PromotedResidueStillRefusesAfterTheAMIIsGone(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := promotedResidue(t, svc, store)
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-orphaned-clone", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: snapshotID,
+	})
+
+	amis, err := svc.metadata.ListAMIs(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, amis, "no AMI may name the snapshot, or the refusal proves nothing")
+
+	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
+// Absence of the global document is what permits the narrow scan, so one that
+// failed to read has to widen it rather than read as absent.
+func TestDeleteSnapshot_UnreadableGlobalSnapshotDocumentScansEveryAccount(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := unreferencedSnapshot(t, svc, store)
+	globalKey, err := ebsmetadata.SnapshotKey(awsidentifiers.GlobalAccountID, snapshotID)
+	require.NoError(t, err)
+	putCorruptDocument(t, store, globalKey)
+
+	volumeKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	require.NoError(t, err)
+	putCorruptDocument(t, store, volumeKey)
+
+	code, message := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	assert.Equal(t, awserrors.ErrorServerInternal, code)
+	assert.Contains(t, message, "could not be read")
+	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
+// A system snapshot's clones routinely live in other accounts, so its own
+// delete still reads every prefix and still fails closed on an unreadable one.
+func TestDeleteSnapshot_SystemSnapshotStillScansEveryAccount(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := promotedResidue(t, svc, store)
+	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	require.NoError(t, err)
+	putCorruptDocument(t, store, key)
+
+	code, message := clientErrorDetail(t, deleteSnapshotAs(svc, snapshotID, awsidentifiers.GlobalAccountID))
+	assert.Equal(t, awserrors.ErrorServerInternal, code)
+	assert.Contains(t, message, "could not be read")
 }
 
 // A readable clone settles the answer whatever else failed to read, so the

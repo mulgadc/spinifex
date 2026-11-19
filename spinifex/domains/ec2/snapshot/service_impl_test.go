@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -534,10 +535,17 @@ func TestDeleteSnapshot_CloneAlreadyDeleting(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 }
 
-// TestDeleteSnapshot_InUseByAnotherAccountsVolume tests that the refusal
-// never names a volume the caller does not own, since the dependency scan is
-// whole-cluster and an endpoint never confirms another account's IDs.
-func TestDeleteSnapshot_InUseByAnotherAccountsVolume(t *testing.T) {
+// A tenant snapshot is reachable only from the account that owns it, so a
+// foreign volume document naming one is not consulted and cannot refuse it.
+//
+// Reaching another account takes an AMI that account may launch, and every
+// creation path stamps ImageOwnerAlias with the creating account, which the
+// launch check then requires the caller to match. Only a system AMI carries an
+// alias anyone may launch, and promotion writes the snapshot under the global
+// account before rewriting the alias, so that case is the whole-cluster branch.
+// A foreign clone of a tenant snapshot needs cross-account EBS sharing, which
+// is deliberately unimplemented.
+func TestDeleteSnapshot_ForeignVolumeDocumentDoesNotRefuseATenantSnapshot(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -553,21 +561,52 @@ func TestDeleteSnapshot_InUseByAnotherAccountsVolume(t *testing.T) {
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
-	require.Error(t, err)
-	code, message := clientErrorDetail(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
-	assert.NotContains(t, message, "vol-foreign")
-	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by a volume.", message)
+	require.NoError(t, err)
+}
 
-	// A volume the caller owns is named even when a foreign one also matches.
+// A volume the caller owns is still named in the refusal.
+func TestDeleteSnapshot_OwnVolumeIsNamedInTheRefusal(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
 		VolumeID: "vol-own", CapacityGiB: 50, SnapshotID: *snap.SnapshotId,
 	})
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
-	_, message = clientErrorDetail(t, err)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
 	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by volume 'vol-own'.", message)
+}
+
+// The redaction still has a case to protect: a system snapshot does scan every
+// account, and its refusal must not confirm another account's volume ID.
+func TestDeleteSnapshot_SystemSnapshotRefusalDoesNotNameAForeignVolume(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolumeForAccount(t, svc, store, "vol-system", 8, awsidentifiers.GlobalAccountID)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-system"),
+	}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-foreign", TenantID: otherAccountID, CapacityGiB: 8, SnapshotID: *snap.SnapshotId,
+	})
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, awsidentifiers.GlobalAccountID)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.NotContains(t, message, "vol-foreign")
+	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by a volume.", message)
 }
 
 // TestDeleteSnapshot_InUseByRegisteredAMI tests that deleting a snapshot

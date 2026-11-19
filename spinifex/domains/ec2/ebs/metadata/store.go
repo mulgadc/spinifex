@@ -110,6 +110,27 @@ func (s *Store) ListAllVolumesPartial(ctx context.Context) ([]Volume, []Unreadab
 	return collectDocuments(ctx, s, volumePrefix, UnmarshalVolume, listPartial)
 }
 
+// ListVolumesPartial is ListAllVolumesPartial confined to one account. The
+// prefix is the isolation: another account's document is never read, so an
+// unreadable one there cannot reach this caller's answer.
+func (s *Store) ListVolumesPartial(ctx context.Context, accountID string) ([]Volume, []UnreadableDocument, error) {
+	if s == nil || s.objects == nil {
+		return nil, nil, errors.New("metadata store is not configured")
+	}
+	prefix, err := accountPrefix(volumePrefix, accountID)
+	if err != nil {
+		return nil, nil, err
+	}
+	volumes, unreadable, err := collectDocuments(ctx, s, prefix, UnmarshalVolume, listPartial)
+	// The account is a segment of the prefix rather than of the key remainder,
+	// so documentIdentity cannot recover it here. Every document found under
+	// this prefix belongs to accountID by construction.
+	for i := range unreadable {
+		unreadable[i].AccountID = accountID
+	}
+	return volumes, unreadable, err
+}
+
 func (s *Store) listVolumeDocuments(ctx context.Context, accountID string, skipCorrupt bool) ([]Volume, error) {
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")

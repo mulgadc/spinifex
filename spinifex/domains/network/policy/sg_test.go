@@ -249,12 +249,11 @@ func TestSGManager_WithdrawnGrantsRenderNoPrefixListPeer(t *testing.T) {
 	granted.Store(false)
 	assert.Equal(t, 1, sg.GrantingApplies(), "an apply that started while grants held is counted until it returns")
 	close(blocking.release)
-	<-blocking.entered // the apply sees the withdrawal after its write and rewrites
 	require.NoError(t, <-done)
 	assert.Zero(t, sg.GrantingApplies())
-	for _, uuid := range m.PortGroups[pg].ACLs {
-		assert.NotContains(t, m.ACLs[uuid].Match, "spx_pl_", "an apply whose grant was withdrawn mid-write leaves no prefix-list ACL")
-	}
+	// One write from its snapshot, never a second that could undo a newer
+	// update; the ACL it leaves is the drain's to see and a pass's to remove.
+	assert.Equal(t, int32(2), blocking.calls.Load(), "each apply writes once")
 }
 
 // An apply paused while it reads the grant is already counted, so a rollback
@@ -287,9 +286,11 @@ type blockingACLs struct {
 	*mock.Client
 
 	entered, release chan struct{}
+	calls            atomic.Int32
 }
 
 func (b *blockingACLs) ReplaceACLs(ctx context.Context, pg string, specs []ovn.ACLSpec) error {
+	b.calls.Add(1)
 	if b.release != nil {
 		b.entered <- struct{}{}
 		<-b.release

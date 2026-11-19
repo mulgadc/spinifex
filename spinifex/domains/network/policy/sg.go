@@ -91,18 +91,10 @@ func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
 		sg.EgressRules = withoutPrefixLists(sg.EgressRules)
 		return m.applyACLs(ctx, sg)
 	}
+	// Counted until it returns: an ACL it leaves after a withdrawal is seen by
+	// the drain, whose poll wakes a pass that renders from current records.
 	defer m.granting.Add(-1)
-	if err := m.applyACLs(ctx, sg); err != nil {
-		return err
-	}
-	// Withdrawn while this apply wrote: the withdrawal's pass may have run
-	// before the write landed, so this apply removes its own peers.
-	if !m.grants() {
-		sg.IngressRules = withoutPrefixLists(sg.IngressRules)
-		sg.EgressRules = withoutPrefixLists(sg.EgressRules)
-		return m.applyACLs(ctx, sg)
-	}
-	return nil
+	return m.applyACLs(ctx, sg)
 }
 
 func (m *sgManager) grants() bool { return m.granted == nil || m.granted() }

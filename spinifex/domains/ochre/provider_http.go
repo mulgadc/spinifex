@@ -18,10 +18,10 @@ func newNoRedirectHTTPClient() *http.Client {
 	}
 }
 
-// newKBProviderHTTPClient is newNoRedirectHTTPClient on a private transport
+// newProviderHTTPClient is newNoRedirectHTTPClient on a private transport
 // that never idles a connection: an idle one logs any stray response bytes,
 // which a provider can fill with echoed tenant input.
-func newKBProviderHTTPClient() *http.Client {
+func newProviderHTTPClient() *http.Client {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = base.Clone()

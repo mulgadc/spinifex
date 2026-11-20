@@ -146,7 +146,7 @@ var _ Provider = (*vllmProvider)(nil)
 func newVLLMProvider(endpointResolver EndpointResolver) *vllmProvider {
 	return &vllmProvider{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 
@@ -156,7 +156,7 @@ func newVLLMProvider(endpointResolver EndpointResolver) *vllmProvider {
 func newVLLMProviderForAccount(endpointResolver EndpointResolver, account string) *vllmProvider {
 	return &vllmProvider{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 		account:          account,
 	}
 }
@@ -205,15 +205,15 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("vllm: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Error("vllm: failed to read response body", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("vllm: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	var cr vllmChatResponse
@@ -339,10 +339,9 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		slog.Error("vllm stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("vllm stream: upstream error", "model", modelID, "status", resp.StatusCode)
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 

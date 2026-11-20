@@ -70,7 +70,7 @@ var _ InvokeAdapter = (*teiEmbeddingInvokeAdapter)(nil)
 func newTEIEmbeddingInvokeAdapter(endpointResolver EndpointResolver) *teiEmbeddingInvokeAdapter {
 	return &teiEmbeddingInvokeAdapter{
 		endpointResolver: endpointResolver,
-		httpClient:       newNoRedirectHTTPClient(),
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 
@@ -172,16 +172,16 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The body is not read: TEI validation errors can quote the input.
+		slog.Error("tei invoke: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, "", errors.New(mapTEIStatus(resp.StatusCode))
+	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, teiEmbeddingsResponseLimit+1))
 	if err != nil {
 		slog.Error("tei invoke: failed to read response body", "model", modelID, "endpoint", endpointLogID(baseURL),
 			"failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The body is not logged: TEI validation errors can quote the input.
-		slog.Error("tei invoke: upstream error", "model", modelID, "status", resp.StatusCode)
-		return nil, "", errors.New(mapTEIStatus(resp.StatusCode))
 	}
 	if len(respBody) > teiEmbeddingsResponseLimit {
 		slog.Error("tei invoke: response exceeds limit", "model", modelID)

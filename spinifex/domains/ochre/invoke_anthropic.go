@@ -22,7 +22,7 @@ type anthropicInvokeAdapter struct {
 
 func newAnthropicInvokeAdapterClient() *anthropicInvokeAdapter {
 	return &anthropicInvokeAdapter{
-		httpClient: &http.Client{Timeout: providerHTTPTimeout},
+		httpClient: newProviderHTTPClient(),
 		baseURL:    anthropicDefaultBaseURL,
 	}
 }
@@ -93,15 +93,15 @@ func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("anthropic invoke: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Error("anthropic invoke: failed to read response body", "model", modelID, "err", err)
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("anthropic invoke: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	return respBody, "application/json", nil
@@ -157,10 +157,9 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode)
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
@@ -168,7 +167,8 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 }
 
 // anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line
-// verbatim as the chunk payload, skipping keepalive "ping" events. It also
+// verbatim as the chunk payload, skipping keepalive "ping" events and ending
+// the stream with a fault on an "error" event. It also
 // opportunistically taps message_start/message_delta for token usage
 // without altering the forwarded bytes.
 type anthropicInvokeStreamSource struct {
@@ -201,6 +201,10 @@ func (s *anthropicInvokeStreamSource) Next(_ context.Context) ([]byte, bool, err
 		}
 		if !ok {
 			continue
+		}
+		if ev.Event == "error" {
+			// The event data is not carried: a provider can echo request secrets in it.
+			return nil, false, newStreamFault(errors.New("anthropic invoke stream: upstream error event"))
 		}
 		if ev.Event == "ping" || ev.Data == "" {
 			continue

@@ -99,7 +99,7 @@ type anthropicProvider struct {
 
 func newAnthropicProviderClient() *anthropicProvider {
 	return &anthropicProvider{
-		httpClient: &http.Client{Timeout: providerHTTPTimeout},
+		httpClient: newProviderHTTPClient(),
 		baseURL:    anthropicDefaultBaseURL,
 	}
 }
@@ -156,15 +156,15 @@ func (p *anthropicProvider) Converse(ctx context.Context, modelID string, input 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("anthropic: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Error("anthropic: failed to read response body", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("anthropic: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	var ar anthropicResponse
@@ -295,10 +295,9 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		slog.Error("anthropic stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("anthropic stream: upstream error", "model", modelID, "status", resp.StatusCode)
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 

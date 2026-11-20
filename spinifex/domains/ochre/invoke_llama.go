@@ -127,7 +127,7 @@ var _ InvokeAdapter = (*llamaInvokeAdapter)(nil)
 func newLlamaInvokeAdapter(endpointResolver EndpointResolver) *llamaInvokeAdapter {
 	return &llamaInvokeAdapter{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 
@@ -138,7 +138,7 @@ func newLlamaInvokeAdapter(endpointResolver EndpointResolver) *llamaInvokeAdapte
 func newLlamaInvokeAdapterForAccount(endpointResolver EndpointResolver, account string) *llamaInvokeAdapter {
 	return &llamaInvokeAdapter{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 		account:          account,
 	}
 }
@@ -197,15 +197,15 @@ func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, bo
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("llama invoke: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Error("llama invoke: failed to read response body", "model", modelID, "err", err)
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("llama invoke: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	var cr llamaCompletionsResponse
@@ -290,10 +290,9 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		slog.Error("llama invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("llama invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode)
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 

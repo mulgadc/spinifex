@@ -129,3 +129,41 @@ func TestWarmupProbe_StopEndsThePollLoop(t *testing.T) {
 		t.Fatal("run kept polling after stop")
 	}
 }
+
+// A static endpoint whose /health redirects to a healthy host must stay
+// unready: the probe must not follow the redirect and report the other host.
+func TestWarmupProbe_HealthRedirectStaysUnready(t *testing.T) {
+	t.Parallel()
+	var destinationCalls, sourceHealthCalls, embedCalls atomic.Int64
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		destinationCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case embedderHealthPath:
+			sourceHealthCalls.Add(1)
+			http.Redirect(w, r, destination.URL+r.URL.Path, http.StatusTemporaryRedirect)
+		default:
+			embedCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer source.Close()
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: source.URL}))
+	p.warmupPollInterval = 10 * time.Millisecond
+	wp := p.warmupFor(source.URL)
+	t.Cleanup(wp.stop)
+
+	require.Eventually(t, func() bool { return sourceHealthCalls.Load() >= 2 }, 5*time.Second, 5*time.Millisecond)
+	assert.False(t, wp.Ready(), "a redirected health check must not mark the endpoint ready")
+	assert.Zero(t, destinationCalls.Load(), "the probe must not follow the health redirect")
+
+	_, err := p.Embed(t.Context(), modelID, []string{"hello"})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Zero(t, embedCalls.Load(), "Embed must stay gated while the endpoint is unready")
+}

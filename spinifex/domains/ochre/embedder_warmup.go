@@ -87,7 +87,7 @@ func (p *warmupProbe) probe() {
 	p.mu.Unlock()
 
 	if ok && !wasReady {
-		slog.Info("embedder ready", "service", embedServiceLabel, "action", "warmup_probe", "endpoint", p.baseURL)
+		slog.Info("embedder ready", "service", embedServiceLabel, "action", "warmup_probe", "endpoint", endpointLogID(p.baseURL))
 	}
 }
 

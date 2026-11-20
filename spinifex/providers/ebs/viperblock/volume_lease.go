@@ -726,6 +726,16 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 		return nil, err
 	}
 
+	// A retake after a stall may reopen the volume only if no other node has
+	// mounted it since, checked while this node holds the lease and before the
+	// marker is rewritten.
+	if fenced, ok := fencedGenerationFrom(ctx); ok {
+		if err := cfg.requireFencedMarker(ctx, volumeName, fenced); err != nil {
+			cfg.leases.release(ctx, lease)
+			return nil, err
+		}
+	}
+
 	// Mark before a single write lands, not when a seal fails. A node killed
 	// mid-write never reaches its seal, so marking there leaves no trace of the
 	// case the marker exists for. A takeover writes its own richer reason.
@@ -754,4 +764,36 @@ func (cfg *Config) releaseVolumeLease(ctx context.Context, lease *volumeLease) {
 		return
 	}
 	cfg.leases.release(ctx, lease)
+}
+
+// errFencedMarkerMoved reports that a stalled volume's dirty marker no longer
+// names this node at the fenced generation, so another node may have written it.
+var errFencedMarkerMoved = errors.New("the dirty marker no longer names this node at the fenced generation")
+
+type fencedGenerationKey struct{}
+
+// withFencedGeneration marks ctx as a retake of a volume fenced at generation.
+func withFencedGeneration(ctx context.Context, generation uint64) context.Context {
+	return context.WithValue(ctx, fencedGenerationKey{}, generation)
+}
+
+func fencedGenerationFrom(ctx context.Context) (uint64, bool) {
+	generation, ok := ctx.Value(fencedGenerationKey{}).(uint64)
+	return generation, ok
+}
+
+// requireFencedMarker fails unless volumeName's marker still names this node
+// at generation. An unreadable marker fails too: it proves nothing.
+func (cfg *Config) requireFencedMarker(ctx context.Context, volumeName string, generation uint64) error {
+	if cfg.dirty == nil {
+		return errFencedMarkerMoved
+	}
+	record, ok, err := cfg.dirty.lookup(ctx, volumeName)
+	if err != nil {
+		return fmt.Errorf("read dirty marker for %s: %w", volumeName, err)
+	}
+	if !ok || record.Owner != cfg.dirty.owner || record.Generation != generation {
+		return fmt.Errorf("%s: %w (marker names %q at %d)", volumeName, errFencedMarkerMoved, record.Owner, record.Generation)
+	}
+	return nil
 }

@@ -57,19 +57,28 @@ func (d *Daemon) handleFenceNotice(msg *nats.Msg) string {
 	switch notice.Action {
 	case ebsprovider.FenceActionPause:
 		// Paused before the ack, so nothing here runs against the dead export.
-		ack.InstanceID = d.vmMgr.PauseForFence(ctx, notice.VolumeID, notice.Reason)
+		ack.InstanceID = d.vmMgr.PauseForFence(ctx, notice.VolumeID, notice.Reason, notice.Generation, notice.PauseFor)
 		ackFenceNotice(ctx, msg, ack)
 		return outcomeSuccess
 	case ebsprovider.FenceActionResume:
-		id, err := d.vmMgr.ResumeAfterFence(ctx, notice.VolumeID, d.reassertInstanceOwner)
+		id, resumed, err := d.vmMgr.ResumeAfterFence(ctx, notice.VolumeID, notice.Generation, d.reassertInstanceOwner)
 		ack.InstanceID = id
 		if err != nil {
 			return refuse(ebsprovider.ErrorCodeNotFound, "cannot resume: "+err.Error())
 		}
 		ackFenceNotice(ctx, msg, ack)
-		d.repairInstanceOwner(ctx, id)
+		if resumed {
+			d.repairInstanceOwner(ctx, id)
+		}
 		return outcomeSuccess
 	case ebsprovider.FenceActionStop:
+		// A stop that names a fence generation ends a pause, and acts only on a
+		// guest paused under that fence, never on whatever uses the volume now.
+		if notice.Generation != 0 {
+			ack.InstanceID = d.vmMgr.StopFencePaused(ctx, notice.VolumeID, notice.Generation, notice.Reason)
+			ackFenceNotice(ctx, msg, ack)
+			return outcomeSuccess
+		}
 	default:
 		return refuse(ebsprovider.ErrorCodeInvalidArgument, fmt.Sprintf("unknown fence action %q", notice.Action))
 	}

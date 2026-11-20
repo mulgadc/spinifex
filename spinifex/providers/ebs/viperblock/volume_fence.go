@@ -126,13 +126,7 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName string, kind leas
 	// this node tries to take the lease back. A TCP export has no socket for the
 	// guest to reconnect to, so it is stopped as before.
 	if kind == leaseLostStalled && winner == "unknown" && matched.Socket != "" && matched.Lease != nil && cfg.dirty != nil {
-		generation := matched.Lease.generation
-		if err := cfg.publishFenceNotice(ctx, cfg.fenceNotice(volumeName, winner, ebsprovider.FenceActionPause, generation), true); err != nil {
-			// A daemon that cannot pause the guest is asked to stop it instead.
-			cfg.publishVolumeFenced(ctx, volumeName, winner)
-			return
-		}
-		go cfg.retakeStalledVolume(context.WithoutCancel(ctx), matched, generation)
+		go cfg.pauseAndRetake(context.WithoutCancel(ctx), matched, matched.Lease.generation)
 		return
 	}
 	cfg.publishVolumeFenced(ctx, volumeName, winner)
@@ -160,70 +154,91 @@ func (cfg *Config) fenceRetakeInterval() time.Duration {
 	return defaultFenceRetakeEvery
 }
 
-// retakeStalledVolume tries, for a bounded window, to take back the volume a
-// stall fenced, and resumes the paused guest if it can. It re-exports only once
-// the dirty marker still names this node at the fenced generation, which no
-// other node's mount leaves in place, and the lease is held again through the
-// ordinary mount. Anything else, or the window ending, stops the guest.
-func (cfg *Config) retakeStalledVolume(ctx context.Context, fenced MountedVolume, generation uint64) {
+// pauseAndRetake pauses the guest using a volume a stall fenced, then tries,
+// until the window ends, to take the volume back and resume it. The volume is
+// reopened only through the ordinary mount, under that mount's lock, and only
+// while its dirty marker still names this node at the fenced generation, which
+// is checked under the re-acquired lease. Anything else stops the guest.
+func (cfg *Config) pauseAndRetake(ctx context.Context, fenced MountedVolume, generation uint64) {
 	volumeName := fenced.Name
+	window := cfg.fencePauseWindow()
 	began := time.Now()
-	deadline := began.Add(cfg.fencePauseWindow())
+	ctx, cancel := context.WithDeadline(ctx, began.Add(window))
+	defer cancel()
+
 	stop := func(winner, why string) {
 		slog.ErrorContext(ctx, "volume fence: could not take the lease back, stopping the paused guest",
 			"volume", volumeName, "why", why, "paused_ms", otelsetup.Millis(time.Since(began)))
-		cfg.publishVolumeFenced(ctx, volumeName, winner)
+		notice := cfg.fenceNotice(volumeName, winner, ebsprovider.FenceActionStop, generation)
+		_ = cfg.publishFenceNotice(context.WithoutCancel(ctx), notice, true)
 	}
 
+	pause := cfg.fenceNotice(volumeName, "unknown", ebsprovider.FenceActionPause, generation)
+	pause.PauseFor = window
+	if err := cfg.publishFenceNotice(ctx, pause, true); err != nil {
+		// A daemon that cannot pause the guest is asked to stop it instead.
+		cfg.publishVolumeFenced(context.WithoutCancel(ctx), volumeName, "unknown")
+		return
+	}
+
+	retake := withFencedGeneration(ctx, generation)
 	for {
 		select {
 		case <-ctx.Done():
+			stop("unknown", "the pause window ended")
 			return
 		case <-time.After(cfg.fenceRetakeInterval()):
 		}
-		if time.Now().After(deadline) {
-			stop("unknown", "the pause window ended")
-			return
-		}
 
-		record, marked, err := cfg.dirty.lookup(ctx, volumeName)
-		if err != nil {
-			continue
-		}
-		if !marked || record.Owner != cfg.dirty.owner || record.Generation != generation {
-			stop(record.Owner, "the volume's dirty marker no longer names this node at the fenced generation")
+		_, err := mountVolumeAt(retake, cfg, cfg.nc, volumeName, fenced.ReadOnly, fenced.Socket)
+		switch {
+		case errors.Is(err, errFencedMarkerMoved):
+			stop(cfg.fenceMarkerHolder(ctx, volumeName), "another node has mounted the volume since the fence")
 			return
-		}
-
-		if _, err := mountVolumeAt(ctx, cfg, cfg.nc, volumeName, fenced.ReadOnly, fenced.Socket); err != nil {
-			if errors.Is(err, errVolumeLeaseHeld) {
-				stop(cfg.fenceHolder(ctx, volumeName), "another node holds the lease")
-				return
-			}
+		case errors.Is(err, errVolumeLeaseHeld):
+			stop(cfg.fenceHolder(ctx, volumeName), "another node holds the lease")
+			return
+		case err != nil:
 			slog.WarnContext(ctx, "volume fence: could not take the lease back yet, retrying",
 				"volume", volumeName, "err", err)
 			continue
 		}
-
-		resume := cfg.fenceNotice(volumeName, cfg.leaseOwner(), ebsprovider.FenceActionResume, generation)
-		if err := cfg.publishFenceNotice(ctx, resume, false); err != nil {
-			slog.ErrorContext(ctx, "volume fence: the daemon would not resume the guest, giving the export back",
-				"volume", volumeName, "err", err)
-			if _, aerr := cfg.abandonVolume(ctx, volumeName, "resume refused"); aerr != nil {
-				return
-			}
-			stop("unknown", "the daemon refused the resume")
+		// A newer mount exported the volume first; that export is not this
+		// fence's to resume onto or to give back.
+		if current, ok := cfg.lookupMountedVolume(volumeName); !ok || current.Socket != fenced.Socket {
+			stop("unknown", "the volume was exported again by a newer mount")
 			return
 		}
-		slog.WarnContext(ctx, "volume fence: took the lease back and resumed the guest",
-			"volume", volumeName, "paused_ms", otelsetup.Millis(time.Since(began)))
+
+		if ctx.Err() == nil {
+			resume := cfg.fenceNotice(volumeName, cfg.leaseOwner(), ebsprovider.FenceActionResume, generation)
+			if err = cfg.publishFenceNotice(ctx, resume, false); err == nil {
+				slog.WarnContext(ctx, "volume fence: took the lease back and resumed the guest",
+					"volume", volumeName, "paused_ms", otelsetup.Millis(time.Since(began)))
+				return
+			}
+		}
+		slog.ErrorContext(ctx, "volume fence: the guest was not resumed in the window, giving the export back",
+			"volume", volumeName, "err", err)
+		if _, aerr := cfg.abandonVolume(context.WithoutCancel(ctx), volumeName, "resume not completed"); aerr != nil {
+			return
+		}
+		stop("unknown", "the guest was not resumed in the window")
 		return
 	}
 }
 
+// fenceMarkerHolder names the node volumeName's dirty marker names, for the stop.
+func (cfg *Config) fenceMarkerHolder(ctx context.Context, volumeName string) string {
+	if record, ok := cfg.dirty.holder(context.WithoutCancel(ctx), volumeName); ok && record.Owner != "" {
+		return record.Owner
+	}
+	return "unknown"
+}
+
 // fenceHolder names who holds volumeName's lease, for the stop notice.
 func (cfg *Config) fenceHolder(ctx context.Context, volumeName string) string {
-	readCtx, cancel := context.WithTimeout(ctx, fenceHolderReadTimeout)
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fenceHolderReadTimeout)
 	defer cancel()
 	if owner, held := cfg.leases.currentOwner(readCtx, volumeName); held {
 		return owner

@@ -110,6 +110,9 @@ type Manager struct {
 	deps        Deps
 	goroutineWg sync.WaitGroup
 
+	// fenceGrace overrides fenceExpiryGrace when non-zero; tests shorten it.
+	fenceGrace time.Duration
+
 	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
 	// teardown, which run outside mu.
 	imdsLocks keyedMutex

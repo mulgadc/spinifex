@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
@@ -17,7 +18,7 @@ import (
 func TestStalledFencePausesTheGuest(t *testing.T) {
 	m, instance, pid, qmpCalls, _ := fencedGuest(t, "vol-stalledfence")
 
-	require.Equal(t, instance.ID, m.PauseForFence(t.Context(), "vol-stalledfence", "lease unconfirmed, no peer"))
+	require.Equal(t, instance.ID, m.PauseForFence(t.Context(), "vol-stalledfence", "lease unconfirmed, no peer", 7, 0))
 	m.goroutineWg.Wait()
 
 	assert.Truef(t, hostprocess.ProcessAlive(pid),
@@ -29,7 +30,7 @@ func TestStalledFencePausesTheGuest(t *testing.T) {
 // A stop for a paused guest kills the process the pause pinned.
 func TestAPausedGuestIsKilledByALaterStop(t *testing.T) {
 	m, _, pid, qmpCalls, _ := fencedGuest(t, "vol-pausedstop")
-	m.PauseForFence(t.Context(), "vol-pausedstop", "lease unconfirmed, no peer")
+	m.PauseForFence(t.Context(), "vol-pausedstop", "lease unconfirmed, no peer", 7, 0)
 
 	m.FenceVolume(t.Context(), "vol-pausedstop", "the pause window ended")
 	waitFenceTeardown(t, m)
@@ -42,7 +43,7 @@ func TestAPausedGuestIsKilledByALaterStop(t *testing.T) {
 // relaunched here under a new pid after the paused one exited is untouched.
 func TestAStopNeverSignalsAProcessThePauseDidNotPin(t *testing.T) {
 	m, instance, pid, _, _ := fencedGuest(t, "vol-pausedreuse")
-	m.PauseForFence(t.Context(), "vol-pausedreuse", "lease unconfirmed, no peer")
+	m.PauseForFence(t.Context(), "vol-pausedreuse", "lease unconfirmed, no peer", 7, 0)
 
 	require.NoError(t, hostprocess.ForceKillProcess(pid, fencedGuestTeardownBound))
 	successor := exec.Command("sleep", "300")
@@ -63,31 +64,64 @@ func TestAStopNeverSignalsAProcessThePauseDidNotPin(t *testing.T) {
 }
 
 // A resume continues the guest only once its precondition holds, and a failed
-// precondition leaves it paused.
+// precondition leaves it paused for the same fence. A repeat for a fence
+// already resumed succeeds without continuing it again.
 func TestAResumeContinuesOnlyAfterItsPrecondition(t *testing.T) {
 	m, instance, _, qmpCalls, _ := fencedGuest(t, "vol-pausedresume")
-	m.PauseForFence(t.Context(), "vol-pausedresume", "lease unconfirmed, no peer")
+	m.PauseForFence(t.Context(), "vol-pausedresume", "lease unconfirmed, no peer", 7, 0)
 
 	moved := errors.New("the instance is assigned elsewhere")
-	_, err := m.ResumeAfterFence(t.Context(), "vol-pausedresume", func(string) error { return moved })
+	_, resumed, err := m.ResumeAfterFence(t.Context(), "vol-pausedresume", 7, func(string) error { return moved })
 	require.ErrorIs(t, err, moved)
+	assert.False(t, resumed)
 	assert.Zero(t, qmpCalls("cont"), "a resume whose precondition failed must not continue the guest")
 
-	m.PauseForFence(t.Context(), "vol-pausedresume", "lease unconfirmed, no peer")
-	id, err := m.ResumeAfterFence(t.Context(), "vol-pausedresume", func(string) error { return nil })
-	require.NoError(t, err)
+	_, _, err = m.ResumeAfterFence(t.Context(), "vol-pausedresume", 8, nil)
+	require.ErrorIs(t, err, ErrNotFencePaused, "a resume for another fence generation must not act")
+
+	id, resumed, err := m.ResumeAfterFence(t.Context(), "vol-pausedresume", 7, func(string) error { return nil })
+	require.NoError(t, err, "the failed precondition left the guest paused for the same fence")
+	assert.True(t, resumed)
 	assert.Equal(t, instance.ID, id)
 	assert.Equal(t, 1, qmpCalls("cont"), "the guest is continued once its volume is back")
 
-	_, err = m.ResumeAfterFence(t.Context(), "vol-pausedresume", nil)
-	assert.ErrorIs(t, err, ErrNotFencePaused, "a guest that is not paused for a fence cannot be resumed")
+	_, resumed, err = m.ResumeAfterFence(t.Context(), "vol-pausedresume", 7, nil)
+	require.NoError(t, err, "a repeated resume, as after a lost acknowledgement, must succeed")
+	assert.False(t, resumed)
+	assert.Equal(t, 1, qmpCalls("cont"), "a repeated resume must not continue the guest again")
+}
+
+// A stop for a fence the guest is not paused under is ignored, so a stale stop
+// cannot reach a guest started again on this volume.
+func TestAStaleFenceStopIsIgnored(t *testing.T) {
+	m, _, pid, _, _ := fencedGuest(t, "vol-pausedstale")
+	m.PauseForFence(t.Context(), "vol-pausedstale", "lease unconfirmed, no peer", 7, 0)
+
+	assert.Empty(t, m.StopFencePaused(t.Context(), "vol-pausedstale", 6, "an older fence"))
+	m.goroutineWg.Wait()
+	assert.Truef(t, hostprocess.ProcessAlive(pid), "a stop for another fence killed the guest (pid %d)", pid)
+
+	assert.NotEmpty(t, m.StopFencePaused(t.Context(), "vol-pausedstale", 7, "the window ended"))
+	waitFenceTeardown(t, m)
+	assert.Falsef(t, hostprocess.ProcessAlive(pid), "the stop for its own fence left the guest (pid %d)", pid)
+}
+
+// The daemon stops a paused guest itself once the window and its grace have
+// passed, whether or not the provider is heard from again.
+func TestAPausedGuestIsStoppedWhenTheDaemonsWindowEnds(t *testing.T) {
+	m, _, pid, _, _ := fencedGuest(t, "vol-pausedexpiry")
+	m.fenceGrace = time.Millisecond
+	m.PauseForFence(t.Context(), "vol-pausedexpiry", "lease unconfirmed, no peer", 7, 50*time.Millisecond)
+
+	require.Eventuallyf(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 5*time.Second, 20*time.Millisecond,
+		"the paused guest (pid %d) outlived the daemon's own window", pid)
 }
 
 // The heartbeat's I/O-error resume must leave a fence-paused guest alone: its
 // export is gone until the fence resumes it.
 func TestAFencePausedGuestIsNotResumedByTheIOErrorPath(t *testing.T) {
 	m, instance, _, qmpCalls, _ := fencedGuest(t, "vol-pausedioerr")
-	m.PauseForFence(t.Context(), "vol-pausedioerr", "lease unconfirmed, no peer")
+	m.PauseForFence(t.Context(), "vol-pausedioerr", "lease unconfirmed, no peer", 7, 0)
 
 	for range 3 {
 		m.resumeAfterIOError(t.Context(), instance)

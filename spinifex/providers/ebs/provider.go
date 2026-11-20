@@ -811,8 +811,12 @@ type FenceNotice struct {
 	// Action is what the daemon does with the guest: empty stops it, which is
 	// what every sender before Action meant.
 	Action FenceAction `json:"action,omitempty"`
-	// Generation is the lease generation the export was fenced under.
+	// Generation is the lease generation the export was fenced under, which
+	// ties a pause, its resume and its stop to one fence.
 	Generation uint64 `json:"generation,omitempty"`
+	// PauseFor is how long the daemon keeps a paused guest before stopping it
+	// itself, whether or not the provider is heard from again.
+	PauseFor time.Duration `json:"pause_for,omitempty"`
 }
 
 // FenceAction is what a fence notice asks of the guest using the volume.

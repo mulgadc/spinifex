@@ -1592,6 +1592,9 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 // mountVolumeAt is mountVolume serving the export on socket rather than a new
 // path, so a paused guest's NBD client reconnects to the address it already has.
 func mountVolumeAt(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool, socket string) (mountResult, error) {
+	unlock := cfg.lockVolumeMount(volumeName)
+	defer unlock()
+
 	// A volume this node already exports must not get a second nbdkit, which
 	// is the double-writer hazard the provider boundary exists to prevent: a
 	// retried publish racing a fresh one would otherwise start two exports.

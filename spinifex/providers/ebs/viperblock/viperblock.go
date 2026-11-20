@@ -226,6 +226,10 @@ type Config struct {
 	fencePauseFor    time.Duration
 	fenceRetakeEvery time.Duration
 
+	// mountLocks holds one mutex per volume, taken for a whole mount so two
+	// mounts of one volume cannot both pass the registry check.
+	mountLocks sync.Map
+
 	// leases excludes a second viperblock engine on a volume this node has
 	// open. Nil means exclusion cannot be established, and every engine open
 	// refuses rather than proceeding blind.
@@ -882,4 +886,15 @@ func nbdkitInUse(vol MountedVolume) bool {
 		}
 	}
 	return false
+}
+
+// lockVolumeMount serialises mounts of volumeName and returns the unlock.
+func (cfg *Config) lockVolumeMount(volumeName string) func() {
+	mu, _ := cfg.mountLocks.LoadOrStore(volumeName, &sync.Mutex{})
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		panic("mountLocks holds a value that is not a *sync.Mutex")
+	}
+	m.Lock()
+	return m.Unlock
 }

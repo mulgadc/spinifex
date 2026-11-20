@@ -573,12 +573,13 @@ func TestApplyGuardrail_EmbedderRedirect_FailsClosed(t *testing.T) {
 	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, input)
 	require.NoError(t, err)
 
-	var destinationCalls atomic.Int32
+	var sourceCalls, destinationCalls atomic.Int32
 	destination := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		destinationCalls.Add(1)
 	}))
 	defer destination.Close()
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceCalls.Add(1)
 		http.Redirect(w, r, destination.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	defer source.Close()
@@ -587,6 +588,8 @@ func TestApplyGuardrail_EmbedderRedirect_FailsClosed(t *testing.T) {
 	out, err := ApplyGuardrail(ctx, grCallerAccount, store, embedder, applyGuardrailInput(createOut.GuardrailId, guardrailDraftVersion,
 		bedrockruntime.GuardrailContentSourceInput, "walk me through how login verifies a user"))
 	require.Error(t, err, "a redirected embedder call on unverifiable content must error, not return a usable output")
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
 	assert.Nil(t, out)
+	assert.Positive(t, sourceCalls.Load(), "the topic check must reach the configured embedder")
 	assert.Zero(t, destinationCalls.Load(), "the guarded content must not reach the redirect target")
 }

@@ -140,9 +140,10 @@ func TestKBProviders_RedirectLocationEdgeCases(t *testing.T) {
 		name     string
 		location string
 		wantCode string
+		marker   string
 	}{
 		{name: "empty", location: "", wantCode: awserrors.ErrorModelErrorException},
-		{name: "malformed", location: "http://[::1"},
+		{name: "malformed", location: "http://[::1/loc-marker-5523", marker: "loc-marker-5523"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +153,7 @@ func TestKBProviders_RedirectLocationEdgeCases(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusTemporaryRedirect)
 			})
+			logs := captureDebugLogs(t)
 
 			_, embedErr := kbEmbedder(sourceURL).Embed(context.Background(), kbEmbedModel, []string{"tenant text"})
 			_, rerankErr := kbReranker(sourceURL).Rerank(context.Background(), "tenant query", []string{"tenant doc"})
@@ -162,6 +164,10 @@ func TestKBProviders_RedirectLocationEdgeCases(t *testing.T) {
 				assert.Equal(t, tc.wantCode, rerankErr.Error())
 			}
 			assert.Equal(t, int32(2), sourceCalls.Load(), "each provider must call the source once, without retry")
+			if tc.marker != "" {
+				assert.Contains(t, logs.String(), "endpoint=", "the request failure must still be logged")
+				assert.NotContains(t, logs.String(), tc.marker, "logs must not quote the upstream Location")
+			}
 		})
 	}
 }

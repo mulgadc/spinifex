@@ -364,6 +364,10 @@ dump_guest_apt() {
         echo "== apt errors =="
         sudo timeout 20 grep -aE "^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure" \
             /var/log/cloud-init-output.log 2>/dev/null | tail -40 || true
+        # A packages: install captures apt output into cloud-init.log instead.
+        echo "== apt errors in /var/log/cloud-init.log =="
+        sudo timeout 20 grep -aE "E: |Err:|Failed to fetch|Unable to locate|Hash Sum|Temporary failure|Stderr:" \
+            /var/log/cloud-init.log 2>/dev/null | tail -40 || true
         echo "== /var/log/cloud-init-output.log (tail 80) =="
         sudo timeout 20 tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
     ' 2>&1 | sed "s|^|    |" || log "  ${label}: guest SSH unreachable for the cloud-init dump"

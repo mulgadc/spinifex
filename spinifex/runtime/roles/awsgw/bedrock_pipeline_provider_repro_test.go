@@ -89,7 +89,9 @@ func TestBedrockPipeline_ConverseStreamDecoderFaultOmitsUpstreamValue(t *testing
 		t.Logf("frame %s: %s", mt, msg.Payload)
 		if mt == "exception" {
 			exceptions = append(exceptions, msg.Headers.Get(":exception-type").String())
-			var body struct{ Message string }
+			var body struct {
+				Message string `json:"message"`
+			}
 			require.NoError(t, json.Unmarshal(msg.Payload, &body))
 			assert.NotContains(t, body.Message, pipelineUsageMarker, "the exception frame quotes the upstream value")
 		}

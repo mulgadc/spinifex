@@ -181,10 +181,10 @@ func withLocalAnthropicTransport(t *testing.T, upstream *httptest.Server) *atomi
 	roots := x509.NewCertPool()
 	roots.AddCert(upstream.Certificate())
 	local.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}
-	http.DefaultTransport = local
+	http.DefaultTransport = local //nolint:reassign // test-local transport, restored in cleanup
 	t.Cleanup(func() {
 		local.CloseIdleConnections()
-		http.DefaultTransport = prev
+		http.DefaultTransport = prev //nolint:reassign // restoring the transport captured above
 	})
 	return dials
 }
@@ -213,7 +213,9 @@ func TestInvokeModelWithResponseStream_AnthropicErrorEventDoesNotLeakSecret(t *t
 	for _, f := range decodeAllFrames(t, rec.Body.Bytes()) {
 		payload := f.Payload
 		if f.MessageType == "event" && f.Type == "chunk" {
-			var part struct{ Bytes []byte }
+			var part struct {
+				Bytes []byte `json:"bytes"`
+			}
 			require.NoError(t, json.Unmarshal(f.Payload, &part))
 			payload = part.Bytes
 		}

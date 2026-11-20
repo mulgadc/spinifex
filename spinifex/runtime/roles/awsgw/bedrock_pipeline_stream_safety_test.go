@@ -45,7 +45,9 @@ func TestBedrockPipeline_InvokeStreamDecoderFaultIsSanitized(t *testing.T) {
 		assert.NotContains(t, string(msg.Payload), pipelineUsageMarker)
 		if msg.Headers.Get(":message-type").String() == "exception" {
 			assert.Equal(t, "modelStreamErrorException", msg.Headers.Get(":exception-type").String())
-			var payload struct{ Message string }
+			var payload struct {
+				Message string `json:"message"`
+			}
 			require.NoError(t, json.Unmarshal(msg.Payload, &payload))
 			messages = append(messages, payload.Message)
 		}

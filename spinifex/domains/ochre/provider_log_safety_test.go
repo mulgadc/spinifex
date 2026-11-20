@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log" //nolint:depguard // the HTTP transport writes stray response bytes through the standard logger
 	"log/slog"
 	"net"
 	"net/http"
@@ -340,7 +340,9 @@ func TestStreamHandlers_AnthropicErrorEventIsSanitizedInFramesAndLogs(t *testing
 				assert.NotContains(t, string(f.Payload), reproEchoSecret)
 				if f.MessageType == "exception" {
 					assert.Equal(t, excModelStreamErrorException, f.Type)
-					var body struct{ Message string }
+					var body struct {
+						Message string `json:"message"`
+					}
 					require.NoError(t, json.Unmarshal(f.Payload, &body))
 					messages = append(messages, body.Message)
 				}
@@ -354,5 +356,5 @@ func TestStreamHandlers_AnthropicErrorEventIsSanitizedInFramesAndLogs(t *testing
 	for _, marker := range []string{reproEchoSecret, reproAPIKey, reproPromptMarker} {
 		assert.NotContains(t, out, marker)
 	}
-	assert.False(t, strings.Contains(out, "overloaded_error"), "the provider's error type was logged")
+	assert.NotContains(t, out, "overloaded_error", "the provider's error type was logged")
 }

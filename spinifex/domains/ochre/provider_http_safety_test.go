@@ -33,7 +33,9 @@ func safetyConverseMessages() []*bedrockruntime.Message {
 // baseURL and returns its error.
 func providerCalls() map[string]func(baseURL string) error {
 	ctx := context.Background()
-	static := func(u string) EndpointResolver { return NewStaticEndpointResolver(map[string]string{safetyLlamaModel: u}) }
+	static := func(u string) EndpointResolver {
+		return NewStaticEndpointResolver(map[string]string{safetyLlamaModel: u})
+	}
 	anthropic := func(u string) *anthropicBoundProvider {
 		p := newAnthropicProvider(reproAPIKey).(*anthropicBoundProvider)
 		p.inner.baseURL = u

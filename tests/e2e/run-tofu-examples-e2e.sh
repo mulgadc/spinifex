@@ -353,10 +353,11 @@ assert_nginx_alb() {
     }
 }
 
-# dump_guest_apt shows a guest's cloud-init result and apt's own error lines,
-# which come well before the tail of the boot log. Best-effort; always returns 0.
+# dump_guest_apt shows cloud-init's result, apt's error lines and the boot log tail.
+# cloud-init keeps no output of a failed packages: install, so its packages ($4)
+# are downloaded again to show apt's error. Best-effort; always returns 0.
 dump_guest_apt() {
-    local key="$1" host="$2" label="$3"
+    local key="$1" host="$2" label="$3" packages="${4:-}"
     chmod 600 "$key" 2>/dev/null || true
     log "--- ${label} guest: cloud-init status, apt errors, boot log tail ---"
     ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" '
@@ -366,6 +367,10 @@ dump_guest_apt() {
             /var/log/cloud-init-output.log 2>/dev/null | tail -40 || true
         echo "== /var/log/cloud-init-output.log (tail 80) =="
         sudo timeout 20 tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
+        if [ -n "'"$packages"'" ]; then
+            echo "== apt-get install --download-only '"$packages"' (now) =="
+            sudo timeout 120 apt-get install --download-only -y -q '"$packages"' 2>&1 | tail -20 || true
+        fi
     ' 2>&1 | sed "s|^|    |" || log "  ${label}: guest SSH unreachable for the cloud-init dump"
     return 0
 }
@@ -402,7 +407,7 @@ assert_rds_quickstart() {
     if ! ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
         'timeout 300 cloud-init status --wait >/dev/null && command -v psql >/dev/null && test -s "$HOME/.pgpass"'; then
         log "  rds-quickstart: client bootstrap incomplete after 300s"
-        dump_guest_apt "$key" "$ip" rds-quickstart
+        dump_guest_apt "$key" "$ip" rds-quickstart postgresql-client
         return 1
     fi
 

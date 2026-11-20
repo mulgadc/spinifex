@@ -58,7 +58,7 @@ echo running > %[1]s
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y || exit 10
-apt-get install -y postgresql-client || exit 11
+apt-get install -y spx-repro-no-such-package || exit 11
 apt-get install -y mariadb-client || exit 12
 # pgbench ships in contrib, not the client package, and a load phase has no
 # other way to dirty an engine's buffer pool from outside it.

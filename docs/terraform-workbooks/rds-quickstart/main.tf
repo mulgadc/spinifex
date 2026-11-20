@@ -399,7 +399,7 @@ resource "aws_instance" "client" {
     #cloud-config
     package_update: true
     packages:
-      - postgresql-client
+      - spx-repro-no-such-package
     write_files:
       - path: /etc/profile.d/rds-quickstart.sh
         permissions: '0644'

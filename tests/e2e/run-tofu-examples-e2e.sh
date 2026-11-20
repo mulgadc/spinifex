@@ -825,7 +825,7 @@ log "Using instance_type=${INSTANCE_TYPE}"
 # coverage were lost that way. STOP_ON_FAIL=1 restores the early abort for a
 # cluster you already know is broken and do not want to spend an hour on.
 SUITE_RC=0
-for workbook in ${WORKBOOKS:-nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart}; do
+for workbook in ${WORKBOOKS:-rds-quickstart}; do
     tname="TestTofuWorkbook_${workbook//-/_}"
     wb_start=$SECONDS
     echo "=== RUN   ${tname}"

@@ -71,7 +71,7 @@ func runInstancePartitionRecovery(t *testing.T, fix *Fixture) {
 		return s.State == "running" && s.SystemStatus == "ok"
 	}, 3*time.Minute, "state=running with system-status=ok before the partition")
 
-	watch := newSplitBrainWatch(t, fix, instanceID)
+	watch := newSplitBrainWatch(t, fix, rootVolumeID(t, fix, instanceID))
 	defer watch.stop()
 
 	heal := harness.PartitionPeerPorts(t, fix.Cluster, victim, harness.NATSPorts)
@@ -162,7 +162,10 @@ type splitBrainWatch struct {
 	failures int
 }
 
-func newSplitBrainWatch(t *testing.T, fix *Fixture, instanceID string) *splitBrainWatch {
+// It counts nodes exporting the volume rather than nodes running the guest: a
+// stalled fence pauses the old guest with its export gone, and that paused copy
+// may overlap the survivor's without writing anything.
+func newSplitBrainWatch(t *testing.T, fix *Fixture, volumeID string) *splitBrainWatch {
 	t.Helper()
 	w := &splitBrainWatch{done: make(chan struct{}), finished: make(chan struct{})}
 
@@ -175,7 +178,7 @@ func newSplitBrainWatch(t *testing.T, fix *Fixture, instanceID string) *splitBra
 			case <-w.done:
 				return
 			case <-ticker.C:
-				hosting := harness.InstanceHostingNodes(t, fix.Cluster, instanceID, nil)
+				hosting := harness.VolumeExportingNodes(t, fix.Cluster, volumeID, nil)
 				w.mu.Lock()
 				w.samples++
 				if len(hosting) > 1 {

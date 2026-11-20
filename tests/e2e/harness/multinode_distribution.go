@@ -84,3 +84,34 @@ func asExitErr(err error) (*exec.ExitError, bool) {
 	}
 	return nil, false
 }
+
+// VolumeExportingNodes returns the nodes running an nbdkit export of volumeID,
+// which is what can write the volume. A guest paused with its export fenced
+// runs QEMU but no export, so it is not counted.
+func VolumeExportingNodes(t *testing.T, c *Cluster, volumeID string, skip []string) []Node {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ssh := NewPeerSSH()
+
+	var exporting []Node
+	for i := range c.Nodes {
+		n := c.Nodes[i]
+		if slices.Contains(skip, n.Name) {
+			continue
+		}
+		cmd := fmt.Sprintf("ps auxw | grep nbdkit | grep %q | grep -v grep", "volume="+volumeID)
+		out, err := ssh.Run(ctx, n.Addr, cmd)
+		if err != nil {
+			if exitErr, ok := asExitErr(err); ok && exitErr.ExitCode() == 1 {
+				continue
+			}
+			t.Logf("VolumeExportingNodes: %s did not answer for %s: %v", n.Name, volumeID, err)
+			continue
+		}
+		if strings.Contains(string(out), volumeID) {
+			exporting = append(exporting, c.Nodes[i])
+		}
+	}
+	return exporting
+}

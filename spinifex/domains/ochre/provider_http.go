@@ -22,7 +22,10 @@ func newNoRedirectHTTPClient() *http.Client {
 // that never idles a connection: an idle one logs any stray response bytes,
 // which a provider can fill with echoed tenant input.
 func newKBProviderHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+	}
 	transport.DisableKeepAlives = true
 	client := newNoRedirectHTTPClient()
 	client.Transport = transport

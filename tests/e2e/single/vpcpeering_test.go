@@ -179,17 +179,48 @@ func lrpMAC(t *testing.T, port string) string {
 // returns the first router-policy stage it hits, with the actions under it.
 func tracePolicy(t *testing.T, vpcID, inport, src, dst string) string {
 	t.Helper()
+	stage, trace := probePolicy(t, vpcID, inport, src, dst)
+	if stage == "" {
+		t.Fatalf("trace of %s -> %s on %s reached no router policy\n%s", src, dst, vpcID, trace)
+	}
+	return stage
+}
+
+// probePolicy returns the first router-policy stage of a trace, or "" with the
+// whole trace when it reached none, which a route still being programmed can do.
+func probePolicy(t *testing.T, vpcID, inport, src, dst string) (stage, trace string) {
+	t.Helper()
 	flow := fmt.Sprintf(`inport == %q && eth.src == 02:00:00:00:00:01 && eth.dst == %s && ip4.src == %s && ip4.dst == %s && ip.ttl == 64 && icmp4`,
 		inport, lrpMAC(t, inport), src, dst)
-	trace := harness.OvnTrace(t, "vpc-"+vpcID, flow)
+	trace = harness.OvnTrace(t, "vpc-"+vpcID, flow)
 	lines := strings.Split(trace, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "lr_in_policy (") {
-			return strings.Join(lines[i:min(i+6, len(lines))], "\n")
+			return strings.Join(lines[i:min(i+6, len(lines))], "\n"), trace
 		}
 	}
-	t.Fatalf("trace of %s -> %s on %s reached no router policy\n%s", src, dst, vpcID, trace)
-	return ""
+	return "", trace
+}
+
+// awaitPolicy traces until the first router policy hit is the one at priority,
+// so a check after a route change reads that route's row rather than a wider one.
+func awaitPolicy(t *testing.T, vpcID, inport, src, dst string, priority int) string {
+	t.Helper()
+	want := fmt.Sprintf("priority %d,", priority)
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		stage, trace := probePolicy(t, vpcID, inport, src, dst)
+		if strings.Contains(stage, want) {
+			return stage
+		}
+		if time.Now().After(deadline) {
+			if stage != "" {
+				trace = stage
+			}
+			t.Fatalf("%s -> %s on %s never reached the policy at priority %d\n%s", src, dst, vpcID, priority, trace)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // Peering route rows rank by destination length: a drop at 1300+2*bits and
@@ -303,12 +334,9 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 				_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(a.rtbID), DestinationCidrBlock: aws.String(d)})
 			}
 		})
-		harness.Eventually(t, func() bool {
-			return strings.Contains(tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.200.0.1"), "drop;")
-		}, 60*time.Second, 2*time.Second, "wide peering route never realised")
-		requirePolicyReroute(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), peeringDropPriority(16)+1, abLinkA, "peer range under its own route")
-		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.200.0.1"), peeringDropPriority(8), "rest of a wide route")
-		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.99.0.1"), peeringDropPriority(16), "route disjoint from the peer")
+		requirePolicyReroute(t, awaitPolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer, peeringDropPriority(16)+1), peeringDropPriority(16)+1, abLinkA, "peer range under its own route")
+		requirePolicyDrop(t, awaitPolicy(t, a.vpcID, subnetPort, a.privateIP, "10.200.0.1", peeringDropPriority(8)), peeringDropPriority(8), "rest of a wide route")
+		requirePolicyDrop(t, awaitPolicy(t, a.vpcID, subnetPort, a.privateIP, "10.99.0.1", peeringDropPriority(16)), peeringDropPriority(16), "route disjoint from the peer")
 
 		// A blackhole route beats an active one by length in both nesting orders.
 		d := harness.CreateVPC(t, c, "10.156.0.0/16")
@@ -322,12 +350,9 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 			}
 		})
 		require.Equal(t, "blackhole", routeState(t, c, a.rtbID, "10.151.2.0/24"))
-		harness.Eventually(t, func() bool {
-			return strings.Contains(tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), fmt.Sprintf("priority %d,", peeringDropPriority(24)))
-		}, 60*time.Second, 2*time.Second, "blackhole route never realised")
-		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), peeringDropPriority(24), "narrower blackhole inside an active route")
+		requirePolicyDrop(t, awaitPolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer, peeringDropPriority(24)), peeringDropPriority(24), "narrower blackhole inside an active route")
 		requirePolicyReroute(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, b.privateIP), peeringDropPriority(16)+1, abLinkA, "active route inside a wider blackhole")
-		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.152.0.1"), peeringDropPriority(12), "rest of a wider blackhole")
+		requirePolicyDrop(t, awaitPolicy(t, a.vpcID, subnetPort, a.privateIP, "10.152.0.1", peeringDropPriority(12)), peeringDropPriority(12), "rest of a wider blackhole")
 
 		// B's guard drops transit from a third VPC towards A, and A's guard
 		// drops B's traffic towards A's internet gateway.

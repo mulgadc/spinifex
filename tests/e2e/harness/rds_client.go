@@ -169,8 +169,7 @@ func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 		default:
 			status = readStatus
 			if code != "" && code != "0" {
-				log, _ := GuestExec(tgt, "tail -40 /var/log/cloud-init-output.log 2>/dev/null || true")
-				return fmt.Errorf("client VM database-client install exited %s (status=%q):\n%s", code, status, log)
+				return fmt.Errorf("client VM database-client install exited %s (status=%q):\n%s", code, status, aptFailureLog(tgt))
 			}
 			if code == "0" && status == "done" {
 				return nil
@@ -183,6 +182,20 @@ func waitForRDSClientTooling(t *testing.T, tgt SSHTarget) error {
 		time.Sleep(5 * time.Second)
 	}
 }
+
+// aptFailureLog returns apt's own error lines from the boot log, then its tail:
+// apt writes them well before the later boot output a short tail would show.
+func aptFailureLog(tgt SSHTarget) string {
+	out, err := GuestExec(tgt, "sudo -n grep -aE "+aptErrorPattern+" /var/log/cloud-init-output.log | tail -40; "+
+		"echo '-- last 60 lines --'; sudo -n tail -n 60 /var/log/cloud-init-output.log")
+	if err != nil {
+		return fmt.Sprintf("reading the boot log failed: %v\n%s", err, out)
+	}
+	return out
+}
+
+// aptErrorPattern matches the lines apt prints when a fetch or install fails.
+const aptErrorPattern = `'^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure'`
 
 // Both sentinels, or neither. GuestExec returns the combined output, so ssh's
 // own error text on a failed connection is indistinguishable from a sentinel's

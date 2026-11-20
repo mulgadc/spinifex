@@ -353,10 +353,35 @@ assert_nginx_alb() {
     }
 }
 
+# dump_guest_apt shows cloud-init's result, apt's error lines and the boot log tail.
+# cloud-init keeps no output of a failed packages: install, so its packages ($4)
+# are downloaded again to show apt's error. Best-effort; always returns 0.
+dump_guest_apt() {
+    local key="$1" host="$2" label="$3" packages="${4:-}"
+    chmod 600 "$key" 2>/dev/null || true
+    log "--- ${label} guest: cloud-init status, apt errors, boot log tail ---"
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" '
+        echo "== cloud-init status =="; timeout 20 cloud-init status --long 2>/dev/null || true
+        echo "== apt errors =="
+        sudo timeout 20 grep -aE "^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure" \
+            /var/log/cloud-init-output.log 2>/dev/null | tail -40 || true
+        echo "== /var/log/cloud-init-output.log (tail 80) =="
+        sudo timeout 20 tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
+        if [ -n "'"$packages"'" ]; then
+            echo "== apt-get install --download-only '"$packages"' (now) =="
+            sudo timeout 120 apt-get install --download-only -y -q '"$packages"' 2>&1 | tail -20 || true
+        fi
+    ' 2>&1 | sed "s|^|    |" || log "  ${label}: guest SSH unreachable for the cloud-init dump"
+    return 0
+}
+
 assert_nginx_webserver() {
     local ip
     ip=$(tofu output -raw public_ip)
-    wait_for_http_200 "http://${ip}/"
+    wait_for_http_200 "http://${ip}/" && return 0
+    log "  nginx-webserver: no HTTP 200 from http://${ip}/"
+    dump_guest_apt "$(pwd)/nginx-demo.pem" "$ip" nginx-webserver
+    return 1
 }
 
 # The DB endpoint is a private VPC address and there is no publicly_accessible
@@ -382,9 +407,7 @@ assert_rds_quickstart() {
     if ! ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
         'timeout 300 cloud-init status --wait >/dev/null && command -v psql >/dev/null && test -s "$HOME/.pgpass"'; then
         log "  rds-quickstart: client bootstrap incomplete after 300s"
-        ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
-            'cloud-init status --long; sudo tail -n 40 /var/log/cloud-init-output.log' 2>&1 | \
-            sed "s|^|    |" || true
+        dump_guest_apt "$key" "$ip" rds-quickstart postgresql-client
         return 1
     fi
 
@@ -418,15 +441,11 @@ dump_s3_webapp_guest() {
         log "  s3-webapp: ${key} missing, skipping guest cloud-init dump"
         return 0
     fi
-    chmod 600 "$key" 2>/dev/null || true
-    log "--- s3-webapp guest: cloud-init status + output log + unit status ---"
-    ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" '
-        echo "== cloud-init status =="; cloud-init status --long 2>/dev/null || true
-        echo "== /var/log/cloud-init-output.log (tail 80) =="
-        sudo tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
-        echo "== s3-webapp.service =="
-        systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true
-    ' 2>&1 | sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for cloud-init dump"
+    dump_guest_apt "$key" "$host" s3-webapp
+    log "--- s3-webapp guest: unit status ---"
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" \
+        'timeout 20 systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true' 2>&1 |
+        sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for the unit status"
 }
 
 assert_s3_webapp() {

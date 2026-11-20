@@ -158,7 +158,7 @@ func (a *llamaInvokeAdapter) resolveEndpoint(ctx context.Context, modelID string
 func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, body []byte) ([]byte, string, error) {
 	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("llama invoke: endpoint resolution failed", "model", modelID, "err", err)
+		slog.Error("llama invoke: endpoint resolution failed", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, "", resolveEndpointError(err)
 	}
 	if !ok {
@@ -167,7 +167,7 @@ func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, bo
 
 	var lr llamaInvokeRequest
 	if err := json.Unmarshal(body, &lr); err != nil {
-		slog.Error("llama invoke: failed to parse request body", "model", modelID, "err", err)
+		slog.Error("llama invoke: failed to parse request body", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorValidationException)
 	}
 
@@ -185,14 +185,14 @@ func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, bo
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
-		slog.Error("llama invoke: failed to build request", "model", modelID, "err", err)
+		slog.Error("llama invoke: failed to build request", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, "", errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Error("llama invoke: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		slog.Error("llama invoke: request failed", "model", modelID, "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
@@ -204,13 +204,13 @@ func (a *llamaInvokeAdapter) InvokeModel(ctx context.Context, modelID string, bo
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Error("llama invoke: failed to read response body", "model", modelID, "err", err)
+		slog.Error("llama invoke: failed to read response body", "model", modelID, "failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	var cr llamaCompletionsResponse
 	if err := json.Unmarshal(respBody, &cr); err != nil {
-		slog.Error("llama invoke: failed to parse response", "model", modelID, "err", err)
+		slog.Error("llama invoke: failed to parse response", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorModelErrorException)
 	}
 	if len(cr.Choices) == 0 {
@@ -242,7 +242,7 @@ var _ InvokeStreamAdapter = (*llamaInvokeAdapter)(nil)
 func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte) (invokeStreamSource, error) {
 	baseURL, ok, err := a.resolveEndpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("llama invoke-stream: endpoint resolution failed", "model", modelID, "err", err)
+		slog.Error("llama invoke-stream: endpoint resolution failed", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, resolveEndpointError(err)
 	}
 	if !ok {
@@ -251,7 +251,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 
 	var lr llamaInvokeRequest
 	if err := json.Unmarshal(body, &lr); err != nil {
-		slog.Error("llama invoke-stream: failed to parse request body", "model", modelID, "err", err)
+		slog.Error("llama invoke-stream: failed to parse request body", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 
@@ -276,7 +276,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
-		slog.Error("llama invoke-stream: failed to build request", "model", modelID, "err", err)
+		slog.Error("llama invoke-stream: failed to build request", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -285,7 +285,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
-		slog.Error("llama invoke-stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		slog.Error("llama invoke-stream: request failed", "model", modelID, "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 

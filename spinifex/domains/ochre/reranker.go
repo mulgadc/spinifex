@@ -126,7 +126,7 @@ func (p *rerankProvider) Rerank(ctx context.Context, query string, docs []string
 
 	indices, err := orderByScore(len(docs), results)
 	if err != nil {
-		slog.Debug("rerank: malformed response shape", "err", err)
+		slog.Debug("rerank: malformed response shape", "failure", decodeFailureClass(err))
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 	return indices, nil

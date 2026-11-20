@@ -140,7 +140,7 @@ func (p *anthropicProvider) Converse(ctx context.Context, modelID string, input 
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody))
 	if err != nil {
-		slog.Error("anthropic: failed to build request", "model", modelID, "err", err)
+		slog.Error("anthropic: failed to build request", "model", modelID)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("X-Api-Key", apiKey)
@@ -151,7 +151,7 @@ func (p *anthropicProvider) Converse(ctx context.Context, modelID string, input 
 	resp, err := p.httpClient.Do(httpReq)
 	latency := time.Since(start)
 	if err != nil {
-		slog.Error("anthropic: request failed", "model", modelID, "err", err)
+		slog.Error("anthropic: request failed", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
@@ -163,13 +163,13 @@ func (p *anthropicProvider) Converse(ctx context.Context, modelID string, input 
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Error("anthropic: failed to read response body", "model", modelID, "err", err)
+		slog.Error("anthropic: failed to read response body", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	var ar anthropicResponse
 	if err := json.Unmarshal(respBody, &ar); err != nil {
-		slog.Error("anthropic: failed to parse response", "model", modelID, "err", err)
+		slog.Error("anthropic: failed to parse response", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
@@ -279,7 +279,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
-		slog.Error("anthropic stream: failed to build request", "model", modelID, "err", err)
+		slog.Error("anthropic stream: failed to build request", "model", modelID)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("X-Api-Key", apiKey)
@@ -290,7 +290,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
-		slog.Error("anthropic stream: request failed", "model", modelID, "err", err)
+		slog.Error("anthropic stream: request failed", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
@@ -379,7 +379,7 @@ func (s *anthropicConverseStreamSource) Next(_ context.Context) (ConverseStreamE
 		case "message_stop":
 			return s.handleMessageStop()
 		case "error":
-			return ConverseStreamEvent{}, false, newStreamFault(fmt.Errorf("anthropic stream: upstream error event: %s", ev.Data))
+			return ConverseStreamEvent{}, false, newStreamFault(fmt.Errorf("anthropic stream: %w", errUpstreamErrorEvent))
 		default:
 			continue // forward-compat: skip unrecognised event types
 		}

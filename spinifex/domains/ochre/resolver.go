@@ -74,10 +74,21 @@ type cachedEndpoint struct {
 	expiresAt time.Time
 }
 
+// livenessOutcome is what one liveness re-probe of a member observed.
+type livenessOutcome int
+
+const (
+	livenessNotLive livenessOutcome = iota
+	livenessLive
+	// livenessRedirected is a member answering its health route with a
+	// redirect: it points elsewhere, so waiting on it cannot make it ready.
+	livenessRedirected
+)
+
 // livenessResult is the outcome of the last liveness re-probe of one base
 // URL and when it was taken.
 type livenessResult struct {
-	live      bool
+	outcome   livenessOutcome
 	checkedAt time.Time
 }
 
@@ -222,8 +233,12 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 	switch out.Endpoint.State {
 	case StateReady:
 		if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
-			if r.isLive(ctx, out.Endpoint, modelID, url) {
+			switch r.liveness(ctx, out.Endpoint, modelID, url) {
+			case livenessLive:
 				return url, nil
+			case livenessRedirected:
+				return "", nil
+			case livenessNotLive:
 			}
 			// The persisted record is READY but the member itself is not
 			// answering (e.g. a co-resident engine still rebinding its port
@@ -279,8 +294,14 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 			return "", err
 		}
 		if out.Endpoint.State == StateReady {
-			if url := out.Endpoint.MemberBaseURL(modelID); url != "" && r.isLive(ctx, out.Endpoint, modelID, url) {
-				return url, nil
+			if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
+				switch r.liveness(ctx, out.Endpoint, modelID, url) {
+				case livenessLive:
+					return url, nil
+				case livenessRedirected:
+					return "", nil
+				case livenessNotLive:
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -301,26 +322,81 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 // still rebinding its port, and describeAndEnsure has no other signal that
 // the address it is about to hand out currently dials to nothing.
 func (r *DynamicEndpointResolver) isLive(ctx context.Context, rec EndpointRecord, modelID, baseURL string) bool {
+	return r.liveness(ctx, rec, modelID, baseURL) == livenessLive
+}
+
+// liveness is isLive's full outcome, cached the same way, so a caller can
+// tell a redirected member from one that is merely not answering yet.
+func (r *DynamicEndpointResolver) liveness(ctx context.Context, rec EndpointRecord, modelID, baseURL string) livenessOutcome {
 	member, ok := rec.Members[modelID]
 	if !ok {
-		return true
+		return livenessLive
 	}
 
 	r.livenessMu.Lock()
 	if cached, ok := r.livenessCache[baseURL]; ok && time.Since(cached.checkedAt) < r.livenessTTL {
 		r.livenessMu.Unlock()
-		return cached.live
+		return cached.outcome
 	}
 	r.livenessMu.Unlock()
 
 	probeCtx, cancel := context.WithTimeout(ctx, livenessProbeTimeout)
 	defer cancel()
-	live := probeOnce(probeCtx, r.client, baseURL+readinessPath(member.Family))
+	outcome := probeLiveness(probeCtx, r.client, baseURL+readinessPath(member.Family))
 
 	r.livenessMu.Lock()
-	r.livenessCache[baseURL] = livenessResult{live: live, checkedAt: time.Now()}
+	r.livenessCache[baseURL] = livenessResult{outcome: outcome, checkedAt: time.Now()}
 	r.livenessMu.Unlock()
-	return live
+	return outcome
+}
+
+// probeLiveness GETs url through a shallow copy of client that hands any
+// redirect back unfollowed, so client's transport, jar and timeout still
+// apply and client itself is unchanged. Only HTTP 200 is live.
+func probeLiveness(ctx context.Context, client *http.Client, url string) livenessOutcome {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return livenessNotLive
+	}
+	recorder := &redirectRecorder{next: client.Transport}
+	probe := *client
+	probe.Transport = recorder
+	probe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := probe.Do(req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	switch {
+	case recorder.redirected:
+		return livenessRedirected
+	case err != nil:
+		return livenessNotLive
+	case resp.StatusCode == http.StatusOK:
+		return livenessLive
+	default:
+		return livenessNotLive
+	}
+}
+
+// redirectRecorder notes whether any response it carried was a redirect,
+// including one whose Location the client then fails to parse.
+type redirectRecorder struct {
+	next       http.RoundTripper
+	redirected bool
+}
+
+var _ http.RoundTripper = (*redirectRecorder)(nil)
+
+func (r *redirectRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	next := r.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	resp, err := next.RoundTrip(req)
+	if resp != nil && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		r.redirected = true
+	}
+	return resp, err
 }
 
 func (r *DynamicEndpointResolver) lookupCache(modelID string) (string, bool) {

@@ -149,7 +149,7 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 	}
 	baseURL, ok, err := pinned.PinnedEndpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("tei invoke: endpoint lookup failed", "model", modelID, "err", err)
+		slog.Error("tei invoke: endpoint lookup failed", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, "", resolveEndpointError(err)
 	}
 	if !ok {
@@ -191,7 +191,7 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 	entry, _ := lookupCatalogEntry(modelID)
 	out, err := normalizeTEIEmbeddingsResponse(modelID, respBody, n, entry.EmbeddingDimensions)
 	if err != nil {
-		slog.Error("tei invoke: malformed response", "model", modelID, "err", err)
+		slog.Error("tei invoke: malformed response", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorModelErrorException)
 	}
 	return out, "application/json", nil

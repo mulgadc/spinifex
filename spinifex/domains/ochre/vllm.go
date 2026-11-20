@@ -176,7 +176,7 @@ func (p *vllmProvider) resolveEndpoint(ctx context.Context, modelID string) (str
 func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
 	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("vllm: endpoint resolution failed", "model", modelID, "err", err)
+		slog.Error("vllm: endpoint resolution failed", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, resolveEndpointError(err)
 	}
 	if !ok {
@@ -191,7 +191,7 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
-		slog.Error("vllm: failed to build request", "model", modelID, "err", err)
+		slog.Error("vllm: failed to build request", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -200,7 +200,7 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 	resp, err := p.httpClient.Do(httpReq)
 	latency := time.Since(start)
 	if err != nil {
-		slog.Error("vllm: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		slog.Error("vllm: request failed", "model", modelID, "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
@@ -212,13 +212,13 @@ func (p *vllmProvider) Converse(ctx context.Context, modelID string, input *bedr
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Error("vllm: failed to read response body", "model", modelID, "err", err)
+		slog.Error("vllm: failed to read response body", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	var cr vllmChatResponse
 	if err := json.Unmarshal(respBody, &cr); err != nil {
-		slog.Error("vllm: failed to parse response", "model", modelID, "err", err)
+		slog.Error("vllm: failed to parse response", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
@@ -301,7 +301,7 @@ var _ ConverseStreamProvider = (*vllmProvider)(nil)
 func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input *bedrockruntime.ConverseStreamInput) (converseStreamSource, error) {
 	baseURL, ok, err := p.resolveEndpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("vllm stream: endpoint resolution failed", "model", modelID, "err", err)
+		slog.Error("vllm stream: endpoint resolution failed", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, resolveEndpointError(err)
 	}
 	if !ok {
@@ -325,7 +325,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
-		slog.Error("vllm stream: failed to build request", "model", modelID, "err", err)
+		slog.Error("vllm stream: failed to build request", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -334,7 +334,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
-		slog.Error("vllm stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		slog.Error("vllm stream: request failed", "model", modelID, "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 

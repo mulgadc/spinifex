@@ -114,7 +114,7 @@ func TestPumpConverseStream_MidStreamFaultWritesExceptionFrame(t *testing.T) {
 	assert.Equal(t, "messageStart", frames[0].Type)
 	assert.Equal(t, "exception", frames[1].MessageType)
 	assert.Equal(t, excModelStreamErrorException, frames[1].Type)
-	assert.JSONEq(t, `{"message":"upstream connection reset"}`, string(frames[1].Payload))
+	assert.JSONEq(t, `{"message":"The model stream ended with an error."}`, string(frames[1].Payload))
 
 	// The status must still be 200: post-header, a fault cannot change it.
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -131,6 +131,7 @@ func TestPumpConverseStream_NonFaultErrorUsesInternalServerException(t *testing.
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 1)
 	assert.Equal(t, excInternalServerException, frames[0].Type)
+	assert.JSONEq(t, `{"message":"internal error"}`, string(frames[0].Payload))
 }
 
 func TestPumpConverseStream_CleanEOFWritesNoExceptionFrame(t *testing.T) {

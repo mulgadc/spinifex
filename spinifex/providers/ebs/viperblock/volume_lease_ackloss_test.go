@@ -95,21 +95,41 @@ func TestVolumeLease_AnUnacknowledgedGenerationPublishBoundsTheConfirmation(t *t
 	start := time.Now()
 	clock := &fakeClock{now: start}
 	leases.now = clock.Now
-	leases.kv = &ackLossKV{KeyValue: leases.kv}
+	published := start.Add(3 * time.Second)
+	leases.kv = &slowCreateKV{ackLossKV: ackLossKV{KeyValue: leases.kv}, clock: clock, after: published}
 
 	lease, err := leases.acquire(t.Context(), "vol-acklosspublish")
 	require.NoError(t, err)
 	lease.stop()
 	<-lease.done
+	created := lease.revision
 
 	clock.set(start.Add(10 * time.Second))
 	require.True(t, lease.renew(t.Context()), "the refused renewal re-reads the stored publish")
 
-	require.False(t, lease.lastConfirmed().After(start),
-		"the publish was sent at acquisition, so the lease cannot be confirmed from any later time")
-	clock.set(start.Add(volumeLeaseValidity + time.Second))
-	require.True(t, lease.expiredLocally(),
-		"validity must end 40 s after the publish was sent, inside the server's 45 s TTL")
+	lease.mu.Lock()
+	revision := lease.revision
+	lease.mu.Unlock()
+	require.Greater(t, revision, created, "the stored publish revision must be adopted")
+	require.Equal(t, published, lease.lastConfirmed(),
+		"the publish is the unacknowledged write, so the lease is confirmed from its send and no later")
+	clock.set(published.Add(volumeLeaseValidity))
+	require.True(t, lease.expiredLocally(), "validity ends exactly 40 s after the publish was sent")
+}
+
+// slowCreateKV moves the clock forward once the Create returns, so the
+// generation publish that follows is sent at a later time than the Create.
+type slowCreateKV struct {
+	ackLossKV
+
+	clock *fakeClock
+	after time.Time
+}
+
+func (k *slowCreateKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	rev, err := k.KeyValue.Create(ctx, key, value, opts...)
+	k.clock.set(k.after)
+	return rev, err
 }
 
 // A lease that has already lapsed on this node's clock is given up when a
@@ -170,4 +190,93 @@ func TestVolumeLease_AReReadOfAnOlderRevisionConfirmsNothing(t *testing.T) {
 	}
 	require.True(t, lease.renew(t.Context()))
 	require.Equal(t, before, lease.lastConfirmed(), "revision 99 is older than 200, so nothing new was stored")
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	require.Equal(t, uint64(200), lease.revision, "a stale read must not roll the revision back")
+}
+
+// scriptedReadKV refuses every update and answers reads from a script, which
+// is how a stale replica looks to the lease.
+type scriptedReadKV struct {
+	jetstream.KeyValue
+
+	value     []byte
+	revisions []uint64
+}
+
+func (k *scriptedReadKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	return 0, jetstream.ErrKeyRevisionMismatch
+}
+
+func (k *scriptedReadKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
+	rev := k.revisions[0]
+	k.revisions = k.revisions[1:]
+	return stubEntry{value: k.value, revision: rev}, nil
+}
+
+// Stale reads that return an older revision and then the acknowledged one must
+// neither roll the lease back nor pass the acknowledged revision off as newer,
+// or a later read of the real write confirms from too late a send.
+func TestVolumeLease_StaleReadsCannotStretchValidity(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+	start := time.Now()
+	clock := &fakeClock{now: start}
+	leases.now = clock.Now
+
+	lease, err := leases.acquire(t.Context(), "vol-acklossstale")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	// R2 = 20 was acknowledged at 0 s; R3 = 30 was sent at 20 s and stored, its
+	// acknowledgement lost.
+	lease.mu.Lock()
+	lease.revision = 20
+	lease.confirmed = start
+	lease.unackedSince = start.Add(20 * time.Second)
+	lease.mu.Unlock()
+	leases.kv = &scriptedReadKV{KeyValue: leases.kv, value: leaseEntry(t, "node-a", lease.generation), revisions: []uint64{10, 20, 30}}
+
+	clock.set(start.Add(25 * time.Second))
+	require.True(t, lease.renew(t.Context()), "a stale read of R1 keeps the lease")
+	require.True(t, lease.renew(t.Context()), "a read of the acknowledged R2 keeps the lease")
+	require.Equal(t, start, lease.lastConfirmed(), "neither stale read proves a newer write was stored")
+
+	require.True(t, lease.renew(t.Context()), "a read of R3 proves the write sent at 20 s was stored")
+	require.Equal(t, start.Add(20*time.Second), lease.lastConfirmed(),
+		"validity must run from 20 s, the send of the write R3 came from, and no later")
+}
+
+// A lease already given up is not changed by a later re-read of its own write,
+// and is not fenced a second time.
+func TestVolumeLease_AReReadAfterTheLeaseIsLostChangesNothing(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+	fences := make(chan leaseLossKind, 2)
+	leases.onLost = func(_ context.Context, _ string, kind leaseLossKind) { fences <- kind }
+
+	lease, err := leases.acquire(t.Context(), "vol-acklosslost")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	lease.mu.Lock()
+	lease.lost = true
+	lease.unackedSince = lease.confirmed.Add(time.Second)
+	before, revision := lease.confirmed, lease.revision
+	lease.mu.Unlock()
+	leases.kv = &scriptedReadKV{KeyValue: leases.kv, value: leaseEntry(t, "node-a", lease.generation), revisions: []uint64{revision + 5}}
+
+	require.False(t, lease.renew(t.Context()), "a lost lease stays lost")
+	require.Equal(t, before, lease.lastConfirmed())
+	select {
+	case kind := <-fences:
+		t.Fatalf("a lease already given up was fenced again (%v)", kind)
+	case <-time.After(200 * time.Millisecond):
+	}
 }

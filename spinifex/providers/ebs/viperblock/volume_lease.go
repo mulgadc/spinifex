@@ -226,8 +226,8 @@ type volumeLease struct {
 	failures     int
 	failingSince time.Time
 	// unackedSince is when the first write after the last confirmation was sent
-	// whose acknowledgement never arrived, and zero when there is none. Such a
-	// write was stored no earlier, so it bounds when the server's TTL restarted.
+	// whose acknowledgement never arrived, and zero when there is none. It is
+	// never before confirmed, and bounds when the server's TTL last restarted.
 	unackedSince time.Time
 }
 
@@ -652,14 +652,27 @@ func (lease *volumeLease) readopt(ctx context.Context, cause error) bool {
 	// Newer than the last acknowledged write, so one of this lease's own
 	// unacknowledged writes stored it, and the TTL restarted no earlier than
 	// that write was sent. That is all an acknowledgement proves too.
-	if entry.Revision() > lease.revision && !lease.unackedSince.IsZero() {
+	// A stale read can return an older revision; adopting it would let a later
+	// read of an acknowledged revision pass for a newer one.
+	if entry.Revision() <= lease.revision {
+		lease.mu.Unlock()
+		slog.Warn("volume lease: a renewal was rejected and the re-read returned no newer revision, so the lease is kept until its validity lapses",
+			"volume", lease.volume, "generation", lease.generation, "revision", entry.Revision())
+		return true
+	}
+	if !lease.unackedSince.IsZero() {
 		since := lease.unackedSince
 		lease.revision = entry.Revision()
 		lease.confirmed = since
+		attempts, outage := lease.failures, time.Since(lease.failingSince)
 		lease.failures, lease.failingSince, lease.unackedSince = 0, time.Time{}, time.Time{}
 		lease.mu.Unlock()
 		slog.Warn("volume lease: a write this node never saw acknowledged was stored, so the lease is confirmed from its send",
 			"volume", lease.volume, "generation", lease.generation, "revision", entry.Revision())
+		if attempts > 0 {
+			slog.Warn("volume lease: renewals recovered, so the store was unwritable for this long",
+				"volume", lease.volume, "attempts", attempts, "outage_ms", otelsetup.Millis(outage))
+		}
 		return true
 	}
 	lease.revision = entry.Revision()

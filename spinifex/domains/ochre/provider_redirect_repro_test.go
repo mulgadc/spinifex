@@ -6,12 +6,15 @@ package ochre
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -156,33 +159,46 @@ func TestStreamUpstreamFault_LogOmitsUpstreamErrorEvent(t *testing.T) {
 	assert.NotContains(t, logs.String(), reproAPIKey)
 }
 
-// anthropicHostTransport sends every request for the Anthropic API host to
-// target instead, leaving the production client and base URL untouched.
-type anthropicHostTransport struct {
-	target *url.URL
-	next   http.RoundTripper
-}
-
-func (a anthropicHostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Host == "api.anthropic.com" {
-		r = r.Clone(r.Context())
-		r.URL.Scheme, r.URL.Host = a.target.Scheme, a.target.Host
+// withLocalAnthropicTransport replaces http.DefaultTransport with a clone that
+// dials only upstream, for the Anthropic API host, trusting its certificate;
+// every other address and any proxy is refused. It returns a dial counter.
+func withLocalAnthropicTransport(t *testing.T, upstream *httptest.Server) *atomic.Int32 {
+	t.Helper()
+	prev := http.DefaultTransport
+	base, ok := prev.(*http.Transport)
+	require.True(t, ok, "http.DefaultTransport is not an *http.Transport")
+	dials := &atomic.Int32{}
+	local := base.Clone()
+	local.Proxy = nil
+	local.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr != "api.anthropic.com:443" {
+			return nil, fmt.Errorf("test transport refuses %s", addr)
+		}
+		dials.Add(1)
+		var d net.Dialer
+		return d.DialContext(ctx, network, upstream.Listener.Addr().String())
 	}
-	return a.next.RoundTrip(r)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	local.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}
+	http.DefaultTransport = local
+	t.Cleanup(func() {
+		local.CloseIdleConnections()
+		http.DefaultTransport = prev
+	})
+	return dials
 }
 
 func TestInvokeModelWithResponseStream_AnthropicErrorEventDoesNotLeakSecret(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"bad key " + reproEchoSecret + "\"}}\n\n"))
 	}))
 	defer upstream.Close()
-	target, err := url.Parse(upstream.URL)
-	require.NoError(t, err)
-	prev := http.DefaultTransport
-	http.DefaultTransport = anthropicHostTransport{target: target, next: prev}
-	defer func() { http.DefaultTransport = prev }()
+	dials := withLocalAnthropicTransport(t, upstream)
+	_, err := http.DefaultTransport.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.org/", nil))
+	require.ErrorContains(t, err, "test transport refuses example.org:443")
 	modelID := "anthropic.claude-3-5-sonnet-20240620-v1:0"
 	withProviderCatalogEntry(t, modelID)
 
@@ -191,6 +207,7 @@ func TestInvokeModelWithResponseStream_AnthropicErrorEventDoesNotLeakSecret(t *t
 		[]byte(`{"anthropic_version":"bedrock-2023-05-31","messages":[]}`),
 		stubCredentialResolver{key: reproAPIKey, ok: true}, nil, "application/json", nil, grantAll{}, nil, "", "", nil, nil)
 	require.NoError(t, err)
+	require.EqualValues(t, 1, dials.Load(), "the handler never reached the local upstream")
 
 	var exceptions []string
 	for _, f := range decodeAllFrames(t, rec.Body.Bytes()) {

@@ -37,13 +37,6 @@ func TestAccountVersionedBucketTeardown(t *testing.T) {
 	runAccountVersionedBucketTeardown(t, requireSingleNodeFixture(t))
 }
 
-// TestKVReplication reads the cluster's own state and runs a repair that has
-// nothing to repair, so it mutates nothing another test can see.
-func TestKVReplication(t *testing.T) {
-	t.Parallel()
-	runKVReplication(t, requireSingleNodeFixture(t))
-}
-
 // Reaches the public internet rather than the cluster: it asks whether the
 // upstreams our image catalog names are still publishing what it claims.
 func TestImageCatalogReachable(t *testing.T) {
@@ -52,6 +45,12 @@ func TestImageCatalogReachable(t *testing.T) {
 }
 
 // --- Sequential: singleton VM lifecycle ---
+
+// TestKVReplication compares the bucket list across a repair, so it runs where
+// no parallel test can create an account's buckets between the two audits.
+func TestKVReplication(t *testing.T) {
+	runKVReplication(t, requireSingleNodeFixture(t))
+}
 
 // TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
 // concurrency-tolerant (other suites may have VMs on the node).

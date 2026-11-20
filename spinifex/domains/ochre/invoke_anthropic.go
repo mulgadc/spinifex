@@ -167,11 +167,9 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 	return &anthropicInvokeStreamSource{resp: resp, scanner: newSSEScanner(resp.Body), cancel: cancel}, nil
 }
 
-// anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line
-// verbatim as the chunk payload, skipping keepalive "ping" events and ending
-// the stream with a fault on an "error" event. It also
-// opportunistically taps message_start/message_delta for token usage
-// without altering the forwarded bytes.
+// anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line verbatim,
+// skips "ping" events, ends the stream with a fault on an "error" event, and
+// taps message_start/message_delta for token usage without altering the bytes.
 type anthropicInvokeStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner

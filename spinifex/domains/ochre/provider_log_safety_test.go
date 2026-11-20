@@ -129,23 +129,28 @@ func TestDynamicEndpointResolver_RedirectedOutcomeIsCached(t *testing.T) {
 
 func TestDynamicEndpointResolver_NotLiveReadyMemberStillWaits(t *testing.T) {
 	t.Parallel()
-	var probes atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if probes.Add(1) == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
-	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute), WithLivenessCacheTTL(time.Nanosecond))
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusNotModified} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			var probes atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if probes.Add(1) == 1 {
+					w.WriteHeader(status)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+			svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
+			r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute), WithLivenessCacheTTL(time.Nanosecond))
 
-	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
-	require.NoError(t, err)
-	require.True(t, ok, "an ordinary not-live member must be polled until it answers")
-	assert.Equal(t, srv.URL, baseURL)
-	assert.GreaterOrEqual(t, probes.Load(), int32(2))
+			baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+			require.NoError(t, err)
+			require.True(t, ok, "an ordinary not-live member must be polled until it answers")
+			assert.Equal(t, srv.URL, baseURL)
+			assert.GreaterOrEqual(t, probes.Load(), int32(2))
+		})
+	}
 }
 
 // countingTransport counts round trips through the injected client's transport.
@@ -357,4 +362,53 @@ func TestStreamHandlers_AnthropicErrorEventIsSanitizedInFramesAndLogs(t *testing
 		assert.NotContains(t, out, marker)
 	}
 	assert.NotContains(t, out, "overloaded_error", "the provider's error type was logged")
+}
+
+func TestDynamicEndpointResolver_ProbeTrailingBytesAreNotLogged(t *testing.T) {
+	stdLogs := captureStdLog(t)
+	srv, closed := strayByteServer(t, http.StatusOK, "")
+	r := NewDynamicEndpointResolver(&fakeEndpointService{}, nil, 0)
+
+	assert.Equal(t, livenessLive, r.liveness(context.Background(), memberReadyRecord(t, srv), resolverTestModel, srv.URL))
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the probe kept the connection open after the response")
+	}
+	assert.NotContains(t, stdLogs.String(), safetyStrayMarker)
+}
+
+func TestProviderClients_ErrorResponseIsNotReadOrLogged(t *testing.T) {
+	logs := captureSafetyLogs(t)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"` + reproEchoSecret + " " + reproPromptMarker))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	for name, call := range providerCalls() {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- call(srv.URL) }()
+			select {
+			case err := <-done:
+				require.Error(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("the call waited for the error body")
+			}
+		})
+	}
+	out := logs.String()
+	require.Contains(t, out, "status=500", "the error responses were not logged")
+	assert.NotContains(t, out, reproEchoSecret)
+	assert.NotContains(t, out, reproPromptMarker)
 }

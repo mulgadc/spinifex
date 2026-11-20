@@ -358,6 +358,8 @@ func probeLiveness(ctx context.Context, client *http.Client, url string) livenes
 	if err != nil {
 		return livenessNotLive
 	}
+	// The connection is not pooled, so trailing bytes are never logged as idle.
+	req.Close = true
 	recorder := &redirectRecorder{next: client.Transport}
 	probe := *client
 	probe.Transport = recorder
@@ -378,8 +380,8 @@ func probeLiveness(ctx context.Context, client *http.Client, url string) livenes
 	}
 }
 
-// redirectRecorder notes whether any response it carried was a redirect,
-// including one whose Location the client then fails to parse.
+// redirectRecorder notes whether any response it carried had a status the
+// client follows, including one whose Location the client then fails to parse.
 type redirectRecorder struct {
 	next       http.RoundTripper
 	redirected bool
@@ -393,7 +395,7 @@ func (r *redirectRecorder) RoundTrip(req *http.Request) (*http.Response, error) 
 		next = http.DefaultTransport
 	}
 	resp, err := next.RoundTrip(req)
-	if resp != nil && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+	if resp != nil && isFollowedRedirect(resp.StatusCode) {
 		r.redirected = true
 	}
 	return resp, err
@@ -413,4 +415,15 @@ func (r *DynamicEndpointResolver) storeCache(modelID, baseURL string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cached[modelID] = cachedEndpoint{baseURL: baseURL, expiresAt: time.Now().Add(r.ttl)}
+}
+
+// isFollowedRedirect reports whether net/http's client follows status.
+func isFollowedRedirect(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }

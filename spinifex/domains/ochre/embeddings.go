@@ -285,7 +285,7 @@ func (p *embeddingsProvider) embedBatch(ctx context.Context, modelID, baseURL st
 
 	vectors, err := orderEmbeddings(len(inputs), er.Data)
 	if err != nil {
-		slog.Error("embeddings: malformed response shape", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "failure", decodeFailureClass(err))
+		slog.Error("embeddings: malformed response shape", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 	return vectors, nil

@@ -82,3 +82,92 @@ func TestVolumeLease_LostAcknowledgementsDoNotLapseALiveLease(t *testing.T) {
 	require.False(t, lease.expiredLocally(),
 		"the second re-read proves a write sent at 30 s was stored, so validity runs to 70 s")
 }
+
+// A generation publish stored without an acknowledgement is one of this lease's
+// own writes too, and was sent at acquisition. A renewal that re-reads it must
+// not confirm the lease from the renewal's later send, or validity outlives the
+// server's TTL by the gap between the two.
+func TestVolumeLease_AnUnacknowledgedGenerationPublishBoundsTheConfirmation(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+	start := time.Now()
+	clock := &fakeClock{now: start}
+	leases.now = clock.Now
+	leases.kv = &ackLossKV{KeyValue: leases.kv}
+
+	lease, err := leases.acquire(t.Context(), "vol-acklosspublish")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	clock.set(start.Add(10 * time.Second))
+	require.True(t, lease.renew(t.Context()), "the refused renewal re-reads the stored publish")
+
+	require.False(t, lease.lastConfirmed().After(start),
+		"the publish was sent at acquisition, so the lease cannot be confirmed from any later time")
+	clock.set(start.Add(volumeLeaseValidity + time.Second))
+	require.True(t, lease.expiredLocally(),
+		"validity must end 40 s after the publish was sent, inside the server's 45 s TTL")
+}
+
+// A lease that has already lapsed on this node's clock is given up when a
+// re-read lands, rather than revived before the watchdog notices the lapse.
+func TestVolumeLease_AReReadAfterALapseDoesNotReviveTheLease(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+	lost := make(chan leaseLossKind, 1)
+	leases.onLost = func(_ context.Context, _ string, kind leaseLossKind) { lost <- kind }
+	start := time.Now()
+	clock := &fakeClock{now: start}
+	leases.now = clock.Now
+
+	lease, err := leases.acquire(t.Context(), "vol-acklosslapsed")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+	leases.kv = &ackLossKV{KeyValue: leases.kv}
+
+	clock.set(start.Add(10 * time.Second))
+	require.True(t, lease.renew(t.Context()))
+	clock.set(start.Add(volumeLeaseValidity + time.Second))
+	require.False(t, lease.renew(t.Context()), "a re-read after the lapse must give the volume up")
+
+	select {
+	case kind := <-lost:
+		require.Equal(t, leaseLostStalled, kind)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lapsed lease was not surrendered")
+	}
+}
+
+// Only a revision newer than the last acknowledged one proves a later write
+// was stored. A re-read returning an older revision confirms nothing.
+func TestVolumeLease_AReReadOfAnOlderRevisionConfirmsNothing(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	lease, err := leases.acquire(t.Context(), "vol-acklossolder")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	before := lease.lastConfirmed()
+	lease.mu.Lock()
+	lease.revision = 200
+	lease.unackedSince = before.Add(time.Second)
+	lease.mu.Unlock()
+
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getValue: leaseEntry(t, "node-a", lease.generation),
+	}
+	require.True(t, lease.renew(t.Context()))
+	require.Equal(t, before, lease.lastConfirmed(), "revision 99 is older than 200, so nothing new was stored")
+}

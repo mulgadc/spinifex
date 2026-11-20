@@ -17,11 +17,13 @@ const (
 // AccountID scopes the endpoint to a tenant; empty resolves to
 // awsidentifiers.GlobalAccountID, the shared platform endpoint every caller used
 // before per-account endpoints existed. Pinned marks a created endpoint
-// exempt from idle reaping and eviction.
+// exempt from idle reaping and eviction; OperatorReserved, with Pinned,
+// records that an operator made that pin.
 type EnsureEndpointInput struct {
-	ModelID   string `json:"model_id"`
-	AccountID string `json:"account_id,omitempty"`
-	Pinned    bool   `json:"pinned,omitempty"`
+	ModelID          string `json:"model_id"`
+	AccountID        string `json:"account_id,omitempty"`
+	Pinned           bool   `json:"pinned,omitempty"`
+	OperatorReserved bool   `json:"operator_reserved,omitempty"`
 }
 
 // EnsureEndpointOutput carries the model's endpoint record, either the one already STARTING or READY

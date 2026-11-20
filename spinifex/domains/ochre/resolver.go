@@ -152,6 +152,33 @@ func (r *DynamicEndpointResolver) Endpoint(ctx context.Context, modelID string) 
 	return baseURL, baseURL != "", nil
 }
 
+var _ PinnedEndpointResolver = (*DynamicEndpointResolver)(nil)
+
+// PinnedEndpoint returns modelID's base URL only from a static entry or a
+// shared bundle that is READY, operator-pinned and live. It never launches,
+// waits, or trusts the URL cache, which an unpinned resolve may have filled.
+func (r *DynamicEndpointResolver) PinnedEndpoint(ctx context.Context, modelID string) (string, bool, error) {
+	if baseURL, ok := r.static[modelID]; ok {
+		return baseURL, true, nil
+	}
+	out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID, AccountID: awsidentifiers.GlobalAccountID},
+		awsidentifiers.GlobalAccountID)
+	if err != nil {
+		return "", false, err
+	}
+	rec := out.Endpoint
+	// A record without this member predates per-member ports, so its BaseURL
+	// would name the bundle's generative engine rather than this model.
+	if _, member := rec.Members[modelID]; rec.State != StateReady || !rec.Pinned || !rec.OperatorReserved || !member {
+		return "", false, nil
+	}
+	url := rec.MemberBaseURL(modelID)
+	if url == "" || !r.isLive(ctx, rec, modelID, url) {
+		return "", false, nil
+	}
+	return url, true, nil
+}
+
 // resolve describes the endpoint and, when there is none, asks for one. An
 // empty base URL means "not resolved", which is the only outcome a cold model
 // can have: the launch outlives this request by design.

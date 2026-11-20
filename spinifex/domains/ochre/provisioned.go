@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -206,6 +207,12 @@ func CreateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	if _, found, selfHost := LookupServingSpec(modelID); !found || !selfHost {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
+	// A system-account commitment would share, and on delete tear down, the
+	// operator-reserved embedding bundle, so none is created for its group.
+	if has, _ := coServeGroupHasEmbedding(modelID); has && accountID == awsidentifiers.GlobalAccountID {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+			"bedrock: provisioned throughput for %s is not available to the system account", modelID)
+	}
 
 	// Resolve the bucket before pinning an endpoint, so an unreachable KV
 	// fails without launching a VM whose commitment record can never be
@@ -353,6 +360,31 @@ func UpdateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	return &bedrock.UpdateProvisionedModelThroughputOutput{}, nil
 }
 
+// deleteCommitmentEndpoint tears down rec's pinned endpoint. A system-account
+// commitment on an embedding group, or one whose group no longer resolves,
+// shares the operator's bundle: it is never torn down here, and the record may
+// go only once that endpoint is already absent.
+func deleteCommitmentEndpoint(ctx context.Context, store *ProvisionedStore, accountID string, rec ProvisionedModelRecord) error {
+	has, known := coServeGroupHasEmbedding(rec.ModelID)
+	if accountID != awsidentifiers.GlobalAccountID || (known && !has) {
+		return store.endpoint.DeletePinned(ctx, accountID, rec.ModelID)
+	}
+	if !known {
+		return awserrors.Errorf(awserrors.ErrorConflictException,
+			"bedrock: provisioned throughput %s serves %s, which is no longer in the catalog; its endpoint ownership is unknown", rec.ARN, rec.ModelID)
+	}
+	state, err := store.endpoint.EndpointState(ctx, accountID, rec.ModelID)
+	if err != nil {
+		return err
+	}
+	if state != string(StateAbsent) {
+		return awserrors.Errorf(awserrors.ErrorConflictException,
+			"bedrock: provisioned throughput %s shares the %s endpoint bundle for %s, which other clients may be using; "+
+				"only once it is confirmed safe to remove, delete it with 'spx admin ochre endpoint delete' and retry", rec.ARN, state, rec.ModelID)
+	}
+	return nil
+}
+
 // DeleteProvisionedModelThroughput tears down the pinned endpoint for
 // input.ProvisionedModelId's model, then removes the record. An already-absent
 // commitment is a no-op success, matching ochre.Service.Delete's
@@ -374,7 +406,7 @@ func DeleteProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		return &bedrock.DeleteProvisionedModelThroughputOutput{}, nil
 	}
 
-	if err := store.endpoint.DeletePinned(ctx, accountID, rec.ModelID); err != nil {
+	if err := deleteCommitmentEndpoint(ctx, store, accountID, rec); err != nil {
 		return nil, err
 	}
 	if err := store.store.Delete(ctx, provisionedKey(accountID, id)); err != nil {

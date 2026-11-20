@@ -74,6 +74,10 @@ type Service struct {
 
 	// launchWG tracks in-flight async launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+
+	// afterEvictionSelect, nil outside tests, runs between choosing an
+	// eviction victim and its guarded teardown.
+	afterEvictionSelect func(EndpointRecord)
 }
 
 var _ EndpointService = (*Service)(nil)
@@ -215,6 +219,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		CreatedAt:  time.Now().UTC(),
 		Generation: 1,
 		Pinned:     in.Pinned,
+
+		OperatorReserved: in.Pinned && in.OperatorReserved,
 	}
 	if _, err := s.store.Create(ctx, key, &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
@@ -281,7 +287,21 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
 		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
 		"idleSince", victim.LastActive())
-	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
+	if s.afterEvictionSelect != nil {
+		s.afterEvictionSelect(victim)
+	}
+	// Re-checked under the key's lock: a selection gone stale (replaced,
+	// pinned, or otherwise moved on) is not torn down.
+	admit := func(current EndpointRecord) bool {
+		return current.State == StateReady && !current.Pinned && sameIncarnation(current, victim) &&
+			current.Generation == victim.Generation
+	}
+	key := resolveKey(resolveAccountID(victim.AccountID), victim.ModelID)
+	if _, err := s.deleteEndpoint(ctx, key, victim.ModelID, admit); errors.Is(err, errReclaimSuperseded) {
+		slog.InfoContext(ctx, "bedrock: eviction victim changed since selection; not evicting",
+			"evicting", victim.ModelID, "for", wantModelID)
+		return false
+	} else if err != nil {
 		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
 			"evicting", victim.ModelID, "for", wantModelID, "err", err)
 		return false
@@ -481,13 +501,15 @@ func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit
 		}
 		rec.State = StateDraining
 		rec.Generation++
-		if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+		next, err := s.store.CompareAndSet(ctx, key, &rec, rev)
+		if err != nil {
 			// A record moved since admission belongs to whoever moved it.
 			if admit != nil && errors.Is(err, kvstore.ErrConflict) {
 				return nil, errReclaimSuperseded
 			}
 			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", modelID, err)
 		}
+		rev = next
 	}
 
 	if err := TerminateServingVM(ctx, s.deps.Launch, rec); err != nil {
@@ -496,8 +518,14 @@ func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit
 	if err := validateTransition(StateDraining, StateAbsent); err != nil {
 		return nil, err
 	}
-	if err := s.store.Purge(ctx, key); err != nil {
-		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", modelID, err)
+	// Guarded on the draining revision: another daemon may have finished this
+	// teardown and claimed the key for a new endpoint, whose record stays.
+	if err := s.store.CompareAndDelete(ctx, key, rev); err != nil {
+		if !errors.Is(err, kvstore.ErrConflict) {
+			return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", modelID, err)
+		}
+		slog.InfoContext(ctx, "bedrock: endpoint record replaced during teardown; leaving the replacement",
+			"model", modelID, "instanceId", rec.InstanceID)
 	}
 	return &DeleteEndpointOutput{Removed: true}, nil
 }

@@ -1,8 +1,12 @@
 package ochre_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -108,14 +113,128 @@ func TestKBEmbedder_InfoRedirectFallsBackToDefault(t *testing.T) {
 	require.True(t, ok)
 	fallback := unresolved.MaxInputLength(context.Background(), kbEmbedModel)
 
-	sourceURL, _, destinationCalls := redirectPair(t, http.StatusTemporaryRedirect, func(w http.ResponseWriter, _ *http.Request) {
+	sourceURL, sourceCalls, destinationCalls := redirectPair(t, http.StatusTemporaryRedirect, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"max_input_length":8192}`))
 	})
 	limiter, ok := kbEmbedder(sourceURL).(ochre.TokenLimiter)
 	require.True(t, ok)
 
 	assert.Equal(t, fallback, limiter.MaxInputLength(context.Background(), kbEmbedModel))
+	assert.Equal(t, int32(1), sourceCalls.Load(), "the configured endpoint must be asked for /info once")
 	assert.Zero(t, destinationCalls.Load(), "the redirect target must not be asked for /info")
+}
+
+func TestKBEmbedder_InfoServedLimitOverridesDefault(t *testing.T) {
+	var infoCalls atomic.Int32
+	sourceURL, _ := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/info" {
+			infoCalls.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"max_input_length":8192}`))
+	})
+	limiter, ok := kbEmbedder(sourceURL).(ochre.TokenLimiter)
+	require.True(t, ok)
+
+	assert.Equal(t, 8192, limiter.MaxInputLength(context.Background(), kbEmbedModel))
+	assert.Equal(t, int32(1), infoCalls.Load())
+}
+
+// failingResolver fails every lookup with err.
+type failingResolver struct{ err error }
+
+func (r failingResolver) Endpoint(context.Context, string) (string, bool, error) {
+	return "", false, r.err
+}
+
+func (r failingResolver) EndpointForAccount(context.Context, string, string) (string, bool, error) {
+	return "", false, r.err
+}
+
+var _ ochre.EndpointResolver = failingResolver{}
+
+func TestKBProviders_ResolverErrorLogOmitsDetail(t *testing.T) {
+	resolver := failingResolver{err: errors.New("lookup http://kbuser:kbsecret@10.0.0.9:8080 failed")}
+	logs := captureDebugLogs(t)
+
+	_, embedErr := ochre.NewEmbedder(resolver).Embed(context.Background(), kbEmbedModel, []string{"tenant text"})
+	_, rerankErr := ochre.NewReranker(resolver, kbRerankModel).Rerank(context.Background(), "tenant query", []string{"tenant doc"})
+	require.Error(t, embedErr)
+	require.Error(t, rerankErr)
+
+	out := logs.String()
+	assert.Contains(t, out, "embeddings: endpoint resolution failed")
+	assert.Contains(t, out, "rerank: endpoint resolution failed")
+	for _, secret := range []string{"kbuser", "kbsecret", "10.0.0.9"} {
+		assert.NotContains(t, out, secret)
+	}
+}
+
+// overrunServer answers each request with a response whose body runs past its
+// declared Content-Length by trailer, and closes connClosed once the client
+// closes its connection.
+func overrunServer(t *testing.T, body, trailer string) (baseURL string, connClosed <-chan struct{}) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	closed := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		defer close(closed)
+		br := bufio.NewReader(conn)
+		for {
+			req, err := http.ReadRequest(br)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, req.Body)
+			_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s%s", len(body), body, trailer)
+		}
+	}()
+	return "http://" + ln.Addr().String(), closed
+}
+
+// TestKBProviders_StrayResponseBytesNotLogged: Go's transport logs bytes that
+// arrive on an idle connection, so the KB clients must not keep one.
+func TestKBProviders_StrayResponseBytesNotLogged(t *testing.T) {
+	const marker = "tenant-marker-9931"
+	cases := map[string]struct {
+		body string
+		call func(baseURL string) error
+	}{
+		"embed": {
+			body: `{"data":[{"index":0,"embedding":[0.1]}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`,
+			call: func(baseURL string) error {
+				_, err := kbEmbedder(baseURL).Embed(context.Background(), kbEmbedModel, []string{"tenant text"})
+				return err
+			},
+		},
+		"rerank": {
+			body: `[{"index":0,"score":0.5}]`,
+			call: func(baseURL string) error {
+				_, err := kbReranker(baseURL).Rerank(context.Background(), "tenant query", []string{"tenant doc"})
+				return err
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			baseURL, connClosed := overrunServer(t, tc.body, marker)
+			logs := captureDebugLogs(t)
+
+			require.NoError(t, tc.call(baseURL))
+			select {
+			case <-connClosed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the client kept its provider connection open")
+			}
+			assert.NotContains(t, logs.String(), marker)
+		})
+	}
 }
 
 func TestKBReranker_DoesNotFollowRedirects(t *testing.T) {

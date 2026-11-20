@@ -145,7 +145,7 @@ var _ TokenLimiter = (*embeddingsProvider)(nil)
 func newEmbeddingsProvider(endpointResolver EndpointResolver) *embeddingsProvider {
 	return &embeddingsProvider{
 		endpointResolver: endpointResolver,
-		httpClient:       newNoRedirectHTTPClient(),
+		httpClient:       newKBProviderHTTPClient(),
 	}
 }
 
@@ -217,7 +217,7 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 
 	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("embeddings: endpoint resolution failed", "service", embedServiceLabel, "action", "resolve_endpoint", "model", modelID, "err", err)
+		slog.Error("embeddings: endpoint resolution failed", "service", embedServiceLabel, "action", "resolve_endpoint", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 	if !ok {

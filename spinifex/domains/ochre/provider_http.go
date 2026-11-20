@@ -18,6 +18,17 @@ func newNoRedirectHTTPClient() *http.Client {
 	}
 }
 
+// newKBProviderHTTPClient is newNoRedirectHTTPClient on a private transport
+// that never idles a connection: an idle one logs any stray response bytes,
+// which a provider can fill with echoed tenant input.
+func newKBProviderHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	client := newNoRedirectHTTPClient()
+	client.Transport = transport
+	return client
+}
+
 // endpointLogID names baseURL by scheme and host only, dropping any userinfo,
 // path or query.
 func endpointLogID(baseURL string) string {

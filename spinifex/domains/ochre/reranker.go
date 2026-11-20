@@ -64,7 +64,7 @@ func NewReranker(endpointResolver EndpointResolver, modelID string) *rerankProvi
 	return &rerankProvider{
 		modelID:          modelID,
 		endpointResolver: endpointResolver,
-		httpClient:       newNoRedirectHTTPClient(),
+		httpClient:       newKBProviderHTTPClient(),
 	}
 }
 
@@ -78,7 +78,7 @@ func (p *rerankProvider) Rerank(ctx context.Context, query string, docs []string
 
 	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, p.modelID)
 	if err != nil {
-		slog.Debug("rerank: endpoint resolution failed", "model", p.modelID, "err", err)
+		slog.Debug("rerank: endpoint resolution failed", "model", p.modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	if !ok {

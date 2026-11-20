@@ -359,13 +359,13 @@ dump_guest_apt() {
     local key="$1" host="$2" label="$3"
     chmod 600 "$key" 2>/dev/null || true
     log "--- ${label} guest: cloud-init status, apt errors, boot log tail ---"
-    ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" '
-        echo "== cloud-init status =="; cloud-init status --long 2>/dev/null || true
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" '
+        echo "== cloud-init status =="; timeout 20 cloud-init status --long 2>/dev/null || true
         echo "== apt errors =="
-        sudo grep -aE "^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure" \
+        sudo timeout 20 grep -aE "^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure" \
             /var/log/cloud-init-output.log 2>/dev/null | tail -40 || true
         echo "== /var/log/cloud-init-output.log (tail 80) =="
-        sudo tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
+        sudo timeout 20 tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
     ' 2>&1 | sed "s|^|    |" || log "  ${label}: guest SSH unreachable for the cloud-init dump"
     return 0
 }
@@ -438,8 +438,8 @@ dump_s3_webapp_guest() {
     fi
     dump_guest_apt "$key" "$host" s3-webapp
     log "--- s3-webapp guest: unit status ---"
-    ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" \
-        'systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true' 2>&1 |
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" \
+        'timeout 20 systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true' 2>&1 |
         sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for the unit status"
 }
 

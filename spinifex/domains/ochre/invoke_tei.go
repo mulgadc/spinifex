@@ -7,9 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -72,11 +70,7 @@ var _ InvokeAdapter = (*teiEmbeddingInvokeAdapter)(nil)
 func newTEIEmbeddingInvokeAdapter(endpointResolver EndpointResolver) *teiEmbeddingInvokeAdapter {
 	return &teiEmbeddingInvokeAdapter{
 		endpointResolver: endpointResolver,
-		httpClient: &http.Client{
-			Timeout: providerHTTPTimeout,
-			// A redirect would resend the embedding input to another host.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		httpClient:       newNoRedirectHTTPClient(),
 	}
 }
 
@@ -201,30 +195,6 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 		return nil, "", errors.New(awserrors.ErrorModelErrorException)
 	}
 	return out, "application/json", nil
-}
-
-// endpointLogID names baseURL by scheme and host only, dropping any userinfo,
-// path or query.
-func endpointLogID(baseURL string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
-		return "unparseable"
-	}
-	return u.Scheme + "://" + u.Host
-}
-
-// transportFailureClass reduces a transport error to a fixed label, since
-// its text can quote the request URL.
-func transportFailureClass(err error) string {
-	var netErr net.Error
-	switch {
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
-		return "timeout"
-	default:
-		return "unreachable"
-	}
 }
 
 // mapTEIStatus maps TEI's input rejections (413 payload too large, 422

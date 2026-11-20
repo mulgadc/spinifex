@@ -1075,7 +1075,9 @@ func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
 	// A fenced guest's disk belongs to another node, and the heartbeat may have
 	// read Running just before the fence landed. Resuming it serves nobody.
 	var stopped bool
-	m.Inspect(instance, func(v *VM) { stopped = v.Status != StateRunning || VolumeFenced(v.Instance) })
+	m.Inspect(instance, func(v *VM) {
+		stopped = v.Status != StateRunning || VolumeFenced(v.Instance) || len(v.fencePaused) > 0
+	})
 	if stopped {
 		slog.InfoContext(ctx, "Not resuming a guest that is fenced or no longer running", "instance", instance.ID)
 		return

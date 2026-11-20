@@ -808,7 +808,26 @@ type FenceNotice struct {
 	NodeID   string `json:"node_id"`
 	Winner   string `json:"winner,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	// Action is what the daemon does with the guest: empty stops it, which is
+	// what every sender before Action meant.
+	Action FenceAction `json:"action,omitempty"`
+	// Generation is the lease generation the export was fenced under.
+	Generation uint64 `json:"generation,omitempty"`
 }
+
+// FenceAction is what a fence notice asks of the guest using the volume.
+type FenceAction string
+
+const (
+	// FenceActionStop kills the guest, as a fence always has.
+	FenceActionStop FenceAction = ""
+	// FenceActionPause pauses the guest while its node tries to get the volume's
+	// lease back; the export is already fenced.
+	FenceActionPause FenceAction = "pause"
+	// FenceActionResume continues a paused guest whose volume is exported again
+	// under a lease this node re-acquired.
+	FenceActionResume FenceAction = "resume"
+)
 
 // FenceNoticeAck is the daemon's answer to a FenceNotice. Any answer ends the
 // sender's retries; InstanceID names the guest stopped, if one was, and Error

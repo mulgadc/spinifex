@@ -121,7 +121,114 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName string, kind leas
 	slog.WarnContext(ctx, "volume fenced: the export is gone and this node is no longer writing it",
 		"volume", volumeName, "pid", matched.PID, "winner", winner)
 	otelsetup.RecordVolumeFence(ctx, outcome)
+
+	// Nobody took the volume, so the guest is paused rather than stopped while
+	// this node tries to take the lease back. A TCP export has no socket for the
+	// guest to reconnect to, so it is stopped as before.
+	if kind == leaseLostStalled && winner == "unknown" && matched.Socket != "" && matched.Lease != nil && cfg.dirty != nil {
+		generation := matched.Lease.generation
+		if err := cfg.publishFenceNotice(ctx, cfg.fenceNotice(volumeName, winner, ebsprovider.FenceActionPause, generation), true); err != nil {
+			// A daemon that cannot pause the guest is asked to stop it instead.
+			cfg.publishVolumeFenced(ctx, volumeName, winner)
+			return
+		}
+		go cfg.retakeStalledVolume(context.WithoutCancel(ctx), matched, generation)
+		return
+	}
 	cfg.publishVolumeFenced(ctx, volumeName, winner)
+}
+
+// Defaults for how long a stalled fence keeps its guest paused, and how often
+// it tries to take the lease back meanwhile. Twice the lease TTL rides out the
+// store stalls seen on prod; nothing about exclusion depends on the value.
+const (
+	defaultFencePauseFor    = 2 * volumeLeaseTTL
+	defaultFenceRetakeEvery = volumeLeaseCheckInterval
+)
+
+func (cfg *Config) fencePauseWindow() time.Duration {
+	if cfg.fencePauseFor > 0 {
+		return cfg.fencePauseFor
+	}
+	return defaultFencePauseFor
+}
+
+func (cfg *Config) fenceRetakeInterval() time.Duration {
+	if cfg.fenceRetakeEvery > 0 {
+		return cfg.fenceRetakeEvery
+	}
+	return defaultFenceRetakeEvery
+}
+
+// retakeStalledVolume tries, for a bounded window, to take back the volume a
+// stall fenced, and resumes the paused guest if it can. It re-exports only once
+// the dirty marker still names this node at the fenced generation, which no
+// other node's mount leaves in place, and the lease is held again through the
+// ordinary mount. Anything else, or the window ending, stops the guest.
+func (cfg *Config) retakeStalledVolume(ctx context.Context, fenced MountedVolume, generation uint64) {
+	volumeName := fenced.Name
+	began := time.Now()
+	deadline := began.Add(cfg.fencePauseWindow())
+	stop := func(winner, why string) {
+		slog.ErrorContext(ctx, "volume fence: could not take the lease back, stopping the paused guest",
+			"volume", volumeName, "why", why, "paused_ms", otelsetup.Millis(time.Since(began)))
+		cfg.publishVolumeFenced(ctx, volumeName, winner)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(cfg.fenceRetakeInterval()):
+		}
+		if time.Now().After(deadline) {
+			stop("unknown", "the pause window ended")
+			return
+		}
+
+		record, marked, err := cfg.dirty.lookup(ctx, volumeName)
+		if err != nil {
+			continue
+		}
+		if !marked || record.Owner != cfg.dirty.owner || record.Generation != generation {
+			stop(record.Owner, "the volume's dirty marker no longer names this node at the fenced generation")
+			return
+		}
+
+		if _, err := mountVolumeAt(ctx, cfg, cfg.nc, volumeName, fenced.ReadOnly, fenced.Socket); err != nil {
+			if errors.Is(err, errVolumeLeaseHeld) {
+				stop(cfg.fenceHolder(ctx, volumeName), "another node holds the lease")
+				return
+			}
+			slog.WarnContext(ctx, "volume fence: could not take the lease back yet, retrying",
+				"volume", volumeName, "err", err)
+			continue
+		}
+
+		resume := cfg.fenceNotice(volumeName, cfg.leaseOwner(), ebsprovider.FenceActionResume, generation)
+		if err := cfg.publishFenceNotice(ctx, resume, false); err != nil {
+			slog.ErrorContext(ctx, "volume fence: the daemon would not resume the guest, giving the export back",
+				"volume", volumeName, "err", err)
+			if _, aerr := cfg.abandonVolume(ctx, volumeName, "resume refused"); aerr != nil {
+				return
+			}
+			stop("unknown", "the daemon refused the resume")
+			return
+		}
+		slog.WarnContext(ctx, "volume fence: took the lease back and resumed the guest",
+			"volume", volumeName, "paused_ms", otelsetup.Millis(time.Since(began)))
+		return
+	}
+}
+
+// fenceHolder names who holds volumeName's lease, for the stop notice.
+func (cfg *Config) fenceHolder(ctx context.Context, volumeName string) string {
+	readCtx, cancel := context.WithTimeout(ctx, fenceHolderReadTimeout)
+	defer cancel()
+	if owner, held := cfg.leases.currentOwner(readCtx, volumeName); held {
+		return owner
+	}
+	return "unknown"
 }
 
 // defaultFenceWatchInterval is how often a fence that did not complete re-checks
@@ -317,16 +424,38 @@ func (cfg *Config) fenceNoticeRetry() time.Duration {
 // that is gone, until the daemon acknowledges. It gives up on a notice that can
 // never be acted on, a closed connection, or the volume being exported again.
 func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner string) {
+	_ = cfg.publishFenceNotice(ctx, cfg.fenceNotice(volumeName, winner, ebsprovider.FenceActionStop, 0), true)
+}
+
+// fenceNotice builds the notice for action on volumeName.
+func (cfg *Config) fenceNotice(volumeName, winner string, action ebsprovider.FenceAction, generation uint64) ebsprovider.FenceNotice {
+	reason := fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner)
+	switch action {
+	case ebsprovider.FenceActionPause:
+		reason = "this node could not confirm the volume lease and no other node holds it"
+	case ebsprovider.FenceActionResume:
+		reason = "this node holds the volume lease again"
+	case ebsprovider.FenceActionStop:
+	}
+	return ebsprovider.FenceNotice{
+		Versioned:  ebsprovider.NewVersioned(),
+		VolumeID:   volumeName,
+		NodeID:     cfg.NodeName,
+		Winner:     winner,
+		Reason:     reason,
+		Action:     action,
+		Generation: generation,
+	}
+}
+
+// publishFenceNotice delivers notice until the daemon answers, and returns the
+// daemon's refusal if it gave one. dropIfExported abandons the notice once the
+// volume is exported here again, which makes a stop or pause stale.
+func (cfg *Config) publishFenceNotice(ctx context.Context, notice ebsprovider.FenceNotice, dropIfExported bool) error {
 	if cfg.nc == nil {
-		return
+		return errors.New("no NATS connection for the fence notice")
 	}
-	notice := ebsprovider.FenceNotice{
-		Versioned: ebsprovider.NewVersioned(),
-		VolumeID:  volumeName,
-		NodeID:    cfg.NodeName,
-		Winner:    winner,
-		Reason:    fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
-	}
+	volumeName := notice.VolumeID
 	began := time.Now()
 
 	for attempt := 1; ; attempt++ {
@@ -337,23 +466,23 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 					"volume", volumeName, "instance", instanceID, "attempts", attempt,
 					"unacknowledged_ms", otelsetup.Millis(time.Since(began)))
 			}
-			return
+			return nil
 		}
 		if !ebsprovider.FenceNoticeRetryable(err) {
 			slog.ErrorContext(ctx, "fence: the daemon cannot act on the fenced volume, the guest is left with dead I/O",
 				"volume", volumeName, "node", notice.NodeID, "attempts", attempt, "err", err)
-			return
+			return err
 		}
 
 		if cfg.nc.IsClosed() {
 			slog.ErrorContext(ctx, "fence: connection closed before the daemon acknowledged the fenced volume, the guest may be left with dead I/O",
 				"volume", volumeName, "node", notice.NodeID, "attempts", attempt)
-			return
+			return errors.New("NATS connection closed")
 		}
-		if _, again := cfg.lookupMountedVolume(volumeName); again {
+		if _, again := cfg.lookupMountedVolume(volumeName); again && dropIfExported {
 			slog.WarnContext(ctx, "fence: volume exported here again before the daemon acknowledged the fence, dropping the stale notice",
 				"volume", volumeName, "attempts", attempt)
-			return
+			return nil
 		}
 		if attempt == 1 || attempt%fenceNoticeLogEveryTries == 0 {
 			slog.ErrorContext(ctx, "fence: the daemon has not acknowledged the fenced volume, retrying; until it does the guest keeps running with dead I/O",
@@ -363,7 +492,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-time.After(cfg.fenceNoticeRetry()):
 		}
 	}

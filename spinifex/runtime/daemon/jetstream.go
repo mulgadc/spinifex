@@ -1002,3 +1002,46 @@ func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, er
 	}
 	return loadInstance(m.termRecords, instanceID, nil)
 }
+
+// ReassertInstanceOwner rewrites instanceID's record unchanged, conditioned on
+// the revision that names node as its owner. A recovery claim conditioned on an
+// earlier revision then fails, so a guest resumed here cannot be claimed under it.
+func (m *JetStreamManager) ReassertInstanceOwner(instanceID, node string) error {
+	if m.records == nil {
+		return errors.New("KV bucket not initialized")
+	}
+	key := instanceRecordKey(instanceID)
+	record, rev, err := m.records.Get(context.Background(), key)
+	if err != nil {
+		return err
+	}
+	if record.Status.LastNode != node {
+		return fmt.Errorf("instance %s is assigned to %q: %w", instanceID, record.Status.LastNode, vm.ErrRecoveryClaimLost)
+	}
+	_, err = m.records.CompareAndSet(context.Background(), key, record, rev)
+	return err
+}
+
+// RepairInstanceOwner points instanceID's record back at node, the holder of
+// its volume leases, if a recovery claim moved it while the guest resumed here.
+func (m *JetStreamManager) RepairInstanceOwner(instanceID, node string) error {
+	if m.records == nil {
+		return errors.New("KV bucket not initialized")
+	}
+	key := instanceRecordKey(instanceID)
+	record, rev, err := m.records.Get(context.Background(), key)
+	if err != nil {
+		return err
+	}
+	if record.Status.LastNode == node {
+		return nil
+	}
+	repaired := *record
+	repaired.Status.LastNode = node
+	if _, err := m.records.CompareAndSet(context.Background(), key, &repaired, rev); err != nil {
+		return err
+	}
+	slog.Warn("Returned an instance record to the node running it after a recovery claim moved it",
+		"instanceId", instanceID, "from", record.Status.LastNode, "to", node)
+	return nil
+}

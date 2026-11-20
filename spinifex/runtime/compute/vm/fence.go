@@ -2,6 +2,8 @@ package vm
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+	"golang.org/x/sys/unix"
 )
 
 // fenceStateReasonCode is the StateReason a fenced instance carries. Distinct
@@ -93,6 +96,110 @@ func (m *Manager) FenceVolume(ctx context.Context, volumeID, reason string) stri
 	return instance.ID
 }
 
+// ErrNotFencePaused reports a resume for a volume whose fence paused no guest
+// here, so there is nothing a resume may continue.
+var ErrNotFencePaused = errors.New("no guest here is paused for this volume's fence")
+
+// PauseForFence pauses the guest running against volumeID, whose export was
+// fenced because this node could not confirm the volume's lease. The export is
+// already gone; pausing keeps the guest's memory while the node tries to get
+// the lease back. A guest that cannot be paused is stopped as by FenceVolume.
+func (m *Manager) PauseForFence(ctx context.Context, volumeID, reason string) string {
+	instance := m.instanceUsingVolume(volumeID)
+	if instance == nil {
+		return ""
+	}
+	var running bool
+	m.Inspect(instance, func(v *VM) { running = v.Status == StateRunning })
+	if !running {
+		return m.FenceVolume(ctx, volumeID, reason)
+	}
+
+	if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+		qmp.QMPCommand{Execute: "stop"}, instance.ID, qmpCommandTimeout); err != nil {
+		slog.ErrorContext(ctx, "PauseForFence: could not pause the guest, stopping it instead",
+			"instanceId", instance.ID, "volumeId", volumeID, "err", err)
+		return m.FenceVolume(ctx, volumeID, reason)
+	}
+
+	pid, _ := hostprocess.ReadPidFile(instance.ID)
+	pidfd := 0
+	if pid > 0 {
+		if fd, err := unix.PidfdOpen(pid, 0); err == nil {
+			pidfd = fd
+		} else {
+			slog.WarnContext(ctx, "PauseForFence: could not pin the paused guest's process",
+				"instanceId", instance.ID, "pid", pid, "err", err)
+		}
+	}
+	m.Inspect(instance, func(v *VM) {
+		if v.fencePaused == nil {
+			v.fencePaused = make(map[string]bool)
+		}
+		v.fencePaused[volumeID] = true
+		if v.fencePidfd == 0 && pidfd != 0 {
+			v.fencePidfd, v.fencePid, pidfd = pidfd, pid, 0
+		}
+	})
+	if pidfd != 0 {
+		_ = unix.Close(pidfd)
+	}
+	slog.WarnContext(ctx, "Instance paused: this node could not confirm its volume's lease, and is trying to get it back",
+		"instanceId", instance.ID, "volumeId", volumeID, "reason", reason)
+	return instance.ID
+}
+
+// ResumeAfterFence continues a guest that PauseForFence paused, once volumeID
+// is exported again under a lease this node holds. The guest stays paused
+// while any other of its volumes is still fenced. before runs just ahead of the
+// resume and keeps the guest paused if it fails.
+func (m *Manager) ResumeAfterFence(ctx context.Context, volumeID string, before func(instanceID string) error) (string, error) {
+	instance := m.instanceUsingVolume(volumeID)
+	if instance == nil {
+		return "", ErrNotFencePaused
+	}
+	var paused bool
+	var remaining, pidfd int
+	m.Inspect(instance, func(v *VM) {
+		paused = v.Status == StateRunning && v.fencePaused[volumeID]
+		if paused {
+			delete(v.fencePaused, volumeID)
+		}
+		remaining, pidfd = len(v.fencePaused), v.fencePidfd
+	})
+	if !paused {
+		return instance.ID, ErrNotFencePaused
+	}
+	if remaining > 0 {
+		slog.InfoContext(ctx, "ResumeAfterFence: volume restored, guest stays paused for its other volumes",
+			"instanceId", instance.ID, "volumeId", volumeID, "still_fenced", remaining)
+		return instance.ID, nil
+	}
+	if pidfd != 0 {
+		if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil {
+			return instance.ID, fmt.Errorf("the paused guest's process is gone: %w", err)
+		}
+	}
+	if before != nil {
+		if err := before(instance.ID); err != nil {
+			return instance.ID, err
+		}
+	}
+	if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+		qmp.QMPCommand{Execute: "cont"}, instance.ID, qmpCommandTimeout); err != nil {
+		return instance.ID, fmt.Errorf("resume the guest: %w", err)
+	}
+	m.Inspect(instance, func(v *VM) {
+		if v.fencePidfd != 0 {
+			_ = unix.Close(v.fencePidfd)
+		}
+		v.fencePidfd, v.fencePid = 0, 0
+	})
+	slog.WarnContext(ctx, "Instance resumed: its node got the volume's lease back",
+		"instanceId", instance.ID, "volumeId", volumeID)
+	return instance.ID, nil
+}
+
 // fencedQEMUKillTimeout bounds the wait for a SIGKILLed fenced guest to exit.
 const fencedQEMUKillTimeout = 10 * time.Second
 
@@ -100,6 +207,15 @@ const fencedQEMUKillTimeout = 10 * time.Second
 // graceful shutdown has nothing to flush to, and while it waits the guest's taps
 // and process outlive its ownership as a survivor starts it again.
 func (m *Manager) killFencedQEMU(ctx context.Context, instance *VM) {
+	var pidfd, pausedPid int
+	m.Inspect(instance, func(v *VM) {
+		pidfd, pausedPid = v.fencePidfd, v.fencePid
+		v.fencePaused, v.fencePidfd, v.fencePid = nil, 0, 0
+	})
+	if pidfd != 0 {
+		m.killPinnedQEMU(ctx, instance, pidfd, pausedPid)
+		return
+	}
 	pid, err := hostprocess.ReadPidFile(instance.ID)
 	if err != nil || pid <= 0 {
 		// No PID to kill, so ask QEMU itself; quit skips the guest's shutdown.
@@ -139,4 +255,24 @@ func (m *Manager) instanceUsingVolume(volumeID string) *VM {
 		}
 	})
 	return found
+}
+
+// killPinnedQEMU kills a fence-paused guest through the pidfd taken when it was
+// paused, so a pid reused after it exited can never be signalled. The PID file
+// is removed only while it still names that process.
+func (m *Manager) killPinnedQEMU(ctx context.Context, instance *VM, pidfd, pid int) {
+	defer func() { _ = unix.Close(pidfd) }()
+	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
+		slog.ErrorContext(ctx, "FenceVolume: failed to kill the paused guest",
+			"instanceId", instance.ID, "pid", pid, "err", err)
+		return
+	}
+	fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}} //nolint:gosec // a pidfd is a small non-negative descriptor.
+	if _, err := unix.Poll(fds, int(fencedQEMUKillTimeout.Milliseconds())); err != nil {
+		slog.WarnContext(ctx, "FenceVolume: could not wait for the paused guest to exit",
+			"instanceId", instance.ID, "pid", pid, "err", err)
+	}
+	if current, err := hostprocess.ReadPidFile(instance.ID); err == nil && current == pid {
+		_ = hostprocess.RemovePidFile(instance.ID)
+	}
 }

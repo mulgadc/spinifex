@@ -1586,6 +1586,12 @@ type unmountResult struct {
 // the result in cfg.MountedVolumes; it does not publish a response, that stays
 // with the caller.
 func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (mountResult, error) {
+	return mountVolumeAt(ctx, cfg, nc, volumeName, readOnly, "")
+}
+
+// mountVolumeAt is mountVolume serving the export on socket rather than a new
+// path, so a paused guest's NBD client reconnects to the address it already has.
+func mountVolumeAt(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool, socket string) (mountResult, error) {
 	// A volume this node already exports must not get a second nbdkit, which
 	// is the double-writer hazard the provider boundary exists to prevent: a
 	// retried publish racing a fresh one would otherwise start two exports.
@@ -1668,8 +1674,13 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		slog.InfoContext(ctx, "Mounting volume (TCP)", "name", volumeName, "port", nbdPort, "uri", nbdURI)
 	} else {
 		// Unix socket transport (default) - generate unique socket path
-		nbdSocket, err = nbd.GenerateUniqueSocketFile(volumeName)
-		if err != nil {
+		if socket != "" {
+			nbdSocket = socket
+			if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+				ebsResponse.Error = err.Error()
+				return ebsResponse, err
+			}
+		} else if nbdSocket, err = nbd.GenerateUniqueSocketFile(volumeName); err != nil {
 			ebsResponse.Error = err.Error()
 			return ebsResponse, err
 		}

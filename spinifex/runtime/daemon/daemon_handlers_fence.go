@@ -54,6 +54,26 @@ func (d *Daemon) handleFenceNotice(msg *nats.Msg) string {
 		return refuse(ebsprovider.ErrorCodeInvalidArgument, "notice named no volume")
 	}
 
+	switch notice.Action {
+	case ebsprovider.FenceActionPause:
+		// Paused before the ack, so nothing here runs against the dead export.
+		ack.InstanceID = d.vmMgr.PauseForFence(ctx, notice.VolumeID, notice.Reason)
+		ackFenceNotice(ctx, msg, ack)
+		return outcomeSuccess
+	case ebsprovider.FenceActionResume:
+		id, err := d.vmMgr.ResumeAfterFence(ctx, notice.VolumeID, d.reassertInstanceOwner)
+		ack.InstanceID = id
+		if err != nil {
+			return refuse(ebsprovider.ErrorCodeNotFound, "cannot resume: "+err.Error())
+		}
+		ackFenceNotice(ctx, msg, ack)
+		d.repairInstanceOwner(ctx, id)
+		return outcomeSuccess
+	case ebsprovider.FenceActionStop:
+	default:
+		return refuse(ebsprovider.ErrorCodeInvalidArgument, fmt.Sprintf("unknown fence action %q", notice.Action))
+	}
+
 	// FenceVolume moves the guest out of running before it returns, so the ack
 	// below is sent only once nothing here will resume it.
 	ack.InstanceID = d.vmMgr.FenceVolume(ctx, notice.VolumeID, notice.Reason)
@@ -84,5 +104,27 @@ func ackFenceNotice(ctx context.Context, msg *nats.Msg, ack ebsprovider.FenceNot
 	}
 	if err := msg.Respond(payload); err != nil {
 		slog.WarnContext(ctx, "volume fenced: could not acknowledge, the provider will repeat the notice", "err", err)
+	}
+}
+
+// reassertInstanceOwner serialises a resume with recovery claims: a claim that
+// read the record before this write fails on its revision.
+func (d *Daemon) reassertInstanceOwner(instanceID string) error {
+	if d.jsManager == nil {
+		return nil
+	}
+	return d.jsManager.ReassertInstanceOwner(instanceID, d.node)
+}
+
+// repairInstanceOwner returns the record to this node if a claim landed between
+// the reassert and the resume. The claimant cannot mount while this node holds
+// the leases, so this node is the instance's owner.
+func (d *Daemon) repairInstanceOwner(ctx context.Context, instanceID string) {
+	if d.jsManager == nil || instanceID == "" {
+		return
+	}
+	if err := d.jsManager.RepairInstanceOwner(instanceID, d.node); err != nil {
+		slog.ErrorContext(ctx, "volume fence: could not return the instance record to the node running it",
+			"instanceId", instanceID, "err", err)
 	}
 }

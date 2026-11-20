@@ -220,6 +220,12 @@ type Config struct {
 	// means defaultFenceNoticeRetry.
 	fenceNoticeEvery time.Duration
 
+	// fencePauseFor and fenceRetakeEvery override how long a stalled fence keeps
+	// its guest paused and how often it tries to take the lease back. Zero means
+	// the defaults; tests shorten them.
+	fencePauseFor    time.Duration
+	fenceRetakeEvery time.Duration
+
 	// leases excludes a second viperblock engine on a volume this node has
 	// open. Nil means exclusion cannot be established, and every engine open
 	// refuses rather than proceeding blind.

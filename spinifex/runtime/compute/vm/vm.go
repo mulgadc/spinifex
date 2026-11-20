@@ -149,6 +149,12 @@ type VM struct {
 	// waiter reports a crash only while it is current; a reboot clears it.
 	qemuPID atomic.Int64 `json:"-"`
 
+	// fencePaused names the volumes whose fence paused this guest. fencePidfd
+	// pins the paused QEMU, fencePid, so a later kill cannot reach a reused pid.
+	fencePaused map[string]bool `json:"-"`
+	fencePidfd  int             `json:"-"`
+	fencePid    int             `json:"-"`
+
 	// DesiredState is the state this instance has been asked to be in, as
 	// opposed to Status, which is the state it is observed to be in.
 	DesiredState DesiredState `json:"desired_state,omitempty"`

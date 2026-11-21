@@ -422,6 +422,20 @@ func readVolumeState(ctx context.Context, cfg *Config, volumeName string) (viper
 	return state, nil
 }
 
+// volumeMapCommitted reports whether a format-2 volume has a committed head,
+// without opening it.
+func volumeMapCommitted(ctx context.Context, cfg *Config, volumeName string) (bool, error) {
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
+	vb, err := viperblock.NewStateReader(&vbconfig, "s3", s3cfg)
+	if err != nil {
+		return false, fmt.Errorf("new state reader: %w", err)
+	}
+	if err := vb.InitBackendForRead(ctx); err != nil {
+		return false, fmt.Errorf("backend init: %w", err)
+	}
+	return vb.MapCommittedCtx(ctx)
+}
+
 // openVolumeVB constructs and opens an existing viperblock volume with its
 // config state loaded (LoadState) but NOT its block map. Construction mirrors
 // mountVolume's path so encrypted volumes open with the master key and matching

@@ -750,6 +750,18 @@ func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*e
 	if err != nil {
 		return nil, err
 	}
+	// An encrypted volume persists VBState when it reserves sequence numbers,
+	// before its seed commits, so a format-2 volume exists only once a head
+	// does; a create retry then recreates it rather than report it created.
+	if state.MapFormat == viperblock.MapFormatDelta {
+		committed, cerr := volumeMapCommitted(ctx, cfg, volumeID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if !committed {
+			return nil, fmt.Errorf("volume %s creation incomplete: %w", volumeID, viperblock.ErrStateNotFound)
+		}
+	}
 	return &ebsprovider.Volume{
 		ID:            volumeID,
 		CapacityBytes: safecast.Uint64ToInt64(state.VolumeSize),

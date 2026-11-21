@@ -55,6 +55,10 @@ type ConfigSettings struct {
 	AccountID string
 	Region    string
 	NatsToken string
+	// MapFormatDefault is written as map_format_default only when set: an
+	// init sets it to 2, and a join leaves it unset, so a joining node keeps
+	// format 1 until the operator activates format 2 for the cluster.
+	MapFormatDefault int
 	DataDir   string
 	LogDir    string
 	ConfigDir string

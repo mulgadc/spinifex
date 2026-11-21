@@ -1669,12 +1669,17 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
-	// Every launch takes its own epoch, a shared open on this node included.
-	launchEpoch, err := lease.launchEpoch(ctx)
-	if err != nil {
-		ebsResponse.Error = err.Error()
-		ebsResponse.Retryable = true
-		return ebsResponse, err
+	// Every launch of a format-2 volume takes its own epoch, a shared open on
+	// this node included. A format-1 volume gets none, so a plugin that
+	// predates lease_epoch still mounts it.
+	var launchEpoch uint64
+	if vb.IsMapDelta() {
+		launchEpoch, err = lease.launchEpoch(ctx)
+		if err != nil {
+			ebsResponse.Error = err.Error()
+			ebsResponse.Retryable = true
+			return ebsResponse, err
+		}
 	}
 
 	useTCP := cfg.NBDTransport == NBDTransportTCP

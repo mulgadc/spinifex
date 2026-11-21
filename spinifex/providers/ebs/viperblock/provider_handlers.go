@@ -601,6 +601,18 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, safecast.Int64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
+	// A format-2 create holds the new volume's lease and takes a creation
+	// epoch from it, so no two attempts share a map key.
+	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
+		lease, epoch, lerr := cfg.creationEpoch(ctx, req.VolumeID)
+		if lerr != nil {
+			slog.Error("ebs.provider.volume.create: creation epoch failed", "volume", req.VolumeID, "err", lerr)
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("creation epoch: %v", lerr)})
+			return
+		}
+		defer cfg.leases.release(ctx, lease)
+		vbconfig.LeaseEpoch = epoch
+	}
 	s3cfg := cfg.volumeS3Config(req.VolumeID)
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
@@ -620,6 +632,15 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		if perr := verifySourceSnapshot(vb, req.SourceSnapshotID, req.SourceSnapshotVolumeID); perr != nil {
 			slog.Error("ebs.provider.volume.create: source snapshot rejected", "volume", req.VolumeID, "snapshot", req.SourceSnapshotID, "err", perr.Message)
 			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: perr})
+			return
+		}
+	}
+	// The fence stubs, base and first head are durable before VBState, whose
+	// presence is what describe and a repeated create treat as created.
+	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
+		if err := vb.InitMapDeltaCtx(ctx); err != nil {
+			slog.Error("ebs.provider.volume.create: map init failed", "volume", req.VolumeID, "err", err)
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("map init: %v", err)})
 			return
 		}
 	}
@@ -1641,6 +1662,14 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
+	// Every launch takes its own epoch, a shared open on this node included.
+	launchEpoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		ebsResponse.Error = err.Error()
+		ebsResponse.Retryable = true
+		return ebsResponse, err
+	}
+
 	useTCP := cfg.NBDTransport == NBDTransportTCP
 
 	var nbdURI string
@@ -1708,6 +1737,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		EncryptionKeyFile: cfg.EncryptionKeyFile,
 		ReadOnly:          readOnly,
 		Threads:           cfg.Threads,
+		LeaseEpoch:        launchEpoch,
 	}
 
 	// Create a unique error channel for this specific mount request

@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
+	vbengine "github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
@@ -336,6 +337,11 @@ var viperblockStartCmd = &cobra.Command{
 			gcEnabled = *nodeConfig.Viperblock.GCEnabled
 		}
 
+		mapFormatDefault := vbengine.MapFormatLegacy
+		if f := nodeConfig.Viperblock.MapFormatDefault; f != nil && *f == int(vbengine.MapFormatDelta) {
+			mapFormatDefault = vbengine.MapFormatDelta
+		}
+
 		encryptionKeyFile := nodeConfig.Viperblock.EncryptionKeyFile
 		if envKey := viper.GetString("viperblock-encryption-key-file"); envKey != "" {
 			encryptionKeyFile = envKey
@@ -359,6 +365,7 @@ var viperblockStartCmd = &cobra.Command{
 			NodeName:          clusterConfig.Node,
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
+			MapFormatDefault:  mapFormatDefault,
 			WALBaseDir:        nodeConfig.Viperblock.WALBaseDir,
 			EncryptionKeyFile: encryptionKeyFile,
 			Threads:           nodeConfig.EBS.ResolvedThreads(),

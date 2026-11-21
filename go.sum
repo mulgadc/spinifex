@@ -313,6 +313,10 @@ github.com/mulgadc/predastore v1.25.1-0.20261118011524-52d20d2d1793 h1:fj2RT+AsC
 github.com/mulgadc/predastore v1.25.1-0.20261118011524-52d20d2d1793/go.mod h1:+8cAOWN07oc1AafNSvIXe8m+ptztrIc3KZxUmjCmztc=
 github.com/mulgadc/viperblock v1.25.0 h1:3gVa8QVagyjFyCml7NskO2qxowXtaqmZ/AAL6erTzss=
 github.com/mulgadc/viperblock v1.25.0/go.mod h1:3R0xoE5HZ061RYWBRv11eUEUAmG4Zj+4qwBZrxiM1wc=
+github.com/mulgadc/viperblock v1.25.1-0.20261121055641-4655af77406b h1:vPOoLBkQzJqMOvTp80oeKR/2TulqgGprAeevU0j80ik=
+github.com/mulgadc/viperblock v1.25.1-0.20261121055641-4655af77406b/go.mod h1:3R0xoE5HZ061RYWBRv11eUEUAmG4Zj+4qwBZrxiM1wc=
+github.com/mulgadc/viperblock v1.25.1-0.20261121060400-6865465a7c48 h1:20FQKL0ORY6XP4s05Twy4VQb0oTIK4rYgXYRcRxWl+U=
+github.com/mulgadc/viperblock v1.25.1-0.20261121060400-6865465a7c48/go.mod h1:3R0xoE5HZ061RYWBRv11eUEUAmG4Zj+4qwBZrxiM1wc=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/nats-io/jwt/v2 v2.8.3 h1:pqImTmlqH2zPHKNdRXO0YRyWif2diGRlrtLFJ2RxM2I=

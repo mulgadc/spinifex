@@ -166,6 +166,10 @@ type Config struct {
 	// Default false, matching ShardWAL.
 	GCEnabled bool
 
+	// MapFormatDefault is the block-map format new volumes are created in:
+	// viperblock.MapFormatDelta, or format 1 for anything else.
+	MapFormatDefault uint8
+
 	// WALBaseDir puts every volume's WAL under this directory instead of
 	// BaseDir, so a WAL fsync is not queued behind the node's other IO.
 	// Empty keeps the WAL under BaseDir.
@@ -446,6 +450,13 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 // stays the caller's to release, on failure too.
 func openLeasedVolumeVB(ctx context.Context, cfg *Config, volumeName string, lease *volumeLease) (*viperblock.VB, error) {
 	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
+	// A daemon-side engine gets its own epoch, so a seal it commits orders
+	// above the export it replaces. Only a claim or commit writes a head.
+	epoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lease epoch: %w", err)
+	}
+	vbconfig.LeaseEpoch = epoch
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
 		return nil, fmt.Errorf("new viperblock: %w", err)
@@ -690,6 +701,11 @@ func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 		return nil, nil, fmt.Errorf("load block state: %w", err)
+	}
+	if err := vb.ClaimMapCtx(ctx); err != nil {
+		vb.Detach()
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, fmt.Errorf("claim block map: %w", err)
 	}
 	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
 	// state itself; on failure retain the local WAL (no Close) for retry.

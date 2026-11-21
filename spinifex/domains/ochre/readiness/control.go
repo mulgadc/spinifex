@@ -3,11 +3,13 @@
 package readiness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -20,6 +22,10 @@ const (
 	KVBucket = "bedrock-readiness-control"
 	Key      = "control"
 )
+
+// SchemaVersion is the only record format this code reads or writes. Any other
+// version, field or enum value fails closed and is never rewritten.
+const SchemaVersion = 1
 
 // Phase gates which work the record admits.
 type Phase string
@@ -60,8 +66,8 @@ type Journal struct {
 	Intent           Intent `json:"intent"`
 }
 
-// Token is one durable operation. It stays in the record until its holder has
-// seen every covered write and side effect return definitively.
+// Token is one durable operation, admitted for one epoch. It stays in the record
+// until its holder has seen every covered write and side effect return definitively.
 type Token struct {
 	ID       string    `json:"id"`
 	Kind     TokenKind `json:"kind"`
@@ -75,6 +81,7 @@ type Token struct {
 // Record is the control record. Rollback is the identity of the rollback that
 // last froze it, kept through finalizing.
 type Record struct {
+	Version  int              `json:"version"`
 	Epoch    uint64           `json:"epoch"`
 	Phase    Phase            `json:"phase"`
 	Rollback string           `json:"rollback,omitempty"`
@@ -101,6 +108,10 @@ var (
 	ErrTokenExists       = errors.New("readiness control token already exists")
 	ErrTokenNotFound     = errors.New("readiness control token not found")
 	ErrInvalid           = errors.New("invalid readiness control request")
+	// ErrTokenReleased refuses further work on a token this Control released.
+	ErrTokenReleased = errors.New("readiness control token was released")
+	// ErrUnsupported is a record in a version or form this code does not know.
+	ErrUnsupported = errors.New("unsupported readiness control record")
 	// ErrContended is a token update that kept losing to other writers.
 	ErrContended = errors.New("readiness control record contended")
 )
@@ -125,11 +136,14 @@ type Control struct {
 	js          jetstream.JetStream
 	kv          KV
 	beforeWrite func(op string)
+
+	mu       sync.Mutex
+	released map[string]struct{}
 }
 
 // New returns a Control over an already-opened kv; js serves leader reads.
 func New(js jetstream.JetStream, kv KV) *Control {
-	return &Control{js: js, kv: kv}
+	return &Control{js: js, kv: kv, released: map[string]struct{}{}}
 }
 
 // Read returns the record and its revision from the stream leader.
@@ -145,11 +159,46 @@ func (c *Control) Read(ctx context.Context) (Record, uint64, error) {
 	if op := msg.Header.Get("KV-Operation"); op == "DEL" || op == "PURGE" {
 		return Record{}, msg.Sequence, fmt.Errorf("%w at revision %d", ErrDeleted, msg.Sequence)
 	}
-	var rec Record
-	if err := json.Unmarshal(msg.Data, &rec); err != nil {
-		return Record{}, msg.Sequence, fmt.Errorf("decode readiness control: %w", err)
+	rec, err := decode(msg.Data)
+	if err != nil {
+		return Record{}, msg.Sequence, fmt.Errorf("revision %d: %w", msg.Sequence, err)
 	}
 	return rec, msg.Sequence, nil
+}
+
+// decode accepts only SchemaVersion with known fields and enum values.
+func decode(data []byte) (Record, error) {
+	var head struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return Record{}, fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	if head.Version != SchemaVersion {
+		return Record{}, fmt.Errorf("%w: version %d", ErrUnsupported, head.Version)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var rec Record
+	if err := dec.Decode(&rec); err != nil {
+		return Record{}, fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	switch rec.Phase {
+	case PhasePreparing, PhaseActive, PhaseFrozen, PhaseFinalizing:
+	default:
+		return Record{}, fmt.Errorf("%w: phase %q", ErrUnsupported, rec.Phase)
+	}
+	for id, tok := range rec.Tokens {
+		if tok.ID != id || (tok.Kind != TokenLaunch && tok.Kind != TokenSweep && tok.Kind != TokenDrain) {
+			return Record{}, fmt.Errorf("%w: token %q kind %q", ErrUnsupported, id, tok.Kind)
+		}
+		for _, j := range tok.Journal {
+			if !validIntent(j.Intent) {
+				return Record{}, fmt.Errorf("%w: token %q intent %q", ErrUnsupported, id, j.Intent)
+			}
+		}
+	}
+	return rec, nil
 }
 
 // Initialize writes the first record, preparing at epoch 1. It refuses a key
@@ -163,28 +212,35 @@ func (c *Control) Initialize(ctx context.Context) (uint64, error) {
 	default:
 		return 0, err
 	}
-	return c.write(ctx, "initialize", Record{Epoch: 1, Phase: PhasePreparing}, 0)
+	return c.write(ctx, "initialize", Record{Version: SchemaVersion, Epoch: 1, Phase: PhasePreparing}, 0)
 }
 
-// Activate moves preparing(epoch) to active at rev, the revision the caller read
-// before checking the feature level.
+// Activate moves preparing(epoch) with no tokens to active at rev, the revision
+// the caller read before checking the feature level.
 func (c *Control) Activate(ctx context.Context, epoch, rev uint64) (uint64, error) {
 	return c.transition(ctx, "activate", rev, func(r *Record) error {
 		if r.Phase != PhasePreparing || r.Epoch != epoch {
 			return fmt.Errorf("%w: activate epoch %d from %s epoch %d", ErrWrongState, epoch, r.Phase, r.Epoch)
+		}
+		if len(r.Tokens) > 0 {
+			return fmt.Errorf("%w: %d", ErrTokensOutstanding, len(r.Tokens))
 		}
 		r.Phase = PhaseActive
 		return nil
 	})
 }
 
-// Freeze records rollback as frozen at rev from any phase. It always writes, so
-// a writer holding an earlier revision fails even if the record was frozen.
+// Freeze records rollback as frozen at rev. It always writes, so a writer holding
+// an earlier revision fails even if the record was frozen. Finalizing stays
+// closed: only Reopen leaves it.
 func (c *Control) Freeze(ctx context.Context, rollback string, rev uint64) (uint64, error) {
 	if rollback == "" {
 		return 0, fmt.Errorf("%w: empty rollback identity", ErrInvalid)
 	}
 	return c.transition(ctx, "freeze", rev, func(r *Record) error {
+		if r.Phase == PhaseFinalizing {
+			return fmt.Errorf("%w: freeze for rollback %q while finalizing rollback %q", ErrWrongState, rollback, r.Rollback)
+		}
 		r.Phase = PhaseFrozen
 		r.Rollback = rollback
 		return nil
@@ -206,12 +262,15 @@ func (c *Control) Finalize(ctx context.Context, rollback string, rev uint64) (ui
 	})
 }
 
-// Reopen moves frozen or finalizing(epoch) to preparing(epoch+1) at rev. It
-// keeps every token; only the new epoch can later be activated.
+// Reopen moves frozen or finalizing(epoch) to preparing(epoch+1) at rev. Every
+// token must be settled first, so uncertainty keeps the record frozen.
 func (c *Control) Reopen(ctx context.Context, epoch, rev uint64) (uint64, error) {
 	return c.transition(ctx, "reopen", rev, func(r *Record) error {
 		if (r.Phase != PhaseFrozen && r.Phase != PhaseFinalizing) || r.Epoch != epoch {
 			return fmt.Errorf("%w: reopen epoch %d from %s epoch %d", ErrWrongState, epoch, r.Phase, r.Epoch)
+		}
+		if len(r.Tokens) > 0 {
+			return fmt.Errorf("%w: %d", ErrTokensOutstanding, len(r.Tokens))
 		}
 		r.Epoch++
 		r.Phase = PhasePreparing
@@ -220,30 +279,32 @@ func (c *Control) Reopen(ctx context.Context, epoch, rev uint64) (uint64, error)
 	})
 }
 
-// Admit adds a launch or sweep token while active and returns it as recorded.
-// Every retry re-reads the phase, so an add delayed past a freeze never lands.
-func (c *Control) Admit(ctx context.Context, tok Token) (Token, uint64, error) {
+// Admit adds a launch or sweep token while tok.Epoch is active. Every retry
+// re-reads phase and epoch, so an add delayed past a freeze or into a later
+// epoch never lands.
+func (c *Control) Admit(ctx context.Context, tok Token) (uint64, error) {
 	if tok.Kind != TokenLaunch && tok.Kind != TokenSweep {
-		return Token{}, 0, fmt.Errorf("%w: admit kind %q", ErrInvalid, tok.Kind)
+		return 0, fmt.Errorf("%w: admit kind %q", ErrInvalid, tok.Kind)
 	}
 	return c.add(ctx, "admit", tok, func(r *Record) error {
-		if r.Phase != PhaseActive {
-			return fmt.Errorf("%w: phase %s", ErrNotAdmitted, r.Phase)
+		if r.Phase != PhaseActive || r.Epoch != tok.Epoch {
+			return fmt.Errorf("%w: epoch %d in %s epoch %d", ErrNotAdmitted, tok.Epoch, r.Phase, r.Epoch)
 		}
 		return nil
 	})
 }
 
-// AdmitDrain adds a drain token while frozen for rollback. Drain tokens may
-// only journal settle writes.
-func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (Token, uint64, error) {
+// AdmitDrain adds a drain token while tok.Epoch is frozen for rollback. Drain
+// tokens may only journal settle writes.
+func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (uint64, error) {
 	if tok.Kind != TokenDrain || rollback == "" {
-		return Token{}, 0, fmt.Errorf("%w: drain kind %q rollback %q", ErrInvalid, tok.Kind, rollback)
+		return 0, fmt.Errorf("%w: drain kind %q rollback %q", ErrInvalid, tok.Kind, rollback)
 	}
 	tok.Rollback = rollback
 	return c.add(ctx, "admit-drain", tok, func(r *Record) error {
-		if r.Phase != PhaseFrozen || r.Rollback != rollback {
-			return fmt.Errorf("%w: drain for rollback %q in %s rollback %q", ErrNotAdmitted, rollback, r.Phase, r.Rollback)
+		if r.Phase != PhaseFrozen || r.Rollback != rollback || r.Epoch != tok.Epoch {
+			return fmt.Errorf("%w: drain for rollback %q epoch %d in %s rollback %q epoch %d",
+				ErrNotAdmitted, rollback, tok.Epoch, r.Phase, r.Rollback, r.Epoch)
 		}
 		return nil
 	})
@@ -254,6 +315,9 @@ func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (T
 func (c *Control) JournalWrite(ctx context.Context, id string, j Journal) (uint64, error) {
 	if j.Incarnation == "" || j.Key == "" || !validIntent(j.Intent) {
 		return 0, fmt.Errorf("%w: journal %+v", ErrInvalid, j)
+	}
+	if c.isReleased(id) {
+		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, id)
 	}
 	return c.update(ctx, "journal", func(r *Record) error {
 		tok, ok := r.Tokens[id]
@@ -272,9 +336,13 @@ func (c *Control) JournalWrite(ctx context.Context, id string, j Journal) (uint6
 	})
 }
 
-// Release removes token id in any phase. A token already absent is not an
-// error; an unknown outcome means the caller must still treat it as held.
+// Release removes token id in any phase. Call it only once every covered write,
+// side effect and retry has returned definitively: an unknown outcome may have
+// removed it. This Control refuses further work on id whatever the result.
 func (c *Control) Release(ctx context.Context, id string) (uint64, error) {
+	c.mu.Lock()
+	c.released[id] = struct{}{}
+	c.mu.Unlock()
 	return c.update(ctx, "release", func(r *Record) error {
 		if _, ok := r.Tokens[id]; !ok {
 			return errUnchanged
@@ -287,32 +355,35 @@ func (c *Control) Release(ctx context.Context, id string) (uint64, error) {
 // errUnchanged ends an update that has nothing to write.
 var errUnchanged = errors.New("unchanged")
 
+func (c *Control) isReleased(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.released[id]
+	return ok
+}
+
 func validIntent(i Intent) bool {
 	return i == IntentClaim || i == IntentHold || i == IntentSettle
 }
 
-func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Record) error) (Token, uint64, error) {
-	if tok.ID == "" {
-		return Token{}, 0, fmt.Errorf("%w: empty token id", ErrInvalid)
+func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Record) error) (uint64, error) {
+	if tok.ID == "" || tok.Epoch == 0 {
+		return 0, fmt.Errorf("%w: token id %q epoch %d", ErrInvalid, tok.ID, tok.Epoch)
+	}
+	if c.isReleased(tok.ID) {
+		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, tok.ID)
 	}
 	tok.Journal = nil
-	var added Token
-	rev, err := c.update(ctx, op, func(r *Record) error {
+	return c.update(ctx, op, func(r *Record) error {
 		if err := admit(r); err != nil {
 			return err
 		}
 		if _, ok := r.Tokens[tok.ID]; ok {
 			return fmt.Errorf("%w: %s", ErrTokenExists, tok.ID)
 		}
-		added = tok
-		added.Epoch = r.Epoch
-		r.Tokens[tok.ID] = added
+		r.Tokens[tok.ID] = tok
 		return nil
 	})
-	if err != nil && !errors.Is(err, ErrOutcomeUnknown) {
-		return Token{}, 0, err
-	}
-	return added, rev, err
 }
 
 // transition applies f to the record read at rev and writes it once at rev.

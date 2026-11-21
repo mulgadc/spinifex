@@ -604,6 +604,9 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	// A format-2 create holds the new volume's lease and takes a creation
 	// epoch from it, so no two attempts share a map key.
 	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
+		if cfg.afterCreateCheck != nil {
+			cfg.afterCreateCheck(req.VolumeID)
+		}
 		lease, epoch, lerr := cfg.creationEpoch(ctx, req.VolumeID)
 		if lerr != nil {
 			slog.Error("ebs.provider.volume.create: creation epoch failed", "volume", req.VolumeID, "err", lerr)
@@ -611,6 +614,21 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 			return
 		}
 		defer cfg.leases.release(ctx, lease)
+		// Checked again under the lease: another node may have finished this
+		// creation between the first check and the claim, and a second map
+		// published over it would supersede that volume and its writes.
+		if existing, eerr := describeVolumeEngine(ctx, cfg, req.VolumeID); eerr == nil {
+			if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
+				respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
+				return
+			}
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Volume: existing})
+			return
+		} else if !errors.Is(eerr, viperblock.ErrStateNotFound) {
+			slog.Error("ebs.provider.volume.create: existence recheck failed", "volume", req.VolumeID, "err", eerr)
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("check existing volume: %v", eerr)})
+			return
+		}
 		vbconfig.LeaseEpoch = epoch
 	}
 	s3cfg := cfg.volumeS3Config(req.VolumeID)

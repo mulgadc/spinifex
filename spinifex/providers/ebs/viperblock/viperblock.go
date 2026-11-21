@@ -170,6 +170,10 @@ type Config struct {
 	// viperblock.MapFormatDelta, or format 1 for anything else.
 	MapFormatDefault uint8
 
+	// afterCreateCheck, when set by a test, runs between a format-2 create's
+	// first existence check and its claim of the new volume's lease.
+	afterCreateCheck func(volumeID string)
+
 	// WALBaseDir puts every volume's WAL under this directory instead of
 	// BaseDir, so a WAL fsync is not queued behind the node's other IO.
 	// Empty keeps the WAL under BaseDir.

@@ -176,3 +176,37 @@ func TestProviderHandlers_CreateVolume_FormatTwoIncompleteCreationIsRetried(t *t
 	assert.True(t, state.MapCommitted, "the retry completed the creation")
 	_ = readOnlyEngine(t, cfg, volumeName)
 }
+
+// A create that paused after its first existence check, while another node
+// finished the same volume, returns that volume and publishes nothing over it.
+func TestProviderHandlers_CreateVolume_FormatTwoRechecksUnderTheLease(t *testing.T) {
+	t.Parallel()
+	cfg, create := formatTwoProvider(t)
+	volumeName := "vol-fmt2recheck-" + strings.ToLower(rand.Text())
+	var otherEpoch uint64
+	cfg.afterCreateCheck = func(id string) {
+		lease, epoch, err := cfg.creationEpoch(t.Context(), id)
+		require.NoError(t, err)
+		defer cfg.leases.release(t.Context(), lease)
+		vbconfig := buildProviderVBConfig(cfg, id, 1<<30, "", "")
+		vbconfig.LeaseEpoch = epoch
+		other, err := viperblock.New(vbconfig, "s3", cfg.volumeS3Config(id))
+		require.NoError(t, err)
+		defer other.Detach()
+		require.NoError(t, other.Backend.InitCtx(t.Context()))
+		require.NoError(t, other.InitMapDeltaCtx(t.Context(), true))
+		require.NoError(t, other.SaveStateCtx(t.Context()))
+		otherEpoch = epoch
+	}
+	resp := create(marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"capacity_range": map[string]any{"required_bytes": int64(1) << 30},
+	}))
+	require.Nil(t, resp.Error)
+	require.NotNil(t, resp.Volume)
+	state, err := readVolumeState(t.Context(), cfg, volumeName)
+	require.NoError(t, err)
+	assert.Equal(t, otherEpoch, state.MapCreationEpoch, "the paused create published no map of its own")
+	_ = readOnlyEngine(t, cfg, volumeName)
+}

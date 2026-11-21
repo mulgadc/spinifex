@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -120,6 +121,9 @@ func (m *Manager) PauseForFence(ctx context.Context, volumeID, reason string, ge
 		return m.FenceVolume(ctx, volumeID, reason)
 	}
 
+	instance.fenceMu.Lock()
+	defer instance.fenceMu.Unlock()
+
 	pidfd, pid, err := m.pinRunningQEMU(instance)
 	if err != nil {
 		slog.ErrorContext(ctx, "PauseForFence: could not pin the guest's process, stopping it instead",
@@ -140,6 +144,7 @@ func (m *Manager) PauseForFence(ctx context.Context, volumeID, reason string, ge
 		}
 		v.fencePaused[volumeID] = generation
 		delete(v.fenceResumed, volumeID)
+		delete(v.fenceRestored, volumeID)
 		if v.fencePidfd == 0 {
 			v.fencePidfd, v.fencePid, pidfd = pidfd, pid, 0
 		}
@@ -186,6 +191,9 @@ func (m *Manager) StopFencePaused(ctx context.Context, volumeID string, generati
 	if instance == nil {
 		return ""
 	}
+	instance.fenceMu.Lock()
+	defer instance.fenceMu.Unlock()
+
 	var paused bool
 	m.Inspect(instance, func(v *VM) {
 		g, ok := v.fencePaused[volumeID]
@@ -199,19 +207,23 @@ func (m *Manager) StopFencePaused(ctx context.Context, volumeID string, generati
 	return m.FenceVolume(ctx, volumeID, reason)
 }
 
-// ResumeAfterFence continues a guest that PauseForFence paused at generation,
-// once volumeID is exported again under a lease this node holds. The guest
-// stays paused while any other of its volumes is still fenced, and resumed
-// reports whether this call continued it. before runs just ahead of the
-// continue; if it or the continue fails the guest is paused for this fence
-// again. A repeat for a fence already resumed succeeds without acting.
+// ResumeAfterFence records that volumeID is exported again under a lease this
+// node holds, and continues the guest PauseForFence paused at generation once
+// every volume it lost is back. The fence stays in force, for expiry and for a
+// stop, until the continue succeeds; resume, stop and expiry are serialised.
+// resumed reports whether this call continued the guest. before runs just
+// ahead of the continue. A repeat for a fence already resumed succeeds without
+// acting.
 func (m *Manager) ResumeAfterFence(ctx context.Context, volumeID string, generation uint64, before func(instanceID string) error) (string, bool, error) {
 	instance := m.instanceUsingVolume(volumeID)
 	if instance == nil {
 		return "", false, ErrNotFencePaused
 	}
-	var paused, repeat bool
-	var remaining, pidfd int
+	instance.fenceMu.Lock()
+	defer instance.fenceMu.Unlock()
+
+	var paused, repeat, complete bool
+	var pidfd int
 	m.Inspect(instance, func(v *VM) {
 		if g, ok := v.fenceResumed[volumeID]; ok && g == generation {
 			repeat = true
@@ -219,51 +231,53 @@ func (m *Manager) ResumeAfterFence(ctx context.Context, volumeID string, generat
 		}
 		g, ok := v.fencePaused[volumeID]
 		paused = v.Status == StateRunning && ok && g == generation
-		if paused {
-			delete(v.fencePaused, volumeID)
-			if v.fenceResumed == nil {
-				v.fenceResumed = make(map[string]uint64)
-			}
-			v.fenceResumed[volumeID] = generation
+		if !paused {
+			return
 		}
-		remaining, pidfd = len(v.fencePaused), v.fencePidfd
-	})
-	if repeat {
-		return instance.ID, false, nil
-	}
-	if !paused {
-		return instance.ID, false, ErrNotFencePaused
-	}
-	if remaining > 0 {
-		slog.InfoContext(ctx, "ResumeAfterFence: volume restored, guest stays paused for its other volumes",
-			"instanceId", instance.ID, "volumeId", volumeID, "still_fenced", remaining)
-		return instance.ID, false, nil
-	}
-	repause := func(err error) (string, bool, error) {
-		m.Inspect(instance, func(v *VM) {
-			delete(v.fenceResumed, volumeID)
-			if v.fencePaused == nil {
-				v.fencePaused = make(map[string]uint64)
+		if v.fenceRestored == nil {
+			v.fenceRestored = make(map[string]uint64)
+		}
+		v.fenceRestored[volumeID] = generation
+		complete = true
+		for vol, g := range v.fencePaused {
+			if r, ok := v.fenceRestored[vol]; !ok || r != g {
+				complete = false
 			}
-			v.fencePaused[volumeID] = generation
-		})
-		return instance.ID, false, err
+		}
+		pidfd = v.fencePidfd
+	})
+	switch {
+	case repeat:
+		return instance.ID, false, nil
+	case !paused:
+		return instance.ID, false, ErrNotFencePaused
+	case !complete:
+		slog.InfoContext(ctx, "ResumeAfterFence: volume restored, guest stays paused for its other volumes",
+			"instanceId", instance.ID, "volumeId", volumeID)
+		return instance.ID, false, nil
 	}
+
 	if pidfd != 0 {
 		if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil {
-			return repause(fmt.Errorf("the paused guest's process is gone: %w", err))
+			return instance.ID, false, fmt.Errorf("the paused guest's process is gone: %w", err)
 		}
 	}
 	if before != nil {
 		if err := before(instance.ID); err != nil {
-			return repause(err)
+			return instance.ID, false, err
 		}
 	}
 	if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
 		qmp.QMPCommand{Execute: "cont"}, instance.ID, qmpCommandTimeout); err != nil {
-		return repause(fmt.Errorf("resume the guest: %w", err))
+		return instance.ID, false, fmt.Errorf("resume the guest: %w", err)
 	}
+
 	m.Inspect(instance, func(v *VM) {
+		if v.fenceResumed == nil {
+			v.fenceResumed = make(map[string]uint64)
+		}
+		maps.Copy(v.fenceResumed, v.fencePaused)
+		v.fencePaused, v.fenceRestored = nil, nil
 		if v.fencePidfd != 0 {
 			_ = unix.Close(v.fencePidfd)
 		}
@@ -284,7 +298,7 @@ func (m *Manager) killFencedQEMU(ctx context.Context, instance *VM) {
 	var pidfd, pausedPid int
 	m.Inspect(instance, func(v *VM) {
 		pidfd, pausedPid = v.fencePidfd, v.fencePid
-		v.fencePaused, v.fenceResumed, v.fencePidfd, v.fencePid = nil, nil, 0, 0
+		v.fencePaused, v.fenceRestored, v.fenceResumed, v.fencePidfd, v.fencePid = nil, nil, nil, 0, 0
 	})
 	if pidfd != 0 {
 		m.killPinnedQEMU(ctx, instance, pidfd, pausedPid)

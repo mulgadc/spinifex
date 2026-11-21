@@ -729,11 +729,14 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 	// A retake after a stall may reopen the volume only if no other node has
 	// mounted it since, checked while this node holds the lease and before the
 	// marker is rewritten.
+	// The marker is left at the fenced generation until the export is up, so
+	// a failed attempt does not make the next one reject this node's marker.
 	if fenced, ok := fencedGenerationFrom(ctx); ok {
 		if err := cfg.requireFencedMarker(ctx, volumeName, fenced); err != nil {
 			cfg.leases.release(ctx, lease)
 			return nil, err
 		}
+		return lease, nil
 	}
 
 	// Mark before a single write lands, not when a seal fails. A node killed

@@ -128,3 +128,37 @@ func TestAFencePausedGuestIsNotResumedByTheIOErrorPath(t *testing.T) {
 	}
 	assert.Zero(t, qmpCalls("cont"), "a guest paused for a fence was continued with no disk behind it")
 }
+
+// A resume whose precondition fails leaves the fence in force, so the daemon's
+// own expiry still stops the guest.
+func TestAFailedResumeKeepsTheExpiry(t *testing.T) {
+	m, _, pid, qmpCalls, _ := fencedGuest(t, "vol-pausedkeepexpiry")
+	m.fenceGrace = time.Millisecond
+	m.PauseForFence(t.Context(), "vol-pausedkeepexpiry", "lease unconfirmed, no peer", 7, 100*time.Millisecond)
+
+	_, _, err := m.ResumeAfterFence(t.Context(), "vol-pausedkeepexpiry", 7, func(string) error { return errors.New("moved") })
+	require.Error(t, err)
+	require.Eventuallyf(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 5*time.Second, 20*time.Millisecond,
+		"a guest whose resume failed outlived its window (pid %d)", pid)
+	assert.Zero(t, qmpCalls("cont"))
+}
+
+// A guest that lost two volumes continues only once both are back, and a stop
+// for the one still fenced kills it even after the other was restored.
+func TestAGuestWithTwoFencedVolumesWaitsForBoth(t *testing.T) {
+	m, instance, pid, qmpCalls, _ := fencedGuest(t, "vol-pausedfirst")
+	m.Inspect(instance, func(v *VM) {
+		v.EBSRequests.Requests = append(v.EBSRequests.Requests, EBSRequest{Name: "vol-pausedsecond"})
+	})
+	m.PauseForFence(t.Context(), "vol-pausedfirst", "lease unconfirmed, no peer", 7, 0)
+	m.PauseForFence(t.Context(), "vol-pausedsecond", "lease unconfirmed, no peer", 9, 0)
+
+	_, resumed, err := m.ResumeAfterFence(t.Context(), "vol-pausedfirst", 7, nil)
+	require.NoError(t, err)
+	assert.False(t, resumed, "one volume back is not the guest back")
+	assert.Zero(t, qmpCalls("cont"))
+
+	assert.NotEmpty(t, m.StopFencePaused(t.Context(), "vol-pausedsecond", 9, "the window ended"))
+	waitFenceTeardown(t, m)
+	assert.Falsef(t, hostprocess.ProcessAlive(pid), "the guest (pid %d) outlived a stop for its other volume", pid)
+}

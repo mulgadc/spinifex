@@ -1594,7 +1594,12 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 func mountVolumeAt(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool, socket string) (mountResult, error) {
 	unlock := cfg.lockVolumeMount(volumeName)
 	defer unlock()
+	return mountVolumeLocked(ctx, cfg, nc, volumeName, readOnly, socket)
+}
 
+// mountVolumeLocked is mountVolumeAt for a caller already holding the volume's
+// mount lock.
+func mountVolumeLocked(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool, socket string) (mountResult, error) {
 	// A volume this node already exports must not get a second nbdkit, which
 	// is the double-writer hazard the provider boundary exists to prevent: a
 	// retried publish racing a fresh one would otherwise start two exports.
@@ -1642,9 +1647,12 @@ func mountVolumeAt(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName s
 	// without one, so it has to go back or the volume stays wedged until it
 	// expires.
 	mounted := false
+	// An nbdkit that started and was not registered still serves the volume, so
+	// the lease stays held unless it is confirmed gone.
+	keepLease := false
 	defer func() {
-		if !mounted {
-			cfg.releaseVolumeLease(ctx, lease)
+		if !mounted && !keepLease {
+			cfg.releaseVolumeLease(context.WithoutCancel(ctx), lease)
 		}
 	}()
 
@@ -1765,6 +1773,16 @@ func mountVolumeAt(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName s
 		ebsResponse.Error = "Failed to start nbdkit"
 		return ebsResponse, errors.New(ebsResponse.Error)
 	}
+	defer func() {
+		if mounted {
+			return
+		}
+		if err := hostprocess.ForceKillProcess(pid, fenceKillTimeout); err != nil {
+			keepLease = true
+			slog.ErrorContext(ctx, "ebs.mount: an nbdkit that never became ready did not exit, so the lease stays held",
+				"volume", volumeName, "pid", pid, "err", err)
+		}
+	}()
 
 	ctx, readySpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount.nbdkit_ready")
 	readyDeadline := time.Now().Add(nbdkitReadyDeadline)

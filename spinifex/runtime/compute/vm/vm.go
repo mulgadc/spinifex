@@ -149,13 +149,17 @@ type VM struct {
 	// waiter reports a crash only while it is current; a reboot clears it.
 	qemuPID atomic.Int64 `json:"-"`
 
-	// fencePaused and fenceResumed map a volume to the fence generation that
-	// paused or resumed this guest. fencePidfd pins the paused QEMU, fencePid,
-	// so a later kill cannot reach a reused pid.
-	fencePaused  map[string]uint64 `json:"-"`
-	fenceResumed map[string]uint64 `json:"-"`
-	fencePidfd   int               `json:"-"`
-	fencePid     int               `json:"-"`
+	// fencePaused, fenceRestored and fenceResumed map a volume to the fence
+	// generation that paused, re-exported or resumed this guest. fencePidfd
+	// pins the paused QEMU, fencePid, so a later kill cannot reach a reused pid.
+	fencePaused   map[string]uint64 `json:"-"`
+	fenceRestored map[string]uint64 `json:"-"`
+	fenceResumed  map[string]uint64 `json:"-"`
+	fencePidfd    int               `json:"-"`
+	fencePid      int               `json:"-"`
+
+	// fenceMu serialises a fence's pause, resume, stop and expiry for this guest.
+	fenceMu sync.Mutex `json:"-"`
 
 	// DesiredState is the state this instance has been asked to be in, as
 	// opposed to Status, which is the state it is observed to be in.

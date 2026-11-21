@@ -190,7 +190,7 @@ func (cfg *Config) pauseAndRetake(ctx context.Context, fenced MountedVolume, gen
 		case <-time.After(cfg.fenceRetakeInterval()):
 		}
 
-		_, err := mountVolumeAt(retake, cfg, cfg.nc, volumeName, fenced.ReadOnly, fenced.Socket)
+		ours, why, err := cfg.remountFenced(retake, fenced)
 		switch {
 		case errors.Is(err, errFencedMarkerMoved):
 			stop(cfg.fenceMarkerHolder(ctx, volumeName), "another node has mounted the volume since the fence")
@@ -198,16 +198,13 @@ func (cfg *Config) pauseAndRetake(ctx context.Context, fenced MountedVolume, gen
 		case errors.Is(err, errVolumeLeaseHeld):
 			stop(cfg.fenceHolder(ctx, volumeName), "another node holds the lease")
 			return
+		case why != "":
+			stop("unknown", why)
+			return
 		case err != nil:
 			slog.WarnContext(ctx, "volume fence: could not take the lease back yet, retrying",
 				"volume", volumeName, "err", err)
 			continue
-		}
-		// A newer mount exported the volume first; that export is not this
-		// fence's to resume onto or to give back.
-		if current, ok := cfg.lookupMountedVolume(volumeName); !ok || current.Socket != fenced.Socket {
-			stop("unknown", "the volume was exported again by a newer mount")
-			return
 		}
 
 		if ctx.Err() == nil {
@@ -220,12 +217,62 @@ func (cfg *Config) pauseAndRetake(ctx context.Context, fenced MountedVolume, gen
 		}
 		slog.ErrorContext(ctx, "volume fence: the guest was not resumed in the window, giving the export back",
 			"volume", volumeName, "err", err)
-		if _, aerr := cfg.abandonVolume(context.WithoutCancel(ctx), volumeName, "resume not completed"); aerr != nil {
+		if !cfg.abandonExport(context.WithoutCancel(ctx), ours, "resume not completed") {
 			return
 		}
 		stop("unknown", "the guest was not resumed in the window")
 		return
 	}
+}
+
+// remountFenced reopens a fenced volume on its old socket, under the volume's
+// mount lock, and returns the export it created. why is set, with no export,
+// when the retake must stop rather than retry: a newer mount already exports
+// the volume, or the export came up but its marker could not be moved to the
+// new generation.
+func (cfg *Config) remountFenced(ctx context.Context, fenced MountedVolume) (MountedVolume, string, error) {
+	unlock := cfg.lockVolumeMount(fenced.Name)
+	defer unlock()
+
+	if _, exported := cfg.lookupMountedVolume(fenced.Name); exported {
+		return MountedVolume{}, "the volume was exported again by a newer mount", nil
+	}
+	if _, err := mountVolumeLocked(ctx, cfg, cfg.nc, fenced.Name, fenced.ReadOnly, fenced.Socket); err != nil {
+		return MountedVolume{}, "", err
+	}
+	ours, ok := cfg.lookupMountedVolume(fenced.Name)
+	if !ok || ours.Socket != fenced.Socket || ours.Lease == nil {
+		return MountedVolume{}, "the retake's export is not the one registered", nil
+	}
+	if err := cfg.markVolumeDirty(context.WithoutCancel(ctx), fenced.Name, ours.Lease.generation,
+		"volume reopened after a stalled fence, writes not yet confirmed to the backend"); err != nil {
+		if err := cfg.tearDownExport(context.WithoutCancel(ctx), ours, "retake"); err != nil {
+			return MountedVolume{}, "the retake's export could not be withdrawn after its marker failed", nil
+		}
+		return MountedVolume{}, "the volume's marker could not be moved to the new generation", nil
+	}
+	return ours, "", nil
+}
+
+// abandonExport withdraws exactly the export ours, under the volume's mount
+// lock, and leaves any other export of the volume alone. Reports whether the
+// volume is no longer exported by ours.
+func (cfg *Config) abandonExport(ctx context.Context, ours MountedVolume, why string) bool {
+	unlock := cfg.lockVolumeMount(ours.Name)
+	defer unlock()
+
+	current, ok := cfg.lookupMountedVolume(ours.Name)
+	if !ok || current.PID != ours.PID || current.Lease != ours.Lease {
+		slog.WarnContext(ctx, "volume fence: the retake's export is already gone or replaced, leaving it alone",
+			"volume", ours.Name, "why", why)
+		return true
+	}
+	if err := cfg.tearDownExport(ctx, current, why); err != nil {
+		slog.ErrorContext(ctx, "volume fence: the retake's export did not exit, so this node keeps the lease",
+			"volume", ours.Name, "pid", current.PID, "err", err)
+		return false
+	}
+	return true
 }
 
 // fenceMarkerHolder names the node volumeName's dirty marker names, for the stop.

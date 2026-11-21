@@ -82,3 +82,43 @@ func TestAStalledFenceStopsWhenTheMarkerMoves(t *testing.T) {
 	require.Equal(t, ebsprovider.FenceActionStop, actions[1], "a moved marker stops the guest well before the window")
 	require.Equal(t, "node-b", responder.events[1].Winner, "the stop names the node the marker names")
 }
+
+// A retake's cleanup withdraws only the export it created. An export of the
+// volume started by a newer mount is left alone.
+func TestARetakeNeverWithdrawsAnotherMountsExport(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	const volumeName = "vol-retakeother"
+	cfg, _ := noticeConfig(t, natsURL, volumeName)
+	newer := cfg.MountedVolumes[0]
+	ours := newer
+	ours.PID = newer.PID + 1
+
+	require.True(t, cfg.abandonExport(t.Context(), ours, "resume not completed"))
+	_, still := cfg.lookupMountedVolume(volumeName)
+	require.True(t, still, "the retake withdrew an export it did not create")
+}
+
+// A retake reopens the volume without rewriting its marker, so a retake that
+// fails before its export is up leaves the fenced marker for the next attempt.
+func TestARetakeLeavesTheFencedMarkerUntilItsExportIsUp(t *testing.T) {
+	t.Parallel()
+
+	_, natsURL := setupEmbeddedNATS(t)
+	const volumeName = "vol-retakemarker"
+	cfg, _ := noticeConfig(t, natsURL, volumeName)
+	fenced := cfg.MountedVolumes[0].Lease.generation
+	require.NoError(t, cfg.dirty.mark(t.Context(), volumeName, fenced, "test"))
+	cfg.releaseVolumeLease(t.Context(), cfg.MountedVolumes[0].Lease)
+	cfg.MountedVolumes = nil
+
+	lease, err := cfg.acquireVolumeLease(withFencedGeneration(t.Context(), fenced), volumeName)
+	require.NoError(t, err)
+	t.Cleanup(func() { cfg.releaseVolumeLease(context.Background(), lease) })
+
+	record, ok, err := cfg.dirty.lookup(t.Context(), volumeName)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, fenced, record.Generation, "a retake must not move the marker before its export is up")
+}

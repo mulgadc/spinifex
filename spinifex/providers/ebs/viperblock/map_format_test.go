@@ -125,3 +125,23 @@ func TestProviderHandlers_CreateVolume_FormatTwoSeedReadsBackAndSeals(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, seed, got, "the seal's claim and commit keep the seed")
 }
+
+func TestVolumeLease_LostLeaseTakesNoEpoch(t *testing.T) {
+	t.Parallel()
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+	lease, err := leases.acquire(t.Context(), "vol-lostepoch0001")
+	require.NoError(t, err)
+	lease.mu.Lock()
+	lease.lost = true
+	lease.mu.Unlock()
+	_, err = lease.launchEpoch(t.Context())
+	assert.ErrorIs(t, err, ErrLeaseStoreUnavailable)
+}
+
+func TestProviderHandlers_CreateVolume_FormatTwoNeedsALeaseStore(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{MapFormatDefault: viperblock.MapFormatDelta}
+	_, _, err := cfg.creationEpoch(t.Context(), "vol-noleasestore01")
+	assert.ErrorIs(t, err, errNoVolumeLeaseStore)
+}

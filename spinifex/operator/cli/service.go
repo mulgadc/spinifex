@@ -337,10 +337,7 @@ var viperblockStartCmd = &cobra.Command{
 			gcEnabled = *nodeConfig.Viperblock.GCEnabled
 		}
 
-		mapFormatDefault := vbengine.MapFormatLegacy
-		if f := nodeConfig.Viperblock.MapFormatDefault; f != nil && *f == int(vbengine.MapFormatDelta) {
-			mapFormatDefault = vbengine.MapFormatDelta
-		}
+		mapFormatDefault := resolveMapFormatDefault(nodeConfig.Viperblock.MapFormatDefault)
 
 		encryptionKeyFile := nodeConfig.Viperblock.EncryptionKeyFile
 		if envKey := viper.GetString("viperblock-encryption-key-file"); envKey != "" {
@@ -1348,4 +1345,13 @@ func init() {
 	serviceCmd.AddCommand(qmpCollectorCmd)
 
 	qmpCollectorCmd.AddCommand(qmpCollectorStartCmd)
+}
+
+// resolveMapFormatDefault maps the node's map_format_default to a format:
+// format 2 only when it is set to 2, format 1 when absent or anything else.
+func resolveMapFormatDefault(f *int) uint8 {
+	if f != nil && *f == int(vbengine.MapFormatDelta) {
+		return vbengine.MapFormatDelta
+	}
+	return vbengine.MapFormatLegacy
 }

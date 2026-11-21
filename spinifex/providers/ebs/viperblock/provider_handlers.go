@@ -638,7 +638,8 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	// The fence stubs, base and first head are durable before VBState, whose
 	// presence is what describe and a repeated create treat as created.
 	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
-		if err := vb.InitMapDeltaCtx(ctx); err != nil {
+		// A seeded volume publishes its first head only once the seed is in.
+		if err := vb.InitMapDeltaCtx(ctx, len(req.SeedData) == 0); err != nil {
 			slog.Error("ebs.provider.volume.create: map init failed", "volume", req.VolumeID, "err", err)
 			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("map init: %v", err)})
 			return

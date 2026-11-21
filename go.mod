@@ -31,7 +31,7 @@ require (
 	github.com/mulgadc/bluebottle v1.25.1-0.20261118003950-05fa4c716542
 	github.com/mulgadc/northstar v1.25.0
 	github.com/mulgadc/predastore v1.25.1-0.20261118011524-52d20d2d1793
-	github.com/mulgadc/viperblock v1.25.1-0.20261121060400-6865465a7c48
+	github.com/mulgadc/viperblock v1.25.1-0.20261121061518-1bca1ce91b48
 	github.com/nats-io/nats-server/v2 v2.15.3
 	github.com/nats-io/nats.go v1.55.0
 	github.com/nats-io/nkeys v0.4.17

@@ -1953,6 +1953,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	bootstrapIgwId := awsidentifiers.GenerateResourceID("igw")
 
 	configSettings := admin.ConfigSettings{
+		MapFormatDefault: 2,
+
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 		AccountID: accountID,
@@ -2271,6 +2273,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
 
 	configSettings := admin.ConfigSettings{
+		MapFormatDefault: 2,
+
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 		AccountID: accountID,

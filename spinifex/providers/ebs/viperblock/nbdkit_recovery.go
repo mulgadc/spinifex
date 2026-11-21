@@ -41,6 +41,9 @@ type discoveredNbdkit struct {
 	Port    int
 	Plugin  string
 	BaseDir string
+	// LeaseEpoch is the epoch the process launched with; an adopted nbdkit
+	// keeps writing under it.
+	LeaseEpoch uint64
 }
 
 // scanNbdkitProcs walks procRoot for nbdkit-comm processes, parsing each
@@ -89,7 +92,10 @@ func parseNbdkitCmdline(cmdline []byte) (disc discoveredNbdkit, ok bool) {
 		arg := string(args[i])
 		volume, isVolume := strings.CutPrefix(arg, "volume=")
 		baseDir, isBaseDir := strings.CutPrefix(arg, "base_dir=")
+		epoch, isEpoch := strings.CutPrefix(arg, "lease_epoch=")
 		switch {
+		case isEpoch:
+			disc.LeaseEpoch, _ = strconv.ParseUint(epoch, 10, 64)
 		case arg == "--unix" && i+1 < len(args):
 			disc.Socket = string(args[i+1])
 			i++
@@ -195,7 +201,7 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 	for _, disc := range scanNbdkitProcs(procRoot) {
 		if !corroborateNbdkit(cfg, disc) {
 			slog.Warn("recovery: nbdkit process is not this daemon's, skipping",
-				"pid", disc.PID, "volume", disc.Volume, "base_dir", disc.BaseDir, "plugin", disc.Plugin)
+				"pid", disc.PID, "volume", disc.Volume, "base_dir", disc.BaseDir, "plugin", disc.Plugin, "lease_epoch", disc.LeaseEpoch)
 			continue
 		}
 

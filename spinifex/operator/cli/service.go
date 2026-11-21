@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/service"
+	vbengine "github.com/mulgadc/viperblock/viperblock"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -336,6 +337,8 @@ var viperblockStartCmd = &cobra.Command{
 			gcEnabled = *nodeConfig.Viperblock.GCEnabled
 		}
 
+		mapFormatDefault := resolveMapFormatDefault(nodeConfig.Viperblock.MapFormatDefault)
+
 		encryptionKeyFile := nodeConfig.Viperblock.EncryptionKeyFile
 		if envKey := viper.GetString("viperblock-encryption-key-file"); envKey != "" {
 			encryptionKeyFile = envKey
@@ -359,6 +362,7 @@ var viperblockStartCmd = &cobra.Command{
 			NodeName:          clusterConfig.Node,
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
+			MapFormatDefault:  mapFormatDefault,
 			WALBaseDir:        nodeConfig.Viperblock.WALBaseDir,
 			EncryptionKeyFile: encryptionKeyFile,
 			Threads:           nodeConfig.EBS.ResolvedThreads(),
@@ -1341,4 +1345,13 @@ func init() {
 	serviceCmd.AddCommand(qmpCollectorCmd)
 
 	qmpCollectorCmd.AddCommand(qmpCollectorStartCmd)
+}
+
+// resolveMapFormatDefault maps the node's map_format_default to a format:
+// format 2 only when it is set to 2, format 1 when absent or anything else.
+func resolveMapFormatDefault(f *int) uint8 {
+	if f != nil && *f == int(vbengine.MapFormatDelta) {
+		return vbengine.MapFormatDelta
+	}
+	return vbengine.MapFormatLegacy
 }

@@ -896,3 +896,10 @@ func TestUnpublishVolume_ReportsAReapedUnregisteredExport(t *testing.T) {
 	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"unpublish must leave no nbdkit serving the volume")
 }
+
+func TestParseNbdkitCmdline_ReadsLeaseEpoch(t *testing.T) {
+	cmdline := []byte("nbdkit\x00--unix\x00/run/s.sock\x00/usr/lib/nbdkit-viperblock-plugin.so\x00volume=vol-1\x00lease_epoch=99\x00")
+	disc, ok := parseNbdkitCmdline(cmdline)
+	require.True(t, ok)
+	assert.Equal(t, uint64(99), disc.LeaseEpoch)
+}

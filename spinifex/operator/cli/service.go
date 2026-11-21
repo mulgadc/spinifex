@@ -16,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
-	vbengine "github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
@@ -28,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/service"
+	vbengine "github.com/mulgadc/viperblock/viperblock"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

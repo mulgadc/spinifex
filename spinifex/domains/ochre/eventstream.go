@@ -31,6 +31,10 @@ const (
 // instead of the default internalServerException.
 type streamFaultError struct{ err error }
 
+// errUpstreamErrorEvent is a provider's in-stream error event; its data is
+// deliberately not kept.
+var errUpstreamErrorEvent = errors.New("upstream error event")
+
 // newStreamFault wraps err as a streamFaultError, or returns nil for a nil err.
 func newStreamFault(err error) error {
 	if err == nil {
@@ -49,11 +53,22 @@ type exceptionMessage struct {
 	Message string `json:"message"`
 }
 
-// exceptionPayload marshals err as an exception frame payload. Marshaling a
-// single-string struct cannot fail; the fallback exists only to satisfy the
-// type checker.
+// Fixed in-band exception messages. Fault text is never framed, since a
+// provider can echo request secrets or tenant text into it.
+const (
+	msgModelStreamError = "The model stream ended with an error."
+	msgInternalError    = "internal error"
+)
+
+// exceptionPayload marshals a fixed message for err as an exception frame
+// payload. Marshaling a single-string struct cannot fail; the fallback
+// exists only to satisfy the type checker.
 func exceptionPayload(err error) []byte {
-	body, marshalErr := json.Marshal(exceptionMessage{Message: err.Error()})
+	message := msgInternalError
+	if _, ok := errors.AsType[*streamFaultError](err); ok {
+		message = msgModelStreamError
+	}
+	body, marshalErr := json.Marshal(exceptionMessage{Message: message})
 	if marshalErr != nil {
 		return []byte(`{"message":"internal error"}`)
 	}
@@ -142,7 +157,7 @@ func (fw *frameWriter) writeUpstreamFault(op, modelID string, err error) string 
 	if _, ok := errors.AsType[*streamFaultError](err); ok {
 		excType = excModelStreamErrorException
 	}
-	slog.Error(op+": upstream fault", "model", modelID, "err", err)
+	slog.Error(op+": upstream fault", "model", modelID, "failure", streamFailureClass(err))
 	if werr := fw.writeException(excType, exceptionPayload(err)); werr != nil {
 		slog.Error(op+": failed to write exception frame", "model", modelID, "err", werr)
 		return errCodeClientDisconnected
@@ -160,4 +175,21 @@ func (fw *frameWriter) writeChunk(nativeChunk []byte) error {
 		return err
 	}
 	return fw.writeEvent("chunk", payload)
+}
+
+// streamFailureClass reduces a stream fault to a fixed label for logging,
+// since decoder and upstream error text can quote provider output.
+func streamFailureClass(err error) string {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	switch {
+	case errors.Is(err, errUpstreamErrorEvent):
+		return "upstream_error_event"
+	case errors.As(err, &syntaxErr):
+		return "malformed_json"
+	case errors.As(err, &typeErr):
+		return "unexpected_type"
+	default:
+		return transportFailureClass(err)
+	}
 }

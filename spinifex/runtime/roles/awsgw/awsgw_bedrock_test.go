@@ -1,6 +1,8 @@
 package awsgw
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -78,5 +80,20 @@ func TestParseColdStartWait(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, parseColdStartWait(tt.raw))
 		})
+	}
+}
+
+func TestParseBedrockEndpoints_MalformedEntryLogOmitsEntry(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	got := parseBedrockEndpoints("http://gw-user-4471:gw-pass-9035@vllm.internal:8000/gw-path-2264,m=http://vllm2:8000")
+
+	assert.Equal(t, map[string]string{"m": "http://vllm2:8000"}, got)
+	assert.Contains(t, logs.String(), "position=1")
+	for _, marker := range []string{"gw-user-4471", "gw-pass-9035", "gw-path-2264", "vllm.internal"} {
+		assert.NotContains(t, logs.String(), marker)
 	}
 }

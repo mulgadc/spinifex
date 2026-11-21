@@ -64,7 +64,7 @@ func NewReranker(endpointResolver EndpointResolver, modelID string) *rerankProvi
 	return &rerankProvider{
 		modelID:          modelID,
 		endpointResolver: endpointResolver,
-		httpClient:       newKBProviderHTTPClient(),
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 

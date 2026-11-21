@@ -2,6 +2,7 @@ package ochre
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -18,10 +19,10 @@ func newNoRedirectHTTPClient() *http.Client {
 	}
 }
 
-// newKBProviderHTTPClient is newNoRedirectHTTPClient on a private transport
+// newProviderHTTPClient is newNoRedirectHTTPClient on a private transport
 // that never idles a connection: an idle one logs any stray response bytes,
 // which a provider can fill with echoed tenant input.
-func newKBProviderHTTPClient() *http.Client {
+func newProviderHTTPClient() *http.Client {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = base.Clone()
@@ -53,5 +54,20 @@ func transportFailureClass(err error) string {
 		return "timeout"
 	default:
 		return "unreachable"
+	}
+}
+
+// decodeFailureClass reduces a JSON decode error to a fixed label, since its
+// text can quote the input being decoded.
+func decodeFailureClass(err error) string {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntaxErr):
+		return "malformed_json"
+	case errors.As(err, &typeErr):
+		return "unexpected_type"
+	default:
+		return "invalid_shape"
 	}
 }

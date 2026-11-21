@@ -145,7 +145,7 @@ var _ TokenLimiter = (*embeddingsProvider)(nil)
 func newEmbeddingsProvider(endpointResolver EndpointResolver) *embeddingsProvider {
 	return &embeddingsProvider{
 		endpointResolver: endpointResolver,
-		httpClient:       newKBProviderHTTPClient(),
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 

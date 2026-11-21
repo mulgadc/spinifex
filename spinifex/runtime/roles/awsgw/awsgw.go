@@ -940,12 +940,15 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	endpoints := map[string]string{}
+	index := 0
 	for pair := range strings.SplitSeq(raw, ",") {
+		index++
 		modelID, baseURL, ok := strings.Cut(pair, "=")
 		modelID = strings.TrimSpace(modelID)
 		baseURL = strings.TrimSpace(baseURL)
 		if !ok || modelID == "" || baseURL == "" {
-			slog.Warn("awsgw: skipping malformed OCHRE_VLLM_ENDPOINTS entry", "entry", pair)
+			// The entry is not logged: its URL can carry credentials.
+			slog.Warn("awsgw: skipping malformed OCHRE_VLLM_ENDPOINTS entry", "position", index)
 			continue
 		}
 		endpoints[modelID] = baseURL

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -112,7 +114,7 @@ func TestPumpConverseStream_MidStreamFaultWritesExceptionFrame(t *testing.T) {
 	assert.Equal(t, "messageStart", frames[0].Type)
 	assert.Equal(t, "exception", frames[1].MessageType)
 	assert.Equal(t, excModelStreamErrorException, frames[1].Type)
-	assert.JSONEq(t, `{"message":"upstream connection reset"}`, string(frames[1].Payload))
+	assert.JSONEq(t, `{"message":"The model stream ended with an error."}`, string(frames[1].Payload))
 
 	// The status must still be 200: post-header, a fault cannot change it.
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -129,6 +131,7 @@ func TestPumpConverseStream_NonFaultErrorUsesInternalServerException(t *testing.
 	frames := decodeAllFrames(t, rec.Body.Bytes())
 	require.Len(t, frames, 1)
 	assert.Equal(t, excInternalServerException, frames[0].Type)
+	assert.JSONEq(t, `{"message":"internal error"}`, string(frames[0].Payload))
 }
 
 func TestPumpConverseStream_CleanEOFWritesNoExceptionFrame(t *testing.T) {
@@ -276,7 +279,12 @@ func TestPumpConverseStream_RecordsInvocationOnUpstreamFault(t *testing.T) {
 func TestConverseStream_ClientDisconnectAbortsUpstreamRequest(t *testing.T) {
 	serverCtxDone := make(chan struct{})
 	firstChunkSent := make(chan struct{})
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	connClosed := make(chan struct{})
+	var closeOnce sync.Once
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Consume the request body, as a real provider does, so the server
+		// starts watching the connection for the client going away.
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
@@ -285,6 +293,12 @@ func TestConverseStream_ClientDisconnectAbortsUpstreamRequest(t *testing.T) {
 		<-r.Context().Done()
 		close(serverCtxDone)
 	}))
+	ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closeOnce.Do(func() { close(connClosed) })
+		}
+	}
+	ts.Start()
 	defer ts.Close()
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
@@ -315,6 +329,11 @@ func TestConverseStream_ClientDisconnectAbortsUpstreamRequest(t *testing.T) {
 		// Upstream request context was canceled: aborted, not drained.
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream request was never aborted after client disconnect")
+	}
+	select {
+	case <-connClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after client disconnect")
 	}
 	<-done
 }

@@ -76,9 +76,23 @@ func drain(id string, epoch uint64) readiness.Token {
 	return readiness.Token{ID: id, Kind: readiness.TokenDrain, Epoch: epoch, Node: "node-1"}
 }
 
-func admit(t *testing.T, c *readiness.Control, id string, epoch uint64) {
+func admit(t *testing.T, c *readiness.Control, id string, epoch uint64) *readiness.Operation {
 	t.Helper()
-	_, err := c.Admit(t.Context(), launch(id, epoch))
+	op, _, err := c.Admit(t.Context(), launch(id, epoch))
+	require.NoError(t, err)
+	return op
+}
+
+func admitDrain(t *testing.T, c *readiness.Control, rollback, id string, epoch uint64) *readiness.Operation {
+	t.Helper()
+	op, _, err := c.AdmitDrain(t.Context(), rollback, drain(id, epoch))
+	require.NoError(t, err)
+	return op
+}
+
+func release(t *testing.T, op *readiness.Operation) {
+	t.Helper()
+	_, err := op.Release(t.Context())
 	require.NoError(t, err)
 }
 
@@ -143,6 +157,14 @@ func (f *faultKV) Update(ctx context.Context, key string, value []byte, last uin
 	return f.KV.Update(ctx, key, value, last)
 }
 
+
+// setFault arms fault for the next Update.
+func (f *faultKV) setFault(fault func(context.Context, string, []byte, uint64) (uint64, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fault = fault
+}
+
 func TestControl_TransitionsAdvanceEpochOnlyAfterTokensSettle(t *testing.T) {
 	c := newFixture(t).control()
 	ctx := t.Context()
@@ -160,13 +182,12 @@ func TestControl_TransitionsAdvanceEpochOnlyAfterTokensSettle(t *testing.T) {
 	_, err = c.Activate(ctx, 1, rev)
 	require.ErrorIs(t, err, readiness.ErrWrongState, "active cannot be activated again")
 
-	admit(t, c, "launch-1", 1)
+	op := admit(t, c, "launch-1", 1)
 	rev = freeze(t, c, "rb-1")
 	_, err = c.Reopen(ctx, 1, rev)
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding, "an unresolved token keeps the record frozen")
 
-	_, err = c.Release(ctx, "launch-1")
-	require.NoError(t, err)
+	release(t, op)
 	_, rev = read(t, c)
 	_, err = c.Reopen(ctx, 1, rev)
 	require.NoError(t, err)
@@ -198,7 +219,7 @@ func TestControl_InitializeRefusesExistingOrDeletedRecord(t *testing.T) {
 	require.ErrorIs(t, err, readiness.ErrDeleted)
 	_, err = c.Initialize(ctx)
 	require.ErrorIs(t, err, readiness.ErrDeleted, "a deleted record must not be mistaken for a fresh one")
-	_, err = c.Admit(ctx, launch("launch-1", 1))
+	_, _, err = c.Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrDeleted)
 }
 
@@ -232,7 +253,7 @@ func TestControl_AdmissionPausedAcrossFreezeIsRefused(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		_, err := worker.Admit(t.Context(), launch("launch-late", 1))
+		_, _, err := worker.Admit(t.Context(), launch("launch-late", 1))
 		errc <- err
 	}()
 	<-p.reached
@@ -255,7 +276,7 @@ func TestControl_AdmissionPausedAcrossEpochChangeIsRefused(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		_, err := worker.Admit(t.Context(), launch("launch-epoch-1", 1))
+		_, _, err := worker.Admit(t.Context(), launch("launch-epoch-1", 1))
 		errc <- err
 	}()
 	<-p.reached
@@ -308,7 +329,7 @@ func TestControl_SecondRunnerCannotReopenFinalizingForDrain(t *testing.T) {
 	_, rev := read(t, second)
 	_, err = second.Freeze(ctx, "rb-1", rev)
 	require.ErrorIs(t, err, readiness.ErrWrongState, "a second runner must not refreeze a finalizing record")
-	_, err = second.AdmitDrain(ctx, "rb-1", drain("drain-1", 1))
+	_, _, err = second.AdmitDrain(ctx, "rb-1", drain("drain-1", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "finalizing admits no drain work")
 	_, err = second.Finalize(ctx, "rb-1", rev)
 	require.ErrorIs(t, err, readiness.ErrWrongState)
@@ -335,7 +356,7 @@ func TestControl_CancelledRollbackRunnerCannotFreezeNewEpoch(t *testing.T) {
 	require.ErrorIs(t, err, readiness.ErrChanged)
 	_, err = runner.Finalize(ctx, "rb-cancelled", frozenAt)
 	require.ErrorIs(t, err, readiness.ErrChanged)
-	_, err = runner.AdmitDrain(ctx, "rb-cancelled", drain("drain-1", 1))
+	_, _, err = runner.AdmitDrain(ctx, "rb-cancelled", drain("drain-1", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted)
 
 	rec, _ := read(t, operator)
@@ -354,21 +375,19 @@ func TestControl_FinalizeFencedByDrainAdmittedAfterZeroTokenRead(t *testing.T) {
 	rec, zeroTokensAt := read(t, runner)
 	require.Empty(t, rec.Tokens)
 	drainer := f.control()
-	_, err := drainer.AdmitDrain(ctx, "rb-1", drain("drain-1", 1))
-	require.NoError(t, err)
+	op := admitDrain(t, drainer, "rb-1", "drain-1", 1)
 
-	_, err = runner.Finalize(ctx, "rb-1", zeroTokensAt)
+	_, err := runner.Finalize(ctx, "rb-1", zeroTokensAt)
 	require.ErrorIs(t, err, readiness.ErrChanged, "a token admitted after the zero-token read must force a fresh inventory")
 
-	_, err = drainer.Release(ctx, "drain-1")
-	require.NoError(t, err)
+	release(t, op)
 	_, rev := read(t, runner)
 	_, err = runner.Finalize(ctx, "rb-1", rev)
 	require.NoError(t, err)
 
-	_, err = drainer.AdmitDrain(ctx, "rb-1", drain("drain-2", 1))
+	_, _, err = drainer.AdmitDrain(ctx, "rb-1", drain("drain-2", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "finalizing admits no drain work")
-	_, err = drainer.Admit(ctx, launch("launch-1", 1))
+	_, _, err = drainer.Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "finalizing admits no new work")
 }
 
@@ -376,30 +395,29 @@ func TestControl_FrozenTokensSettleButCannotClaimOrHold(t *testing.T) {
 	c := newFixture(t).control()
 	ctx := t.Context()
 	activate(t, c)
-	admit(t, c, "launch-1", 1)
-	_, err := c.JournalWrite(ctx, "launch-1", journal(readiness.IntentClaim))
+	launchOp := admit(t, c, "launch-1", 1)
+	_, err := launchOp.Journal(ctx, journal(readiness.IntentClaim))
 	require.NoError(t, err)
 
-	_, err = c.AdmitDrain(ctx, "rb-1", drain("drain-early", 1))
+	_, _, err = c.AdmitDrain(ctx, "rb-1", drain("drain-early", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "drain admission needs the frozen rollback")
 	freeze(t, c, "rb-1")
 
 	for _, intent := range []readiness.Intent{readiness.IntentClaim, readiness.IntentHold} {
-		_, err = c.JournalWrite(ctx, "launch-1", journal(intent))
+		_, err = launchOp.Journal(ctx, journal(intent))
 		require.ErrorIs(t, err, readiness.ErrNotAdmitted, intent)
 	}
-	_, err = c.JournalWrite(ctx, "launch-1", journal(readiness.IntentSettle))
+	_, err = launchOp.Journal(ctx, journal(readiness.IntentSettle))
 	require.NoError(t, err, "admitted work may still make its launch safe")
 
-	_, err = c.AdmitDrain(ctx, "rb-other", drain("drain-1", 1))
+	_, _, err = c.AdmitDrain(ctx, "rb-other", drain("drain-1", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted)
-	_, err = c.AdmitDrain(ctx, "rb-1", drain("drain-1", 2))
+	_, _, err = c.AdmitDrain(ctx, "rb-1", drain("drain-1", 2))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "drain admission is bound to its epoch")
-	_, err = c.AdmitDrain(ctx, "rb-1", drain("drain-1", 1))
-	require.NoError(t, err)
-	_, err = c.JournalWrite(ctx, "drain-1", journal(readiness.IntentHold))
+	drainOp := admitDrain(t, c, "rb-1", "drain-1", 1)
+	_, err = drainOp.Journal(ctx, journal(readiness.IntentHold))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "a drain token never adds a hold")
-	_, err = c.JournalWrite(ctx, "drain-1", journal(readiness.IntentSettle))
+	_, err = drainOp.Journal(ctx, journal(readiness.IntentSettle))
 	require.NoError(t, err)
 
 	rec, rev := read(t, c)
@@ -408,10 +426,8 @@ func TestControl_FrozenTokensSettleButCannotClaimOrHold(t *testing.T) {
 	_, err = c.Finalize(ctx, "rb-1", rev)
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding)
 
-	for _, id := range []string{"launch-1", "drain-1"} {
-		_, err = c.Release(ctx, id)
-		require.NoError(t, err)
-	}
+	release(t, launchOp)
+	release(t, drainOp)
 	_, rev = read(t, c)
 	_, err = c.Finalize(ctx, "rb-1", rev)
 	require.NoError(t, err)
@@ -421,17 +437,16 @@ func TestControl_FrozenSettlementThenReopenStartsCleanEpoch(t *testing.T) {
 	c := newFixture(t).control()
 	ctx := t.Context()
 	activate(t, c)
-	admit(t, c, "launch-old", 1)
-	_, err := c.JournalWrite(ctx, "launch-old", journal(readiness.IntentClaim))
+	old := admit(t, c, "launch-old", 1)
+	_, err := old.Journal(ctx, journal(readiness.IntentClaim))
 	require.NoError(t, err)
 	frozenAt := freeze(t, c, "rb-1")
 
 	_, err = c.Reopen(ctx, 1, frozenAt)
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding)
-	_, err = c.JournalWrite(ctx, "launch-old", journal(readiness.IntentSettle))
+	_, err = old.Journal(ctx, journal(readiness.IntentSettle))
 	require.NoError(t, err, "recovery settles the outstanding launch while frozen")
-	_, err = c.Release(ctx, "launch-old")
-	require.NoError(t, err)
+	release(t, old)
 
 	_, rev := read(t, c)
 	rev, err = c.Reopen(ctx, 1, rev)
@@ -439,10 +454,10 @@ func TestControl_FrozenSettlementThenReopenStartsCleanEpoch(t *testing.T) {
 	_, err = c.Activate(ctx, 2, rev)
 	require.NoError(t, err)
 
-	_, err = c.Admit(ctx, launch("launch-stale", 1))
+	_, _, err = c.Admit(ctx, launch("launch-stale", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "an epoch 1 authorization is spent")
-	admit(t, c, "launch-new", 2)
-	_, err = c.JournalWrite(ctx, "launch-new", journal(readiness.IntentClaim))
+	fresh := admit(t, c, "launch-new", 2)
+	_, err = fresh.Journal(ctx, journal(readiness.IntentClaim))
 	require.NoError(t, err)
 }
 
@@ -473,8 +488,13 @@ func TestControl_UnsupportedRecordFailsClosedWithoutRewrite(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			ctx := t.Context()
+			owner := f.control()
+			activate(t, owner)
+			journalOp := admit(t, owner, "journal-op", 1)
+			releaseOp := admit(t, owner, "release-op", 1)
 			rev, err := f.kv.Put(ctx, readiness.Key, []byte(raw))
 			require.NoError(t, err)
+
 			_, _, err = f.control().Read(ctx)
 			require.ErrorIs(t, err, readiness.ErrUnsupported)
 			mutations := map[string]func(c *readiness.Control) error{
@@ -483,10 +503,10 @@ func TestControl_UnsupportedRecordFailsClosedWithoutRewrite(t *testing.T) {
 				"freeze":     func(c *readiness.Control) error { _, err := c.Freeze(ctx, "rb-1", rev); return err },
 				"finalize":   func(c *readiness.Control) error { _, err := c.Finalize(ctx, "rb-1", rev); return err },
 				"reopen":     func(c *readiness.Control) error { _, err := c.Reopen(ctx, 1, rev); return err },
-				"admit":      func(c *readiness.Control) error { _, err := c.Admit(ctx, launch("launch-1", 1)); return err },
-				"drain":      func(c *readiness.Control) error { _, err := c.AdmitDrain(ctx, "rb-1", drain("drain-1", 1)); return err },
-				"journal":    func(c *readiness.Control) error { _, err := c.JournalWrite(ctx, "t", journal(readiness.IntentSettle)); return err },
-				"release":    func(c *readiness.Control) error { _, err := c.Release(ctx, "t"); return err },
+				"admit":      func(c *readiness.Control) error { _, _, err := c.Admit(ctx, launch("launch-1", 1)); return err },
+				"drain":      func(c *readiness.Control) error { _, _, err := c.AdmitDrain(ctx, "rb-1", drain("drain-1", 1)); return err },
+				"journal":    func(*readiness.Control) error { _, err := journalOp.Journal(ctx, journal(readiness.IntentSettle)); return err },
+				"release":    func(*readiness.Control) error { _, err := releaseOp.Release(ctx); return err },
 			}
 			for op, mutate := range mutations {
 				require.ErrorIs(t, mutate(f.control()), readiness.ErrUnsupported, op)
@@ -505,9 +525,11 @@ func TestControl_UnknownAdmitOutcomeRetainsTokenAcrossRestart(t *testing.T) {
 	ctx := t.Context()
 	activate(t, f.control())
 
-	lossy := &faultKV{KV: f.kv, fault: landThenLoseReply(f.kv)}
-	_, err := readiness.New(f.js, lossy).Admit(ctx, launch("launch-1", 1))
+	lossy := &faultKV{KV: f.kv}
+	lossy.setFault(landThenLoseReply(f.kv))
+	op, _, err := readiness.New(f.js, lossy).Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Nil(t, op, "an uncertain admission gives the owner no handle to start work with")
 
 	restarted := f.reconnect(t)
 	rec, _ := read(t, restarted)
@@ -519,69 +541,82 @@ func TestControl_UnknownAdmitOutcomeRetainsTokenAcrossRestart(t *testing.T) {
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding, "an uncertain token keeps the record frozen")
 }
 
-func TestControl_ReleaseLandedWithLostReplyEndsTheToken(t *testing.T) {
+// ownedLaunch admits launch-1 through a Control whose next write can be faulted,
+// then freezes the record for rb-1.
+func ownedLaunch(t *testing.T, f fixture) (*faultKV, *readiness.Operation) {
+	t.Helper()
+	activate(t, f.control())
+	lossy := &faultKV{KV: f.kv}
+	op := admit(t, readiness.New(f.js, lossy), "launch-1", 1)
+	freeze(t, f.control(), "rb-1")
+	return lossy, op
+}
+
+func TestControl_ReleaseLandedWithLostReply(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
-	c := f.control()
-	activate(t, c)
-	admit(t, c, "launch-1", 1)
-	freeze(t, c, "rb-1")
+	lossy, op := ownedLaunch(t, f)
 
-	holder := readiness.New(f.js, &faultKV{KV: f.kv, fault: landThenLoseReply(f.kv)})
-	_, err := holder.Release(ctx, "launch-1")
+	lossy.setFault(landThenLoseReply(f.kv))
+	_, err := op.Release(ctx)
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
 
-	rec, rev := read(t, c)
+	fresh := f.reconnect(t)
+	rec, rev := read(t, fresh)
 	assert.NotContains(t, rec.Tokens, "launch-1", "an unknown release may have removed the token")
-	_, err = holder.JournalWrite(ctx, "launch-1", journal(readiness.IntentSettle))
-	require.ErrorIs(t, err, readiness.ErrTokenReleased, "no covered work may resume after release")
-	_, err = holder.Admit(ctx, launch("launch-1", 1))
-	require.ErrorIs(t, err, readiness.ErrTokenReleased)
-	_, err = c.Finalize(ctx, "rb-1", rev)
-	require.NoError(t, err)
+	_, err = fresh.Finalize(ctx, "rb-1", rev)
+	require.NoError(t, err, "a landed release lets rollback finish")
+
+	_, err = op.Journal(ctx, journal(readiness.IntentSettle))
+	require.ErrorIs(t, err, readiness.ErrTokenReleased, "the owner resumes no work after a release attempt")
 }
 
-func TestControl_ReleaseLostBeforeLandingKeepsTokenButEndsWork(t *testing.T) {
+func TestControl_ReleaseLostBeforeLanding(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
-	c := f.control()
-	activate(t, c)
-	admit(t, c, "launch-1", 1)
-	freeze(t, c, "rb-1")
+	lossy, op := ownedLaunch(t, f)
 
-	lossy := &faultKV{KV: f.kv, fault: loseBeforeLanding}
-	holder := readiness.New(f.js, lossy)
-	_, err := holder.Release(ctx, "launch-1")
+	lossy.setFault(loseBeforeLanding)
+	_, err := op.Release(ctx)
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
 
-	rec, rev := read(t, f.reconnect(t))
-	require.Contains(t, rec.Tokens, "launch-1")
-	_, err = c.Finalize(ctx, "rb-1", rev)
+	fresh := f.reconnect(t)
+	rec, rev := read(t, fresh)
+	require.Contains(t, rec.Tokens, "launch-1", "an unlanded release leaves the token recorded")
+	_, err = fresh.Finalize(ctx, "rb-1", rev)
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding)
-	_, err = holder.JournalWrite(ctx, "launch-1", journal(readiness.IntentSettle))
-	require.ErrorIs(t, err, readiness.ErrTokenReleased, "a release attempt ends the holder's covered work")
 
-	_, err = holder.Release(ctx, "launch-1")
-	require.NoError(t, err, "the release itself may be retried")
-	_, rev = read(t, c)
-	_, err = c.Finalize(ctx, "rb-1", rev)
+	_, err = op.Journal(ctx, journal(readiness.IntentSettle))
+	require.ErrorIs(t, err, readiness.ErrTokenReleased, "the owner resumes no work after a release attempt")
+	release(t, op)
+
+	rec, rev = read(t, fresh)
+	assert.NotContains(t, rec.Tokens, "launch-1", "only the release itself is retried")
+	_, err = fresh.Finalize(ctx, "rb-1", rev)
 	require.NoError(t, err)
 }
 
-func TestControl_AdmitRefusedUnlessActive(t *testing.T) {
+func TestControl_AdmitRefusedUnlessActiveOrForAnExistingID(t *testing.T) {
 	c := newFixture(t).control()
 	ctx := t.Context()
 
-	_, err := c.Admit(ctx, launch("launch-1", 1))
+	_, _, err := c.Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrAbsent, "an absent record refuses work")
 	_, err = c.Initialize(ctx)
 	require.NoError(t, err)
-	_, err = c.Admit(ctx, launch("launch-1", 1))
+	_, _, err = c.Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "preparing refuses work")
-	_, err = c.Admit(ctx, drain("drain-1", 1))
+	_, _, err = c.Admit(ctx, drain("drain-1", 1))
 	require.ErrorIs(t, err, readiness.ErrInvalid, "drain tokens use drain admission")
-	_, err = c.Admit(ctx, launch("launch-2", 0))
+	_, _, err = c.Admit(ctx, launch("launch-2", 0))
 	require.ErrorIs(t, err, readiness.ErrInvalid, "an admission names the epoch it was authorized for")
+
+	_, rev := read(t, c)
+	_, err = c.Activate(ctx, 1, rev)
+	require.NoError(t, err)
+	admit(t, c, "launch-1", 1)
+	_, _, err = c.Admit(ctx, launch("launch-1", 1))
+	require.ErrorIs(t, err, readiness.ErrTokenExists)
 }
 
 func TestControl_ConcurrentAdmissionsAreAllRecorded(t *testing.T) {
@@ -597,7 +632,7 @@ func TestControl_ConcurrentAdmissionsAreAllRecorded(t *testing.T) {
 	}
 	for i := range workers {
 		wg.Go(func() {
-			_, errs[i] = controls[i].Admit(t.Context(), launch(fmt.Sprintf("launch-%d", i), 1))
+			_, _, errs[i] = controls[i].Admit(t.Context(), launch(fmt.Sprintf("launch-%d", i), 1))
 		})
 	}
 	wg.Wait()

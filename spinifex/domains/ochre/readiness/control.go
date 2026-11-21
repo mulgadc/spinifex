@@ -96,8 +96,8 @@ var (
 	ErrDeleted = errors.New("readiness control record was deleted")
 	// ErrChanged is a fixed-revision write that lost to a newer revision.
 	ErrChanged = errors.New("readiness control record changed")
-	// ErrOutcomeUnknown is a write that may or may not have landed. Callers must
-	// assume it did: an added token is retained and a removed one is not gone.
+	// ErrOutcomeUnknown is a write that may or may not have landed. An add, journal
+	// entry or transition must be assumed to have landed; a release may have too.
 	ErrOutcomeUnknown = errors.New("readiness control write outcome unknown")
 	// ErrWrongState is a transition whose phase, epoch or rollback does not hold.
 	ErrWrongState = errors.New("readiness control record is in the wrong state")
@@ -108,7 +108,7 @@ var (
 	ErrTokenExists       = errors.New("readiness control token already exists")
 	ErrTokenNotFound     = errors.New("readiness control token not found")
 	ErrInvalid           = errors.New("invalid readiness control request")
-	// ErrTokenReleased refuses further work on a token this Control released.
+	// ErrTokenReleased refuses work on an Operation after its release attempt.
 	ErrTokenReleased = errors.New("readiness control token was released")
 	// ErrUnsupported is a record in a version or form this code does not know.
 	ErrUnsupported = errors.New("unsupported readiness control record")
@@ -136,14 +136,11 @@ type Control struct {
 	js          jetstream.JetStream
 	kv          KV
 	beforeWrite func(op string)
-
-	mu       sync.Mutex
-	released map[string]struct{}
 }
 
 // New returns a Control over an already-opened kv; js serves leader reads.
 func New(js jetstream.JetStream, kv KV) *Control {
-	return &Control{js: js, kv: kv, released: map[string]struct{}{}}
+	return &Control{js: js, kv: kv}
 }
 
 // Read returns the record and its revision from the stream leader.
@@ -279,12 +276,26 @@ func (c *Control) Reopen(ctx context.Context, epoch, rev uint64) (uint64, error)
 	})
 }
 
+// Operation is the owner's handle on one admitted token. It serializes the
+// owner's journal entries with release and refuses both after a release
+// attempt; it is an in-process aid, not a durable fence.
+type Operation struct {
+	c  *Control
+	id string
+
+	mu       sync.Mutex
+	released bool
+}
+
+// ID is the token's unique ID, which the owner must never reuse.
+func (o *Operation) ID() string { return o.id }
+
 // Admit adds a launch or sweep token while tok.Epoch is active. Every retry
 // re-reads phase and epoch, so an add delayed past a freeze or into a later
-// epoch never lands.
-func (c *Control) Admit(ctx context.Context, tok Token) (uint64, error) {
+// epoch never lands. An unknown outcome returns no Operation.
+func (c *Control) Admit(ctx context.Context, tok Token) (*Operation, uint64, error) {
 	if tok.Kind != TokenLaunch && tok.Kind != TokenSweep {
-		return 0, fmt.Errorf("%w: admit kind %q", ErrInvalid, tok.Kind)
+		return nil, 0, fmt.Errorf("%w: admit kind %q", ErrInvalid, tok.Kind)
 	}
 	return c.add(ctx, "admit", tok, func(r *Record) error {
 		if r.Phase != PhaseActive || r.Epoch != tok.Epoch {
@@ -296,9 +307,9 @@ func (c *Control) Admit(ctx context.Context, tok Token) (uint64, error) {
 
 // AdmitDrain adds a drain token while tok.Epoch is frozen for rollback. Drain
 // tokens may only journal settle writes.
-func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (uint64, error) {
+func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (*Operation, uint64, error) {
 	if tok.Kind != TokenDrain || rollback == "" {
-		return 0, fmt.Errorf("%w: drain kind %q rollback %q", ErrInvalid, tok.Kind, rollback)
+		return nil, 0, fmt.Errorf("%w: drain kind %q rollback %q", ErrInvalid, tok.Kind, rollback)
 	}
 	tok.Rollback = rollback
 	return c.add(ctx, "admit-drain", tok, func(r *Record) error {
@@ -310,19 +321,21 @@ func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (u
 	})
 }
 
-// JournalWrite records j on token id before its write is sent. New claims and
+// Journal records j on the token before its write is sent. New claims and
 // holds need an active phase and a token from the current epoch.
-func (c *Control) JournalWrite(ctx context.Context, id string, j Journal) (uint64, error) {
+func (o *Operation) Journal(ctx context.Context, j Journal) (uint64, error) {
 	if j.Incarnation == "" || j.Key == "" || !validIntent(j.Intent) {
 		return 0, fmt.Errorf("%w: journal %+v", ErrInvalid, j)
 	}
-	if c.isReleased(id) {
-		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, id)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.released {
+		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, o.id)
 	}
-	return c.update(ctx, "journal", func(r *Record) error {
-		tok, ok := r.Tokens[id]
+	return o.c.update(ctx, "journal", func(r *Record) error {
+		tok, ok := r.Tokens[o.id]
 		if !ok {
-			return fmt.Errorf("%w: %s", ErrTokenNotFound, id)
+			return fmt.Errorf("%w: %s", ErrTokenNotFound, o.id)
 		}
 		if r.Phase == PhaseFinalizing {
 			return fmt.Errorf("%w: phase %s", ErrNotAdmitted, r.Phase)
@@ -331,23 +344,23 @@ func (c *Control) JournalWrite(ctx context.Context, id string, j Journal) (uint6
 			return fmt.Errorf("%w: %s by %s token from epoch %d in %s epoch %d", ErrNotAdmitted, j.Intent, tok.Kind, tok.Epoch, r.Phase, r.Epoch)
 		}
 		tok.Journal = append(tok.Journal, j)
-		r.Tokens[id] = tok
+		r.Tokens[o.id] = tok
 		return nil
 	})
 }
 
-// Release removes token id in any phase. Call it only once every covered write,
-// side effect and retry has returned definitively: an unknown outcome may have
-// removed it. This Control refuses further work on id whatever the result.
-func (c *Control) Release(ctx context.Context, id string) (uint64, error) {
-	c.mu.Lock()
-	c.released[id] = struct{}{}
-	c.mu.Unlock()
-	return c.update(ctx, "release", func(r *Record) error {
-		if _, ok := r.Tokens[id]; !ok {
+// Release removes the token in any phase. The owner calls it only after every
+// covered call, side effect and retry has stopped, and resumes no work after
+// it, even when its outcome is unknown; only the release itself may be retried.
+func (o *Operation) Release(ctx context.Context) (uint64, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.released = true
+	return o.c.update(ctx, "release", func(r *Record) error {
+		if _, ok := r.Tokens[o.id]; !ok {
 			return errUnchanged
 		}
-		delete(r.Tokens, id)
+		delete(r.Tokens, o.id)
 		return nil
 	})
 }
@@ -355,26 +368,16 @@ func (c *Control) Release(ctx context.Context, id string) (uint64, error) {
 // errUnchanged ends an update that has nothing to write.
 var errUnchanged = errors.New("unchanged")
 
-func (c *Control) isReleased(id string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, ok := c.released[id]
-	return ok
-}
-
 func validIntent(i Intent) bool {
 	return i == IntentClaim || i == IntentHold || i == IntentSettle
 }
 
-func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Record) error) (uint64, error) {
+func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Record) error) (*Operation, uint64, error) {
 	if tok.ID == "" || tok.Epoch == 0 {
-		return 0, fmt.Errorf("%w: token id %q epoch %d", ErrInvalid, tok.ID, tok.Epoch)
-	}
-	if c.isReleased(tok.ID) {
-		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, tok.ID)
+		return nil, 0, fmt.Errorf("%w: token id %q epoch %d", ErrInvalid, tok.ID, tok.Epoch)
 	}
 	tok.Journal = nil
-	return c.update(ctx, op, func(r *Record) error {
+	rev, err := c.update(ctx, op, func(r *Record) error {
 		if err := admit(r); err != nil {
 			return err
 		}
@@ -384,6 +387,10 @@ func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Rec
 		r.Tokens[tok.ID] = tok
 		return nil
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return &Operation{c: c, id: tok.ID}, rev, nil
 }
 
 // transition applies f to the record read at rev and writes it once at rev.

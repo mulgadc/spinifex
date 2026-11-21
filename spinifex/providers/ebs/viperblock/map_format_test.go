@@ -146,35 +146,33 @@ func TestProviderHandlers_CreateVolume_FormatTwoNeedsALeaseStore(t *testing.T) {
 	assert.ErrorIs(t, err, errNoVolumeLeaseStore)
 }
 
-// A format-2 VBState with no committed head is an incomplete creation: the
-// create retry recreates the volume rather than report it created.
+// A format-2 VBState that records no committed head is an incomplete
+// creation: the create retry recreates the volume rather than report it.
 func TestProviderHandlers_CreateVolume_FormatTwoIncompleteCreationIsRetried(t *testing.T) {
 	t.Parallel()
 	cfg, create := formatTwoProvider(t)
 	volumeName := "vol-fmt2retry-" + strings.ToLower(rand.Text())
-	body := marshalRequest(t, map[string]any{
-		"schema_version": ebsprovider.SchemaVersion,
-		"volume_id":      volumeName,
-		"capacity_range": map[string]any{"required_bytes": int64(1) << 30},
-	})
-	require.Nil(t, create(body).Error)
 
-	// Drop every head, as a crash between the state write and the first
-	// head would have left the volume.
-	vb := readOnlyEngine(t, cfg, volumeName)
-	keys, err := vb.Backend.ListObjectsCtx(t.Context(), volumeName+"/map/")
+	// A crashed attempt that wrote VBState, as a sequence reservation does,
+	// before publishing any head.
+	vbconfig := buildProviderVBConfig(cfg, volumeName, 1<<30, "", "")
+	vbconfig.LeaseEpoch = 1
+	crashed, err := viperblock.New(vbconfig, "s3", cfg.volumeS3Config(volumeName))
 	require.NoError(t, err)
-	for _, k := range keys {
-		if strings.Contains(k, "/map/head.") {
-			require.NoError(t, vb.Backend.DeleteKeyCtx(t.Context(), strings.TrimPrefix(k, volumeName+"/")))
-		}
-	}
-	vb.Detach()
+	require.NoError(t, crashed.Backend.InitCtx(t.Context()))
+	require.NoError(t, crashed.InitMapDeltaCtx(t.Context(), false))
+	require.NoError(t, crashed.SaveStateCtx(t.Context()))
+	crashed.Detach()
 	_, err = describeVolumeEngine(t.Context(), cfg, volumeName)
 	require.ErrorIs(t, err, viperblock.ErrStateNotFound)
 
-	require.Nil(t, create(body).Error)
-	committed, err := volumeMapCommitted(t.Context(), cfg, volumeName)
+	require.Nil(t, create(marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"capacity_range": map[string]any{"required_bytes": int64(1) << 30},
+	})).Error)
+	state, err := readVolumeState(t.Context(), cfg, volumeName)
 	require.NoError(t, err)
-	assert.True(t, committed, "the retry completed the creation")
+	assert.True(t, state.MapCommitted, "the retry completed the creation")
+	_ = readOnlyEngine(t, cfg, volumeName)
 }

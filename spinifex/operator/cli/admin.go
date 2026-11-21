@@ -1954,6 +1954,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	configSettings := admin.ConfigSettings{
 		MapFormatDefault: 2,
+
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 		AccountID: accountID,
@@ -2273,6 +2274,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	configSettings := admin.ConfigSettings{
 		MapFormatDefault: 2,
+
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 		AccountID: accountID,

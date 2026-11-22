@@ -660,3 +660,38 @@ func TestCreateLoadBalancer_CustomerOwnedIpv4PoolRefused(t *testing.T) {
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest)
 }
+
+func TestSetSubnets_RelaunchRefreshesRecoveryIndex(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.40.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.41.0/24", "us-east-1b")
+	mock.launchResult = &SystemInstanceOutput{InstanceID: "i-lb-old", PrivateIP: "10.0.40.5"}
+
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("recovery-index-lb"),
+		Subnets: []*string{aws.String(sub1)},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+
+	// Populate the recovery index with the original VM.
+	_, err = svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+	require.NoError(t, err)
+
+	mock.launchResult = &SystemInstanceOutput{InstanceID: "i-lb-new", PrivateIP: "10.0.40.6"}
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
+		LoadBalancerArn: out.LoadBalancers[0].LoadBalancerArn,
+		Subnets:         []*string{aws.String(sub1), aws.String(sub2)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rebuilt, err := svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-new", InstanceType: "sys.micro"})
+	require.NoError(t, err)
+	assert.Len(t, rebuilt.ExtraENIs, 1, "recovery must rebuild from the reshaped LB")
+
+	_, err = svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no LB record references instance i-lb-old")
+}

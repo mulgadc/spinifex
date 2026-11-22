@@ -570,6 +570,13 @@ func (s *ELBv2ServiceImpl) loadRecoveryLBIndex(ctx context.Context) (map[string]
 	return s.recoveryLBIndex, nil
 }
 
+// invalidateRecoveryLBIndex forces the next recovery lookup to re-list LB records.
+func (s *ELBv2ServiceImpl) invalidateRecoveryLBIndex() {
+	s.recoveryLBIndexMu.Lock()
+	s.recoveryLBIndex = nil
+	s.recoveryLBIndexMu.Unlock()
+}
+
 // RebuildSystemInstanceInput reconstructs the launch input for host-reboot recovery.
 // The instance→LB map is memoised so concurrent recovery candidates share one ListLoadBalancers call.
 func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*SystemInstanceInput, error) {

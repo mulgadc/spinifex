@@ -1042,6 +1042,53 @@ func TestGetFunctionConfiguration_Authorization(t *testing.T) {
 	})
 }
 
+// Lambda matches a qualified read only against a qualified policy resource,
+// whether the qualifier comes in the function name or the Qualifier query.
+func TestGetFunctionFamily_QualifiedAuthorization(t *testing.T) {
+	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
+	actions := []struct {
+		action, path, suffix string
+		query                bool
+	}{
+		{"GetFunction", "/2015-03-31/functions/", "", true},
+		{"GetFunctionConfiguration", "/2015-03-31/functions/", "/configuration", true},
+		{"GetFunctionCodeSigningConfig", "/2020-06-30/functions/", "/code-signing-config", false},
+		{"ListVersionsByFunction", "/2015-03-31/functions/", "/versions", false},
+	}
+	for _, a := range actions {
+		forms := map[string]string{"path qualifier": a.path + "hello:$LATEST" + a.suffix}
+		if a.query {
+			forms["query qualifier"] = a.path + "hello" + a.suffix + "?Qualifier=%24LATEST"
+		}
+		for form, path := range forms {
+			run := func(t *testing.T, statements ...iamdomain.Statement) error {
+				e := newEnv(t, statements...)
+				_, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
+					FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
+					Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
+				})
+				require.NoError(t, err)
+				_, err = e.do(http.MethodGet, path, nil)
+				return err
+			}
+			action := "lambda:" + a.action
+			t.Run(a.action+" "+form, func(t *testing.T) {
+				t.Run("a qualified allow passes", func(t *testing.T) {
+					require.NoError(t, run(t, gwtest.Statement("Allow", action, arn+":$LATEST")))
+				})
+				t.Run("an unqualified-only allow does not match", func(t *testing.T) {
+					gwtest.AssertDenied(t, run(t, gwtest.Statement("Allow", action, arn)))
+				})
+				t.Run("a qualified deny overrides an allow on the function", func(t *testing.T) {
+					gwtest.AssertDenied(t, run(t,
+						gwtest.Statement("Allow", action, arn+"*"),
+						gwtest.Statement("Deny", action, arn+":$LATEST")))
+				})
+			})
+		}
+	}
+}
+
 func TestGetFunctionCodeSigningConfig_ExistingFunctionHasExplicitNulls(t *testing.T) {
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))

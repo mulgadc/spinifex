@@ -138,7 +138,15 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction", "UpdateFunctionCode":
+	case "GetFunction", "GetFunctionConfiguration":
+		if name, q, err := resolveTarget(c, c.Query.Get("Qualifier")); err == nil {
+			resource = qualifiedFunctionARN(inv.Region, inv.AccountID, name, q)
+		}
+	case "GetFunctionCodeSigningConfig", "ListVersionsByFunction":
+		if name, q, err := resolveTarget(c, ""); err == nil {
+			resource = qualifiedFunctionARN(inv.Region, inv.AccountID, name, q)
+		}
+	case "UpdateFunctionCode":
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}

@@ -145,3 +145,122 @@ func TestWaitReadyAll_JoinsPerMemberFailures(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stuck-model")
 }
+
+// countedServer is an httptest server that counts requests and answers each
+// with answer, given its 1-based request number.
+func countedServer(t *testing.T, answer func(w http.ResponseWriter, n int32)) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		answer(w, hits.Add(1))
+	}))
+	t.Cleanup(ts.Close)
+	return ts, &hits
+}
+
+func TestWaitReady_RedirectEndsTheWaitUnfollowed(t *testing.T) {
+	t.Parallel()
+	target, targetHits := countedServer(t, func(w http.ResponseWriter, _ int32) { w.WriteHeader(http.StatusOK) })
+	cases := map[string]func(w http.ResponseWriter){}
+	for _, code := range []int{301, 302, 303, 307, 308} {
+		cases[http.StatusText(code)] = func(w http.ResponseWriter) {
+			w.Header().Set("Location", target.URL+"/v1/models")
+			w.WriteHeader(code)
+		}
+	}
+	for name, loc := range map[string]string{"unparseable host": "http://[::1", "bad escape": "/v1/%zz"} {
+		cases[name] = func(w http.ResponseWriter) {
+			w.Header().Set("Location", loc)
+			w.WriteHeader(http.StatusFound)
+		}
+	}
+	cases["missing Location"] = func(w http.ResponseWriter) { w.WriteHeader(http.StatusFound) }
+
+	for name, answer := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			src, srcHits := countedServer(t, func(w http.ResponseWriter, _ int32) { answer(w) })
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := waitReady(ctx, src.Client(), readinessTarget{BaseURL: src.URL, Path: "/v1/models"}, 10*time.Millisecond)
+			require.ErrorIs(t, err, errReadinessRedirected)
+			assert.NotErrorIs(t, err, context.DeadlineExceeded)
+			assert.EqualValues(t, 1, srcHits.Load(), "a redirect is not retried")
+			assert.NotContains(t, err.Error(), target.URL)
+			assert.NotContains(t, err.Error(), "[::1")
+			assert.NotContains(t, err.Error(), "%zz")
+		})
+	}
+	t.Cleanup(func() { assert.Zero(t, targetHits.Load(), "the redirect target must receive no request") })
+}
+
+func TestWaitReady_OrdinaryFailuresKeepPolling(t *testing.T) {
+	t.Parallel()
+	for _, code := range []int{http.StatusNotModified, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			t.Parallel()
+			src, hits := countedServer(t, func(w http.ResponseWriter, n int32) {
+				if n <= 3 {
+					w.WriteHeader(code)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			require.NoError(t, waitReady(ctx, src.Client(), readinessTarget{BaseURL: src.URL, Path: "/health"}, 5*time.Millisecond))
+			assert.EqualValues(t, 4, hits.Load())
+		})
+	}
+}
+
+func TestWaitReady_KeepsInjectedClient(t *testing.T) {
+	t.Parallel()
+	target, targetHits := countedServer(t, func(w http.ResponseWriter, _ int32) { w.WriteHeader(http.StatusOK) })
+	src, _ := countedServer(t, func(w http.ResponseWriter, _ int32) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	})
+	var transportCalls, policyCalls atomic.Int32
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	policy := func(*http.Request, []*http.Request) error { policyCalls.Add(1); return nil }
+	client := &http.Client{Transport: transport, CheckRedirect: policy}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := waitReady(ctx, client, readinessTarget{BaseURL: src.URL, Path: "/v1/models"}, 10*time.Millisecond)
+	require.ErrorIs(t, err, errReadinessRedirected)
+	assert.EqualValues(t, 1, transportCalls.Load(), "the probe goes through the injected transport")
+	assert.Zero(t, policyCalls.Load(), "the injected redirect policy is never consulted")
+	assert.Zero(t, targetHits.Load())
+	assert.NotNil(t, client.CheckRedirect, "the injected client is unchanged")
+	_, isRecorder := client.Transport.(*redirectRecorder)
+	assert.False(t, isRecorder, "the injected client's transport is unchanged")
+}
+
+func TestWaitReadyAll_RedirectCancelsTheOtherMembers(t *testing.T) {
+	t.Parallel()
+	redirecting, _ := countedServer(t, func(w http.ResponseWriter, _ int32) { w.WriteHeader(http.StatusTemporaryRedirect) })
+	stuck, _ := countedServer(t, func(w http.ResponseWriter, _ int32) { w.WriteHeader(http.StatusServiceUnavailable) })
+	targets := map[string]readinessTarget{
+		"redirecting-model": {BaseURL: redirecting.URL, Path: "/v1/models"},
+		"stuck-model":       {BaseURL: stuck.URL, Path: "/health"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	err := waitReadyAll(ctx, http.DefaultClient, targets, 5*time.Millisecond)
+	require.ErrorIs(t, err, errReadinessRedirected)
+	assert.ErrorIs(t, err, context.Canceled, "the other member's wait is cancelled, not left to the deadline")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+	assert.NoError(t, ctx.Err(), "the wait ended long before the caller's deadline")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

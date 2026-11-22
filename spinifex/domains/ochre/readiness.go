@@ -11,7 +11,7 @@ import (
 
 // defaultStartupTimeout bounds how long Ensure's launch goroutine polls a
 // freshly-launched serving VM's per-member readiness route before giving up
-// and reverting the record to ABSENT.
+// and leaving the launch retained in STARTING.
 //
 // Measured once, on the only GPU available to test on: Llama 3.2 1B on an
 // RTX A1000 reached "Application startup complete" 257.6s after launch, of
@@ -45,17 +45,25 @@ type readinessTarget struct {
 	Path    string
 }
 
+// errReadinessRedirected reports a member that answered its readiness route
+// with a redirect. The redirect is never followed, so it is not retried.
+var errReadinessRedirected = errors.New("bedrock: readiness probe was redirected")
+
 // waitReady polls target.BaseURL+target.Path every pollInterval until it
-// returns HTTP 200 or ctx's deadline expires; every non-200 (including a
-// refused connection while the guest boots) is swallowed and retried.
+// returns HTTP 200 or ctx's deadline expires; any other answer (including a
+// refused connection while the guest boots) is retried, except a redirect.
 func waitReady(ctx context.Context, client *http.Client, target readinessTarget, pollInterval time.Duration) error {
 	url := target.BaseURL + target.Path
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
-		if probeOnce(ctx, client, url) {
+		switch probeLiveness(ctx, client, url) {
+		case livenessLive:
 			return nil
+		case livenessRedirected:
+			return fmt.Errorf("%w: %s", errReadinessRedirected, url)
+		case livenessNotLive:
 		}
 		select {
 		case <-ctx.Done():
@@ -67,8 +75,10 @@ func waitReady(ctx context.Context, client *http.Client, target readinessTarget,
 
 // waitReadyAll polls every target (keyed by model id) in parallel, each on
 // its own engine's route, until all answer ready or ctx expires; member
-// failures are joined so the caller learns which member never came up.
+// failures are joined. A redirect from any member cancels the others' waits.
 func waitReadyAll(ctx context.Context, client *http.Client, targets map[string]readinessTarget, pollInterval time.Duration) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
@@ -78,6 +88,9 @@ func waitReadyAll(ctx context.Context, client *http.Client, targets map[string]r
 		go func(modelID string, target readinessTarget) {
 			defer wg.Done()
 			if err := waitReady(ctx, client, target, pollInterval); err != nil {
+				if errors.Is(err, errReadinessRedirected) {
+					cancel()
+				}
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", modelID, err))
 				mu.Unlock()
@@ -88,7 +101,7 @@ func waitReadyAll(ctx context.Context, client *http.Client, targets map[string]r
 	return errors.Join(errs...)
 }
 
-// probeOnce issues a single GET and reports whether it returned HTTP 200.
+// probeOnce, used by the reaper, issues a single GET and reports whether it returned HTTP 200.
 // Any transport error (guest not listening yet) or non-200 status counts as
 // not-yet-ready, not a failure — the caller's context deadline is what
 // eventually turns "not yet" into an error.

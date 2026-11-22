@@ -360,6 +360,11 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.startupTimeout())
 	defer cancel()
 	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberReadinessTargets(), s.pollInterval()); err != nil {
+		if errors.Is(err, errReadinessRedirected) {
+			slog.ErrorContext(ctx, "bedrock: readiness probe was redirected; retaining the launched VM",
+				"group", spec.GroupID, "instanceId", rec.InstanceID)
+			return
+		}
 		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; retaining the launched VM",
 			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
 		return

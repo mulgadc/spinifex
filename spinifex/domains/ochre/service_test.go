@@ -4,7 +4,9 @@ import (
 	"context"
 	stderrors "errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -834,4 +836,115 @@ func TestEnsure_NewClaimAfterGuardedAbortReachesReady(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, StateReady, got.State, "a claim over the guarded delete's tombstone must publish READY")
 	assert.EqualValues(t, 2, h.launcher.launchCount.Load())
+}
+
+// memberProbe answers each member's readiness probe by port, so a test can
+// give each member of a bundle its own behaviour. It counts requests per host.
+type memberProbe struct {
+	mu     sync.Mutex
+	hits   map[string]int
+	answer func(port string, n int) *http.Response
+}
+
+func (m *memberProbe) RoundTrip(r *http.Request) (*http.Response, error) {
+	m.mu.Lock()
+	if m.hits == nil {
+		m.hits = map[string]int{}
+	}
+	m.hits[r.URL.Host]++
+	n := m.hits[r.URL.Host]
+	m.mu.Unlock()
+	return m.answer(r.URL.Port(), n), nil
+}
+
+func (m *memberProbe) count(host string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hits[host]
+}
+
+func probeAnswer(code int, location string) *http.Response {
+	resp := &http.Response{StatusCode: code, Body: http.NoBody, Header: make(http.Header)}
+	if location != "" {
+		resp.Header.Set("Location", location)
+	}
+	return resp
+}
+
+const redirectTarget = "redirect-target.invalid"
+
+// waitLaunchesWithin fails the test if the launch worker outlives limit; it
+// guards a wait that must end on a redirect long before the startup timeout.
+func waitLaunchesWithin(t *testing.T, s *Service, limit time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { s.WaitLaunches(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(limit):
+		t.Fatalf("launch worker still running after %s", limit)
+	}
+}
+
+func TestEnsure_RedirectingMemberRetainsTheLaunchAndCancelsTheOthers(t *testing.T) {
+	t.Parallel()
+	for name, client := range map[string]func(*memberProbe) *http.Client{
+		"following client": func(p *memberProbe) *http.Client { return &http.Client{Transport: p} },
+		"no-follow client": func(p *memberProbe) *http.Client {
+			return &http.Client{Transport: p, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			probe := &memberProbe{answer: func(port string, _ int) *http.Response {
+				if port == strconv.Itoa(vllmServePort) {
+					return probeAnswer(http.StatusTemporaryRedirect, "http://"+redirectTarget+"/v1/models")
+				}
+				return probeAnswer(http.StatusServiceUnavailable, "")
+			}}
+			s.deps.HTTPClient = client(probe)
+			s.deps.StartupTimeout = time.Hour
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			waitLaunchesWithin(t, s, 30*time.Second)
+
+			got, found := storedEndpoint(t, s)
+			require.True(t, found, "a redirect must keep the claim")
+			assert.Equal(t, StateStarting, got.State, "a redirecting member must not read as ready")
+			assert.Equal(t, "i-1", got.InstanceID)
+			assert.Greater(t, len(got.Members), 1, "the bundle's every member identity is retained")
+			assert.Empty(t, got.BaseURL)
+			assert.Zero(t, probe.count(redirectTarget), "the redirect target must receive no probe")
+			assertRetained(t, h)
+		})
+	}
+}
+
+func TestEnsure_UnavailableThenReadyReachesReady(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	probe := &memberProbe{answer: func(_ string, n int) *http.Response {
+		if n <= 2 {
+			return probeAnswer(http.StatusServiceUnavailable, "")
+		}
+		return probeAnswer(http.StatusOK, "")
+	}}
+	s.deps.HTTPClient = &http.Client{Transport: probe}
+	s.deps.StartupTimeout = time.Hour
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	waitLaunchesWithin(t, s, 30*time.Second)
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found)
+	assert.Equal(t, StateReady, got.State)
+	for modelID, m := range got.Members {
+		assert.Equal(t, 3, probe.count(net.JoinHostPort(got.PrivateIP, strconv.Itoa(m.Port))), modelID)
+	}
+	assertRetained(t, h)
 }

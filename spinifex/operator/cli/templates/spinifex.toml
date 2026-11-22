@@ -123,12 +123,6 @@ token = "{{.NatsToken}}"
 [nodes.{{.Node}}.viperblock]
 shardwal = false
 gc_enabled = true
-{{- if .MapFormatDefault}}
-# New volumes persist their block map in this format; 2 is heads, deltas and
-# bases. Written by init only: a joined or upgraded node keeps format 1 until
-# the operator sets it once every node runs a build that reads format 2.
-map_format_default = {{.MapFormatDefault}}
-{{- end}}
 #
 # wal_base_dir: put every volume's WAL under this directory instead of the
 # node's base_dir. A WAL fsync shares the device queue with predastore, the

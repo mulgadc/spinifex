@@ -314,11 +314,6 @@ type ViperblockConfig struct {
 	// today's behavior until explicitly opted in.
 	GCEnabled *bool `json:"GCEnabled" mapstructure:"gc_enabled"`
 
-	// MapFormatDefault is the block-map format new volumes are created in.
-	// Absent means 1: a fresh install writes 2, and an upgraded cluster is set
-	// to 2 only once every node runs a build that reads it.
-	MapFormatDefault *int `json:"MapFormatDefault" mapstructure:"map_format_default"`
-
 	// WALBaseDir puts every volume's WAL under this directory instead of the
 	// node's base_dir. A WAL fsync shares the device queue with everything
 	// else on the node, so giving it its own device keeps neighbouring IO out

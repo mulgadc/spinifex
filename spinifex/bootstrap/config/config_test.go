@@ -371,6 +371,21 @@ func TestGetServices(t *testing.T) {
 	}
 }
 
+func TestGetServicesFollowsEBSProvider(t *testing.T) {
+	ocibsd := Config{EBS: EBSConfig{Provider: EBSProviderOCIBSD}}
+	assert.Equal(t, []string{"nats", "predastore", "ocibsd", "daemon", "awsgw", "vpcd", "ui"}, ocibsd.GetServices())
+	assert.False(t, ocibsd.HasService("viperblock"), "an ocibsd node does not run viperblock")
+	assert.True(t, ocibsd.HasService("ocibsd"))
+	assert.Equal(t, []string{"nats", "predastore", "viperblock", "daemon", "awsgw", "vpcd", "ui"}, AllServices, "the default list itself is untouched")
+
+	viperblockd := Config{EBS: EBSConfig{Provider: EBSProviderViperblockd}}
+	assert.Equal(t, AllServices, viperblockd.GetServices())
+	assert.True(t, viperblockd.HasService("viperblock"))
+
+	explicit := Config{Services: []string{"nats", "viperblock"}, EBS: EBSConfig{Provider: EBSProviderOCIBSD}}
+	assert.Equal(t, []string{"nats", "viperblock"}, explicit.GetServices(), "an explicit list is returned as configured")
+}
+
 // Tests for NodeBaseDir
 
 func TestNodeBaseDir_HappyPath(t *testing.T) {

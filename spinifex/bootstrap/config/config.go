@@ -669,13 +669,9 @@ func (cc *ClusterConfig) NodeBaseDir() string {
 // AllServices is the default service list when Services is empty (backward compat).
 var AllServices = []string{"nats", "predastore", "viperblock", "daemon", "awsgw", "vpcd", "ui"}
 
-// HasService reports whether the node runs the named service (empty list means all services).
+// HasService reports whether the node runs the named service (empty list means the defaults).
 func (c Config) HasService(name string) bool {
-	services := c.Services
-	if len(services) == 0 {
-		services = AllServices
-	}
-	return slices.Contains(services, name)
+	return slices.Contains(c.GetServices(), name)
 }
 
 // NodesRunning returns, sorted, the name of every configured node that runs
@@ -692,12 +688,18 @@ func (cc *ClusterConfig) NodesRunning(service string) []string {
 	return nodes
 }
 
-// GetServices returns the configured service list, defaulting to AllServices.
+// GetServices returns the configured service list, defaulting to AllServices
+// with the viperblock service swapped for ocibsd on an ocibsd-provider node.
 func (c Config) GetServices() []string {
-	if len(c.Services) == 0 {
+	if len(c.Services) > 0 {
+		return c.Services
+	}
+	if c.EBS.ResolvedProvider() != EBSProviderOCIBSD {
 		return AllServices
 	}
-	return c.Services
+	services := slices.Clone(AllServices)
+	services[slices.Index(services, "viperblock")] = EBSProviderOCIBSD
+	return services
 }
 
 // LoadConfig loads the configuration from file and environment variables.

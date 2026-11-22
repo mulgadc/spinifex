@@ -313,19 +313,26 @@ require_branch_build() {
     [ -n "$DISTRO" ] || die "--nodes 3 needs --distro: the latitude pool is not in a release yet, and a released spx rejects source=\"latitude\" and crash-loops; build one with 'make distro-amd64' and pass its tarball"
 }
 
-# require_one_address stops a one-node run that would buy more than one Elastic IP. The one-node
-# pool publishes a single address, and a second pool is never tried when the first is full, so
-# the extra addresses would be paid for and never used.
-require_one_address() {
-    [ "$NODES" = 1 ] || return 0
-    case "${TF_VAR_elastic_ip_count:-1}" in
-        1) ;;
-        *) die "a one-node deployment publishes one Elastic IP; unset TF_VAR_elastic_ip_count (it is ${TF_VAR_elastic_ip_count}) or use --nodes 3 for the floating pool" ;;
+# Reads elastic_ip_count as Terraform will see it, with no overriding -var, and refuses 0 (this script buys
+# its own addresses) or, on one node, anything but 1. TF_CLI_ARGS could change the count after the read, so
+# it is refused.
+require_effective_count() {
+    local count v
+    for v in TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply; do
+        [ -z "${!v:-}" ] || die "$v is set; unset it, this script controls its own Terraform arguments"
+    done
+    "$TF_BIN" -chdir="$SCRIPT_DIR" init -input=false >/dev/null 2>&1 || die "terraform init failed; run it in $SCRIPT_DIR to see why"
+    count="$(printf 'var.elastic_ip_count\n' | tf console 2>/dev/null | tail -n 1)" || count=""
+    case "$count" in
+        0) die "elastic_ip_count is 0, and this script buys and records its own Elastic IPs; zero is for provisioning with Terraform alone and forming the cluster with the operator collection (see the README)" ;;
+        [1-5]) ;;
+        *) die "could not read elastic_ip_count from Terraform (got '${count}'); check TF_VAR_elastic_ip_count and the .tfvars files in $SCRIPT_DIR" ;;
     esac
+    [ "$NODES" != 1 ] || [ "$count" = 1 ] || die "a one-node deployment publishes one Elastic IP; elastic_ip_count is $count, so unset it or use --nodes 3 for the floating pool"
 }
 preflight() {
     require_branch_build
-    require_one_address
+    done_step terraform || require_effective_count
     [ -r "$SSH_KEY" ] && [ -r "$SSH_KEY.pub" ] || die "SSH key $SSH_KEY (and .pub) not readable"
     command -v aws >/dev/null || die "the AWS CLI is not installed"
     command -v python3 >/dev/null || die "python3 is not installed"

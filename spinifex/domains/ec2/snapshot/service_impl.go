@@ -170,14 +170,19 @@ func (s *SnapshotServiceImpl) getSnapshotConfig(ctx context.Context, accountID, 
 	cfg, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
-			return ebsmetadata.Snapshot{}, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return ebsmetadata.Snapshot{}, snapshotNotFound(snapshotID)
 		}
 		return ebsmetadata.Snapshot{}, err
 	}
 	if cfg.Hidden() {
-		return ebsmetadata.Snapshot{}, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		return ebsmetadata.Snapshot{}, snapshotNotFound(snapshotID)
 	}
 	return cfg, nil
+}
+
+// snapshotNotFound answers InvalidSnapshot.NotFound with AWS's text naming id.
+func snapshotNotFound(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidSnapshotNotFound, "The snapshot '%s' does not exist.", id)
 }
 
 // snapshotConfigToEC2 converts a snapshot document to an EC2 response object.
@@ -636,7 +641,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 	// OwnerIds naming only another account selects snapshots the caller's
 	// prefix cannot contain, so a named ID is absent without any read.
 	if !ownerIDsIncludeCaller(input.OwnerIds, accountID) {
-		return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		return nil, snapshotNotFound(snapshotIDs[0])
 	}
 
 	// An untenanted caller has no prefix to read under; refuse here rather than
@@ -655,7 +660,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 		// An ID no key can be built for names no document, which is also what
 		// the listing path reports for it.
 		if _, err := ebsmetadata.SnapshotKey(accountID, snapshotID); err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return nil, snapshotNotFound(snapshotID)
 		}
 	}
 
@@ -693,18 +698,18 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 	for i, result := range results {
 		// Every other store error was classified above, so this is a missing key.
 		if result.Err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return nil, snapshotNotFound(snapshotIDs[i])
 		}
 
 		// The read was keyed by the ID inside the caller's prefix, so the
 		// document is theirs and is the one named. Both stay as assertions.
 		if result.Document.SnapshotID != snapshotIDs[i] || result.Document.OwnerID != accountID || result.Document.Hidden() {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return nil, snapshotNotFound(snapshotIDs[i])
 		}
 
 		// A named snapshot a filter excludes is not-found, as on the listing path.
 		if len(parsedFilters) > 0 && !snapshotMatchesFilters(result.Document, parsedFilters) {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return nil, snapshotNotFound(snapshotIDs[i])
 		}
 
 		snapshots = append(snapshots, describedSnapshot(result.Document))
@@ -989,7 +994,7 @@ func (s *SnapshotServiceImpl) requestDelete(ctx context.Context, doc ebsmetadata
 	var current ebsmetadata.Snapshot
 	err := s.writeUnderClaim(ctx, doc.OwnerID, doc.SnapshotID, func(d *ebsmetadata.Snapshot) (bool, error) {
 		if d.Hidden() {
-			return false, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return false, snapshotNotFound(doc.SnapshotID)
 		}
 		current = *d
 		if !deferDelete(*d) {
@@ -1003,7 +1008,7 @@ func (s *SnapshotServiceImpl) requestDelete(ctx context.Context, doc ebsmetadata
 		return false, ebsmetadata.Snapshot{}, err
 	}
 	if current.SnapshotID == "" {
-		return false, ebsmetadata.Snapshot{}, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		return false, ebsmetadata.Snapshot{}, snapshotNotFound(doc.SnapshotID)
 	}
 	return marked, current, nil
 }

@@ -406,7 +406,7 @@ func (c EBSOCIConfig) isZero() bool { return c == EBSOCIConfig{} }
 
 // SupportedEBSProvider reports whether name is a provider a node may run.
 func SupportedEBSProvider(name string) bool {
-	_, ok := ebsProviderServices[name]
+	_, ok := ebsDefaultServices[name]
 	return ok
 }
 
@@ -419,17 +419,18 @@ func (c EBSConfig) ResolvedProvider() string {
 	return c.Provider
 }
 
-// ebsProviderServices maps each EBS provider to the service that serves it.
-var ebsProviderServices = map[string]string{
+// ebsDefaultServices maps each EBS provider to the EBS service its node's
+// default service list names. A qemunbd node keeps the viperblock entry.
+var ebsDefaultServices = map[string]string{
 	EBSProviderViperblockd: "viperblock",
-	EBSProviderQEMUNBD:     "qemunbd",
+	EBSProviderQEMUNBD:     "viperblock",
 	EBSProviderOCIBSD:      "ocibsd",
 }
 
-// ProviderService returns the service that serves the resolved provider, or
-// "" for a provider no node may run.
-func (c EBSConfig) ProviderService() string {
-	return ebsProviderServices[c.ResolvedProvider()]
+// DefaultService returns the EBS service the default service list names for
+// the resolved provider, or "" for a provider no node may run.
+func (c EBSConfig) DefaultService() string {
+	return ebsDefaultServices[c.ResolvedProvider()]
 }
 
 // ResolvedThreads normalizes an unset DefaultThreads to DefaultNBDKitThreads.
@@ -713,17 +714,17 @@ func (cc *ClusterConfig) NodeServices(name string) []string {
 }
 
 // GetServices returns the configured service list, defaulting to AllServices
-// with the viperblock service swapped for the node's EBS provider service.
+// with the viperblock service swapped for the node's default EBS service.
 func (c Config) GetServices() []string {
 	if len(c.Services) > 0 {
 		return c.Services
 	}
-	provider := c.EBS.ProviderService()
-	if provider == "" || provider == "viperblock" {
+	ebs := c.EBS.DefaultService()
+	if ebs == "" || ebs == "viperblock" {
 		return AllServices
 	}
 	services := slices.Clone(AllServices)
-	services[slices.Index(services, "viperblock")] = provider
+	services[slices.Index(services, "viperblock")] = ebs
 	return services
 }
 

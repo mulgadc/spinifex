@@ -379,8 +379,7 @@ func TestGetServicesFollowsEBSProvider(t *testing.T) {
 	assert.Equal(t, []string{"nats", "predastore", "viperblock", "daemon", "awsgw", "vpcd", "ui"}, AllServices, "the default list itself is untouched")
 
 	qemunbd := Config{EBS: EBSConfig{Provider: EBSProviderQEMUNBD}}
-	assert.Equal(t, []string{"nats", "predastore", "qemunbd", "daemon", "awsgw", "vpcd", "ui"}, qemunbd.GetServices())
-	assert.False(t, qemunbd.HasService("viperblock"), "a qemunbd node does not run viperblock")
+	assert.Equal(t, AllServices, qemunbd.GetServices(), "a qemunbd node keeps the default list")
 
 	viperblockd := Config{EBS: EBSConfig{Provider: EBSProviderViperblockd}}
 	assert.Equal(t, AllServices, viperblockd.GetServices())

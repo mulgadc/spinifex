@@ -52,11 +52,11 @@ func parseDailyWindow(field, value string) (dailyWindow, error) {
 	if err != nil {
 		return dailyWindow{}, err
 	}
-	start, err := parseClock(field, from)
+	start, err := parseClock(field, from, from)
 	if err != nil {
 		return dailyWindow{}, err
 	}
-	end, err := parseClock(field, to)
+	end, err := parseClock(field, to, to)
 	if err != nil {
 		return dailyWindow{}, err
 	}
@@ -73,11 +73,11 @@ func parseWeeklyWindow(field, value string) (weeklyWindow, error) {
 	if err != nil {
 		return weeklyWindow{}, err
 	}
-	start, err := parseWeekdayClock(field, from)
+	start, err := parseWeekdayClock(field, value, from)
 	if err != nil {
 		return weeklyWindow{}, err
 	}
-	end, err := parseWeekdayClock(field, to)
+	end, err := parseWeekdayClock(field, value, to)
 	if err != nil {
 		return weeklyWindow{}, err
 	}
@@ -95,18 +95,17 @@ func parseWeeklyWindow(field, value string) (weeklyWindow, error) {
 func cutWindow(field, value string) (string, string, error) {
 	parts := strings.Split(value, "-")
 	if len(parts) != 2 {
-		return "", "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"%s %q is malformed; the form is %s", field, value, windowForm(field))
+		return "", "", malformedWindow(field, value)
 	}
 	return parts[0], parts[1], nil
 }
 
-// Offsets from midnight, from AWS's hh24:mi.
-func parseClock(field, value string) (time.Duration, error) {
+// Offsets from midnight, from AWS's hh24:mi; whole is the full window, which a
+// malformed half is reported as.
+func parseClock(field, whole, value string) (time.Duration, error) {
 	hour, minute, ok := strings.Cut(value, ":")
 	if !ok || !fixedDigits(hour, 2) || !fixedDigits(minute, 2) {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"%s %q is malformed; the form is %s", field, value, windowForm(field))
+		return 0, malformedWindow(field, whole)
 	}
 	hours, _ := strconv.Atoi(hour)
 	minutes, _ := strconv.Atoi(minute)
@@ -118,11 +117,10 @@ func parseClock(field, value string) (time.Duration, error) {
 }
 
 // Offsets from Sunday midnight, from AWS's ddd:hh24:mi.
-func parseWeekdayClock(field, value string) (time.Duration, error) {
+func parseWeekdayClock(field, whole, value string) (time.Duration, error) {
 	day, clock, ok := strings.Cut(value, ":")
 	if !ok {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"%s %q is malformed; the form is %s", field, value, windowForm(field))
+		return 0, malformedWindow(field, whole)
 	}
 	index := strings.Index(weekdayNames, strings.ToLower(day))
 	// Four characters per name, so a match that is not on a name boundary is a
@@ -131,7 +129,7 @@ func parseWeekdayClock(field, value string) (time.Duration, error) {
 		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"%s day %q is not a weekday; use one of %s", field, day, strings.ReplaceAll(weekdayNames, " ", ", "))
 	}
-	offset, err := parseClock(field, clock)
+	offset, err := parseClock(field, whole, clock)
 	if err != nil {
 		return 0, err
 	}
@@ -150,11 +148,14 @@ func fixedDigits(value string, want int) bool {
 	return true
 }
 
-func windowForm(field string) string {
+// A maintenance window answers in AWS's own words, echoing the whole value.
+func malformedWindow(field, value string) error {
 	if strings.Contains(field, "Maintenance") {
-		return "ddd:hh24:mi-ddd:hh24:mi in UTC"
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Invalid maintenance window format: %s. Should be specified as a range ddd:hh24:mi-ddd:hh24:mi (24H Clock UTC). Example: Sun:23:45-Mon:00:15", value)
 	}
-	return "hh24:mi-hh24:mi in UTC"
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"%s %q is malformed; the form is hh24:mi-hh24:mi in UTC", field, value)
 }
 
 // A window that wraps is measured forward through midnight, so an equal start

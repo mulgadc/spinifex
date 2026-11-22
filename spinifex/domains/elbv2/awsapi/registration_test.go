@@ -23,7 +23,7 @@ func TestNewRegistration_RegistersUnderCredentialScopeAndInventoryName(t *testin
 
 	inv := reg.Inventory()["elasticloadbalancingv2"]
 	assert.Equal(t, ActionNames(), inv.Registered)
-	assert.Empty(t, inv.Stubbed)
+	assert.Equal(t, []string{"DescribeListenerAttributes", "ModifyListenerAttributes"}, inv.Stubbed)
 	assert.Empty(t, inv.Unsupported)
 }
 

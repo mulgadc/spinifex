@@ -239,10 +239,13 @@ func ActionNames() []string {
 	return slices.Sorted(maps.Keys(actions))
 }
 
-// OperationInventory classifies the actions the registration serves. Every
-// ELBv2 action is implemented, so none is Stubbed or Unsupported.
+// OperationInventory classifies the actions the registration serves. Listener
+// attributes are not persisted, so their Describe and Modify are Stubbed.
 func OperationInventory() dispatch.Inventory {
-	return dispatch.Inventory{Registered: ActionNames()}
+	return dispatch.Inventory{
+		Registered: ActionNames(),
+		Stubbed:    []string{"DescribeListenerAttributes", "ModifyListenerAttributes"},
+	}
 }
 
 // dispatch parses, scopes and authorizes the request from one parse of its

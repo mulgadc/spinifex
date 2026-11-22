@@ -15,11 +15,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mulgadc/predastore/endpointproxy"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
@@ -55,6 +57,7 @@ type endpointViewSink interface {
 	Publish(v guestmetadata.EndpointView) int
 	Invalidate()
 	Sessions() int
+	PolicySessions() int
 }
 
 var _ endpointViewSink = (*guestmetadata.EndpointProxy)(nil)
@@ -69,9 +72,10 @@ type endpointLoop struct {
 	mgmtIP  func() string
 	load    func(ctx context.Context) (map[string]projection.GatewayEndpoint, error)
 	proxy   endpointViewSink
-	// gate checks that a gate accepts the proxy's mutual TLS: this node's own
-	// when ownGate, else a peer's, since this node's proxy dials only peers.
-	gate    func(ctx context.Context, addr netip.Addr) error
+	// gate checks that a gate accepts the proxy's mutual TLS and a header at
+	// a contract version: this node's own when ownGate, else a peer's, since
+	// this node's proxy dials only peers.
+	gate    func(ctx context.Context, addr netip.Addr, version uint8) error
 	ownGate bool
 	// dialErr is why the proxy cannot present this node's certificate; while
 	// set, the node is never ready, whether or not it runs a gate.
@@ -81,11 +85,13 @@ type endpointLoop struct {
 	// grant is the prefix-list grant; nil on a vpcd that serves none.
 	grant *prefixListGrant
 
-	probePassed   atomic.Bool
-	gateReady     atomic.Bool
-	revision      atomic.Uint64 // the level revision read before the last published view
-	viewEndpoints atomic.Int64  // endpoints in the view the proxy admits by
-	probeFailed   atomic.Bool   // the last capture probe failed, so the next pass logs only a change
+	probePassed    atomic.Bool
+	gateReady      atomic.Bool
+	revision       atomic.Uint64 // the level revision read before the last published view
+	viewEndpoints  atomic.Int64  // endpoints in the view the proxy admits by
+	probeFailed    atomic.Bool   // the last capture probe failed, so the next pass logs only a change
+	gateContract   atomic.Uint32 // the highest contract version the gate accepted
+	contractFailed atomic.Bool   // the last version 2 check failed, so the next pass logs only a change
 }
 
 // reconcile is one node-local pass. A failed projection read withdraws the
@@ -140,7 +146,7 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 }
 
 func (l *endpointLoop) revisit() time.Duration {
-	if l.probePassed.Load() && l.gateReady.Load() {
+	if l.probePassed.Load() && l.gateReady.Load() && l.gateContract.Load() >= endpointproxy.ContractVersion2 {
 		return 0
 	}
 	return endpointProbeRetry
@@ -161,10 +167,11 @@ func (l *endpointLoop) probeCapture(ctx context.Context) {
 	slog.InfoContext(ctx, "vpcd: gateway endpoint capture probe passed")
 }
 
-// probeGate checks a gate endpoint listener until it accepts the proxy once:
-// this node's own on a node running Predastore, else a peer's.
+// probeGate checks a gate endpoint listener until it accepts the proxy once,
+// then until it accepts contract version 2 once: this node's own on a node
+// running Predastore, else a peer's.
 func (l *endpointLoop) probeGate(ctx context.Context, mgmt string) {
-	if l.gateReady.Load() || l.dialErr != nil {
+	if l.gateContract.Load() >= endpointproxy.ContractVersion2 || l.dialErr != nil {
 		return
 	}
 	addr, ok := l.gateAddr(mgmt)
@@ -172,12 +179,23 @@ func (l *endpointLoop) probeGate(ctx context.Context, mgmt string) {
 		slog.WarnContext(ctx, "vpcd: no gate address to check the endpoint listener on", "node", l.cluster.Node, "own_gate", l.ownGate)
 		return
 	}
-	if err := l.gate(ctx, addr); err != nil {
-		slog.WarnContext(ctx, "vpcd: gate endpoint listener not ready", "addr", addr.String(), "own_gate", l.ownGate, "err", err)
+	if !l.gateReady.Load() {
+		if err := l.gate(ctx, addr, endpointproxy.ContractVersion1); err != nil {
+			slog.WarnContext(ctx, "vpcd: gate endpoint listener not ready", "addr", addr.String(), "own_gate", l.ownGate, "err", err)
+			return
+		}
+		l.gateContract.Store(endpointproxy.ContractVersion1)
+		l.gateReady.Store(true)
+		slog.InfoContext(ctx, "vpcd: gate endpoint listener accepted the proxy", "addr", addr.String(), "own_gate", l.ownGate)
+	}
+	if err := l.gate(ctx, addr, endpointproxy.ContractVersion2); err != nil {
+		if !l.contractFailed.Swap(true) {
+			slog.InfoContext(ctx, "vpcd: gate does not enforce endpoint policies yet", "addr", addr.String(), "own_gate", l.ownGate, "err", err)
+		}
 		return
 	}
-	l.gateReady.Store(true)
-	slog.InfoContext(ctx, "vpcd: gate endpoint listener accepted the proxy", "addr", addr.String(), "own_gate", l.ownGate)
+	l.gateContract.Store(endpointproxy.ContractVersion2)
+	slog.InfoContext(ctx, "vpcd: gate endpoint listener enforces endpoint policies", "addr", addr.String(), "own_gate", l.ownGate)
 }
 
 // gateAddr is the address probeGate checks: this node's own service address,
@@ -217,6 +235,9 @@ func (l *endpointLoop) status(ctx context.Context, node string, countACLs bool) 
 		ProbePassed: l.probePassed.Load(),
 		GateReady:   l.gateReady.Load(),
 		Build:       featurelevel.Build,
+		// Read after Sessions, so a session counted toward neither is closed.
+		PolicySessions: l.proxy.PolicySessions(),
+		GateContract:   int(l.gateContract.Load()),
 	}
 	if l.grant == nil {
 		return st, nil
@@ -457,26 +478,55 @@ func unavailableDialer(cause error) guestmetadata.EndpointDialFunc {
 }
 
 // gateAccepts reports whether the gate at addr completes a session with the
-// proxy's certificate. TLS 1.3 finishes the client's handshake before the
-// server has checked that certificate, so a refusal arrives on the first read.
-func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, addr netip.Addr) error {
-	return func(ctx context.Context, addr netip.Addr) error {
+// proxy's certificate and, from version 2, a header at that version. TLS 1.3
+// finishes the client's handshake before the server has checked that
+// certificate, so a refusal of either arrives on the first read.
+func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, addr netip.Addr, version uint8) error {
+	return func(ctx context.Context, addr netip.Addr, version uint8) error {
+		var hdr []byte
+		if version >= endpointproxy.ContractVersion2 {
+			h := gateProbeHeader(addr)
+			h.Version = version
+			var err error
+			if hdr, err = h.Marshal(); err != nil {
+				return err
+			}
+		}
 		c, err := dial(ctx, addr)
 		if err != nil {
 			return err
 		}
 		defer c.Close()
-		if err := c.SetReadDeadline(time.Now().Add(gateVerdictWait)); err != nil {
+		if err := c.SetDeadline(time.Now().Add(gateVerdictWait)); err != nil {
 			return err
+		}
+		if len(hdr) > 0 {
+			if _, err := c.Write(hdr); err != nil {
+				return fmt.Errorf("write probe header: %w", err)
+			}
 		}
 		_, err = c.Read(make([]byte, 1))
 		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-			return nil // waiting for the PROXY header, so the certificate was accepted
+			return nil // waiting for what follows, so the gate accepted all it was sent
 		}
 		if err == nil {
-			return errors.New("gate sent data before the proxy's header")
+			return errors.New("gate sent data before the guest's")
 		}
 		return fmt.Errorf("gate refused the session: %w", err)
+	}
+}
+
+// gateProbeHeader is a well-formed version 2 header naming no real endpoint,
+// carrying the default policy, which every gate at that version enforces.
+func gateProbeHeader(addr netip.Addr) endpointproxy.Header {
+	return endpointproxy.Header{
+		Source:           netip.MustParseAddrPort("192.0.2.1:1"),
+		Destination:      netip.AddrPortFrom(addr, 1),
+		VpceID:           "vpce-00000000",
+		VpcID:            "vpc-00000000",
+		AccountID:        "000000000000",
+		PolicyGeneration: 1,
+		Policy:           ec2vpcendpoint.DefaultPolicy,
 	}
 }
 
@@ -510,11 +560,13 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		Egress: securityGroupEgress(js, grant.lists()),
 		Dial:   dial,
 		// Twice the resync, so only a loop that has stopped passing stops admitting.
-		MaxAge: 2 * reconciler.DefaultResync,
+		MaxAge:   2 * reconciler.DefaultResync,
+		Policies: grant.level.Granted,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct endpoint proxy: %w", err)
 	}
+	grant.level.withdraw = func() { proxy.WithdrawPolicies() }
 	imds.EnableEndpointProxy(proxy)
 
 	runner := host.NewExecRunner()

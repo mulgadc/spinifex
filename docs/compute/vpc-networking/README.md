@@ -190,10 +190,26 @@ The proxy admits it only if the destination is an entry, the subnet's endpoint i
 It then relays the connection over mutual TLS to the gate's endpoint listener on port 8474 on the node the guest dialled, and every refusal resets the connection.
 Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
 The service is offered once every node reports feature level 2.
-A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate: its own on a node running Predastore, otherwise a peer's.
+A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate and a connection carrying an endpoint policy: its own on a node running Predastore, otherwise a peer's.
 Its vpcd must also run this release, and its own prefix-list entry must be its advertised address rather than its management bridge address.
 Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
 `spx admin cluster status` shows each node's level.
+
+### Endpoint Policies
+
+`CreateVpcEndpoint` and `ModifyVpcEndpoint` accept a custom `PolicyDocument` of up to 20,480 characters, and `ResetPolicy` restores the default, which allows everything.
+On every request through the endpoint, including anonymous reads of a public object, the gate evaluates the endpoint policy as well as the caller's identity policy.
+The request is allowed only if both allow it, and an explicit deny in either denies it.
+In a `DeleteObjects` batch each key is decided on its own, and a denied key is reported in `Errors`.
+
+A statement's `Principal` is `"*"`, `{"AWS": "*"}`, or an account by ID or root ARN.
+As on AWS, an account principal names that account's root user only, and no Spinifex credential is an account's root user, so such a statement matches no caller.
+Name users and roles with the `aws:PrincipalArn` condition key; a role session matches its role's ARN.
+A policy naming a user, role, service or federated principal is refused with `InvalidPolicyDocument`, which AWS stores instead.
+So is a condition the gate could not enforce as written, such as an operand that does not parse or an unsupported key.
+
+After a policy change, the endpoint's open connections close within seconds, on vpcd's next pass, and at most after its 5-minute resync.
+Rolling back to level 1 needs every endpoint deleted, so no policy outlives it.
 
 ### Security Groups Naming the S3 Prefix List
 

@@ -114,9 +114,6 @@ func TestCreate_Refusals(t *testing.T) {
 		{"policy too long", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service),
 			PolicyDocument: aws.String(`{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*","Sid":"` + strings.Repeat("x", maxPolicyLength) + `"}]}`)},
 			awserrors.ErrorInvalidPolicyDocument, "Please provide a valid VPC Endpoint policy"},
-		{"custom policy", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service),
-			PolicyDocument: aws.String(`{"Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"*"}]}`)},
-			awserrors.ErrorInvalidParameterValue, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,9 +257,6 @@ func TestModify_Refusals(t *testing.T) {
 			awserrors.ErrorInvalidParameter, "Private DNS is only supported for Interface type VPC Endpoint."},
 		{"policy not JSON", ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String("{nope")},
 			awserrors.ErrorInvalidPolicyDocument, "Please provide a valid VPC Endpoint policy"},
-		{"custom policy", ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id),
-			PolicyDocument: aws.String(`{"Statement":[{"Effect":"Deny","Principal":"*","Action":"*","Resource":"*"}]}`)},
-			awserrors.ErrorInvalidParameterValue, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -497,4 +491,93 @@ func TestCountLive(t *testing.T) {
 
 	f.clock.t = f.clock.t.Add(claimGrace)
 	assert.Equal(t, 1, count(), "a pending record past the grace is an abandoned create")
+}
+
+// readOnly allows reads of one bucket, as customers scope a gateway endpoint.
+const readOnly = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*",` +
+	`"Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::reports","arn:aws:s3:::reports/*"]}]}`
+
+// Once every node enforces endpoint policies, a custom policy is stored as
+// written and described back, and a reset returns the default.
+func TestPolicy_CustomPolicyIsStoredOnceEnforced(t *testing.T) {
+	f := newFixture(t)
+	policies := f.gate
+
+	out, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
+		VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), PolicyDocument: aws.String(readOnly),
+	}, testAccount)
+	require.NoError(t, err)
+	id := aws.StringValue(out.VpcEndpoint.VpcEndpointId)
+	assert.Equal(t, readOnly, aws.StringValue(out.VpcEndpoint.PolicyDocument))
+	assert.Equal(t, readOnly, aws.StringValue(f.describe(t, id).PolicyDocument))
+
+	deny := `{"Statement":{"Effect":"Deny","Principal":"*","Action":"s3:*","Resource":"*"}}`
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(deny)}))
+	assert.Equal(t, deny, aws.StringValue(f.describe(t, id).PolicyDocument))
+
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), ResetPolicy: aws.Bool(true)}))
+	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
+	assert.Zero(t, policies.held, "admission not released")
+}
+
+// A custom policy write holds the policy admission until the policy is stored,
+// so a rollback waiting on in-flight work cannot pass while one is landing.
+func TestPolicy_WriteHoldsAdmissionUntilStored(t *testing.T) {
+	f := newFixture(t)
+	policies := f.gate
+	id := f.create(t, rtbA1)
+	var atRelease string
+	policies.onDone = func() { atRelease = aws.StringValue(f.describe(t, id).PolicyDocument) }
+
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(readOnly)}))
+	assert.Equal(t, readOnly, atRelease, "admission released before the policy was stored")
+	assert.Equal(t, 1, policies.maxHeld)
+
+	// The default needs no admission: it is what every node already enforces.
+	policies.closed = true
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(DefaultPolicy)}))
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), ResetPolicy: aws.Bool(true)}))
+	assert.Zero(t, policies.held)
+}
+
+// While a rollback below the level is written, a custom policy is refused on
+// modify and nothing is stored; a create is refused before it as for any.
+func TestPolicy_RefusedUntilEveryNodeEnforces(t *testing.T) {
+	f := newFixture(t)
+	id := f.create(t, rtbA1)
+	policies := f.gate
+	policies.closed = true
+
+	_, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
+		VpcId: aws.String(vpcB), ServiceName: aws.String(s3Service), PolicyDocument: aws.String(readOnly),
+	}, testAccount)
+	requireCode(t, err, awserrors.ErrorInvalidServiceName, "")
+	requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(readOnly)}),
+		awserrors.ErrorInvalidParameterValue, "")
+	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
+
+	policies.closed, policies.err = false, errors.New("kv down")
+	requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(readOnly)}),
+		awserrors.ErrorServerInternal, "")
+	assert.Zero(t, policies.held, "a refusal still releases admission")
+	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
+}
+
+// A policy the S3 gate would not enforce as written is refused at write, so no
+// stored policy silently fails closed there.
+func TestPolicy_RefusesWhatTheGateWouldNotEnforce(t *testing.T) {
+	f := newFixture(t)
+	id := f.create(t, rtbA1)
+	for name, doc := range map[string]string{
+		"named user principal": `{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/alice"},"Action":"*","Resource":"*"}]}`,
+		"unreadable operand": `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"},` +
+			`{"Effect":"Deny","Principal":"*","Action":"*","Resource":"*","Condition":{"NotIpAddress":{"aws:VpcSourceIp":"nope"}}}]}`,
+		"unsupported condition key": `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*",` +
+			`"Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}`,
+		"effect": `{"Statement":[{"Effect":"Maybe","Principal":"*","Action":"*","Resource":"*"}]}`,
+	} {
+		requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(doc)}),
+			awserrors.ErrorInvalidPolicyDocument, "")
+		assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument), name)
+	}
 }

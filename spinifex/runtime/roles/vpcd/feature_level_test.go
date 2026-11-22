@@ -171,3 +171,35 @@ func TestLevelWatch_RunStopsVpcdWhenTheLevelRisesAboveItsBuild(t *testing.T) {
 		t.Fatal("the withdrawal wakes the reconcile pass")
 	}
 }
+
+// Withdrawing level 2 closes the sessions carrying a policy before the
+// revision that withdrew it is reported, once, and nothing else does.
+func TestLevelWatch_WithdrawingTheGrantClosesPolicySessionsFirst(t *testing.T) {
+	src := &fixedRecord{rec: Record{Level: 1}, rev: 1}
+	var withdrawnAt []uint64
+	w := &levelWatch{read: src.read}
+	w.withdraw = func() { withdrawnAt = append(withdrawnAt, w.Revision()) }
+
+	require.NoError(t, w.observe(t.Context()))
+	src.rec, src.rev = Record{Level: 2}, 2
+	require.NoError(t, w.observe(t.Context()))
+	src.err = errors.New("leader unreachable")
+	require.Error(t, w.observe(t.Context()))
+	src.err = nil
+	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 2}}, 3
+	require.NoError(t, w.observe(t.Context()))
+	assert.Empty(t, withdrawnAt, "nothing withdrew the grant")
+
+	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 1}}, 4
+	require.NoError(t, w.observe(t.Context()))
+	assert.Equal(t, []uint64{3}, withdrawnAt, "closed before revision 4 is reported")
+	src.rev = 5
+	require.NoError(t, w.observe(t.Context()))
+	assert.Len(t, withdrawnAt, 1, "withdrawn once")
+
+	src.rec, src.rev = Record{Level: 2}, 6
+	require.NoError(t, w.observe(t.Context()))
+	src.rec, src.rev = Record{Level: featurelevel.Build + 1}, 7
+	require.Error(t, w.observe(t.Context()))
+	assert.Len(t, withdrawnAt, 2, "a level above this build withdraws it too")
+}

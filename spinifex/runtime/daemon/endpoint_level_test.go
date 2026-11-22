@@ -14,8 +14,8 @@ import (
 )
 
 // The node reports level 2 only while its vpcd can capture and names that
-// build, its gate serves endpoint proxies, and its own prefix-list entry is
-// the one every node derives.
+// build, its gate serves endpoint proxies and enforces their policies, and its
+// own prefix-list entry is the one every node derives.
 func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	below := featurelevel.GatewayEndpoints - 1
 	advertised := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{"n1": {AdvertiseIP: "10.0.0.2"}}}
@@ -28,7 +28,7 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	peerOnly := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
 		"n1": {}, "n2": {AdvertiseIP: "10.0.0.3"},
 	}}
-	ready := projection.EndpointProxyStatus{Node: "n1", ProbePassed: true, GateReady: true, Build: featurelevel.Build}
+	ready := projection.EndpointProxyStatus{Node: "n1", ProbePassed: true, GateReady: true, GateContract: 2, Build: featurelevel.Build}
 	with := func(f func(*projection.EndpointProxyStatus)) *projection.EndpointProxyStatus {
 		st := ready
 		f(&st)
@@ -44,6 +44,8 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 		{"ready", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Build},
 		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"no gate listener", with(func(s *projection.EndpointProxyStatus) { s.GateReady = false }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"gate without endpoint policies", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 1 }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"vpcd omits the gate contract", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 0 }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below},

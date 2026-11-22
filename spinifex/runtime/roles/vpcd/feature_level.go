@@ -16,10 +16,14 @@ import (
 )
 
 // levelWatch is vpcd's view of the cluster feature level. It refuses a level
-// above this build, as the daemon does, and reports whether security-group
-// rules naming a prefix list may grant: only while level 2 is active.
+// above this build, as the daemon does, and reports whether level 2 is active:
+// whether security-group rules naming a prefix list may grant, and whether a
+// proxied session may carry its endpoint's policy.
 type levelWatch struct {
 	read func(ctx context.Context) (featurelevel.Record, uint64, error)
+	// withdraw, set before run, closes the sessions carrying a policy once the
+	// grant is withdrawn, before the revision that withdrew it is reported.
+	withdraw func()
 
 	granted  atomic.Bool
 	revision atomic.Uint64 // the record revision granted was last set from
@@ -37,8 +41,8 @@ func (e *LevelAboveBuildError) Error() string {
 		e.Recorded, featurelevel.Build)
 }
 
-// Granted reports whether prefix-list peers may grant. It is false until the
-// first successful read.
+// Granted reports whether level 2 is active. It is false until the first
+// successful read.
 func (w *levelWatch) Granted() bool { return w.granted.Load() }
 
 // Revision is the record revision Granted reflects.
@@ -63,9 +67,13 @@ func (w *levelWatch) observe(ctx context.Context) error {
 }
 
 func (w *levelWatch) grant(granted bool) {
-	if w.granted.Swap(granted) != granted {
-		w.wake()
+	if w.granted.Swap(granted) == granted {
+		return
 	}
+	if !granted && w.withdraw != nil {
+		w.withdraw()
+	}
+	w.wake()
 }
 
 // wake asks for a reconcile pass without blocking.

@@ -69,6 +69,23 @@ func (s *ServiceImpl) SetActivation(admit Admission, offered func(context.Contex
 	s.active, s.offered = admit, offered
 }
 
+// admitPolicy holds the service's admission for a write storing doc, since
+// every node's gate enforces a policy only once it can carry endpoint traffic;
+// the default needs none.
+func (s *ServiceImpl) admitPolicy(ctx context.Context, op, doc string) (done func(), err error) {
+	if doc == "" {
+		return func() {}, nil
+	}
+	done, ok, err := s.admit(ctx)
+	if err != nil {
+		return done, internalError(ctx, op, err)
+	}
+	if !ok {
+		return done, customPoliciesUnsupported()
+	}
+	return done, nil
+}
+
 // serviceActive answers a read: whether the service is offered right now.
 func (s *ServiceImpl) serviceActive(ctx context.Context) bool {
 	if s.offered == nil {
@@ -283,8 +300,9 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 	} else if held != "" {
 		return nil, s.routeExists(held)
 	}
+	var policy string
 	if input.PolicyDocument != nil {
-		if _, err := checkPolicy(aws.StringValue(input.PolicyDocument)); err != nil {
+		if policy, err = checkPolicy(aws.StringValue(input.PolicyDocument)); err != nil {
 			return nil, err
 		}
 	}
@@ -301,6 +319,7 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 		ServiceName:     s.serviceName(),
 		Type:            TypeGateway,
 		RouteTableIds:   tables,
+		PolicyDocument:  policy,
 		DnsRecordIpType: dnsType,
 		Generation:      1,
 		Tags:            awstags.Extract(input.TagSpecifications, ec2.ResourceTypeVpcEndpoint),
@@ -367,6 +386,11 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "Please specify either a reset flag or a policy document.")
 	case input.PolicyDocument != nil:
 		doc, err := checkPolicy(aws.StringValue(input.PolicyDocument))
+		if err != nil {
+			return nil, err
+		}
+		policyDone, err := s.admitPolicy(ctx, "ModifyVpcEndpoint", doc)
+		defer policyDone()
 		if err != nil {
 			return nil, err
 		}

@@ -28,9 +28,9 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.25.1-0.20261118003950-05fa4c716542
+	github.com/mulgadc/bluebottle v1.25.1-0.20261119052434-6261addd31b9
 	github.com/mulgadc/northstar v1.25.0
-	github.com/mulgadc/predastore v1.25.1-0.20261118011524-52d20d2d1793
+	github.com/mulgadc/predastore v1.25.1-0.20261119055747-c509b3ef5471
 	github.com/mulgadc/viperblock v1.25.1-0.20261121235246-1b6c57c4f92c
 	github.com/nats-io/nats-server/v2 v2.15.3
 	github.com/nats-io/nats.go v1.55.0

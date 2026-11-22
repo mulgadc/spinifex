@@ -50,6 +50,9 @@ type EndpointProxyConfig struct {
 	// MaxAge bounds how long a published view admits connections without being
 	// replaced, so a reconcile loop that stops publishing stops admitting.
 	MaxAge time.Duration
+	// Policies reports whether a new session may carry its endpoint's policy at
+	// contract version 2. nil never does.
+	Policies func() bool
 }
 
 // endpointView is a published view indexed for the per-connection checks.
@@ -59,24 +62,29 @@ type endpointView struct {
 	at        time.Time
 }
 
-// effective reports whether the view still admits a session to dst through vpceID.
-func (v *endpointView) effective(subnetID, vpceID string, dst netip.AddrPort) bool {
+// effective reports whether the view still admits s: its destination is an
+// entry, and its subnet routes to its endpoint under the policy it carries.
+func (v *endpointView) effective(s *endpointSession) bool {
 	if v == nil {
 		return false
 	}
-	if _, ok := v.entries[dst]; !ok {
+	if _, ok := v.entries[s.dst]; !ok {
 		return false
 	}
-	return v.endpoints[subnetID].ID == vpceID
+	ep := v.endpoints[s.subnetID]
+	return ep.ID == s.ep.ID && ep.Policy == s.ep.Policy
 }
 
 // endpointSession is one proxied connection, tracked so a pass can close it once
 // its endpoint stops being effective for its subnet.
 type endpointSession struct {
-	eniID, subnetID, vpceID string
-	dst                     netip.AddrPort
-	guest, upstream         net.Conn
-	once                    sync.Once
+	eniID, subnetID string
+	ep              projection.GatewayEndpoint
+	src, dst        netip.AddrPort
+	// contract is the version its header was written at.
+	contract        uint8
+	guest, upstream net.Conn
+	once            sync.Once
 }
 
 // reset closes both halves, the guest's with an RST.
@@ -103,8 +111,10 @@ type EndpointProxy struct {
 	// admitFailures limits warnings for admissions a failed read left undecided.
 	admitFailures warnLimiter
 	handlers      int // connections being admitted, dialled, relayed or closed
-	closed        bool
-	wg            sync.WaitGroup
+	// policyHandlers counts handlers that chose, or may yet choose, version 2.
+	policyHandlers int
+	closed         bool
+	wg             sync.WaitGroup
 }
 
 // NewEndpointProxy validates cfg. Nothing is served until the IMDS service is
@@ -143,7 +153,7 @@ func (p *EndpointProxy) Publish(v EndpointView) int {
 	p.view = view
 	var stale []*endpointSession
 	for s := range p.sessions {
-		if !view.effective(s.subnetID, s.vpceID, s.dst) {
+		if !view.effective(s) || !p.contractHolds(s) {
 			stale = append(stale, s)
 			delete(p.sessions, s)
 		}
@@ -156,6 +166,46 @@ func (p *EndpointProxy) Publish(v EndpointView) int {
 		slog.Info("IMDS: closed endpoint sessions no longer effective", "sessions", len(stale))
 	}
 	return len(stale)
+}
+
+// policiesActive reports whether a session may carry its policy.
+func (p *EndpointProxy) policiesActive() bool {
+	return p.cfg.Policies != nil && p.cfg.Policies()
+}
+
+// contractHolds reports whether s's version may still be served: a version 2
+// session only while the cluster still enforces endpoint policies.
+func (p *EndpointProxy) contractHolds(s *endpointSession) bool {
+	return s.contract < endpointproxy.ContractVersion2 || p.policiesActive()
+}
+
+// WithdrawPolicies resets every version 2 session, once the cluster no longer
+// enforces endpoint policies: an older gate would refuse them.
+func (p *EndpointProxy) WithdrawPolicies() int {
+	p.mu.Lock()
+	var gone []*endpointSession
+	for s := range p.sessions {
+		if !p.contractHolds(s) {
+			gone = append(gone, s)
+			delete(p.sessions, s)
+		}
+	}
+	p.mu.Unlock()
+	for _, s := range gone {
+		s.reset()
+	}
+	if len(gone) > 0 {
+		slog.Info("IMDS: closed endpoint sessions carrying a policy the cluster no longer enforces", "sessions", len(gone))
+	}
+	return len(gone)
+}
+
+// PolicySessions is the number of handlers that chose version 2, or are about
+// to choose, until both their sockets close.
+func (p *EndpointProxy) PolicySessions() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.policyHandlers
 }
 
 // Invalidate withdraws the view, so no new connection is admitted until the
@@ -211,7 +261,7 @@ func (p *EndpointProxy) untrack() {
 func (p *EndpointProxy) register(s *endpointSession) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || !p.view.effective(s.subnetID, s.vpceID, s.dst) {
+	if p.closed || !p.view.effective(s) || !p.contractHolds(s) {
 		return false
 	}
 	p.sessions[s] = struct{}{}
@@ -287,7 +337,13 @@ func (p *EndpointProxy) handle(ctx context.Context, guest net.Conn, pinned *eniF
 	admitCtx, cancel := context.WithTimeout(ctx, endpointAdmitTimeout)
 	defer cancel()
 
-	s, header, err := p.admit(admitCtx, guest, pinned)
+	s, err := p.admit(admitCtx, guest, pinned)
+	var header []byte
+	if err == nil {
+		var release func()
+		header, release, err = p.header(s)
+		defer release()
+	}
 	if err != nil {
 		if errors.Is(err, errEndpointRefused) {
 			slog.DebugContext(ctx, "IMDS: endpoint connection refused", "eni_id", pinned.eniID, "err", err)
@@ -352,52 +408,88 @@ func (w *warnLimiter) allow(now time.Time) (int, bool) {
 	return n, true
 }
 
+// header picks s's contract version and encodes its header. A handler is
+// counted toward version 2 before the level is read, so a rollback that reads
+// none counted cannot be overtaken by one that read the level and paused. The
+// caller holds release until both sockets close.
+func (p *EndpointProxy) header(s *endpointSession) ([]byte, func(), error) {
+	release := func() {}
+	s.contract = endpointproxy.ContractVersion1
+	if p.cfg.Policies != nil {
+		p.mu.Lock()
+		p.policyHandlers++
+		p.mu.Unlock()
+		var once sync.Once
+		release = func() {
+			once.Do(func() {
+				p.mu.Lock()
+				p.policyHandlers--
+				p.mu.Unlock()
+			})
+		}
+		if p.cfg.Policies() {
+			s.contract = endpointproxy.ContractVersion2
+		} else {
+			release()
+		}
+	}
+	h := endpointproxy.Header{
+		Version: s.contract, Source: s.src, Destination: s.dst,
+		VpceID: s.ep.ID, VpcID: s.ep.VpcID, AccountID: s.ep.AccountID,
+	}
+	switch {
+	case s.contract == endpointproxy.ContractVersion2:
+		if s.ep.Generation <= 0 {
+			return nil, release, fmt.Errorf("endpoint %s has no policy generation", s.ep.ID)
+		}
+		h.PolicyGeneration, h.Policy = uint64(s.ep.Generation), s.ep.PolicyDocument()
+	case s.ep.Policy != "":
+		// Version 1 carries no policy, so the gate would allow what it denies.
+		return nil, release, fmt.Errorf("%w: endpoint %s holds a custom policy the cluster does not enforce", errEndpointRefused, s.ep.ID)
+	}
+	b, err := h.Marshal()
+	return b, release, err
+}
+
 // admit runs the checks a captured connection must pass before it is dialled:
 // the destination is a current entry, the ENI's subnet routes to an endpoint,
 // and the ENI's security groups allow the egress.
-func (p *EndpointProxy) admit(ctx context.Context, guest net.Conn, pinned *eniFacts) (*endpointSession, []byte, error) {
+func (p *EndpointProxy) admit(ctx context.Context, guest net.Conn, pinned *eniFacts) (*endpointSession, error) {
 	src, dst, err := p.connAddrs(guest)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	view := p.currentView()
 	if view == nil {
-		return nil, nil, errors.New("no current endpoint view")
+		return nil, errors.New("no current endpoint view")
 	}
 	if _, ok := view.entries[dst]; !ok {
-		return nil, nil, fmt.Errorf("%w: destination %s is not a prefix-list entry", errEndpointRefused, dst)
+		return nil, fmt.Errorf("%w: destination %s is not a prefix-list entry", errEndpointRefused, dst)
 	}
 	eni, err := p.refresh(ctx, pinned)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read eni: %w", err)
+		return nil, fmt.Errorf("read eni: %w", err)
 	}
 	if eni == nil {
-		return nil, nil, fmt.Errorf("%w: eni record gone", errEndpointRefused)
+		return nil, fmt.Errorf("%w: eni record gone", errEndpointRefused)
 	}
 	// The demux matches on the tap, not the source, so a forged source would
 	// otherwise reach the gate as aws:VpcSourceIp.
 	if ip, perr := netip.ParseAddr(eni.privateIP); perr != nil || ip != src.Addr() {
-		return nil, nil, fmt.Errorf("%w: source %s is not the interface's address", errEndpointRefused, src.Addr())
+		return nil, fmt.Errorf("%w: source %s is not the interface's address", errEndpointRefused, src.Addr())
 	}
 	ep, ok := view.endpoints[eni.subnetID]
 	if !ok || ep.VpcID != eni.vpcID {
-		return nil, nil, fmt.Errorf("%w: subnet %s routes to no gateway endpoint", errEndpointRefused, eni.subnetID)
+		return nil, fmt.Errorf("%w: subnet %s routes to no gateway endpoint", errEndpointRefused, eni.subnetID)
 	}
 	allowed, err := p.cfg.Egress(ctx, eni.accountID, eni.securityGroupIDs, dst)
 	if err != nil {
-		return nil, nil, fmt.Errorf("evaluate security groups: %w", err)
+		return nil, fmt.Errorf("evaluate security groups: %w", err)
 	}
 	if !allowed {
-		return nil, nil, fmt.Errorf("%w: security groups deny egress to %s", errEndpointRefused, dst)
+		return nil, fmt.Errorf("%w: security groups deny egress to %s", errEndpointRefused, dst)
 	}
-	header, err := endpointproxy.Header{
-		Version: endpointproxy.ContractVersion1, Source: src, Destination: dst,
-		VpceID: ep.ID, VpcID: ep.VpcID, AccountID: ep.AccountID,
-	}.Marshal()
-	if err != nil {
-		return nil, nil, err
-	}
-	return &endpointSession{eniID: pinned.eniID, subnetID: eni.subnetID, vpceID: ep.ID, dst: dst, guest: guest}, header, nil
+	return &endpointSession{eniID: pinned.eniID, subnetID: eni.subnetID, ep: ep, src: src, dst: dst, guest: guest}, nil
 }
 
 // splice copies both ways, passing a clean end of either stream on as a

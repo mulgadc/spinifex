@@ -250,7 +250,7 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 		return "", nil
 	case StateStarting:
 		if out.Endpoint.Parked() {
-			// The launch stopped waiting; nothing will become ready on its own.
+			// The launch stopped waiting; only reaper recovery can promote it.
 			return "", nil
 		}
 		// A launch is already in flight, so asking for another changes nothing.

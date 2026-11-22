@@ -125,9 +125,9 @@ func (r *Reaper) IsLeader() bool {
 	return r.lease.Held()
 }
 
-// sweepOnce scrapes every READY endpoint once and acts on what it saw, while
-// the acquisition lost belongs to holds. One endpoint's failure does not stop
-// the pass: the others still need deciding.
+// sweepOnce scrapes every READY endpoint, acts on what it saw, then re-probes
+// parked launches in every account, while the acquisition lost belongs to
+// holds. One endpoint's failure does not stop the pass.
 func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
 	recs, err := r.svc.store.list(ctx, awsidentifiers.GlobalAccountID)
 	if err != nil {
@@ -146,6 +146,11 @@ func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
 		}
 		if err := r.sweepEndpoint(ctx, rec, lost); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", rec.ModelID, err))
+		}
+	}
+	if leading(lost) {
+		if err := r.recoverParked(ctx, lost); err != nil {
+			failures = append(failures, fmt.Errorf("parked recovery: %w", err))
 		}
 	}
 	return errors.Join(failures...)

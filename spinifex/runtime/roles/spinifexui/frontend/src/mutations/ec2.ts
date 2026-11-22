@@ -30,6 +30,7 @@ import {
   CreateSubnetCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
+  CreateVpcEndpointCommand,
   CreateVpcPeeringConnectionCommand,
   DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
@@ -44,6 +45,7 @@ import {
   DeleteSubnetCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DeleteVpcEndpointsCommand,
   DeleteVpcPeeringConnectionCommand,
   DetachInternetGatewayCommand,
   DisassociateAddressCommand,
@@ -56,6 +58,7 @@ import {
   ModifyInstanceAttributeCommand,
   ModifyLaunchTemplateCommand,
   ModifySubnetAttributeCommand,
+  ModifyVpcEndpointCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
   RegisterImageCommand,
@@ -1521,6 +1524,124 @@ export function useDeleteVpcPeeringConnection() {
     },
     onSuccess: () => {
       invalidatePeering(queryClient)
+    },
+  })
+}
+
+// An endpoint's routes are derived from it, so routes and the map refresh too.
+function invalidateEndpoints(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "vpcEndpoints"] })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+  void queryClient.invalidateQueries({ queryKey: ["topology"] })
+}
+
+export function useCreateVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcId: string
+      serviceName: string
+      routeTableIds: string[]
+      // Left out for the default full-access policy.
+      policyDocument?: string
+      name?: string
+    }) => {
+      const command = new CreateVpcEndpointCommand({
+        VpcEndpointType: "Gateway",
+        VpcId: params.vpcId,
+        ServiceName: params.serviceName,
+        RouteTableIds:
+          params.routeTableIds.length > 0 ? params.routeTableIds : undefined,
+        PolicyDocument: params.policyDocument,
+        TagSpecifications: buildTagSpec(
+          ResourceType.vpc_endpoint,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+export function useModifyVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcEndpointId: string
+      addRouteTableIds?: string[]
+      removeRouteTableIds?: string[]
+      policyDocument?: string
+      resetPolicy?: boolean
+    }) => {
+      const command = new ModifyVpcEndpointCommand({
+        VpcEndpointId: params.vpcEndpointId,
+        AddRouteTableIds: params.addRouteTableIds?.length
+          ? params.addRouteTableIds
+          : undefined,
+        RemoveRouteTableIds: params.removeRouteTableIds?.length
+          ? params.removeRouteTableIds
+          : undefined,
+        PolicyDocument: params.policyDocument,
+        ResetPolicy: params.resetPolicy === true ? true : undefined,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+// One call deletes many endpoints and names each it refused, with AWS's reason.
+async function deleteVpcEndpoints(
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const result = await getEc2Client().send(
+    new DeleteVpcEndpointsCommand({ VpcEndpointIds: [...ids] }),
+  )
+
+  return new Map(
+    (result.Unsuccessful ?? []).map((item) => [
+      item.ResourceId ?? "",
+      item.Error?.Message ?? item.Error?.Code ?? "Not deleted",
+    ]),
+  )
+}
+
+export function useDeleteVpcEndpoints() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: deleteVpcEndpoints,
+    onSettled: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+// The panel's delete: the same call, with a refusal raised as an error.
+export function useDeleteVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (endpointId: string) => {
+      const refused = await deleteVpcEndpoints([endpointId])
+      const reason = refused.get(endpointId)
+
+      if (reason !== undefined) {
+        throw new Error(reason)
+      }
+    },
+    onSettled: () => {
+      invalidateEndpoints(queryClient)
     },
   })
 }

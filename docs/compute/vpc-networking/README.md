@@ -195,6 +195,14 @@ Its vpcd must also run this release, and its own prefix-list entry must be its a
 Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
 `spx admin cluster status` shows each node's level.
 
+### In the Console
+
+**Networking › Endpoints** lists the account's endpoints and creates, changes and deletes them.
+The create panel asks for the VPC, the service and the route tables, and shows the AWS CLI command that sends the same request.
+Until the formation offers the service, the panel says so and cannot create an endpoint.
+An endpoint's panel shows its prefix list, its route tables and its policy, and its Topology tab draws it beside the gateways, with a line to each subnet whose route table sends traffic to it.
+The policy choice and **Edit policy** appear only while `DescribeVpcEndpointServices` lists the service, because that is when the gate enforces a custom policy.
+
 ### Endpoint Policies
 
 `CreateVpcEndpoint` and `ModifyVpcEndpoint` accept a custom `PolicyDocument` of up to 20,480 characters, and `ResetPolicy` restores the default, which allows everything.

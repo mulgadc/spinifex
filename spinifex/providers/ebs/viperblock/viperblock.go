@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+	"github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
 
@@ -165,6 +166,13 @@ type Config struct {
 	// the short-lived detached VBs opened for config updates and sealing.
 	// Default false, matching ShardWAL.
 	GCEnabled bool
+
+	// afterCreateCheck, when set by a test, runs between a format-2 create's
+	// first existence check and its claim of the new volume's lease.
+	afterCreateCheck func(volumeID string)
+	// onCreateReply, when set by a test, runs as a create replies, after its
+	// lease is released.
+	onCreateReply func(volumeID string)
 
 	// WALBaseDir puts every volume's WAL under this directory instead of
 	// BaseDir, so a WAL fsync is not queued behind the node's other IO.
@@ -446,6 +454,13 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 // stays the caller's to release, on failure too.
 func openLeasedVolumeVB(ctx context.Context, cfg *Config, volumeName string, lease *volumeLease) (*viperblock.VB, error) {
 	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
+	// A daemon-side engine gets its own epoch, so a seal it commits orders
+	// above the export it replaces. Only a claim or commit writes a head.
+	epoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lease epoch: %w", err)
+	}
+	vbconfig.LeaseEpoch = epoch
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
 		return nil, fmt.Errorf("new viperblock: %w", err)
@@ -686,10 +701,15 @@ func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*v
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := vb.LoadBlockStateCtx(ctx); err != nil {
+	if err := loadBlockStateForSeal(ctx, vb); err != nil {
 		vb.Detach()
 		cfg.releaseVolumeLease(ctx, lease)
 		return nil, nil, fmt.Errorf("load block state: %w", err)
+	}
+	if err := vb.ClaimMapCtx(ctx); err != nil {
+		vb.Detach()
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, fmt.Errorf("claim block map: %w", err)
 	}
 	// RecoverLocalWALs is fail-closed on integrity errors and persists recovered
 	// state itself; on failure retain the local WAL (no Close) for retry.
@@ -699,6 +719,24 @@ func openLoadedVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		return nil, nil, fmt.Errorf("recover local WALs: %w", err)
 	}
 	return vb, lease, nil
+}
+
+// loadBlockStateForSeal loads the map the way the format decides. A volume
+// whose VBState says format 1 but whose live checkpoint is the fence stub was
+// converted, and its VBState write lost: it loads as format 2, and the claim
+// rewrites VBState, so the seal never writes it back as format 1.
+func loadBlockStateForSeal(ctx context.Context, vb *viperblock.VB) error {
+	if vb.IsMapDelta() {
+		return vb.LoadBlockStateCtx(ctx)
+	}
+	live, err := vb.Backend.ReadCtx(ctx, types.FileTypeBlockCheckpointLive, 0, 0, 0)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read live checkpoint: %w", err)
+	}
+	if err == nil && viperblock.IsMapFenceStub(live) {
+		return vb.LoadLiveCheckpointCtx(ctx)
+	}
+	return vb.LoadBlockStateCtx(ctx)
 }
 
 // sealVolumeVB persists a detached volume's block->object map to predastore.

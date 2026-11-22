@@ -2,6 +2,7 @@ package readiness_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -165,4 +166,105 @@ func TestStream_AttachRefusesIncompleteBinding(t *testing.T) {
 
 	_, _, err := readiness.Attach(t.Context(), js, readiness.Binding{Bucket: readiness.KVBucket})
 	require.ErrorIs(t, err, readiness.ErrInvalid)
+}
+
+// hookJS runs a one-shot hook after the next stream info or bucket open, so a
+// test can pause a check with its answer in hand or replace the stream mid-open.
+type hookJS struct {
+	jetstream.JetStream
+	mu          sync.Mutex
+	afterInfo   func(*jetstream.StreamInfo)
+	afterKVOpen func()
+}
+
+func (h *hookJS) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	st, err := h.JetStream.Stream(ctx, name)
+	h.mu.Lock()
+	hook := h.afterInfo
+	h.afterInfo = nil
+	h.mu.Unlock()
+	if hook != nil && err == nil {
+		hook(st.CachedInfo())
+	}
+	return st, err
+}
+
+func (h *hookJS) KeyValue(ctx context.Context, bucket string) (jetstream.KeyValue, error) {
+	kv, err := h.JetStream.KeyValue(ctx, bucket)
+	h.mu.Lock()
+	hook := h.afterKVOpen
+	h.afterKVOpen = nil
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return kv, err
+}
+
+func (h *hookJS) arm(afterInfo func(*jetstream.StreamInfo), afterKVOpen func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.afterInfo, h.afterKVOpen = afterInfo, afterKVOpen
+}
+
+func TestStream_DelayedSuccessCannotOutliveAConcurrentQuarantine(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	bucket := "bedrock-endpoints"
+	createBucket(t, js, bucket)
+	hooked := &hookJS{JetStream: js}
+	s, _, err := readiness.Attach(t.Context(), hooked, observe(t, js, bucket))
+	require.NoError(t, err)
+
+	answered, resume := make(chan struct{}), make(chan struct{})
+	hooked.arm(func(*jetstream.StreamInfo) {
+		close(answered)
+		<-resume
+	}, nil)
+	old := make(chan error, 1)
+	go func() { old <- s.Verify(t.Context()) }()
+	<-answered
+
+	recreate(t, js, bucket)
+	require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamReplaced)
+	close(resume)
+	require.ErrorIs(t, <-old, readiness.ErrStreamReplaced, "an older matching answer must not report success after the quarantine")
+}
+
+func TestStream_AnswerWithoutLeaderFailsClosed(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	bucket := "bedrock-endpoints"
+	createBucket(t, js, bucket)
+	b := observe(t, js, bucket)
+	st, err := js.Stream(t.Context(), "KV_"+bucket)
+	require.NoError(t, err)
+	require.NotNil(t, st.CachedInfo().Cluster)
+	require.NotEmpty(t, st.CachedInfo().Cluster.Leader, "a standalone server names itself as leader")
+
+	hooked := &hookJS{JetStream: js}
+	s, _, err := readiness.Attach(t.Context(), hooked, b)
+	require.NoError(t, err)
+	for name, strip := range map[string]func(*jetstream.StreamInfo){
+		"leaderless group member": func(info *jetstream.StreamInfo) { info.Cluster.Leader = "" },
+		"no cluster section":      func(info *jetstream.StreamInfo) { info.Cluster = nil },
+	} {
+		hooked.arm(strip, nil)
+		require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamUnavailable, name)
+		hooked.arm(strip, nil)
+		_, err := readiness.Observe(t.Context(), hooked, bucket)
+		require.ErrorIs(t, err, readiness.ErrStreamUnavailable, name)
+	}
+	require.NoError(t, s.Verify(t.Context()), "a leaderless answer blocks without quarantining")
+}
+
+func TestStream_AttachRefusesReplacementDuringOpen(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	bucket := "bedrock-endpoints"
+	createBucket(t, js, bucket)
+	b := observe(t, js, bucket)
+
+	hooked := &hookJS{JetStream: js}
+	hooked.arm(nil, func() { recreate(t, js, bucket) })
+	_, kv, err := readiness.Attach(t.Context(), hooked, b)
+	require.ErrorIs(t, err, readiness.ErrStreamReplaced, "the check after opening must catch a replacement made during the open")
+	assert.Nil(t, kv)
 }

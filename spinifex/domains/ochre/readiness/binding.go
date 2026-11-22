@@ -21,7 +21,7 @@ var (
 )
 
 // Binding is independently recorded evidence of one bucket's stream
-// incarnation: the bucket and the creation time its stream leader reported.
+// incarnation: the bucket and the creation time reported with a named leader.
 type Binding struct {
 	Bucket  string    `json:"bucket"`
 	Created time.Time `json:"created"`
@@ -72,7 +72,7 @@ func Attach(ctx context.Context, js jetstream.JetStream, b Binding) (*Stream, je
 	return s, kv, nil
 }
 
-// Verify checks the stream leader's identity against the binding. Call it
+// Verify checks the stream's reported identity against the binding. Call it
 // before interpreting a read or sending a write, and again after every
 // acknowledgement; it compares identities and is not an atomic write fence.
 func (s *Stream) Verify(ctx context.Context) error {
@@ -92,7 +92,11 @@ func (s *Stream) Verify(ctx context.Context) error {
 		return s.quarantined(fmt.Errorf("%w: %s created %s, bound %s", ErrStreamReplaced,
 			s.binding.Bucket, created.Format(time.RFC3339Nano), s.binding.Created.Format(time.RFC3339Nano)))
 	}
-	return nil
+	// A concurrent check may have latched a replacement while this answer was
+	// in flight; the latch wins over an older success.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quarantine
 }
 
 func (s *Stream) quarantined(err error) error {
@@ -104,7 +108,8 @@ func (s *Stream) quarantined(err error) error {
 	return s.quarantine
 }
 
-// streamCreated asks the stream leader for the stream's creation time.
+// streamCreated reads the stream's creation time. A leaderless group member
+// may also answer, so an answer naming no current leader is refused.
 func streamCreated(ctx context.Context, js jetstream.JetStream, bucket string) (time.Time, error) {
 	st, err := js.Stream(ctx, streamName(bucket))
 	if errors.Is(err, jetstream.ErrStreamNotFound) {
@@ -116,6 +121,9 @@ func streamCreated(ctx context.Context, js jetstream.JetStream, bucket string) (
 	info := st.CachedInfo()
 	if info == nil || info.Created.IsZero() {
 		return time.Time{}, fmt.Errorf("%w: %s reported no creation time", ErrStreamUnavailable, bucket)
+	}
+	if info.Cluster == nil || info.Cluster.Leader == "" {
+		return time.Time{}, fmt.Errorf("%w: %s reported no stream leader", ErrStreamUnavailable, bucket)
 	}
 	return info.Created, nil
 }

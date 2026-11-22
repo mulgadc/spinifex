@@ -331,6 +331,11 @@ func relaunchLogPath(volumeID string) string {
 	return fmt.Sprintf("/tmp/nbdkit-relaunch-%s.log", volumeID)
 }
 
+// relaunchPidPath is where the launch wrapper records the relaunched nbdkit's pid.
+func relaunchPidPath(volumeID string) string {
+	return fmt.Sprintf("/tmp/nbdkit-relaunch-%s.pid", volumeID)
+}
+
 // logRelaunchOutput prints the relaunched nbdkit's output into a failed test.
 func logRelaunchOutput(t *testing.T, f *Fixture, node harness.Node, volumeID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -435,11 +440,15 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 		t.Logf("relaunching %s at lease epoch %d, above the killed launch's %d", volumeID, epoch, k.leaseEpoch)
 		r.guard(t, volumeID, k.lease, epoch, seenAt)
 	}
+	// The wrapper records its pid after setsid and then execs nbdkit, so the
+	// pid is nbdkit's whether or not setsid had to fork.
 	start := fmt.Sprintf(
-		"sudo rm -f %s; sudo touch %s && sudo chmod 666 %s && "+
-			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; exec setsid %s' "+
+		"sudo rm -f %s %s; sudo touch %s %s && sudo chmod 666 %s %s && "+
+			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; "+
+			"exec setsid sh -c \"echo \\$\\$ > %s; exec \\\"\\$@\\\"\" sh %s' "+
 			"</dev/null >%s 2>&1 & sleep 5; cat %s",
-		k.socket, log, log, nbdkitUser, k.envFile, cmdline, log, log)
+		k.socket, r.pidFile, log, r.pidFile, log, r.pidFile,
+		nbdkitUser, k.envFile, r.pidFile, cmdline, log, log)
 	// The early output is read here rather than only on failure: a later query
 	// can fail on its own and take the reason with it.
 	var early []byte

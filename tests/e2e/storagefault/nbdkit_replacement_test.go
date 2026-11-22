@@ -36,9 +36,10 @@ var errReplacementUnknown = errors.New("replacement nbdkit state unknown")
 // replacement is the hand-relaunched nbdkit, identified by pid and start time
 // so a reused pid is never signalled or mistaken for it.
 type replacement struct {
-	f      *Fixture
-	node   harness.Node
-	socket string
+	f       *Fixture
+	node    harness.Node
+	socket  string
+	pidFile string
 
 	// launchMu makes a launch and a fence exclusive: a fence before the
 	// launch cancels it, and one during it waits until the pid is known.
@@ -53,8 +54,8 @@ type replacement struct {
 	cancel  context.CancelFunc
 }
 
-func newReplacement(f *Fixture, node harness.Node, socket string) *replacement {
-	return &replacement{f: f, node: node, socket: socket, cancel: func() {}}
+func newReplacement(f *Fixture, node harness.Node, socket, pidFile string) *replacement {
+	return &replacement{f: f, node: node, socket: socket, pidFile: pidFile, cancel: func() {}}
 }
 
 // procStart returns a process's start time from /proc/<pid>/stat, or "" when
@@ -71,17 +72,14 @@ func (r *replacement) procStart(ctx context.Context, pid int) (string, error) {
 	return "", nil
 }
 
-// lookup lists the nbdkit pids whose argv names this socket exactly. A failed
-// enumeration, or an unreadable argv of a live process, is an error.
+// lookup returns the pid the launch wrapper recorded, if that process is
+// still nbdkit. It never reads argv: that read can block on a busy process.
 func (r *replacement) lookup(ctx context.Context) ([]string, error) {
-	// One sudo for the whole script: on the nodes, a shell that writes to the
-	// session after running sudo itself dies of SIGPIPE.
 	out, err := r.f.SSH.Run(ctx, r.node, fmt.Sprintf(
-		`sudo sh -c 'pids=$(pgrep -x %s); rc=$?; [ $rc -le 1 ] || exit 3; `+
-			`for p in $pids; do grep -qzxF -- %q /proc/$p/cmdline 2>/dev/null; g=$?; `+
-			`if [ $g -eq 0 ]; then echo $p; elif [ $g -ge 2 ] && [ -e /proc/$p ]; then exit 4; fi; `+
-			`done; exit 0'`,
-		nbdkitComm, r.socket))
+		`sudo sh -c 'p=$(cat %s 2>/dev/null); case "$p" in ""|*[!0-9]*) exit 0;; esac; `+
+			`c=$(cat /proc/$p/comm 2>/dev/null) || { [ -e /proc/$p ] && exit 4; exit 0; }; `+
+			`[ "$c" = %s ] && echo $p; exit 0'`,
+		r.pidFile, nbdkitComm))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errReplacementUnknown, err)
 	}
@@ -89,7 +87,7 @@ func (r *replacement) lookup(ctx context.Context) ([]string, error) {
 }
 
 // resolve records the replacement's pid and start time, reporting false when
-// no nbdkit serves the socket.
+// no recorded nbdkit is running.
 func (r *replacement) resolve(ctx context.Context) (bool, error) {
 	pids, err := r.lookup(ctx)
 	if err != nil {
@@ -100,7 +98,7 @@ func (r *replacement) resolve(ctx context.Context) (bool, error) {
 		return false, nil
 	case 1:
 	default:
-		return false, fmt.Errorf("%w: %d nbdkit processes on %s", errReplacementUnknown, len(pids), r.socket)
+		return false, fmt.Errorf("%w: %d pids in %s", errReplacementUnknown, len(pids), r.pidFile)
 	}
 	pid, err := strconv.Atoi(pids[0])
 	if err != nil {

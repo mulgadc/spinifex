@@ -130,7 +130,7 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 
 			if tc.kill {
 				harness.Step(t, "relaunching nbdkit on %s, then waiting %s", killed.socket, recoverySettle)
-				rep = newReplacement(fix, *hostNode, killed.socket)
+				rep = newReplacement(fix, *hostNode, killed.socket, relaunchPidPath(volID))
 				relaunchNbdkit(t, fix, *hostNode, volID, killed, rep)
 			} else {
 				harness.Step(t, "thawing nbdkit and waiting %s", recoverySettle)

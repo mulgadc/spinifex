@@ -40,6 +40,8 @@ func TestReadsAfterBucketLossLeaveBucketAbsent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, list.Clusters)
 	assert.Empty(t, list.Clusters)
+	_, err = svc.ListClusters(ctx, &eks.ListClustersInput{NextToken: aws.String("bogus")}, testAccountID)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 
 	notFound := map[string]error{}
 	_, notFound["DescribeCluster"] = svc.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
@@ -50,6 +52,9 @@ func TestReadsAfterBucketLossLeaveBucketAbsent(t *testing.T) {
 	_, notFound["ListAccessEntries"] = svc.ListAccessEntries(ctx, &eks.ListAccessEntriesInput{ClusterName: aws.String("c1")}, testAccountID)
 	_, notFound["ListTagsForResource"] = svc.ListTagsForResource(ctx, &eks.ListTagsForResourceInput{
 		ResourceArn: aws.String("arn:aws:eks:ap-southeast-2:" + testAccountID + ":cluster/c1"),
+	}, testAccountID)
+	_, notFound["ListTagsForResource/nodegroup"] = svc.ListTagsForResource(ctx, &eks.ListTagsForResourceInput{
+		ResourceArn: aws.String("arn:aws:eks:ap-southeast-2:" + testAccountID + ":nodegroup/c1/ng/abc"),
 	}, testAccountID)
 	for op, err := range notFound {
 		assert.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err), op)

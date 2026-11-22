@@ -1284,6 +1284,9 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
 	acctKV, err := s.openAccountBucket(ctx, accountID)
 	if errors.Is(err, ErrClusterNotFound) {
+		if _, err := decodeEKSToken(input.NextToken); err != nil {
+			return nil, err
+		}
 		return &eks.ListClustersOutput{Clusters: []*string{}}, nil
 	}
 	if err != nil {

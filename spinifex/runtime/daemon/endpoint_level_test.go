@@ -43,9 +43,8 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	}{
 		{"ready", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Build},
 		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"no gate listener", with(func(s *projection.EndpointProxyStatus) { s.GateReady = false }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"gate without endpoint policies", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 1 }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"vpcd omits the gate contract", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 0 }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"no gate listener, or a vpcd that omits the contract", with(func(s *projection.EndpointProxyStatus) { s.GateReady, s.GateContract = false, 0 }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below},

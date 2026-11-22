@@ -203,7 +203,9 @@ The request is allowed only if both allow it, and an explicit deny in either den
 In a `DeleteObjects` batch each key is decided on its own, and a denied key is reported in `Errors`.
 
 A statement's `Principal` is `"*"`, `{"AWS": "*"}`, or an account by ID or root ARN.
-As on AWS, an account principal names that account's root user only, and no Spinifex credential is an account's root user, so such a statement matches no caller.
+As on AWS, an account principal names that account's root user only.
+No tenant credential on Spinifex is an account's root user, so an `Allow` naming an account grants nothing.
+A `Deny` naming an account still applies to a caller the gate cannot identify by type, such as an anonymous read or a service credential.
 Name users and roles with the `aws:PrincipalArn` condition key; a role session matches its role's ARN.
 A policy naming a user, role, service or federated principal is refused with `InvalidPolicyDocument`, which AWS stores instead.
 So is a condition the gate could not enforce as written, such as an operand that does not parse or an unsupported key.

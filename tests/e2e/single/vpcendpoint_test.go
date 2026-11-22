@@ -198,7 +198,7 @@ func runVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 
 	probe := func(cfg, addr string) func() (harness.GuestCurl, error) {
 		return func() (harness.GuestCurl, error) {
-			return harness.ProbeGuestS3(bastion, privIP, cfg, region, addr, port, bucket)
+			return harness.ProbeGuestS3(bastion, privIP, harness.GuestS3ListCmd(cfg, region, addr, port, bucket))
 		}
 	}
 	listed := func(g harness.GuestCurl) bool { return g.Code == "200" && strings.Contains(g.Body, vpceObjectKey) }
@@ -362,7 +362,7 @@ func runVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 
 	t.Run("EndpointPolicy", func(t *testing.T) {
 		vpceEndpointPolicy(t, c, epID, gate, bucket, allowed, func(keys []string) (harness.GuestCurl, error) {
-			return harness.ProbeGuestS3DeleteObjects(bastion, privIP, vpceCredAllow, region, gate, port, bucket, keys)
+			return harness.ProbeGuestS3(bastion, privIP, harness.GuestS3DeleteObjectsCmd(vpceCredAllow, region, gate, port, bucket, keys))
 		}, allowedProbe, listed)
 	})
 

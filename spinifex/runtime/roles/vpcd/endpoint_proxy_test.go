@@ -41,11 +41,10 @@ import (
 
 // recordingSink is the proxy as the loop sees it, keeping what it was handed.
 type recordingSink struct {
-	mu             sync.Mutex
-	views          []guestmetadata.EndpointView
-	invalidated    int
-	sessions       int
-	policySessions int
+	mu          sync.Mutex
+	views       []guestmetadata.EndpointView
+	invalidated int
+	sessions    int
 }
 
 var _ endpointViewSink = (*recordingSink)(nil)
@@ -73,12 +72,6 @@ func (s *recordingSink) Sessions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessions
-}
-
-func (s *recordingSink) PolicySessions() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.policySessions
 }
 
 // loopHarness is an endpoint loop over a two-node cluster whose host side and
@@ -341,7 +334,6 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	h := newLoopHarness(false)
 	h.sink.sessions = 3
-	h.sink.policySessions = 2
 	h.rev = 42
 	h.endpoints = loopEndpoints
 	_, err := h.loop.reconcile(t.Context())
@@ -359,7 +351,7 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 
 	var got projection.EndpointProxyStatus
 	require.NoError(t, json.Unmarshal(ask([]byte(`{"node":"n1"}`)), &got))
-	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true, Build: featurelevel.Build, GateContract: 2, PolicySessions: 2}, got)
+	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true, Build: featurelevel.Build, GateContract: 2}, got)
 
 	for _, body := range [][]byte{[]byte(`{"node":"n2"}`), []byte(`not json`)} {
 		var refusal map[string]any
@@ -762,12 +754,6 @@ func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
 }
 
 // The probe's header is one the gate validates, so only its version decides.
-func TestGateProbeHeader_IsAValidVersion2Header(t *testing.T) {
-	h := gateProbeHeader(netip.MustParseAddr("10.0.0.2"))
-	h.Version = endpointproxy.ContractVersion2
-	require.NoError(t, h.Validate())
-}
-
 func TestNewEndpointDialer_RefusesMissingMaterial(t *testing.T) {
 	p := newTestPKI(t)
 	cert, key := p.issue(t, "node")

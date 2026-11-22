@@ -69,23 +69,6 @@ func (s *ServiceImpl) SetActivation(admit Admission, offered func(context.Contex
 	s.active, s.offered = admit, offered
 }
 
-// admitPolicy holds the service's admission for a write storing doc, since
-// every node's gate enforces a policy only once it can carry endpoint traffic;
-// the default needs none.
-func (s *ServiceImpl) admitPolicy(ctx context.Context, op, doc string) (done func(), err error) {
-	if doc == "" {
-		return func() {}, nil
-	}
-	done, ok, err := s.admit(ctx)
-	if err != nil {
-		return done, internalError(ctx, op, err)
-	}
-	if !ok {
-		return done, customPoliciesUnsupported()
-	}
-	return done, nil
-}
-
 // serviceActive answers a read: whether the service is offered right now.
 func (s *ServiceImpl) serviceActive(ctx context.Context) bool {
 	if s.offered == nil {
@@ -389,25 +372,23 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 		if err != nil {
 			return nil, err
 		}
-		policyDone, err := s.admitPolicy(ctx, "ModifyVpcEndpoint", doc)
-		defer policyDone()
-		if err != nil {
-			return nil, err
-		}
 		m.policy = &doc
 	case reset:
 		m.policy = aws.String("")
 	}
-	// A new route needs every node able to carry it; a rollback in progress
-	// refuses it. Admission is held to the last write.
-	if len(input.AddRouteTableIds) > 0 {
+	// A new route or a custom policy needs every node able to carry it; a
+	// rollback in progress refuses either. Admission is held to the last write.
+	if len(input.AddRouteTableIds) > 0 || (m.policy != nil && *m.policy != "") {
 		done, ok, err := s.admit(ctx)
 		defer done()
 		if err != nil {
 			return nil, internalError(ctx, "ModifyVpcEndpoint", err)
 		}
-		if !ok {
+		if !ok && len(input.AddRouteTableIds) > 0 {
 			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "Route tables cannot be added to VPC endpoints at the moment.")
+		}
+		if !ok {
+			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "Custom VPC endpoint policies cannot be set at the moment.")
 		}
 	}
 	if m.add, err = s.checkTables(ctx, accountID, rec.VpcID, input.AddRouteTableIds); err != nil {

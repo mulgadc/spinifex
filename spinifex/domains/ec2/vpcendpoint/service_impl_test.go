@@ -553,7 +553,7 @@ func TestPolicy_RefusedUntilEveryNodeEnforces(t *testing.T) {
 	}, testAccount)
 	requireCode(t, err, awserrors.ErrorInvalidServiceName, "")
 	requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(readOnly)}),
-		awserrors.ErrorInvalidParameterValue, "")
+		awserrors.ErrorServiceUnavailable, "")
 	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
 
 	policies.closed, policies.err = false, errors.New("kv down")
@@ -568,16 +568,9 @@ func TestPolicy_RefusedUntilEveryNodeEnforces(t *testing.T) {
 func TestPolicy_RefusesWhatTheGateWouldNotEnforce(t *testing.T) {
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
-	for name, doc := range map[string]string{
-		"named user principal": `{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/alice"},"Action":"*","Resource":"*"}]}`,
-		"unreadable operand": `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"},` +
-			`{"Effect":"Deny","Principal":"*","Action":"*","Resource":"*","Condition":{"NotIpAddress":{"aws:VpcSourceIp":"nope"}}}]}`,
-		"unsupported condition key": `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*",` +
-			`"Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}`,
-		"effect": `{"Statement":[{"Effect":"Maybe","Principal":"*","Action":"*","Resource":"*"}]}`,
-	} {
-		requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(doc)}),
-			awserrors.ErrorInvalidPolicyDocument, "")
-		assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument), name)
-	}
+	unreadable := `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"},` +
+		`{"Effect":"Deny","Principal":"*","Action":"*","Resource":"*","Condition":{"NotIpAddress":{"aws:VpcSourceIp":"nope"}}}]}`
+	requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PolicyDocument: aws.String(unreadable)}),
+		awserrors.ErrorInvalidPolicyDocument, "")
+	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
 }

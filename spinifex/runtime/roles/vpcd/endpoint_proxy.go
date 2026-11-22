@@ -57,7 +57,6 @@ type endpointViewSink interface {
 	Publish(v guestmetadata.EndpointView) int
 	Invalidate()
 	Sessions() int
-	PolicySessions() int
 }
 
 var _ endpointViewSink = (*guestmetadata.EndpointProxy)(nil)
@@ -86,7 +85,6 @@ type endpointLoop struct {
 	grant *prefixListGrant
 
 	probePassed    atomic.Bool
-	gateReady      atomic.Bool
 	revision       atomic.Uint64 // the level revision read before the last published view
 	viewEndpoints  atomic.Int64  // endpoints in the view the proxy admits by
 	probeFailed    atomic.Bool   // the last capture probe failed, so the next pass logs only a change
@@ -146,7 +144,7 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 }
 
 func (l *endpointLoop) revisit() time.Duration {
-	if l.probePassed.Load() && l.gateReady.Load() && l.gateContract.Load() >= endpointproxy.ContractVersion2 {
+	if l.probePassed.Load() && l.gateContract.Load() >= endpointproxy.ContractVersion2 {
 		return 0
 	}
 	return endpointProbeRetry
@@ -179,13 +177,12 @@ func (l *endpointLoop) probeGate(ctx context.Context, mgmt string) {
 		slog.WarnContext(ctx, "vpcd: no gate address to check the endpoint listener on", "node", l.cluster.Node, "own_gate", l.ownGate)
 		return
 	}
-	if !l.gateReady.Load() {
+	if l.gateContract.Load() < endpointproxy.ContractVersion1 {
 		if err := l.gate(ctx, addr, endpointproxy.ContractVersion1); err != nil {
 			slog.WarnContext(ctx, "vpcd: gate endpoint listener not ready", "addr", addr.String(), "own_gate", l.ownGate, "err", err)
 			return
 		}
 		l.gateContract.Store(endpointproxy.ContractVersion1)
-		l.gateReady.Store(true)
 		slog.InfoContext(ctx, "vpcd: gate endpoint listener accepted the proxy", "addr", addr.String(), "own_gate", l.ownGate)
 	}
 	if err := l.gate(ctx, addr, endpointproxy.ContractVersion2); err != nil {
@@ -228,16 +225,14 @@ const statusWait = 2 * time.Second
 // status is the reply on this node's endpoint proxy status subject.
 func (l *endpointLoop) status(ctx context.Context, node string, countACLs bool) (projection.EndpointProxyStatus, error) {
 	st := projection.EndpointProxyStatus{
-		Node:        node,
-		Revision:    l.revision.Load(),
-		Sessions:    l.proxy.Sessions(),
-		Endpoints:   int(l.viewEndpoints.Load()),
-		ProbePassed: l.probePassed.Load(),
-		GateReady:   l.gateReady.Load(),
-		Build:       featurelevel.Build,
-		// Read after Sessions, so a session counted toward neither is closed.
-		PolicySessions: l.proxy.PolicySessions(),
-		GateContract:   int(l.gateContract.Load()),
+		Node:         node,
+		Revision:     l.revision.Load(),
+		Sessions:     l.proxy.Sessions(),
+		Endpoints:    int(l.viewEndpoints.Load()),
+		ProbePassed:  l.probePassed.Load(),
+		GateReady:    l.gateContract.Load() >= endpointproxy.ContractVersion1,
+		Build:        featurelevel.Build,
+		GateContract: int(l.gateContract.Load()),
 	}
 	if l.grant == nil {
 		return st, nil
@@ -560,13 +555,11 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		Egress: securityGroupEgress(js, grant.lists()),
 		Dial:   dial,
 		// Twice the resync, so only a loop that has stopped passing stops admitting.
-		MaxAge:   2 * reconciler.DefaultResync,
-		Policies: grant.level.Granted,
+		MaxAge: 2 * reconciler.DefaultResync,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct endpoint proxy: %w", err)
 	}
-	grant.level.withdraw = func() { proxy.WithdrawPolicies() }
 	imds.EnableEndpointProxy(proxy)
 
 	runner := host.NewExecRunner()

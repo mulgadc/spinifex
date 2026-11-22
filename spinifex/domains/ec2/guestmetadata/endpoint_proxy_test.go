@@ -38,7 +38,7 @@ var (
 )
 
 func testEndpoint() projection.GatewayEndpoint {
-	return projection.GatewayEndpoint{ID: epTestVpce, AccountID: epTestAccount, VpcID: epTestVPC, ServiceName: "com.amazonaws.ap-southeast-2.s3"}
+	return projection.GatewayEndpoint{ID: epTestVpce, AccountID: epTestAccount, VpcID: epTestVPC, ServiceName: "com.amazonaws.ap-southeast-2.s3", Generation: 1}
 }
 
 func testView() EndpointView {
@@ -126,10 +126,6 @@ type proxyHarness struct {
 	eniGone     atomic.Bool
 	dialed      atomic.Value
 	groups      chan []string
-	// policies is whether new sessions may carry their policy; onPolicies, when
-	// set, runs as the proxy reads it.
-	policies   atomic.Bool
-	onPolicies func()
 }
 
 // newProxyHarness serves one tap over loopback. The accepted socket's loopback
@@ -158,12 +154,6 @@ func newProxyHarness(t *testing.T, dial func(h *proxyHarness) EndpointDialFunc) 
 		},
 		Dial:   dial(h),
 		MaxAge: time.Minute,
-		Policies: func() bool {
-			if h.onPolicies != nil {
-				h.onPolicies()
-			}
-			return h.policies.Load()
-		},
 	})
 	require.NoError(t, err)
 	p.refresh = func(context.Context, *eniFacts) (*eniFacts, error) {
@@ -317,10 +307,11 @@ func TestEndpointProxy_AdmittedConnectionCarriesTheHeaderAndSplices(t *testing.T
 		local, ok := c.LocalAddr().(*net.TCPAddr)
 		require.True(t, ok)
 		assert.Equal(t, endpointproxy.Header{
-			Version:     endpointproxy.ContractVersion1,
+			Version:     endpointproxy.ContractVersion2,
 			Source:      netip.AddrPortFrom(epTestGuest, uint16(local.Port)),
 			Destination: epTestEntry,
 			VpceID:      epTestVpce, VpcID: epTestVPC, AccountID: epTestAccount,
+			PolicyGeneration: 1, Policy: testEndpoint().PolicyDocument(),
 		}, hdr)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the upstream never received a PROXY header")
@@ -541,7 +532,7 @@ func TestEndpointProxy_AdmitMarksOnlyPolicyRefusals(t *testing.T) {
 		return netip.AddrPortFrom(epTestGuest, 40000), epTestEntry, nil
 	}
 	admit := func() error {
-		_, err := h.p.admit(t.Context(), nil, h.eni)
+		_, _, err := h.p.admit(t.Context(), nil, h.eni)
 		select {
 		case <-h.groups:
 		default:
@@ -588,113 +579,26 @@ func registered(p *EndpointProxy) int {
 
 const readOnlyPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"*"}]}`
 
-// policyView routes the test subnet to an endpoint holding policy.
-func policyView(policy string) EndpointView {
-	v := testView()
-	ep := testEndpoint()
-	ep.Generation, ep.Policy = 4, policy
-	v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
-	return v
-}
-
-// openSession proxies one guest connection and returns it with the header the
-// gate read.
-func openSession(t *testing.T, h *proxyHarness, up *upstream) (net.Conn, endpointproxy.Header) {
-	t.Helper()
-	c, err := net.Dial("tcp", h.addr)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
-	select {
-	case hdr := <-up.headers:
-		require.Eventually(t, func() bool { return registered(h.p) == 1 }, 5*time.Second, 10*time.Millisecond)
-		return c, hdr
-	case <-time.After(5 * time.Second):
-		t.Fatal("the upstream never received a PROXY header")
-		return nil, endpointproxy.Header{}
-	}
-}
-
-// Once the cluster enforces endpoint policies, a session carries its endpoint's
-// policy at version 2, the default spelled out, and is counted as one.
-func TestEndpointProxy_SessionCarriesItsPolicyAtVersion2(t *testing.T) {
-	for name, tc := range map[string]struct{ stored, carried string }{
-		"custom policy":  {readOnlyPolicy, readOnlyPolicy},
-		"default policy": {"", testEndpoint().PolicyDocument()},
-	} {
-		t.Run(name, func(t *testing.T) {
-			up := startUpstream(t)
-			h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
-			h.policies.Store(true)
-			h.p.Publish(policyView(tc.stored))
-
-			c, hdr := openSession(t, h, up)
-			assert.Equal(t, uint8(endpointproxy.ContractVersion2), hdr.Version)
-			assert.Equal(t, uint64(4), hdr.PolicyGeneration)
-			assert.Equal(t, tc.carried, hdr.Policy)
-			assert.Equal(t, 1, h.p.PolicySessions())
-
-			require.NoError(t, c.Close())
-			assert.Eventually(t, func() bool { return h.p.PolicySessions() == 0 }, 5*time.Second, 10*time.Millisecond)
-		})
-	}
-}
-
-// Version 1 carries no policy, so a gate reading it would allow what the policy
-// denies: a custom-policy endpoint's connection is refused instead.
-func TestEndpointProxy_CustomPolicyIsNeverSentWithoutIt(t *testing.T) {
-	h := newProxyHarness(t, noDial(t))
-	h.p.Publish(policyView(readOnlyPolicy))
-	expectReset(t, h.addr)
-	assert.Eventually(t, func() bool { return h.p.Sessions() == 0 }, 5*time.Second, 10*time.Millisecond)
-	assert.Zero(t, h.p.PolicySessions())
-}
-
-// A handler is counted toward version 2 before it reads the level, so a drain
-// that counts none cannot be overtaken by a handler that read it and paused.
-func TestEndpointProxy_CountsVersion2BeforeReadingTheLevel(t *testing.T) {
+// A session carries its endpoint's custom policy and the generation it was
+// read at.
+func TestEndpointProxy_SessionCarriesItsCustomPolicy(t *testing.T) {
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
-	seen := make(chan int, 1)
-	h.onPolicies = func() { seen <- h.p.PolicySessions() }
-	h.p.Publish(testView())
+	v := testView()
+	ep := testEndpoint()
+	ep.Generation, ep.Policy = 4, readOnlyPolicy
+	v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
+	h.p.Publish(v)
 
-	_, hdr := openSession(t, h, up)
-	assert.Equal(t, 1, <-seen, "the handler read the level before it was counted")
-	assert.Equal(t, uint8(endpointproxy.ContractVersion1), hdr.Version)
-	assert.Zero(t, h.p.PolicySessions(), "a handler that chose version 1 is no longer counted")
-}
-
-// Once the cluster stops enforcing endpoint policies, every version 2 session is
-// reset, by the withdrawal and by the next publish alike, and version 1 stays.
-func TestEndpointProxy_WithdrawingPoliciesResetsVersion2Sessions(t *testing.T) {
-	for name, withdraw := range map[string]func(*EndpointProxy) int{
-		"withdrawal": (*EndpointProxy).WithdrawPolicies,
-		"publish":    func(p *EndpointProxy) int { return p.Publish(policyView("")) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			up := startUpstream(t)
-			h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
-			h.p.Publish(policyView(""))
-			v1, _ := openSession(t, h, up)
-			h.policies.Store(true)
-			c, err := net.Dial("tcp", h.addr)
-			require.NoError(t, err)
-			defer c.Close()
-			require.Equal(t, uint8(endpointproxy.ContractVersion2), (<-up.headers).Version)
-			require.Eventually(t, func() bool { return registered(h.p) == 2 }, 5*time.Second, 10*time.Millisecond)
-
-			h.policies.Store(false)
-			assert.Equal(t, 1, withdraw(h.p))
-			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
-			_, err = c.Read(make([]byte, 1))
-			assert.ErrorIs(t, err, syscall.ECONNRESET)
-			assert.Eventually(t, func() bool { return h.p.PolicySessions() == 0 }, 5*time.Second, 10*time.Millisecond)
-
-			require.NoError(t, v1.SetDeadline(time.Now().Add(5*time.Second)))
-			_, err = v1.Write([]byte("v1"))
-			require.NoError(t, err)
-			_, err = io.ReadFull(v1, make([]byte, 2))
-			require.NoError(t, err, "a version 1 session outlives the withdrawal")
-		})
+	c, err := net.Dial("tcp", h.addr)
+	require.NoError(t, err)
+	defer c.Close()
+	select {
+	case hdr := <-up.headers:
+		assert.Equal(t, uint8(endpointproxy.ContractVersion2), hdr.Version)
+		assert.Equal(t, uint64(4), hdr.PolicyGeneration)
+		assert.Equal(t, readOnlyPolicy, hdr.Policy)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream never received a PROXY header")
 	}
 }

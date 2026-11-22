@@ -342,12 +342,21 @@ func (g GuestCurl) String() string {
 // GuestS3ListCmd is a guest command that lists bucket at addr:port signed with
 // the curl config at cfgPath. The command always exits 0; parse it with ParseGuestCurl.
 func GuestS3ListCmd(cfgPath, region, addr string, port int, bucket string) string {
-	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/" + bucket + "?list-type=2"
+	return guestCurlCmd(cfgPath, region, "", "", s3URL(addr, port, bucket+"?list-type=2"))
+}
+
+func s3URL(addr string, port int, path string) string {
+	return "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/" + path
+}
+
+// guestCurlCmd runs setup, then one signed curl to url with extra arguments,
+// and prints the outcome ParseGuestCurl reads. It always exits 0.
+func guestCurlCmd(cfgPath, region, setup, extra, url string) string {
 	return fmt.Sprintf(
-		"rm -f /tmp/vpce-body; code=$(curl -sk -K %s --aws-sigv4 %s --connect-timeout 5 --max-time 10 "+
+		"rm -f /tmp/vpce-body; %scode=$(curl -sk -K %s --aws-sigv4 %s --connect-timeout 5 --max-time 10 %s"+
 			"-o /tmp/vpce-body -w '%%{http_code}' %s); rc=$?; printf 'vpce-probe %%s %%s\\n' \"$code\" \"$rc\"; "+
 			"head -c 4096 /tmp/vpce-body 2>/dev/null; true",
-		ShellQuote(cfgPath), ShellQuote("aws:amz:"+region+":s3"), ShellQuote(url))
+		setup, ShellQuote(cfgPath), ShellQuote("aws:amz:"+region+":s3"), extra, ShellQuote(url))
 }
 
 // ParseGuestCurl reads the outcome GuestS3ListCmd printed.
@@ -394,9 +403,10 @@ func GuestExecViaBastion(bastion SSHTarget, privIP, cmd string, timeout time.Dur
 	return string(out), nil
 }
 
-// ProbeGuestS3 runs one GuestS3ListCmd probe on privIP through bastion.
-func ProbeGuestS3(bastion SSHTarget, privIP, cfgPath, region, addr string, port int, bucket string) (GuestCurl, error) {
-	out, err := GuestExecViaBastion(bastion, privIP, GuestS3ListCmd(cfgPath, region, addr, port, bucket), 45*time.Second)
+// ProbeGuestS3 runs one guest S3 command, such as GuestS3ListCmd, on privIP
+// through bastion.
+func ProbeGuestS3(bastion SSHTarget, privIP, cmd string) (GuestCurl, error) {
+	out, err := GuestExecViaBastion(bastion, privIP, cmd, 45*time.Second)
 	if err != nil {
 		return GuestCurl{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
@@ -433,22 +443,9 @@ func GuestS3DeleteObjectsCmd(cfgPath, region, addr string, port int, bucket stri
 		body.WriteString("<Object><Key>" + k + "</Key></Object>")
 	}
 	body.WriteString("</Delete>")
-	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/" + bucket + "?delete="
-	return fmt.Sprintf(
-		"rm -f /tmp/vpce-body; printf '%%s' %s > /tmp/vpce-delete.xml; "+
-			"sha=$(sha256sum /tmp/vpce-delete.xml | cut -d' ' -f1); md5=$(openssl dgst -md5 -binary /tmp/vpce-delete.xml | base64); "+
-			"code=$(curl -sk -K %s --aws-sigv4 %s --connect-timeout 5 --max-time 10 -X POST "+
-			"-H \"x-amz-content-sha256: $sha\" -H \"Content-MD5: $md5\" -H 'Content-Type: application/xml' "+
-			"--data-binary @/tmp/vpce-delete.xml -o /tmp/vpce-body -w '%%{http_code}' %s); rc=$?; "+
-			"printf 'vpce-probe %%s %%s\\n' \"$code\" \"$rc\"; head -c 4096 /tmp/vpce-body 2>/dev/null; true",
-		ShellQuote(body.String()), ShellQuote(cfgPath), ShellQuote("aws:amz:"+region+":s3"), ShellQuote(url))
-}
-
-// ProbeGuestS3DeleteObjects runs one GuestS3DeleteObjectsCmd on privIP through bastion.
-func ProbeGuestS3DeleteObjects(bastion SSHTarget, privIP, cfgPath, region, addr string, port int, bucket string, keys []string) (GuestCurl, error) {
-	out, err := GuestExecViaBastion(bastion, privIP, GuestS3DeleteObjectsCmd(cfgPath, region, addr, port, bucket, keys), 45*time.Second)
-	if err != nil {
-		return GuestCurl{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
-	}
-	return ParseGuestCurl(out)
+	setup := "printf '%s' " + ShellQuote(body.String()) + " > /tmp/vpce-delete.xml; " +
+		"sha=$(sha256sum /tmp/vpce-delete.xml | cut -d' ' -f1); md5=$(openssl dgst -md5 -binary /tmp/vpce-delete.xml | base64); "
+	extra := "-X POST -H \"x-amz-content-sha256: $sha\" -H \"Content-MD5: $md5\" -H 'Content-Type: application/xml' " +
+		"--data-binary @/tmp/vpce-delete.xml "
+	return guestCurlCmd(cfgPath, region, setup, extra, s3URL(addr, port, bucket+"?delete="))
 }

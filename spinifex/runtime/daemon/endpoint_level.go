@@ -31,7 +31,7 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	st, err := projection.RequestEndpointProxyStatus(ctx, d.natsConn, d.node)
 	agree := prefixListDerivationsAgree(d.clusterConfig, d.mgmtBridgeIP)
 	level := featurelevel.Build
-	if err != nil || !st.ProbePassed || !st.GateReady || st.GateContract < endpointproxy.ContractVersion2 ||
+	if err != nil || !st.ProbePassed || st.GateContract < endpointproxy.ContractVersion2 ||
 		st.Build < featurelevel.GatewayEndpoints || !agree {
 		level = featurelevel.GatewayEndpoints - 1
 	}

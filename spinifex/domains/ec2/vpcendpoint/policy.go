@@ -20,13 +20,6 @@ func invalidPolicy() error {
 	return awserrors.Errorf(awserrors.ErrorInvalidPolicyDocument, "Please provide a valid VPC Endpoint policy")
 }
 
-// customPoliciesUnsupported answers a custom policy while the cluster cannot yet
-// enforce one on every node.
-func customPoliciesUnsupported() error {
-	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-		"Custom VPC endpoint policies are not supported. Omit PolicyDocument or pass the default full-access policy.")
-}
-
 // checkPolicy validates doc as AWS does for an endpoint policy, then refuses one
 // the S3 gate would not enforce as written, so no policy is stored that fails
 // closed there. It returns the document to store: "" for the default.

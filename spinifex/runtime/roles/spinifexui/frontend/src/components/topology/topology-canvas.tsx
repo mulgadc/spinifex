@@ -514,7 +514,7 @@ export function TopologyCanvas<N extends Node>({
   return (
     <HoverContext value={hoverContext}>
       <ReactFlow
-        forceColorMode={theme === "dark" ? "dark" : "light"}
+        colorMode={theme === "dark" ? "dark" : "light"}
         edgeTypes={EDGE_TYPES}
         edges={focused}
         fitView

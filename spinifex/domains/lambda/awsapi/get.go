@@ -30,17 +30,27 @@ func notFound(region, accountID, name string) error {
 // lookup resolves the requested $LATEST function's record; query is the
 // Qualifier query parameter, empty for an action that has none.
 func (d Deps) lookup(ctx context.Context, c *call, query string) (function.Record, uint64, error) {
-	name, q, err := resolveFunctionName(c.Region, c.AccountID, c.Params[0])
+	name, q, err := resolveTarget(c, query)
 	if err != nil {
 		return function.Record{}, 0, err
 	}
+	return d.lookupTarget(ctx, c, name, q)
+}
+
+// resolveTarget resolves the function name and the qualifier carried by its
+// suffix or by query, the Qualifier parameter or empty.
+func resolveTarget(c *call, query string) (name, q string, err error) {
+	name, q, err = resolveFunctionName(c.Region, c.AccountID, c.Params[0])
+	if err != nil {
+		return "", "", err
+	}
 	if query != "" {
 		if q != "" && q != query {
-			return function.Record{}, 0, invalid("The derived qualifier from the function name does not match the specified qualifier.")
+			return "", "", invalid("The derived qualifier from the function name does not match the specified qualifier.")
 		}
 		q = query
 	}
-	return d.lookupTarget(ctx, c, name, q)
+	return name, q, nil
 }
 
 // lookupTarget reads the record for an already resolved name and qualifier;

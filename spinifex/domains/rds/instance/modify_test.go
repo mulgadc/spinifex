@@ -735,3 +735,22 @@ func (h *modifyHarness) eventMessages(t *testing.T) []string {
 	}
 	return messages
 }
+
+// AWS answers a malformed maintenance window in its own words, echoing the value.
+func TestModifyDBInstance_RejectsAMalformedMaintenanceWindowInAWSText(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	rec := modifiableRecord()
+	seedInstance(t, h.svc, rec)
+
+	in := modifyInput()
+	in.PreferredMaintenanceWindow = aws.String("someday")
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "not an AWS error: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Invalid maintenance window format: someday. Should be specified as a range "+
+		"ddd:hh24:mi-ddd:hh24:mi (24H Clock UTC). Example: Sun:23:45-Mon:00:15", message)
+	assert.Equal(t, rec.PreferredMaintenanceWindow, h.record(t).PreferredMaintenanceWindow)
+}

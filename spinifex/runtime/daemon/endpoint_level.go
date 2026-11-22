@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mulgadc/predastore/endpointproxy"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
@@ -18,7 +19,8 @@ const endpointProxyStatusWait = 2 * time.Second
 
 // advertisedFeatureLevel is the level this node's heartbeat reports: below 2
 // until its vpcd can capture and render prefix-list peers, its gate serves
-// endpoint proxies, and its prefix-list entry is the gossiped one.
+// endpoint proxies and enforces their policies, and its prefix-list entry is
+// the gossiped one.
 func (d *Daemon) advertisedFeatureLevel() int {
 	parent := d.ctx
 	if parent == nil {
@@ -29,12 +31,13 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	st, err := projection.RequestEndpointProxyStatus(ctx, d.natsConn, d.node)
 	agree := prefixListDerivationsAgree(d.clusterConfig, d.mgmtBridgeIP)
 	level := featurelevel.Build
-	if err != nil || !st.ProbePassed || !st.GateReady || st.Build < featurelevel.GatewayEndpoints || !agree {
+	if err != nil || !st.ProbePassed || st.GateContract < endpointproxy.ContractVersion2 ||
+		st.Build < featurelevel.GatewayEndpoints || !agree {
 		level = featurelevel.GatewayEndpoints - 1
 	}
 	if prev := d.advertisedLevel.Swap(int64(level)); prev != int64(level) {
 		slog.Info("Feature level advertised", "level", level, "build", featurelevel.Build,
-			"capture_probe", st.ProbePassed, "gate_ready", st.GateReady, "vpcd_build", st.Build,
+			"capture_probe", st.ProbePassed, "gate_ready", st.GateReady, "gate_contract", st.GateContract, "vpcd_build", st.Build,
 			"prefix_list_derivations_agree", agree, "err", err)
 	}
 	return level

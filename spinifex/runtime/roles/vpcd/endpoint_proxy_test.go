@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/netip"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/predastore/endpointproxy"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
@@ -84,8 +86,11 @@ type loopHarness struct {
 	endpoints map[string]projection.GatewayEndpoint
 	gateErr   error
 	gateAsked []netip.Addr
-	rev       uint64
-	revErr    error
+	// gateV2Err answers the version 2 checks, which gateV2Asked records.
+	gateV2Err   error
+	gateV2Asked []netip.Addr
+	rev         uint64
+	revErr      error
 }
 
 // newLoopHarness builds the loop; ownGate makes n1 check its own gate rather
@@ -112,7 +117,11 @@ func newLoopHarness(ownGate bool) *loopHarness {
 		},
 	}
 	h.loop.ownGate = ownGate
-	h.loop.gate = func(_ context.Context, addr netip.Addr) error {
+	h.loop.gate = func(_ context.Context, addr netip.Addr, version uint8) error {
+		if version >= endpointproxy.ContractVersion2 {
+			h.gateV2Asked = append(h.gateV2Asked, addr)
+			return h.gateV2Err
+		}
 		h.gateAsked = append(h.gateAsked, addr)
 		return h.gateErr
 	}
@@ -191,6 +200,39 @@ func TestEndpointLoop_GateReadinessIsCheckedUntilItHoldsThenSticks(t *testing.T)
 	require.NoError(t, err)
 	assert.True(t, mustStatus(t, h.loop).GateReady)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("10.0.0.2")}, h.gateAsked)
+}
+
+// Once the gate accepts the proxy, it is asked for contract version 2 on every
+// pass until it accepts that once; until then the node reports version 1 and
+// the pass asks to be revisited.
+func TestEndpointLoop_GateContractIsCheckedUntilVersion2Holds(t *testing.T) {
+	h := newLoopHarness(true)
+	h.gateErr = errors.New("handshake refused")
+	_, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, mustStatus(t, h.loop).GateContract)
+	assert.Empty(t, h.gateV2Asked, "version 2 is asked only of a gate that accepts the proxy")
+
+	h.gateErr, h.gateV2Err = nil, errors.New("unsupported contract version")
+	revisit, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	st := mustStatus(t, h.loop)
+	assert.True(t, st.GateReady)
+	assert.Equal(t, 1, st.GateContract)
+	assert.Equal(t, endpointProbeRetry, revisit)
+
+	h.gateV2Err = nil
+	revisit, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, mustStatus(t, h.loop).GateContract)
+	assert.Zero(t, revisit)
+
+	h.gateErr, h.gateV2Err = errors.New("gate restarted"), errors.New("gate restarted")
+	_, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, mustStatus(t, h.loop).GateContract)
+	assert.Len(t, h.gateAsked, 2)
+	assert.Len(t, h.gateV2Asked, 2)
 }
 
 // A node running no Predastore is ready only once a peer's gate accepts its
@@ -310,7 +352,7 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 
 	var got projection.EndpointProxyStatus
 	require.NoError(t, json.Unmarshal(ask([]byte(`{"node":"n1"}`)), &got))
-	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true, Build: featurelevel.Build}, got)
+	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true, Build: featurelevel.Build, GateContract: 2}, got)
 
 	for _, body := range [][]byte{[]byte(`{"node":"n2"}`), []byte(`not json`)} {
 		var refusal map[string]any
@@ -628,8 +670,9 @@ func (p *testPKI) issue(t *testing.T, name string) (certFile, keyFile string) {
 }
 
 // startGate is an endpoint listener that requires a client certificate from
-// the formation CA and then waits for the PROXY header without answering.
-func startGate(t *testing.T, p *testPKI) uint16 {
+// the formation CA, closes a header above maxVersion, and otherwise waits for
+// the guest's bytes without answering.
+func startGate(t *testing.T, p *testPKI, maxVersion uint8) uint16 {
 	t.Helper()
 	certFile, keyFile := p.issue(t, "gate")
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -648,7 +691,15 @@ func startGate(t *testing.T, p *testPKI) uint16 {
 			}
 			go func() {
 				defer c.Close()
-				_, _ = c.Read(make([]byte, 1))
+				h, err := endpointproxy.Read(c)
+				if err != nil || h.Version > maxVersion {
+					return
+				}
+				// The gate serves the guest's TLS session inside, as predastore does.
+				inner := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+				if inner.Handshake() == nil {
+					_, _ = inner.Read(make([]byte, 1))
+				}
 			}()
 		}
 	}()
@@ -659,23 +710,83 @@ func startGate(t *testing.T, p *testPKI) uint16 {
 // which under TLS 1.3 is decided after the client's handshake returns.
 func TestGateAccepts_OnlyAFormationCertificateIsAccepted(t *testing.T) {
 	formation := newTestPKI(t)
-	port := startGate(t, formation)
+	port := startGate(t, formation, endpointproxy.ContractVersion2)
 	loopback := netip.MustParseAddr("127.0.0.1")
 
 	cert, key := formation.issue(t, "node")
 	dial, err := newEndpointDialer(cert, key, formation.caFile, port)
 	require.NoError(t, err)
-	require.NoError(t, gateAccepts(dial)(t.Context(), loopback))
+	require.NoError(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1))
 
 	rogue := newTestPKI(t)
 	rogueCert, rogueKey := rogue.issue(t, "rogue")
 	dial, err = newEndpointDialer(rogueCert, rogueKey, formation.caFile, port)
 	require.NoError(t, err)
-	require.Error(t, gateAccepts(dial)(t.Context(), loopback))
+	require.Error(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1))
+	require.Error(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion2))
 
 	dial, err = newEndpointDialer(cert, key, rogue.caFile, port)
 	require.NoError(t, err)
-	require.Error(t, gateAccepts(dial)(t.Context(), loopback), "a gate outside the formation is not trusted")
+	require.Error(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1), "a gate outside the formation is not trusted")
+}
+
+// A gate that reads the header and answers nothing has not shown it accepted
+// it, so a slow refusal is never read as version 2.
+func TestGateAccepts_Version2NeedsTheGateToAnswer(t *testing.T) {
+	formation := newTestPKI(t)
+	certFile, keyFile := formation.issue(t, "gate")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	require.NoError(t, err)
+	ln, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert}, ClientCAs: formation.pool,
+		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	nodeCert, nodeKey := formation.issue(t, "node")
+	dial, err := newEndpointDialer(nodeCert, nodeKey, formation.caFile, uint16(ln.Addr().(*net.TCPAddr).Port))
+	require.NoError(t, err)
+	require.Error(t, gateAccepts(dial)(t.Context(), netip.MustParseAddr("127.0.0.1"), endpointproxy.ContractVersion2))
+}
+
+// The version 2 check passes only on a gate that reads a version 2 header and
+// answers the session inside it, and a gate that closes it reads as version 1.
+func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
+	formation := newTestPKI(t)
+	loopback := netip.MustParseAddr("127.0.0.1")
+	cert, key := formation.issue(t, "node")
+	for _, tc := range []struct {
+		name       string
+		maxVersion uint8
+		wantV2     bool
+	}{
+		{name: "a gate at version 1", maxVersion: endpointproxy.ContractVersion1},
+		{name: "a gate at version 2", maxVersion: endpointproxy.ContractVersion2, wantV2: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dial, err := newEndpointDialer(cert, key, formation.caFile, startGate(t, formation, tc.maxVersion))
+			require.NoError(t, err)
+			require.NoError(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1))
+			err = gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion2)
+			if tc.wantV2 {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
 
 func TestNewEndpointDialer_RefusesMissingMaterial(t *testing.T) {

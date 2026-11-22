@@ -27,6 +27,18 @@ type GatewayEndpoint struct {
 	VpcID       string
 	ServiceName string
 	Generation  int64
+	// Policy is the endpoint's custom policy; "" is the default, which allows
+	// everything.
+	Policy string
+}
+
+// PolicyDocument is the policy the endpoint's sessions carry: its custom
+// policy, or the default.
+func (e GatewayEndpoint) PolicyDocument() string {
+	if e.Policy == "" {
+		return ec2vpcendpoint.DefaultPolicy
+	}
+	return e.Policy
 }
 
 // LoadGatewayEndpoints maps each subnet whose route table holds an effective
@@ -64,6 +76,7 @@ func LoadGatewayEndpoints(ctx context.Context, js jetstream.JetStream) (map[stri
 		e := GatewayEndpoint{
 			ID: a.Endpoint.ID, AccountID: a.Endpoint.AccountID, VpcID: a.Endpoint.VpcID,
 			ServiceName: a.Endpoint.ServiceName, Generation: a.Endpoint.Generation,
+			Policy: a.Endpoint.PolicyDocument,
 		}
 		for _, subnet := range governed[rt.RouteTableId] {
 			out[subnet] = e

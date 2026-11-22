@@ -90,7 +90,7 @@ func runMultinodeVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "instance", tg.InstanceID, "node", tg.Node, "timed_gate", tg.Gate, "gate_remote", tg.GateRemote)
 	}
 	probe := func(ip, gate string) (harness.GuestCurl, error) {
-		return harness.ProbeGuestS3(bastion, ip, vpceCred, region, gate, port, bucket)
+		return harness.ProbeGuestS3(bastion, ip, harness.GuestS3ListCmd(vpceCred, region, gate, port, bucket))
 	}
 	flip := func(t *testing.T, phase, want string, act func() error) bool {
 		return vpceTimeFlip(t, bastion, targets, phase, want, vpceFlipScript(want, region, port, bucket), act)

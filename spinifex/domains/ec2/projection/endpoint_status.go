@@ -46,7 +46,10 @@ type EndpointProxyStatus struct {
 	LevelRevision     uint64 `json:"level_revision,omitempty"`
 	PrefixListApplies int    `json:"prefix_list_applies,omitempty"`
 	PrefixListACLs    int    `json:"prefix_list_acls,omitempty"`
-	Error             string `json:"error,omitempty"`
+	// GateContract is the highest endpoint contract version the gate vpcd
+	// probed has accepted; 0 when none has, or from an older vpcd.
+	GateContract int    `json:"gate_contract,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // RequestEndpointProxyStatus asks node's vpcd for its endpoint proxy status. A

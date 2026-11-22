@@ -59,24 +59,27 @@ type endpointView struct {
 	at        time.Time
 }
 
-// effective reports whether the view still admits a session to dst through vpceID.
-func (v *endpointView) effective(subnetID, vpceID string, dst netip.AddrPort) bool {
+// effective reports whether the view still admits s: its destination is an
+// entry, and its subnet routes to its endpoint under the policy it carries.
+func (v *endpointView) effective(s *endpointSession) bool {
 	if v == nil {
 		return false
 	}
-	if _, ok := v.entries[dst]; !ok {
+	if _, ok := v.entries[s.dst]; !ok {
 		return false
 	}
-	return v.endpoints[subnetID].ID == vpceID
+	ep := v.endpoints[s.subnetID]
+	return ep.ID == s.ep.ID && ep.Policy == s.ep.Policy
 }
 
 // endpointSession is one proxied connection, tracked so a pass can close it once
 // its endpoint stops being effective for its subnet.
 type endpointSession struct {
-	eniID, subnetID, vpceID string
-	dst                     netip.AddrPort
-	guest, upstream         net.Conn
-	once                    sync.Once
+	eniID, subnetID string
+	ep              projection.GatewayEndpoint
+	src, dst        netip.AddrPort
+	guest, upstream net.Conn
+	once            sync.Once
 }
 
 // reset closes both halves, the guest's with an RST.
@@ -143,7 +146,7 @@ func (p *EndpointProxy) Publish(v EndpointView) int {
 	p.view = view
 	var stale []*endpointSession
 	for s := range p.sessions {
-		if !view.effective(s.subnetID, s.vpceID, s.dst) {
+		if !view.effective(s) {
 			stale = append(stale, s)
 			delete(p.sessions, s)
 		}
@@ -211,7 +214,7 @@ func (p *EndpointProxy) untrack() {
 func (p *EndpointProxy) register(s *endpointSession) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || !p.view.effective(s.subnetID, s.vpceID, s.dst) {
+	if p.closed || !p.view.effective(s) {
 		return false
 	}
 	p.sessions[s] = struct{}{}
@@ -352,6 +355,19 @@ func (w *warnLimiter) allow(now time.Time) (int, bool) {
 	return n, true
 }
 
+// header encodes s's header at contract version 2, carrying its endpoint's
+// policy: every gate reads version 2 before any endpoint can exist.
+func (s *endpointSession) header() ([]byte, error) {
+	if s.ep.Generation <= 0 {
+		return nil, fmt.Errorf("endpoint %s has no policy generation", s.ep.ID)
+	}
+	return endpointproxy.Header{
+		Version: endpointproxy.ContractVersion2, Source: s.src, Destination: s.dst,
+		VpceID: s.ep.ID, VpcID: s.ep.VpcID, AccountID: s.ep.AccountID,
+		PolicyGeneration: uint64(s.ep.Generation), Policy: s.ep.PolicyDocument(),
+	}.Marshal()
+}
+
 // admit runs the checks a captured connection must pass before it is dialled:
 // the destination is a current entry, the ENI's subnet routes to an endpoint,
 // and the ENI's security groups allow the egress.
@@ -390,14 +406,12 @@ func (p *EndpointProxy) admit(ctx context.Context, guest net.Conn, pinned *eniFa
 	if !allowed {
 		return nil, nil, fmt.Errorf("%w: security groups deny egress to %s", errEndpointRefused, dst)
 	}
-	header, err := endpointproxy.Header{
-		Version: endpointproxy.ContractVersion1, Source: src, Destination: dst,
-		VpceID: ep.ID, VpcID: ep.VpcID, AccountID: ep.AccountID,
-	}.Marshal()
+	s := &endpointSession{eniID: pinned.eniID, subnetID: eni.subnetID, ep: ep, src: src, dst: dst, guest: guest}
+	header, err := s.header()
 	if err != nil {
 		return nil, nil, err
 	}
-	return &endpointSession{eniID: pinned.eniID, subnetID: eni.subnetID, vpceID: ep.ID, dst: dst, guest: guest}, header, nil
+	return s, header, nil
 }
 
 // splice copies both ways, passing a clean end of either stream on as a

@@ -38,7 +38,7 @@ var (
 )
 
 func testEndpoint() projection.GatewayEndpoint {
-	return projection.GatewayEndpoint{ID: epTestVpce, AccountID: epTestAccount, VpcID: epTestVPC, ServiceName: "com.amazonaws.ap-southeast-2.s3"}
+	return projection.GatewayEndpoint{ID: epTestVpce, AccountID: epTestAccount, VpcID: epTestVPC, ServiceName: "com.amazonaws.ap-southeast-2.s3", Generation: 1}
 }
 
 func testView() EndpointView {
@@ -307,10 +307,11 @@ func TestEndpointProxy_AdmittedConnectionCarriesTheHeaderAndSplices(t *testing.T
 		local, ok := c.LocalAddr().(*net.TCPAddr)
 		require.True(t, ok)
 		assert.Equal(t, endpointproxy.Header{
-			Version:     endpointproxy.ContractVersion1,
+			Version:     endpointproxy.ContractVersion2,
 			Source:      netip.AddrPortFrom(epTestGuest, uint16(local.Port)),
 			Destination: epTestEntry,
 			VpceID:      epTestVpce, VpcID: epTestVPC, AccountID: epTestAccount,
+			PolicyGeneration: 1, Policy: testEndpoint().PolicyDocument(),
 		}, hdr)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the upstream never received a PROXY header")
@@ -371,6 +372,20 @@ func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) 
 			v := testView()
 			ep := testEndpoint()
 			ep.ID = "vpce-0fedcba9876543210"
+			v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
+			return v
+		}, false},
+		{"endpoint modified, policy unchanged", func() EndpointView {
+			v := testView()
+			ep := testEndpoint()
+			ep.Generation = 7
+			v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
+			return v
+		}, true},
+		{"policy changed", func() EndpointView {
+			v := testView()
+			ep := testEndpoint()
+			ep.Policy = readOnlyPolicy
 			v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
 			return v
 		}, false},
@@ -560,4 +575,30 @@ func registered(p *EndpointProxy) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.sessions)
+}
+
+const readOnlyPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"*"}]}`
+
+// A session carries its endpoint's custom policy and the generation it was
+// read at.
+func TestEndpointProxy_SessionCarriesItsCustomPolicy(t *testing.T) {
+	up := startUpstream(t)
+	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
+	v := testView()
+	ep := testEndpoint()
+	ep.Generation, ep.Policy = 4, readOnlyPolicy
+	v.Endpoints = map[string]projection.GatewayEndpoint{epTestSubnet: ep}
+	h.p.Publish(v)
+
+	c, err := net.Dial("tcp", h.addr)
+	require.NoError(t, err)
+	defer c.Close()
+	select {
+	case hdr := <-up.headers:
+		assert.Equal(t, uint8(endpointproxy.ContractVersion2), hdr.Version)
+		assert.Equal(t, uint64(4), hdr.PolicyGeneration)
+		assert.Equal(t, readOnlyPolicy, hdr.Policy)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream never received a PROXY header")
+	}
 }

@@ -2227,7 +2227,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		if existing.Protocol == protocol && existing.ProtocolVersion == protocolVersion && existing.Port == port &&
 			existing.TargetType == targetType && existing.HealthCheck == hc {
 			return &elbv2.CreateTargetGroupOutput{
-				TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(existing, nil)},
+				TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(existing)},
 			}, nil
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateTargetGroup,
@@ -2265,8 +2265,16 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
+		TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(record)},
 	}, nil
+}
+
+// AWS omits LoadBalancerArns from a CreateTargetGroup result, while
+// DescribeTargetGroups and ModifyTargetGroup return it as an empty list.
+func (s *ELBv2ServiceImpl) createdTGToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+	tg := s.tgRecordToSDK(r, nil)
+	tg.LoadBalancerArns = nil
+	return tg
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {

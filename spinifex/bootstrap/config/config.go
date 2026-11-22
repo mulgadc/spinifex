@@ -406,7 +406,8 @@ func (c EBSOCIConfig) isZero() bool { return c == EBSOCIConfig{} }
 
 // SupportedEBSProvider reports whether name is a provider a node may run.
 func SupportedEBSProvider(name string) bool {
-	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD || name == EBSProviderOCIBSD
+	_, ok := ebsDefaultServices[name]
+	return ok
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
@@ -416,6 +417,20 @@ func (c EBSConfig) ResolvedProvider() string {
 		return EBSProviderViperblockd
 	}
 	return c.Provider
+}
+
+// ebsDefaultServices maps each EBS provider to the EBS service its node's
+// default service list names. A qemunbd node keeps the viperblock entry.
+var ebsDefaultServices = map[string]string{
+	EBSProviderViperblockd: "viperblock",
+	EBSProviderQEMUNBD:     "viperblock",
+	EBSProviderOCIBSD:      "ocibsd",
+}
+
+// DefaultService returns the EBS service the default service list names for
+// the resolved provider, or "" for a provider no node may run.
+func (c EBSConfig) DefaultService() string {
+	return ebsDefaultServices[c.ResolvedProvider()]
 }
 
 // ResolvedThreads normalizes an unset DefaultThreads to DefaultNBDKitThreads.
@@ -669,13 +684,9 @@ func (cc *ClusterConfig) NodeBaseDir() string {
 // AllServices is the default service list when Services is empty (backward compat).
 var AllServices = []string{"nats", "predastore", "viperblock", "daemon", "awsgw", "vpcd", "ui"}
 
-// HasService reports whether the node runs the named service (empty list means all services).
+// HasService reports whether the node runs the named service (empty list means the defaults).
 func (c Config) HasService(name string) bool {
-	services := c.Services
-	if len(services) == 0 {
-		services = AllServices
-	}
-	return slices.Contains(services, name)
+	return slices.Contains(c.GetServices(), name)
 }
 
 // NodesRunning returns, sorted, the name of every configured node that runs
@@ -692,12 +703,29 @@ func (cc *ClusterConfig) NodesRunning(service string) []string {
 	return nodes
 }
 
-// GetServices returns the configured service list, defaulting to AllServices.
+// NodeServices returns the named node's service list. A peer stanza omits its
+// EBS provider, so it takes the local node's: every node shares one provider.
+func (cc *ClusterConfig) NodeServices(name string) []string {
+	node := cc.Nodes[name]
+	if node.EBS.Provider == "" {
+		node.EBS.Provider = cc.Nodes[cc.Node].EBS.Provider
+	}
+	return node.GetServices()
+}
+
+// GetServices returns the configured service list, defaulting to AllServices
+// with the viperblock service swapped for the node's default EBS service.
 func (c Config) GetServices() []string {
-	if len(c.Services) == 0 {
+	if len(c.Services) > 0 {
+		return c.Services
+	}
+	ebs := c.EBS.DefaultService()
+	if ebs == "" || ebs == "viperblock" {
 		return AllServices
 	}
-	return c.Services
+	services := slices.Clone(AllServices)
+	services[slices.Index(services, "viperblock")] = ebs
+	return services
 }
 
 // LoadConfig loads the configuration from file and environment variables.

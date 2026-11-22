@@ -147,8 +147,8 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 	if dryRun {
 		fmt.Println("Cluster Shutdown Plan (dry-run)")
 		fmt.Printf("  Nodes: %d\n", nodeCount)
-		for name, nodeCfg := range cfg.Nodes {
-			fmt.Printf("    - %s (services: %s)\n", name, strings.Join(nodeCfg.GetServices(), ", "))
+		for name := range cfg.Nodes {
+			fmt.Printf("    - %s (services: %s)\n", name, strings.Join(cfg.NodeServices(name), ", "))
 		}
 		fmt.Printf("  Phases: %s\n", strings.Join(phases, " -> "))
 		fmt.Printf("  Timeout per phase: %s\n", timeout)

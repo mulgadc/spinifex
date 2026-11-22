@@ -160,7 +160,7 @@ jobs:
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -1115,7 +1115,7 @@ jobs:
             { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -1373,7 +1373,7 @@ jobs:
           # disks, which is what the tmpfs assertion below is about.
           echo "WORK_DIR=$E2E_ROOT/work/cell22-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}

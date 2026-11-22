@@ -127,7 +127,7 @@ jobs:
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -265,7 +265,7 @@ jobs:
           sudo umount -l "${ROOTFS}/proc" 2>/dev/null || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}

@@ -90,7 +90,7 @@ func (r *Reaper) recoverOne(ctx context.Context, listed EndpointRecord, lost <-c
 				"model", observed.ModelID, "instanceId", observed.InstanceID)
 			return
 		}
-		slog.ErrorContext(ctx, "bedrock reaper: promoting a recovered endpoint failed",
+		slog.ErrorContext(ctx, "bedrock reaper: promoting a recovered endpoint is unconfirmed; it may have landed",
 			"model", observed.ModelID, "instanceId", observed.InstanceID, "err", err)
 		return
 	}

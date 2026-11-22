@@ -94,6 +94,10 @@ type EndpointRecord struct {
 	ParkedReason ParkReason `json:"parked_reason,omitempty"`
 	ParkedAt     time.Time  `json:"parked_at,omitzero"`
 
+	// HealthHold, when set, keeps automatic reclaim and capacity eviction off
+	// this READY endpoint. An explicit delete still proceeds.
+	HealthHold *HealthHold `json:"health_hold,omitempty"`
+
 	// Pinned exempts this endpoint from the idle-reclaim sweep and from eviction.
 	Pinned bool `json:"pinned,omitempty"`
 	// OperatorReserved marks a pin an operator made explicitly, as opposed to

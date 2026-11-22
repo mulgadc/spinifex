@@ -72,7 +72,7 @@ const defaultMinResidency = 5 * time.Minute
 // refusal rather than an eviction.
 //
 // Evictable is deliberately narrow. A device is never yanked from a running
-// process (InFlight), a pinned endpoint is never touched, and an endpoint that
+// process (InFlight), a pinned or held endpoint is never touched, and one that
 // has not yet served out minResidency is left alone. nodeID confines the
 // choice to this node: GPU capacity is node-local, so stopping an endpoint
 // running elsewhere frees nothing here.
@@ -81,7 +81,7 @@ func selectEvictable(recs []EndpointRecord, nodeID string, minResidency time.Dur
 	var found bool
 	for _, rec := range recs {
 		switch {
-		case rec.State != StateReady, rec.Pinned, rec.InFlight > 0,
+		case rec.State != StateReady, rec.Pinned, rec.Held(), rec.InFlight > 0,
 			rec.NodeID != nodeID, now.Sub(rec.ReadyAt) < minResidency:
 			continue
 		}

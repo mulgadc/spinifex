@@ -84,6 +84,8 @@ type Service struct {
 	identityWrite func(write func() (uint64, error)) (uint64, error)
 	// parkWrite is the same seam for the park write.
 	parkWrite func(write func() (uint64, error)) (uint64, error)
+	// holdWrite is the same seam for health-hold writes.
+	holdWrite func(write func() (uint64, error)) (uint64, error)
 }
 
 var _ EndpointService = (*Service)(nil)
@@ -304,8 +306,8 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 	// Re-checked under the key's lock: a selection gone stale (replaced,
 	// pinned, or otherwise moved on) is not torn down.
 	admit := func(current EndpointRecord) bool {
-		return current.State == StateReady && !current.Pinned && sameIncarnation(current, victim) &&
-			current.Generation == victim.Generation
+		return current.State == StateReady && !current.Pinned && !current.Held() &&
+			sameIncarnation(current, victim) && current.Generation == victim.Generation
 	}
 	key := resolveKey(resolveAccountID(victim.AccountID), victim.ModelID)
 	if _, err := s.deleteEndpoint(ctx, key, victim.ModelID, admit); errors.Is(err, errReclaimSuperseded) {
@@ -546,7 +548,7 @@ var errReclaimSuperseded = errors.New("bedrock: reclaim superseded")
 // holds; the READY-to-DRAINING CAS then makes the teardown this caller's alone.
 func (s *Service) reclaim(ctx context.Context, observed EndpointRecord, stillLeads func() bool) error {
 	admit := func(current EndpointRecord) bool {
-		return current.State == StateReady && sameIncarnation(current, observed) &&
+		return current.State == StateReady && !current.Held() && sameIncarnation(current, observed) &&
 			current.Generation == observed.Generation && stillLeads()
 	}
 	_, err := s.deleteEndpoint(ctx, resolveKey(resolveAccountID(observed.AccountID), observed.ModelID), observed.ModelID, admit)

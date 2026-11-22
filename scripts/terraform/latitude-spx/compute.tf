@@ -30,7 +30,7 @@ resource "latitudesh_ssh_key" "deploy" {
   # Terraform needs a project it does not own. The key exists on every deployment, so this is always checked.
   lifecycle {
     precondition {
-      condition     = var.elastic_ip_count > 0 || (var.project != "" && var.project_id != "")
+      condition     = var.elastic_ip_count > 0 || (var.project != null && var.project != "" && var.project_id != null && var.project_id != "")
       error_message = "elastic_ip_count = 0 keeps an address outside Terraform, so set project and project_id to an existing project: a project Terraform creates is deleted on destroy with everything in it."
     }
   }

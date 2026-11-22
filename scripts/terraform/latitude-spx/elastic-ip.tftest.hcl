@@ -1,5 +1,5 @@
 # Plans the module against a mocked provider: no credentials and no network are used.
-# Run with: tofu init -backend=false && tofu test
+# Developer example: tofu init -backend=false && tofu test
 
 mock_provider "latitudesh" {
   mock_resource "latitudesh_user_data" {
@@ -63,6 +63,30 @@ run "zero_with_a_project_but_no_id_is_refused" {
   variables {
     elastic_ip_count = 0
     project          = "existing"
+  }
+
+  expect_failures = [latitudesh_ssh_key.deploy]
+}
+
+run "zero_with_a_null_project_id_is_refused" {
+  command = plan
+
+  variables {
+    elastic_ip_count = 0
+    project          = "existing"
+    project_id       = null
+  }
+
+  expect_failures = [latitudesh_ssh_key.deploy]
+}
+
+run "zero_with_a_null_project_is_refused" {
+  command = plan
+
+  variables {
+    elastic_ip_count = 0
+    project          = null
+    project_id       = "proj_existing"
   }
 
   expect_failures = [latitudesh_ssh_key.deploy]

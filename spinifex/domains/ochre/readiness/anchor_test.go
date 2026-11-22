@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/readiness"
@@ -282,21 +283,29 @@ func TestInit_ConcurrentInitializersBindOnce(t *testing.T) {
 	})
 }
 
-// The control bucket is opened through the shared get-or-create path, which
-// cannot say who created it. Ownership is proved instead by this attempt's
-// marker landing as the control stream's first message.
+// A control bucket created by another actor after the evidence check is
+// refused unless it is durable, keeps one revision and has never held a message.
 func TestInit_ControlBucketCreatedAfterTheEvidenceCheck(t *testing.T) {
+	alike := jetstream.KeyValueConfig{Bucket: readiness.KVBucket, History: 1}
+	with := func(f func(*jetstream.KeyValueConfig)) jetstream.KeyValueConfig {
+		c := alike
+		f(&c)
+		return c
+	}
 	for name, tc := range map[string]struct {
 		at      string
-		history uint8
+		cfg     jetstream.KeyValueConfig
 		write   bool
 		want    error
 		pending bool
 	}{
-		"empty and alike":           {at: "evidence", history: 1},
-		"already written":           {at: "evidence", history: 1, write: true, want: readiness.ErrPriorBinding},
-		"foreign config":            {at: "evidence", history: 5, want: readiness.ErrPriorBinding},
-		"written before the marker": {at: "publish " + readiness.KVBucket, history: 1, write: true, want: readiness.ErrChanged, pending: true},
+		"empty and alike":           {at: "evidence", cfg: alike},
+		"already written":           {at: "evidence", cfg: alike, write: true, want: readiness.ErrPriorBinding},
+		"more history":              {at: "evidence", cfg: with(func(c *jetstream.KeyValueConfig) { c.History = 5 }), want: readiness.ErrPriorBinding},
+		"size cap":                  {at: "evidence", cfg: with(func(c *jetstream.KeyValueConfig) { c.MaxBytes = 1 << 20 }), want: readiness.ErrNotDurable},
+		"expiring delete markers":   {at: "evidence", cfg: with(func(c *jetstream.KeyValueConfig) { c.LimitMarkerTTL = time.Minute }), want: readiness.ErrNotDurable},
+		"memory storage":            {at: "evidence", cfg: with(func(c *jetstream.KeyValueConfig) { c.Storage = jetstream.MemoryStorage }), want: readiness.ErrNotDurable},
+		"written before the marker": {at: "publish " + readiness.KVBucket, cfg: alike, write: true, want: readiness.ErrChanged, pending: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			js := initEnv(t)
@@ -307,7 +316,7 @@ func TestInit_ControlBucketCreatedAfterTheEvidenceCheck(t *testing.T) {
 				}
 				kv, err := js.KeyValue(t.Context(), readiness.KVBucket)
 				if errors.Is(err, jetstream.ErrBucketNotFound) {
-					kv, err = js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: readiness.KVBucket, History: tc.history})
+					kv, err = js.CreateKeyValue(t.Context(), tc.cfg)
 				}
 				require.NoError(t, err)
 				if tc.write {
@@ -318,7 +327,7 @@ func TestInit_ControlBucketCreatedAfterTheEvidenceCheck(t *testing.T) {
 			a, err := in.Initialize(t.Context(), firstRollout)
 			if tc.want == nil {
 				require.NoError(t, err)
-				assert.Equal(t, uint64(1), a.Bound[1].Marker.Seq, "the marker is the control stream's first message")
+				assert.Equal(t, uint64(1), a.Bound[1].Marker.Seq)
 				_, err = newInit(js).Load(t.Context())
 				require.NoError(t, err)
 				return
@@ -326,13 +335,66 @@ func TestInit_ControlBucketCreatedAfterTheEvidenceCheck(t *testing.T) {
 			require.ErrorIs(t, err, tc.want)
 			_, err = newInit(js).Load(t.Context())
 			if tc.pending {
-				require.ErrorIs(t, err, readiness.ErrBindingPending, "a control stream this attempt does not own is never bound")
+				require.ErrorIs(t, err, readiness.ErrBindingPending, "a control stream written before its marker is never bound")
 				assert.Zero(t, markerSubjects(t, js, readiness.KVBucket))
 			} else {
 				require.ErrorIs(t, err, readiness.ErrAbsent, "refused before any intent was written")
 			}
 		})
 	}
+}
+
+// An empty control stream and a first-message marker refuse earlier writes
+// only. A write sent before initialization and delivered after it lands in the
+// bound stream, which is why FirstRollout must already have fenced its writer.
+func TestInit_EmptyControlStreamDoesNotFenceALateWrite(t *testing.T) {
+	js := initEnv(t)
+	deliver, landed := make(chan struct{}), make(chan error, 1)
+	go func() {
+		<-deliver
+		_, err := js.Publish(t.Context(), "$KV."+readiness.KVBucket+".control", []byte(`{"phase":"open"}`))
+		landed <- err
+	}()
+
+	a, err := newInit(js).Initialize(t.Context(), firstRollout)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), a.Bound[1].Marker.Seq)
+	close(deliver)
+	require.NoError(t, <-landed, "nothing in the binding refuses the late write")
+
+	b, err := newInit(js).Load(t.Context())
+	require.NoError(t, err, "and the binding still verifies afterwards")
+	e, err := b.ControlKV.Get(t.Context(), "control")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"phase":"open"}`, string(e.Value()))
+}
+
+func TestInit_EndpointStreamMustBeDurable(t *testing.T) {
+	t.Run("before binding", func(t *testing.T) {
+		_, _, js := testutil.StartTestJetStream(t)
+		createBucket(t, js, configBucket)
+		_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: endpointBucket, History: 1, MaxBytes: 1 << 20})
+		require.NoError(t, err)
+
+		_, err = newInit(js).Initialize(t.Context(), firstRollout)
+		require.ErrorIs(t, err, readiness.ErrNotDurable)
+		_, err = newInit(js).Load(t.Context())
+		require.ErrorIs(t, err, readiness.ErrAbsent)
+	})
+	t.Run("after binding", func(t *testing.T) {
+		js := initEnv(t)
+		_, err := newInit(js).Initialize(t.Context(), firstRollout)
+		require.NoError(t, err)
+		st, err := js.Stream(t.Context(), "KV_"+endpointBucket)
+		require.NoError(t, err)
+		cfg := st.CachedInfo().Config
+		cfg.MaxBytes = 1 << 20
+		_, err = js.UpdateStream(t.Context(), cfg)
+		require.NoError(t, err)
+
+		_, err = newInit(js).Load(t.Context())
+		require.ErrorIs(t, err, readiness.ErrNotDurable, "a binding over a capped stream is not adopted")
+	})
 }
 
 func TestInit_ConfigBucketMustNotBeABoundStream(t *testing.T) {

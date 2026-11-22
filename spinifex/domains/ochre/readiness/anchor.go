@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -34,6 +35,8 @@ var (
 	ErrPriorBinding = errors.New("readiness binding may already have existed")
 	// ErrNotFirstRollout is an initialization without explicit first-rollout evidence.
 	ErrNotFirstRollout = errors.New("readiness binding initialization requires explicit first-rollout evidence")
+	// ErrNotDurable is a bound stream whose configuration could lose a marker or record.
+	ErrNotDurable = errors.New("readiness stream is not durable")
 )
 
 // AnchorPhase is where an initialization stands.
@@ -69,8 +72,9 @@ type InitConfig struct {
 	EndpointBucket string
 }
 
-// FirstRollout is the caller's assertion that no earlier binding existed. It
-// authenticates nothing; the initializer still refuses when evidence disagrees.
+// FirstRollout asserts no earlier binding existed and every earlier writer and
+// queued publish to either stream is fenced. Nothing here checks the fence; the
+// initializer still refuses when the evidence it can read disagrees.
 type FirstRollout struct {
 	Confirmed bool
 }
@@ -204,6 +208,11 @@ func (in *Initializer) Load(ctx context.Context) (*Bound, error) {
 	if a.Phase == AnchorPending {
 		return nil, fmt.Errorf("%w: intent %s", ErrBindingPending, a.Intent)
 	}
+	for _, bucket := range in.buckets() {
+		if _, err := in.durable(ctx, bucket); err != nil {
+			return nil, err
+		}
+	}
 	b := &Bound{Anchor: a}
 	if b.Endpoints, b.EndpointsKV, err = Attach(ctx, in.js, a.Bound[0]); err != nil {
 		return nil, err
@@ -251,26 +260,42 @@ func (in *Initializer) noPriorBinding(ctx context.Context) error {
 	case !errors.Is(err, jetstream.ErrMsgNotFound):
 		return fmt.Errorf("%w: %s marker discovery: %w", ErrStreamUnavailable, bucket, err)
 	}
+	_, err = in.durable(ctx, bucket)
+	return err
+}
+
+// controlUnused refuses a control stream that is not durable, keeps history,
+// or has ever held a message. An empty stream says nothing about writes still
+// in flight to it; fencing those is the caller's FirstRollout precondition.
+func (in *Initializer) controlUnused(ctx context.Context) error {
+	info, err := in.durable(ctx, KVBucket)
+	if err != nil {
+		return err
+	}
+	if c := info.Config; c.MaxMsgsPerSubject != 1 {
+		return fmt.Errorf("%w: control stream %s keeps %d revisions per key", ErrPriorBinding, c.Name, c.MaxMsgsPerSubject)
+	}
+	if info.State.LastSeq != 0 || info.State.Msgs != 0 {
+		return fmt.Errorf("%w: control stream %s already at seq %d", ErrPriorBinding, info.Config.Name, info.State.LastSeq)
+	}
 	return nil
 }
 
-// controlUnused refuses a control stream this attempt cannot own: one that
-// already held a message or was configured differently. An empty stream is
-// owned only when this attempt's marker lands as its first message.
-func (in *Initializer) controlUnused(ctx context.Context) error {
-	st, err := in.js.Stream(ctx, streamName(KVBucket))
+// durable refuses bucket's stream on the shared kvstore durability terms.
+func (in *Initializer) durable(ctx context.Context, bucket string) (*jetstream.StreamInfo, error) {
+	replicas, err := clustersize.Replicas()
 	if err != nil {
-		return fmt.Errorf("%w: control stream: %w", ErrStreamUnavailable, err)
+		return nil, fmt.Errorf("%w: %s replica count: %w", ErrStreamUnavailable, bucket, err)
+	}
+	st, err := in.js.Stream(ctx, streamName(bucket))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s stream: %w", ErrStreamUnavailable, bucket, err)
 	}
 	info := st.CachedInfo()
-	c := info.Config
-	if info.State.LastSeq != 0 || info.State.Msgs != 0 {
-		return fmt.Errorf("%w: control stream %s already at seq %d", ErrPriorBinding, c.Name, info.State.LastSeq)
+	if err := kvstore.CheckDurable(info.Config, replicas); err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrNotDurable, bucket, err)
 	}
-	if c.MaxMsgsPerSubject != 1 || c.MaxAge != 0 || c.Mirror != nil || len(c.Sources) != 0 || c.Sealed {
-		return fmt.Errorf("%w: control stream %s has a foreign config", ErrPriorBinding, c.Name)
-	}
-	return nil
+	return info, nil
 }
 
 // readAnchor reads the anchor from the cluster-config stream leader. A delete
@@ -351,7 +376,7 @@ func (in *Initializer) writeAnchor(ctx context.Context, a Anchor, expected uint6
 
 // publishMarker writes si's marker as a delete marker that only lands on a
 // subject with no earlier message. The control marker must also be its stream's
-// first message, which is what makes the control stream this attempt's own.
+// first message, which refuses an earlier write but cannot fence a later one.
 func (in *Initializer) publishMarker(ctx context.Context, si StreamIntent) (uint64, error) {
 	msg := &nats.Msg{Subject: "$KV." + si.Bucket + "." + si.MarkerKey, Header: nats.Header{}}
 	msg.Header.Set("KV-Operation", "DEL")

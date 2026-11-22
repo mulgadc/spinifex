@@ -129,9 +129,8 @@ func TestDescribeSnapshotsByID_CrossTenantAndMissingAreIndistinguishable(t *test
 	require.Error(t, missingErr)
 	assert.Nil(t, crossTenant)
 	assert.Nil(t, missing)
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, crossErr.Error())
-	assert.Equal(t, missingErr.Error(), crossErr.Error(),
-		"another account's snapshot must be indistinguishable from one that does not exist")
+	assertByIDNotFound(t, crossErr, "snap-theirs")
+	assertByIDNotFound(t, missingErr, "snap-never-created")
 	for _, key := range store.Gets() {
 		assert.True(t, strings.HasPrefix(key, byIDSnapshots+byIDAccount+"/"),
 			"a by-ID read must stay inside the caller's prefix, read %q", key)
@@ -165,8 +164,7 @@ func TestDescribeSnapshotsByID_OwnerIDsFilter(t *testing.T) {
 			}, byIDAccount)
 
 			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Equal(t, tt.wantErr, err.Error())
+				assertByIDNotFound(t, err, byIDSnapshot)
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, out.Snapshots, 1)
@@ -209,8 +207,7 @@ func TestDescribeSnapshotsByID_AttributeFilters(t *testing.T) {
 			}, byIDAccount)
 
 			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Equal(t, tt.wantErr, err.Error())
+				assertByIDNotFound(t, err, byIDSnapshot)
 				return
 			}
 			require.NoError(t, err)
@@ -346,4 +343,14 @@ func TestDescribeSnapshotsByID_OnlyNilIDs(t *testing.T) {
 	assert.Empty(t, out.Snapshots)
 	assert.Empty(t, store.Gets())
 	assert.Empty(t, store.ListPrefixes())
+}
+
+// assertByIDNotFound requires InvalidSnapshot.NotFound carrying AWS's message
+// naming id.
+func assertByIDNotFound(t *testing.T, err error, id string) {
+	t.Helper()
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, code)
+	assert.Equal(t, "The snapshot '"+id+"' does not exist.", message)
 }

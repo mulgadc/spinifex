@@ -35,12 +35,22 @@ func (f *pendingFixture) assertHidden(svc *SnapshotServiceImpl, id string) {
 		assert.NotEqual(f.t, id, aws.StringValue(snap.SnapshotId), "DescribeSnapshots lists a deleted snapshot")
 	}
 	_, err = svc.DescribeSnapshots(f.t.Context(), &ec2.DescribeSnapshotsInput{SnapshotIds: aws.StringSlice([]string{id})}, testAccountID)
-	assert.EqualError(f.t, err, awserrors.ErrorInvalidSnapshotNotFound)
+	assertSnapshotNotFound(f.t, err, id)
 	_, err = svc.DescribeSnapshotsStrict(f.t.Context(), &ec2.DescribeSnapshotsInput{SnapshotIds: aws.StringSlice([]string{id})}, testAccountID)
-	assert.EqualError(f.t, err, awserrors.ErrorInvalidSnapshotNotFound)
+	assertSnapshotNotFound(f.t, err, id)
 	_, err = svc.CopySnapshot(f.t.Context(), &ec2.CopySnapshotInput{SourceSnapshotId: aws.String(id)}, testAccountID)
-	assert.EqualError(f.t, err, awserrors.ErrorInvalidSnapshotNotFound)
-	assert.EqualError(f.t, f.deleteSnapshot(svc, id), awserrors.ErrorInvalidSnapshotNotFound, "a repeated delete")
+	assertSnapshotNotFound(f.t, err, id)
+	assertSnapshotNotFound(f.t, f.deleteSnapshot(svc, id), id)
+}
+
+// assertSnapshotNotFound requires InvalidSnapshot.NotFound carrying AWS's
+// message naming id.
+func assertSnapshotNotFound(t *testing.T, err error, id string) {
+	t.Helper()
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, code)
+	assert.Equal(t, "The snapshot '"+id+"' does not exist.", message)
 }
 
 // DeleteSnapshot marks a pending or AmbiguousCreate snapshot and returns,

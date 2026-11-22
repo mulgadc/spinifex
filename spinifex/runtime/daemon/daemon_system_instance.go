@@ -338,8 +338,10 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	// Add to daemon state so LaunchInstance can find it
 	d.vmMgr.Insert(instance)
 
+	// A VM without a record is invisible to ownership checks and recovery.
 	if err := d.WriteState(); err != nil {
-		slog.Warn("LaunchSystemInstance: failed to write state", "instanceId", instance.ID, "err", err)
+		d.cleanupFailedSystemInstance(instance, instanceType)
+		return nil, fmt.Errorf("write instance record: %w", err)
 	}
 
 	// Subscribe to per-instance NATS topic for terminate commands.

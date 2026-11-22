@@ -406,7 +406,8 @@ func (c EBSOCIConfig) isZero() bool { return c == EBSOCIConfig{} }
 
 // SupportedEBSProvider reports whether name is a provider a node may run.
 func SupportedEBSProvider(name string) bool {
-	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD || name == EBSProviderOCIBSD
+	_, ok := ebsProviderServices[name]
+	return ok
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
@@ -416,6 +417,19 @@ func (c EBSConfig) ResolvedProvider() string {
 		return EBSProviderViperblockd
 	}
 	return c.Provider
+}
+
+// ebsProviderServices maps each EBS provider to the service that serves it.
+var ebsProviderServices = map[string]string{
+	EBSProviderViperblockd: "viperblock",
+	EBSProviderQEMUNBD:     "qemunbd",
+	EBSProviderOCIBSD:      "ocibsd",
+}
+
+// ProviderService returns the service that serves the resolved provider, or
+// "" for a provider no node may run.
+func (c EBSConfig) ProviderService() string {
+	return ebsProviderServices[c.ResolvedProvider()]
 }
 
 // ResolvedThreads normalizes an unset DefaultThreads to DefaultNBDKitThreads.
@@ -699,16 +713,17 @@ func (cc *ClusterConfig) NodeServices(name string) []string {
 }
 
 // GetServices returns the configured service list, defaulting to AllServices
-// with the viperblock service swapped for ocibsd on an ocibsd-provider node.
+// with the viperblock service swapped for the node's EBS provider service.
 func (c Config) GetServices() []string {
 	if len(c.Services) > 0 {
 		return c.Services
 	}
-	if c.EBS.ResolvedProvider() != EBSProviderOCIBSD {
+	provider := c.EBS.ProviderService()
+	if provider == "" || provider == "viperblock" {
 		return AllServices
 	}
 	services := slices.Clone(AllServices)
-	services[slices.Index(services, "viperblock")] = EBSProviderOCIBSD
+	services[slices.Index(services, "viperblock")] = provider
 	return services
 }
 

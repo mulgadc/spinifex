@@ -91,8 +91,8 @@ type VPCServiceImpl struct {
 	rtbKV      jetstream.KeyValue // route table bucket for auto-creating main route table
 	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
 	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
-	natgwKV    jetstream.KeyValue // NAT gateway bucket for the DeleteSubnet dependency check
-	natgwIdxKV jetstream.KeyValue // per-subnet NAT gateway index for the same check
+	natgwKV    jetstream.KeyValue // NAT gateway bucket for the DeleteSubnet and DeleteVpc dependency checks
+	natgwIdxKV jetstream.KeyValue // per-subnet NAT gateway index for the DeleteSubnet check
 	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
@@ -551,6 +551,11 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		return nil, err
 	}
 	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
+		return nil, err
+	}
+	// A NAT gateway's record leaves this bucket once deleted, so any record
+	// naming the VPC is one AWS would still count as a dependency.
+	if err := rejectAttachedGateway(ctx, s.natgwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
 	if err := s.rejectOwnedDependency(ctx, accountID, vpcID); err != nil {

@@ -11,6 +11,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin" "$work/home"
 real_python="$(command -v python3)"
+real_tofu="$(command -v tofu || true)"
 
 AUTH=FAKEAUTHTOKEN9
 NODE=FAKENODETOKEN7
@@ -26,6 +27,7 @@ if [ ! -t 0 ]; then
     [ -z "$in" ] || echo "$(basename "$0") stdin: $in" >> "$FAKE_STDIN"
 fi
 case "$(basename "$0")" in
+    tofu) case "$*" in *console*) printf '%s\n' "${FAKE_TF_COUNT-1}" ;; esac ;;
     curl) printf '{"data":[{"attributes":{"token_last_slice":"%s","read_only":false}}]}\n200' "$(printf '%s' "$FAKE_NODE" | tail -c 5)" ;;
     ssh)
         if [ -n "${FAKE_SSH_EVAL:-}" ]; then
@@ -104,6 +106,35 @@ check_result "one node with one address goes on" "$( (NODES=1 TF_VAR_elastic_ip_
 check_result "one node with no setting goes on" "$( (NODES=1 TF_VAR_elastic_ip_count="" require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
 check_result "one node with two addresses stops" "$( (NODES=1 TF_VAR_elastic_ip_count=2 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
 check_result "three nodes with three addresses go on" "$( (NODES=3 TF_VAR_elastic_ip_count=3 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+# The effective count is read from Terraform, and a count of 0 is refused before anything is applied.
+# shellcheck disable=SC2034 # read by the sourced functions
+TF_BIN=tofu SCRIPT_DIR="$work" TF_STATE="$work/x.tfstate" NAME=t1 SITE=DAL PLAN=p OS=o PROJECT="" PROJECT_ID="" SSH_KEY="$work/k"
+check_result "a count of 1 goes on" "$( (FAKE_TF_COUNT=1 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 3 goes on" "$( (FAKE_TF_COUNT=3 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 0 stops" "$( (FAKE_TF_COUNT=0 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "a count that cannot be read stops" "$( (FAKE_TF_COUNT="" require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+: > "$FAKE_ARGV"
+(FAKE_TF_COUNT=1 require_bought_address) >/dev/null 2>&1 || true
+check_result "the read adds no -var for the count" "$(grep -c 'elastic_ip_count' "$FAKE_ARGV" || true)" 0
+check_result "the read is a console and no apply" "$(grep -c '^tofu .*\(apply\|destroy\)' "$FAKE_ARGV" || true)" 0
+# A count set in terraform.tfvars is seen as Terraform sees it, which the stand-in cannot show: the real
+# binary reads the module copy. Skipped, and said so, where no tofu or no provider is available.
+if [ -n "$real_tofu" ]; then
+    mkdir "$work/mod"
+    cp "$here"/*.tf "$work/mod/"
+    if (cd "$work/mod" && "$real_tofu" init -backend=false -input=false >/dev/null 2>&1); then
+        echo 'elastic_ip_count = 0' > "$work/mod/terraform.tfvars"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_bought_address) 2>&1 || true)"
+        check_result "a count of 0 in terraform.tfvars stops" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 1
+        echo 'elastic_ip_count = 2' > "$work/mod/terraform.tfvars"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)"
+        check_result "a count of 2 in terraform.tfvars goes on" "$got" ran
+    else
+        echo "skip a count in terraform.tfvars: tofu could not initialise the module here"
+    fi
+else
+    echo "skip a count in terraform.tfvars: no tofu on the PATH"
+fi
 printf 'binary with latitude_elastic_ip_ids inside\n' > "$work/spx-new"
 printf 'binary of a release\n' > "$work/spx-old"
 SPX_BIN="$work/spx-new"

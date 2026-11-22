@@ -323,9 +323,24 @@ require_one_address() {
         *) die "a one-node deployment publishes one Elastic IP; unset TF_VAR_elastic_ip_count (it is ${TF_VAR_elastic_ip_count}) or use --nodes 3 for the floating pool" ;;
     esac
 }
+
+# require_bought_address stops a run whose effective elastic_ip_count is 0. The count is read the way
+# Terraform will see it (TF_VAR_, terraform.tfvars, *.auto.tfvars and the state) without a -var that
+# would override it. This script buys and records its own addresses, so zero is for Terraform alone.
+require_bought_address() {
+    local count
+    "$TF_BIN" -chdir="$SCRIPT_DIR" init -input=false >/dev/null 2>&1 || die "terraform init failed; run it in $SCRIPT_DIR to see why"
+    count="$(printf 'var.elastic_ip_count\n' | tf console 2>/dev/null | tail -n 1)" || count=""
+    case "$count" in
+        0) die "elastic_ip_count is 0, and this script buys and records its own Elastic IPs; zero is for provisioning with Terraform alone and forming the cluster with the operator collection (see the README)" ;;
+        [1-5]) ;;
+        *) die "could not read elastic_ip_count from Terraform (got '${count}'); check TF_VAR_elastic_ip_count and the .tfvars files in $SCRIPT_DIR" ;;
+    esac
+}
 preflight() {
     require_branch_build
     require_one_address
+    require_bought_address
     [ -r "$SSH_KEY" ] && [ -r "$SSH_KEY.pub" ] || die "SSH key $SSH_KEY (and .pub) not readable"
     command -v aws >/dev/null || die "the AWS CLI is not installed"
     command -v python3 >/dev/null || die "python3 is not installed"

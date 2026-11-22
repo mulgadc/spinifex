@@ -440,10 +440,11 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 		t.Logf("relaunching %s at lease epoch %d, above the killed launch's %d", volumeID, epoch, k.leaseEpoch)
 		r.guard(t, volumeID, k.lease, epoch, seenAt)
 	}
-	// The wrapper records its pid after setsid and then execs nbdkit, so the
-	// pid is nbdkit's whether or not setsid had to fork.
+	// The wrapper records its pid after setsid and then execs nbdkit. Only the
+	// redirected sudo is backgrounded: a backgrounded list keeps a bash
+	// subshell holding the session open for as long as nbdkit runs.
 	start := fmt.Sprintf(
-		"sudo rm -f %s %s; sudo touch %s %s && sudo chmod 666 %s %s && "+
+		"sudo rm -f %s %s; sudo touch %s %s && sudo chmod 666 %s %s || exit 1; "+
 			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; "+
 			"exec setsid sh -c \"echo \\$\\$ > %s; exec \\\"\\$@\\\"\" sh %s' "+
 			"</dev/null >%s 2>&1 & sleep 5; cat %s",

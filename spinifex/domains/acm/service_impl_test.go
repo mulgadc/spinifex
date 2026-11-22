@@ -630,7 +630,10 @@ func TestDeleteCertificate_RefusesWhenInUse(t *testing.T) {
 
 	_, err = svc.DeleteCertificate(context.Background(), &acm.DeleteCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorACMResourceInUse)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorACMResourceInUse, code)
+	assert.Equal(t, "Certificate "+certArn+" in account "+testAccountID+" is in use.", message)
 
 	// Refused, not partially applied: the certificate must still be there.
 	_, err = svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: out.CertificateArn}, testAccountID)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/readiness"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -408,6 +409,81 @@ func TestStream_WholeStreamPurgeKeepsCreationButLosesTheMarker(t *testing.T) {
 			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamMissing, "the missing marker refuses the emptied stream")
 			_, _, err = readiness.Attach(t.Context(), js, b)
 			require.ErrorIs(t, err, readiness.ErrStreamMissing)
+		})
+	}
+}
+
+func updateStream(t *testing.T, js jetstream.JetStream, bucket string, f func(*jetstream.StreamConfig)) {
+	t.Helper()
+	st, err := js.Stream(t.Context(), "KV_"+bucket)
+	require.NoError(t, err)
+	cfg := st.CachedInfo().Config
+	f(&cfg)
+	_, err = js.UpdateStream(t.Context(), cfg)
+	require.NoError(t, err)
+}
+
+// A config change keeps the creation time and the marker, so only the
+// durability check sees it. The latch is held by the handle alone: a new handle
+// or a restarted process attaches again once the config is repaired.
+func TestStream_NonDurableConfigQuarantinesTheHandle(t *testing.T) {
+	for _, bucket := range boundBuckets {
+		t.Run(bucket+" size cap", func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			createBucket(t, js, bucket)
+			b := observe(t, js, bucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			updateStream(t, js, bucket, func(c *jetstream.StreamConfig) { c.MaxBytes = 1 << 20 })
+			now, err := readiness.Observe(t.Context(), js, bucket, markerKey)
+			require.NoError(t, err)
+			assert.Equal(t, b, now, "the binding itself is unchanged")
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrNotDurable)
+
+			updateStream(t, js, bucket, func(c *jetstream.StreamConfig) { c.MaxBytes = -1 })
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrNotDurable, "repairing the config does not lift the latch")
+			_, _, err = readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err, "nothing outside the handle remembers the observation")
+		})
+		t.Run(bucket+" expiring delete markers", func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			createBucket(t, js, bucket)
+			b := observe(t, js, bucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			updateStream(t, js, bucket, func(c *jetstream.StreamConfig) {
+				c.AllowMsgTTL = true
+				c.SubjectDeleteMarkerTTL = time.Minute
+			})
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrNotDurable)
+			_, _, err = readiness.Attach(t.Context(), js, b)
+			require.ErrorIs(t, err, readiness.ErrNotDurable)
+		})
+		t.Run(bucket+" too few replicas", func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			createBucket(t, js, bucket)
+			b := observe(t, js, bucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			clustersize.RedeclareForTest(t, 3)
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrNotDurable)
+		})
+		t.Run(bucket+" unknown cluster size", func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			createBucket(t, js, bucket)
+			b := observe(t, js, bucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			clustersize.ResetForTest()
+			t.Cleanup(func() { clustersize.DeclareForTest(t, 1) })
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamUnavailable)
+			require.NotErrorIs(t, s.Verify(t.Context()), readiness.ErrNotDurable)
+			clustersize.DeclareForTest(t, 1)
+			require.NoError(t, s.Verify(t.Context()), "an unreadable requirement does not latch")
 		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -90,9 +91,9 @@ func Attach(ctx context.Context, js jetstream.JetStream, b Binding) (*Stream, je
 	return s, kv, nil
 }
 
-// Verify checks the stream's reported identity against the binding. Call it
-// before interpreting a read or sending a write, and again after every
-// acknowledgement; it compares identities and is not an atomic write fence.
+// Verify checks the stream's reported identity and durability against the
+// binding. Call it before interpreting a read or sending a write and after every
+// acknowledgement; it is not atomic against a later write or config change.
 func (s *Stream) Verify(ctx context.Context) error {
 	s.mu.Lock()
 	q := s.quarantine
@@ -101,10 +102,13 @@ func (s *Stream) Verify(ctx context.Context) error {
 		return q
 	}
 	b := s.binding
-	created, err := streamCreated(ctx, s.js, b.Bucket)
-	if err == nil && !created.Equal(b.Created) {
+	info, err := streamInfo(ctx, s.js, b.Bucket)
+	if err == nil && !info.Created.Equal(b.Created) {
 		err = fmt.Errorf("%w: %s created %s, bound %s", ErrStreamReplaced,
-			b.Bucket, created.Format(time.RFC3339Nano), b.Created.Format(time.RFC3339Nano))
+			b.Bucket, info.Created.Format(time.RFC3339Nano), b.Created.Format(time.RFC3339Nano))
+	}
+	if err == nil {
+		err = checkDurable(b.Bucket, info.Config)
 	}
 	if err == nil {
 		var m Marker
@@ -114,7 +118,7 @@ func (s *Stream) Verify(ctx context.Context) error {
 		}
 	}
 	switch {
-	case errors.Is(err, ErrStreamMissing), errors.Is(err, ErrStreamReplaced):
+	case errors.Is(err, ErrStreamMissing), errors.Is(err, ErrStreamReplaced), errors.Is(err, ErrNotDurable):
 		return s.quarantined(err)
 	case err != nil:
 		return err
@@ -135,24 +139,46 @@ func (s *Stream) quarantined(err error) error {
 	return s.quarantine
 }
 
-// streamCreated reads the stream's creation time. A leaderless group member
-// may also answer, so an answer naming no current leader is refused.
+// streamCreated reads the stream's creation time.
 func streamCreated(ctx context.Context, js jetstream.JetStream, bucket string) (time.Time, error) {
+	info, err := streamInfo(ctx, js, bucket)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.Created, nil
+}
+
+// streamInfo reads the stream's information. A leaderless group member may
+// also answer, so an answer naming no current leader is refused.
+func streamInfo(ctx context.Context, js jetstream.JetStream, bucket string) (*jetstream.StreamInfo, error) {
 	st, err := js.Stream(ctx, streamName(bucket))
 	if errors.Is(err, jetstream.ErrStreamNotFound) {
-		return time.Time{}, fmt.Errorf("%w: %s", ErrStreamMissing, bucket)
+		return nil, fmt.Errorf("%w: %s", ErrStreamMissing, bucket)
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrStreamUnavailable, bucket, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrStreamUnavailable, bucket, err)
 	}
 	info := st.CachedInfo()
 	if info == nil || info.Created.IsZero() {
-		return time.Time{}, fmt.Errorf("%w: %s reported no creation time", ErrStreamUnavailable, bucket)
+		return nil, fmt.Errorf("%w: %s reported no creation time", ErrStreamUnavailable, bucket)
 	}
 	if info.Cluster == nil || info.Cluster.Leader == "" {
-		return time.Time{}, fmt.Errorf("%w: %s reported no stream leader", ErrStreamUnavailable, bucket)
+		return nil, fmt.Errorf("%w: %s reported no stream leader", ErrStreamUnavailable, bucket)
 	}
-	return info.Created, nil
+	return info, nil
+}
+
+// checkDurable refuses c on the shared kvstore durability terms. An unknown
+// cluster size leaves durability unknown, which is unavailable, not refused.
+func checkDurable(bucket string, c jetstream.StreamConfig) error {
+	replicas, err := clustersize.Replicas()
+	if err != nil {
+		return fmt.Errorf("%w: %s replica count: %w", ErrStreamUnavailable, bucket, err)
+	}
+	if err := kvstore.CheckDurable(c, replicas); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrNotDurable, bucket, err)
+	}
+	return nil
 }
 
 // readMarker reads the last message on key through a get only the stream

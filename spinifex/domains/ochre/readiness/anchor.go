@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -208,11 +207,6 @@ func (in *Initializer) Load(ctx context.Context) (*Bound, error) {
 	if a.Phase == AnchorPending {
 		return nil, fmt.Errorf("%w: intent %s", ErrBindingPending, a.Intent)
 	}
-	for _, bucket := range in.buckets() {
-		if _, err := in.durable(ctx, bucket); err != nil {
-			return nil, err
-		}
-	}
 	b := &Bound{Anchor: a}
 	if b.Endpoints, b.EndpointsKV, err = Attach(ctx, in.js, a.Bound[0]); err != nil {
 		return nil, err
@@ -283,19 +277,11 @@ func (in *Initializer) controlUnused(ctx context.Context) error {
 
 // durable refuses bucket's stream on the shared kvstore durability terms.
 func (in *Initializer) durable(ctx context.Context, bucket string) (*jetstream.StreamInfo, error) {
-	replicas, err := clustersize.Replicas()
+	info, err := streamInfo(ctx, in.js, bucket)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s replica count: %w", ErrStreamUnavailable, bucket, err)
+		return nil, err
 	}
-	st, err := in.js.Stream(ctx, streamName(bucket))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s stream: %w", ErrStreamUnavailable, bucket, err)
-	}
-	info := st.CachedInfo()
-	if err := kvstore.CheckDurable(info.Config, replicas); err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrNotDurable, bucket, err)
-	}
-	return info, nil
+	return info, checkDurable(bucket, info.Config)
 }
 
 // readAnchor reads the anchor from the cluster-config stream leader. A delete

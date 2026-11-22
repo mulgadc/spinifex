@@ -231,6 +231,7 @@ func TestRecoverParked_IncompleteOrMismatchedIdentityIsRefused(t *testing.T) {
 		"unknown reason":    func(r *EndpointRecord) { r.ParkedReason = "operator-hold" },
 		"no park time":      func(r *EndpointRecord) { r.ParkedAt = time.Time{} },
 		"no instance":       func(r *EndpointRecord) { r.InstanceID = "" },
+		"no node":           func(r *EndpointRecord) { r.NodeID = "" },
 		"no ENI":            func(r *EndpointRecord) { r.ENIID = "" },
 		"no private IP":     func(r *EndpointRecord) { r.PrivateIP = "" },
 		"no creation time":  func(r *EndpointRecord) { r.CreatedAt = time.Time{} },
@@ -402,4 +403,57 @@ func TestRecoverParked_DelayedParkWriteRacesPromotion(t *testing.T) {
 	assert.Equal(t, promoted, f.current(t, key))
 	assertRetained(t, f.harness)
 	assert.EqualValues(t, 1, f.harness.launcher.launchCount.Load(), "recovery must not relaunch")
+}
+
+// recoverOne must act on the record it reads at a revision, not the listing
+// that named it: a listing gone stale must never route probes or BaseURL.
+func TestRecoverParked_StaleListingIsNeverUsed(t *testing.T) {
+	t.Parallel()
+	const staleIP = "10.0.0.7"
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*EndpointRecord)
+		promote bool
+	}{
+		{name: "stored address changed", mutate: func(r *EndpointRecord) { r.PrivateIP = "10.0.0.8" }, promote: true},
+		{name: "stored members invalid", mutate: func(r *EndpointRecord) {
+			for id, m := range r.Members {
+				m.Port = vllmServePort
+				r.Members[id] = m
+			}
+		}},
+		{name: "stored account differs from its key", mutate: func(r *EndpointRecord) { r.AccountID = recoveryTenant }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRecoveryFixture(t)
+			stored := parkedBundle(t, awsidentifiers.GlobalAccountID)
+			tc.mutate(&stored)
+			key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+			_, err := f.svc.store.Create(t.Context(), key, &stored)
+			require.NoError(t, err)
+			listed := parkedBundle(t, awsidentifiers.GlobalAccountID)
+			listed.PrivateIP = staleIP
+			listed.CreatedAt, listed.ParkedAt = stored.CreatedAt, stored.ParkedAt
+			require.True(t, sameParked(stored, listed), "the stale listing matches on incarnation, generation and reason")
+
+			f.reaper.recoverOne(t.Context(), listed, nil)
+
+			got := f.current(t, key)
+			for _, m := range listed.Members {
+				assert.Zero(t, f.probe.count(net.JoinHostPort(staleIP, strconv.Itoa(m.Port))), "no probe on a stale route")
+			}
+			if !tc.promote {
+				assert.Equal(t, stored, got, "an invalid stored record stays parked")
+				assert.Zero(t, f.probes())
+				return
+			}
+			require.Equal(t, StateReady, got.State)
+			assert.Equal(t, "http://"+net.JoinHostPort(stored.PrivateIP, strconv.Itoa(vllmServePort)), got.BaseURL)
+			for modelID, m := range stored.Members {
+				assert.Equal(t, 1, f.probe.count(net.JoinHostPort(stored.PrivateIP, strconv.Itoa(m.Port))), modelID)
+			}
+			f.assertNothingDone(t)
+		})
+	}
 }

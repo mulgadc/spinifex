@@ -37,21 +37,21 @@ func (r *Reaper) recoverParked(ctx context.Context, lost <-chan struct{}) error 
 	return nil
 }
 
-func (r *Reaper) recoverOne(ctx context.Context, observed EndpointRecord, lost <-chan struct{}) {
-	key := resolveKey(resolveAccountID(observed.AccountID), observed.ModelID)
+func (r *Reaper) recoverOne(ctx context.Context, listed EndpointRecord, lost <-chan struct{}) {
+	key := resolveKey(resolveAccountID(listed.AccountID), listed.ModelID)
+	// Everything below is derived from this read, never from the listing; the
+	// promotion is then a CAS at this exact revision.
+	observed, rev, found, err := r.svc.store.getRevision(ctx, key)
+	if err != nil || !found || !observed.Parked() ||
+		resolveKey(resolveAccountID(observed.AccountID), observed.ModelID) != key {
+		return
+	}
 	targets, primaryURL, err := parkedTargets(observed)
 	if err != nil {
 		slog.WarnContext(ctx, "bedrock reaper: parked endpoint left parked",
 			"model", observed.ModelID, "instanceId", observed.InstanceID, "err", err)
 		return
 	}
-	// The revision is taken before the probe; anything written after it makes
-	// the promotion conflict rather than land over it.
-	current, rev, found, err := r.svc.store.getRevision(ctx, key)
-	if err != nil || !found || !sameParked(current, observed) {
-		return
-	}
-	observed = current
 
 	probeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
@@ -114,7 +114,7 @@ func parkedTargets(rec EndpointRecord) (map[string]readinessTarget, string, erro
 	default:
 		return nil, "", fmt.Errorf("%w: unknown park reason", errRecoveryIncomplete)
 	}
-	if rec.ParkedAt.IsZero() || rec.CreatedAt.IsZero() || rec.InstanceID == "" || rec.ENIID == "" ||
+	if rec.ParkedAt.IsZero() || rec.CreatedAt.IsZero() || rec.NodeID == "" || rec.InstanceID == "" || rec.ENIID == "" ||
 		rec.WeightsVolumeID == "" || net.ParseIP(rec.PrivateIP) == nil {
 		return nil, "", fmt.Errorf("%w: missing marker or resource identity", errRecoveryIncomplete)
 	}

@@ -140,11 +140,12 @@ func TestReadinessRedirectRepro_LaunchRedirectRetainsWithoutReadyOrTeardown(t *t
 			s.WaitLaunches()
 
 			rec := describeState(t, s, testModelID)
-			t.Logf("source /v1/models=%d destination /v1/models=%d state=%s instance=%q baseURL=%s terminated=%v enisDeleted=%v volumesDeleted=%v",
-				p.source.count("/v1/models"), p.dest.count("/v1/models"), rec.State, rec.InstanceID, rec.BaseURL,
-				h.launcher.terminations(), h.vpc.deleted, h.volumes.deleted)
-			assert.Positive(t, p.source.count("/v1/models"))
-			assert.Zero(t, p.dest.count("/v1/models"), "the redirect target must receive no probe")
+			t.Logf("source /v1/models=%d /health=%d destination /v1/models=%d /health=%d state=%s instance=%q baseURL=%s terminated=%v enisDeleted=%v volumesDeleted=%v",
+				p.source.count("/v1/models"), p.source.count("/health"), p.dest.count("/v1/models"), p.dest.count("/health"),
+				rec.State, rec.InstanceID, rec.BaseURL, h.launcher.terminations(), h.vpc.deleted, h.volumes.deleted)
+			// A redirect from any member cancels the others, so only one route may be probed.
+			assert.Positive(t, p.source.count("/v1/models")+p.source.count("/health"), "a member readiness route must be probed")
+			assert.Zero(t, p.dest.count("/v1/models")+p.dest.count("/health"), "the redirect target must receive no probe")
 			assert.NotEqual(t, StateReady, rec.State, "a redirecting member must not read as ready")
 			assert.Equal(t, StateStarting, rec.State, "the launch record must be retained")
 			assert.NotEmpty(t, rec.InstanceID, "the retained record must name the VM it holds")

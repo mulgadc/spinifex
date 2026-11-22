@@ -3,6 +3,7 @@ package ochre
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,6 +69,41 @@ func scrapeMetrics(ctx context.Context, client *http.Client, baseURL string) (en
 	m, err := parseVLLMMetrics(io.LimitReader(resp.Body, metricsBodyLimit))
 	if err != nil {
 		return endpointMetrics{}, fmt.Errorf("bedrock: scrape %s: %w", url, err)
+	}
+	return m, nil
+}
+
+// errMetricsRedirected is a metrics probe answered with a redirect, which is
+// neither followed nor read as metrics.
+var errMetricsRedirected = errors.New("bedrock: metrics probe was redirected")
+
+// probeMetrics is scrapeMetrics through a no-follow copy of client. A redirect,
+// including one with a malformed or missing Location, is errMetricsRedirected;
+// errors name the endpoint by scheme and host and never quote a Location.
+func probeMetrics(ctx context.Context, client *http.Client, baseURL string) (endpointMetrics, error) {
+	id := endpointLogID(baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/metrics", nil)
+	if err != nil {
+		return endpointMetrics{}, fmt.Errorf("bedrock: metrics probe %s: invalid request", id)
+	}
+	// The connection is not pooled, so unread bytes are never logged as idle.
+	req.Close = true
+	probe, recorder := noFollow(client)
+	resp, err := probe.Do(req)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	switch {
+	case recorder.redirected:
+		return endpointMetrics{}, fmt.Errorf("%w: %s", errMetricsRedirected, id)
+	case err != nil:
+		return endpointMetrics{}, fmt.Errorf("bedrock: metrics probe %s: %s", id, transportFailureClass(err))
+	case resp.StatusCode != http.StatusOK:
+		return endpointMetrics{}, fmt.Errorf("bedrock: metrics probe %s: HTTP %d", id, resp.StatusCode)
+	}
+	m, err := parseVLLMMetrics(io.LimitReader(resp.Body, metricsBodyLimit))
+	if err != nil {
+		return endpointMetrics{}, fmt.Errorf("bedrock: metrics probe %s: %w", id, err)
 	}
 	return m, nil
 }

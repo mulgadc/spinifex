@@ -163,8 +163,9 @@ func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor,
 		}
 	}
 
-	// Every marker write has definitively finished; re-observe before binding
-	// so a replacement or a store that stopped being durable is never bound.
+	// Every marker write has definitively finished; re-observe before binding.
+	// A store that changes after this check can still be bound, but is then
+	// reported as a failure rather than a successful binding.
 	in.step("verify")
 	bound := pending
 	bound.Phase = AnchorBound

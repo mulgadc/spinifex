@@ -148,8 +148,9 @@ func streamCreated(ctx context.Context, js jetstream.JetStream, bucket string) (
 	return info.Created, nil
 }
 
-// streamInfo reads the stream's information. A leaderless group member may
-// also answer, so an answer naming no current leader is refused.
+// streamInfo reads the stream's information, refusing an answer that names no
+// leader. Any member may answer and name the leader, so this does not show
+// who answered; only the marker get is leader-attributed.
 func streamInfo(ctx context.Context, js jetstream.JetStream, bucket string) (*jetstream.StreamInfo, error) {
 	st, err := js.Stream(ctx, streamName(bucket))
 	if errors.Is(err, jetstream.ErrStreamNotFound) {

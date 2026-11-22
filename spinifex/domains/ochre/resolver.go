@@ -360,10 +360,7 @@ func probeLiveness(ctx context.Context, client *http.Client, url string) livenes
 	}
 	// The connection is not pooled, so trailing bytes are never logged as idle.
 	req.Close = true
-	recorder := &redirectRecorder{next: client.Transport}
-	probe := *client
-	probe.Transport = recorder
-	probe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	probe, recorder := noFollow(client)
 	resp, err := probe.Do(req)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
@@ -378,6 +375,16 @@ func probeLiveness(ctx context.Context, client *http.Client, url string) livenes
 	default:
 		return livenessNotLive
 	}
+}
+
+// noFollow returns a shallow copy of client that hands any redirect back
+// unfollowed, and the recorder that notes one. client itself is unchanged.
+func noFollow(client *http.Client) (*http.Client, *redirectRecorder) {
+	recorder := &redirectRecorder{next: client.Transport}
+	probe := *client
+	probe.Transport = recorder
+	probe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &probe, recorder
 }
 
 // redirectRecorder notes whether any response it carried had a status the

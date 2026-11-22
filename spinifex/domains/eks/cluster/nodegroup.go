@@ -948,9 +948,6 @@ func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, p
 func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
 	ng := aws.StringValue(input.NodegroupName)
-	if cluster == "" || ng == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
 	if err := requireCluster(ctx, acctKV, cluster); err != nil {
 		return nil, err
 	}
@@ -966,9 +963,6 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 
 func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.KeyValue, input *eks.ListNodegroupsInput) (*eks.ListNodegroupsOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
-	if cluster == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, clusterNotFound(cluster)

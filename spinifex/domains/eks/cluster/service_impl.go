@@ -1688,7 +1688,7 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 }
 
 func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" || aws.StringValue(input.NodegroupName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	acctKV, err := s.openAccountBucket(ctx, accountID)
@@ -1702,7 +1702,7 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 }
 
 func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	acctKV, err := s.openAccountBucket(ctx, accountID)

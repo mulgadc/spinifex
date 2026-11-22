@@ -3,6 +3,8 @@
 package storagefault
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,37 +58,44 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 			}
 
 			az := harness.DiscoverDefaultAZ(t, fix.Harness)
-			volID := harness.EnsureVolume(t, fix.Harness, az, faultVolumeSizeGiB)
+			var volID string
+			// quarantined is set when a replacement's exit is unconfirmed; nothing
+			// that can seal the volume may then run.
+			quarantined := false
 			if tc.kill {
 				// The replacement writes only to a volume no other test can mount.
-				volID = dedicatedFaultVolume(t, fix, az)
+				volID = dedicatedFaultVolume(t, fix, az, &quarantined)
+			} else {
+				volID = harness.EnsureVolume(t, fix.Harness, az, faultVolumeSizeGiB)
 			}
 
 			before := harness.GuestDiskSet(t, tgt)
 			harness.AttachVolumeWait(t, fix.AWS, volID, instanceID, faultDevice)
 			dev := harness.WaitForNewGuestDisk(t, tgt, before, 90*time.Second)
 
-			// relaunchedSocket names an nbdkit the killed variant put back by
-			// hand. It is reaped here, after the guest's quiesce cleanup has
-			// unmounted the disk and before the detach, so the seal runs alone.
-			var relaunchedSocket string
-			stopGuard := func() {}
+			// rep is the nbdkit the killed variant puts back by hand. It is reaped
+			// here, after the guest's quiesce cleanup, and confirmed exited
+			// before the detach, so the platform's seal never runs beside it.
+			var rep *replacement
 			t.Cleanup(func() {
-				if relaunchedSocket != "" {
-					if t.Failed() {
+				defer func() {
+					if rep != nil && t.Failed() {
 						logRelaunchOutput(t, fix, *hostNode, volID)
 					}
-					exited := reapRelaunchedNbdkit(t, fix, *hostNode, relaunchedSocket)
-					stopGuard()
+				}()
+				if rep != nil {
+					if !guestQuiesced(tgt) {
+						t.Errorf("guest still uses %s at teardown; reaping its server anyway", faultMount)
+					}
+					exited := rep.reap(t)
+					rep.stopGuard()
 					if !exited {
-						t.Errorf("left %s attached: its replacement nbdkit is still running, so no seal may run", volID)
+						quarantined = true
+						t.Errorf("left %s attached: its replacement nbdkit may still run, so no seal may run", volID)
 						return
 					}
 				}
 				harness.DetachVolumeWait(t, fix.AWS, volID)
-				if tc.kill {
-					deleteFaultVolume(t, fix, volID)
-				}
 			})
 
 			prepareWorkloadFilesystem(t, tgt, dev)
@@ -121,11 +130,8 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 
 			if tc.kill {
 				harness.Step(t, "relaunching nbdkit on %s, then waiting %s", killed.socket, recoverySettle)
-				relaunchedSocket = killed.socket
-				relaunchNbdkit(t, fix, *hostNode, volID, killed)
-				if killed.leaseEpoch != 0 {
-					stopGuard = guardReplacement(t, fix, *hostNode, volID, killed.socket, killed.lease)
-				}
+				rep = newReplacement(fix, *hostNode, killed.socket)
+				relaunchNbdkit(t, fix, *hostNode, volID, killed, rep)
 			} else {
 				harness.Step(t, "thawing nbdkit and waiting %s", recoverySettle)
 				thawNbdkit(t, fix, *hostNode, pid)
@@ -150,7 +156,7 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 
 // dedicatedFaultVolume creates a volume for the killed variant alone, so a
 // replacement nbdkit can never serve a volume another test mounts later.
-func dedicatedFaultVolume(t *testing.T, fix *Fixture, az string) string {
+func dedicatedFaultVolume(t *testing.T, fix *Fixture, az string, quarantined *bool) string {
 	t.Helper()
 	out, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
@@ -160,14 +166,24 @@ func dedicatedFaultVolume(t *testing.T, fix *Fixture, az string) string {
 		t.Fatalf("create-volume: %v", err)
 	}
 	volID := aws.StringValue(out.VolumeId)
+	t.Cleanup(func() {
+		if *quarantined {
+			t.Errorf("kept volume %s: its replacement nbdkit's exit is unconfirmed", volID)
+			return
+		}
+		if _, err := fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volID)}); err != nil {
+			t.Errorf("LEAKED volume %s: %v", volID, err)
+		}
+	})
 	harness.WaitForVolumeState(t, fix.AWS, volID, "available", harness.WithPoll(time.Second))
 	return volID
 }
 
-// deleteFaultVolume removes a dedicated volume once it is detached.
-func deleteFaultVolume(t *testing.T, fix *Fixture, volID string) {
-	t.Helper()
-	if _, err := fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volID)}); err != nil {
-		t.Errorf("LEAKED volume %s: %v", volID, err)
-	}
+// guestQuiesced reports whether the load has stopped and the fault mount is
+// gone; an unreachable guest is not quiesced.
+func guestQuiesced(tgt harness.SSHTarget) bool {
+	out := bestEffort(tgt, fmt.Sprintf(
+		"p=$(sudo cat %s 2>/dev/null); if [ -n \"$p\" ] && sudo kill -0 \"$p\" 2>/dev/null; then echo BUSY; "+
+			"elif mountpoint -q %s; then echo MOUNTED; else echo QUIET; fi", loadPID, faultMount))
+	return strings.TrimSpace(out) == "QUIET"
 }

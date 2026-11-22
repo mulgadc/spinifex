@@ -283,7 +283,7 @@ func requireLeaseUnchanged(t *testing.T, f *Fixture, volumeID string, atKill lea
 // freshLeaseEpoch waits for the holder seen at the kill to renew past both the
 // killed epoch and the revision read at the kill, and returns that revision.
 // It only reads, so viperblockd's compare-and-set renewals are untouched.
-func freshLeaseEpoch(t *testing.T, f *Fixture, volumeID string, k killedNbdkit) uint64 {
+func freshLeaseEpoch(t *testing.T, f *Fixture, volumeID string, k killedNbdkit) (uint64, time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), leaseEpochWait+30*time.Second)
 	defer cancel()
@@ -306,62 +306,13 @@ func freshLeaseEpoch(t *testing.T, f *Fixture, volumeID string, k killedNbdkit) 
 		}
 		// A rise seen here is a renewal within the last renewal period.
 		if last = snap; snap.revision > floor && snap.revision > first {
-			return snap.revision
+			return snap.revision, time.Now()
 		}
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatalf("lease entry for %s reached revision %d from %d, not above %d with a renewal seen, in %s",
 		volumeID, last.revision, first, floor, leaseEpochWait)
-	return 0
-}
-
-// leaseGuardPoll and leaseGuardValidity bound how long a replacement can
-// outlive its lease. Two missed renewals is half viperblockd's 40 s validity,
-// which leaves room for a renewal that landed but was never acknowledged.
-const (
-	leaseGuardPoll     = 2 * time.Second
-	leaseGuardValidity = 2 * 10 * time.Second
-)
-
-// guardReplacement reaps the replacement and fails the test as soon as the
-// lease it was started under is missing, changes hands or stops renewing.
-func guardReplacement(t *testing.T, f *Fixture, node harness.Node, volumeID, socket string, atKill leaseSnapshot) (stop func()) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	kv := leaseKV(ctx, t, f)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		lastRev, renewedAt := uint64(0), time.Now()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(leaseGuardPoll):
-			}
-			snap, err := readLease(ctx, kv, volumeID)
-			if ctx.Err() != nil {
-				return
-			}
-			why := ""
-			switch {
-			case err != nil:
-				why = err.Error()
-			case snap.Owner != atKill.Owner || snap.Generation != atKill.Generation:
-				why = fmt.Sprintf("lease is now %s generation %d", snap.Owner, snap.Generation)
-			case snap.revision != lastRev:
-				lastRev, renewedAt = snap.revision, time.Now()
-			case time.Since(renewedAt) > leaseGuardValidity:
-				why = fmt.Sprintf("no renewal for %s", time.Since(renewedAt).Round(time.Second))
-			}
-			if why != "" {
-				t.Errorf("reaping the replacement nbdkit for %s: %s", volumeID, why)
-				reapRelaunchedNbdkit(t, f, node, socket)
-				return
-			}
-		}
-	}()
-	return func() { cancel(); <-done }
+	return 0, time.Time{}
 }
 
 // requireNbdkitGone fails unless the killed process has exited, so the
@@ -453,60 +404,6 @@ func killNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, pi
 	return killedNbdkit{cmdline: cmdline, socket: socket, envFile: envFile, pid: pid, leaseEpoch: epoch, lease: lease}
 }
 
-// reapRelaunchedNbdkit kills the relaunched server. setsid detaches it from
-// the SSH session that started it, and viperblockd never learned it exists, so
-// nothing else will ever reap it.
-//
-// Call this after the guest has unmounted the disk and before the detach:
-// with no I/O in flight QEMU can still unplug, and the platform's seal must
-// never run beside a second process on the volume's WAL.
-//
-// The PID is resolved from the socket path rather than the volume id: a
-// legitimate viperblockd nbdkit for the same volume must not be killed, and
-// only this one is bound to this path.
-func reapRelaunchedNbdkit(t *testing.T, f *Fixture, node harness.Node, socket string) (exited bool) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	out, err := f.SSH.Run(ctx, node,
-		fmt.Sprintf("sudo pgrep -a nbdkit | grep -F -- %q | awk '{print $1}'", socket))
-	if err != nil {
-		t.Errorf("could not look up relaunched nbdkit on %s: %v", node.Name, err)
-		return false
-	}
-	for _, pid := range strings.Fields(string(out)) {
-		if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo kill %s", pid)); err != nil {
-			t.Logf("could not stop relaunched nbdkit %s on %s: %v", pid, node.Name, err)
-			continue
-		}
-		t.Logf("stopped relaunched nbdkit %s on %s", pid, node.Name)
-	}
-	if !waitRelaunchedGone(ctx, f, node, socket) {
-		_, _ = f.SSH.Run(ctx, node, fmt.Sprintf("sudo pkill -KILL -f -- %q", socket))
-		if !waitRelaunchedGone(ctx, f, node, socket) {
-			t.Errorf("relaunched nbdkit on %s survived SIGTERM and SIGKILL", socket)
-			return false
-		}
-	}
-	if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo rm -f %s", socket)); err != nil {
-		t.Logf("could not remove %s on %s: %v", socket, node.Name, err)
-	}
-	return true
-}
-
-// waitRelaunchedGone reports whether no nbdkit serves socket within 30 s.
-func waitRelaunchedGone(ctx context.Context, f *Fixture, node harness.Node, socket string) bool {
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		out, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo pgrep -a nbdkit | grep -F -- %q || true", socket))
-		if err == nil && strings.TrimSpace(string(out)) == "" {
-			return true
-		}
-		time.Sleep(time.Second)
-	}
-	return false
-}
-
 // relaunchNbdkit puts the volume's NBD server back on the same socket path,
 // which is what turns the kill into a recoverable fault rather than a
 // destructive one. The stale socket is removed first: nbdkit will not bind a
@@ -514,7 +411,7 @@ func waitRelaunchedGone(ctx context.Context, f *Fixture, node harness.Node, sock
 //
 // It runs as the same user under setsid, because nbdkit was started with -f
 // and would otherwise die with the SSH session that launched it.
-func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, k killedNbdkit) {
+func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, k killedNbdkit, r *replacement) {
 	t.Helper()
 	// Budgeted to outlast the poll below with room for its round trips. Sharing
 	// a shorter context with the poll left it expired by the time the
@@ -533,10 +430,14 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 	cmdline := k.cmdline
 	if k.leaseEpoch != 0 {
 		// A new process may never reopen the killed launch's epoch.
-		epoch := freshLeaseEpoch(t, f, volumeID, k)
+		epoch, seenAt := freshLeaseEpoch(t, f, volumeID, k)
 		cmdline = withLeaseEpoch(k.cmdline, epoch)
 		t.Logf("relaunching %s at lease epoch %d, above the killed launch's %d", volumeID, epoch, k.leaseEpoch)
+		r.guard(t, volumeID, k.lease, epoch, seenAt)
 	}
+	r.mu.Lock()
+	r.spawned = true
+	r.mu.Unlock()
 	start := fmt.Sprintf(
 		"sudo rm -f %s; sudo touch %s && sudo chmod 666 %s && "+
 			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; exec setsid %s' "+
@@ -562,6 +463,9 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 	for time.Now().Before(deadline) {
 		if _, err := f.SSH.Run(ctx, node, ready); err == nil {
 			t.Logf("relaunched nbdkit for %s on %s, socket %s is back", volumeID, node.Name, k.socket)
+			if found, err := r.resolve(ctx); !found {
+				t.Fatalf("cannot identify the relaunched nbdkit on %s: found=%v err=%v", k.socket, found, err)
+			}
 			return
 		}
 		time.Sleep(2 * time.Second)

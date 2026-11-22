@@ -55,7 +55,6 @@ func formatTwoProvider(t *testing.T) (*Config, func(body []byte) ebsprovider.Cre
 	cfg.Region = fixture.Region
 	cfg.AccessKey = fixture.AccessKey
 	cfg.SecretKey = fixture.SecretKey
-	cfg.MapFormatDefault = viperblock.MapFormatDelta
 	nc := startProviderSubjects(t, cfg, natsURL)
 	return cfg, func(body []byte) ebsprovider.CreateVolumeResponse {
 		msg := requestProvider(t, nc, ebsprovider.CreateVolumeSubject, body)
@@ -141,7 +140,7 @@ func TestVolumeLease_LostLeaseTakesNoEpoch(t *testing.T) {
 
 func TestProviderHandlers_CreateVolume_FormatTwoNeedsALeaseStore(t *testing.T) {
 	t.Parallel()
-	cfg := &Config{MapFormatDefault: viperblock.MapFormatDelta}
+	cfg := &Config{}
 	_, _, err := cfg.creationEpoch(t.Context(), "vol-noleasestore01")
 	assert.ErrorIs(t, err, errNoVolumeLeaseStore)
 }
@@ -209,4 +208,84 @@ func TestProviderHandlers_CreateVolume_FormatTwoRechecksUnderTheLease(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, otherEpoch, state.MapCreationEpoch, "the paused create published no map of its own")
 	_ = readOnlyEngine(t, cfg, volumeName)
+}
+
+// A create that finds, under the lease, a volume another node finished with a
+// different size refuses it rather than return that volume as its own.
+func TestProviderHandlers_CreateVolume_RecheckRefusesADifferentCapacity(t *testing.T) {
+	t.Parallel()
+	cfg, create := formatTwoProvider(t)
+	volumeName := "vol-fmt2recap-" + strings.ToLower(rand.Text())
+	cfg.afterCreateCheck = func(id string) {
+		lease, epoch, err := cfg.creationEpoch(t.Context(), id)
+		require.NoError(t, err)
+		defer cfg.leases.release(t.Context(), lease)
+		vbconfig := buildProviderVBConfig(cfg, id, 2<<30, "", "")
+		vbconfig.LeaseEpoch = epoch
+		other, err := viperblock.New(vbconfig, "s3", cfg.volumeS3Config(id))
+		require.NoError(t, err)
+		defer other.Detach()
+		require.NoError(t, other.Backend.InitCtx(t.Context()))
+		require.NoError(t, other.InitMapDeltaCtx(t.Context(), true))
+		require.NoError(t, other.SaveStateCtx(t.Context()))
+	}
+	resp := create(marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"capacity_range": map[string]any{"required_bytes": int64(1) << 30},
+	}))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeAlreadyExists, resp.Error.Code)
+	assert.Nil(t, resp.Volume)
+}
+
+// A converted volume whose VBState write was lost reads format 1 from
+// VBState with the fence stub at its live key. The fallback seal must load it
+// as format 2 and rewrite VBState, never write a format-1 map over it.
+func TestSealVolumeVB_ConvertedVolumeWithAFormatOneVBStateSealsAsFormatTwo(t *testing.T) {
+	t.Parallel()
+	cfg, _ := formatTwoProvider(t)
+	volumeName := "vol-convseal-" + strings.ToLower(rand.Text())
+	seed := bytes.Repeat([]byte{0x5a}, 4096)
+
+	// A format-1 volume, as a build without format 2 wrote it.
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
+	vbconfig.VolumeSize = 1 << 30
+	v1, err := viperblock.New(&vbconfig, "s3", s3cfg)
+	require.NoError(t, err)
+	require.NoError(t, v1.Backend.InitCtx(t.Context()))
+	require.NoError(t, v1.SaveStateCtx(t.Context()))
+	require.NoError(t, seedVolume(t.Context(), v1, seed))
+
+	// Its format-2 chain and stubs are durable; the VBState write was not.
+	conv := readOnlyEngine(t, cfg, volumeName)
+	require.False(t, conv.IsMapDelta())
+	num := conv.BlockToObjectWAL.WallNum.Load()
+	v1Numbered, err := conv.Backend.ReadCtx(t.Context(), types.FileTypeBlockCheckpoint, num, 0, 0)
+	require.NoError(t, err)
+	conv.LeaseEpoch = 1
+	require.NoError(t, conv.InitMapDeltaCtx(t.Context(), true))
+	// A flip fences a new numbered key; the one VBState names keeps the v1 map.
+	empty := []byte{}
+	require.NoError(t, conv.Backend.WriteCtx(t.Context(), types.FileTypeBlockCheckpoint, num, &empty, &v1Numbered))
+	conv.Detach()
+
+	require.NoError(t, sealVolumeVB(t.Context(), cfg, volumeName))
+
+	// VBState alone, as every open reads it before choosing a loader.
+	stateOnly, s3cfg2 := volumeVBConfig(cfg, volumeName)
+	st, err := viperblock.New(&stateOnly, "s3", s3cfg2)
+	require.NoError(t, err)
+	t.Cleanup(st.Detach)
+	require.NoError(t, st.Backend.InitCtx(t.Context()))
+	require.NoError(t, st.LoadStateCtx(t.Context()))
+	assert.True(t, st.IsMapDelta(), "the seal rewrote VBState as format 2")
+
+	after := readOnlyEngine(t, cfg, volumeName)
+	live, err := after.Backend.ReadCtx(t.Context(), types.FileTypeBlockCheckpointLive, 0, 0, 0)
+	require.NoError(t, err)
+	assert.True(t, viperblock.IsMapFenceStub(live), "the seal did not write a format-1 map over the stub")
+	got, err := after.ReadAt(0, 4096)
+	require.NoError(t, err)
+	assert.Equal(t, seed, got)
 }

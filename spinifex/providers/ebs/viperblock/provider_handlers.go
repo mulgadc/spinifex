@@ -601,36 +601,34 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, safecast.Int64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
-	// A format-2 create holds the new volume's lease and takes a creation
-	// epoch from it, so no two attempts share a map key.
-	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
-		if cfg.afterCreateCheck != nil {
-			cfg.afterCreateCheck(req.VolumeID)
-		}
-		lease, epoch, lerr := cfg.creationEpoch(ctx, req.VolumeID)
-		if lerr != nil {
-			slog.Error("ebs.provider.volume.create: creation epoch failed", "volume", req.VolumeID, "err", lerr)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("creation epoch: %v", lerr)})
-			return
-		}
-		defer cfg.leases.release(ctx, lease)
-		// Checked again under the lease: another node may have finished this
-		// creation between the first check and the claim, and a second map
-		// published over it would supersede that volume and its writes.
-		if existing, eerr := describeVolumeEngine(ctx, cfg, req.VolumeID); eerr == nil {
-			if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
-				respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
-				return
-			}
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Volume: existing})
-			return
-		} else if !errors.Is(eerr, viperblock.ErrStateNotFound) {
-			slog.Error("ebs.provider.volume.create: existence recheck failed", "volume", req.VolumeID, "err", eerr)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("check existing volume: %v", eerr)})
-			return
-		}
-		vbconfig.LeaseEpoch = epoch
+	// Every create is format 2: it holds the new volume's lease and takes a
+	// creation epoch from it, so no two attempts share a map key.
+	if cfg.afterCreateCheck != nil {
+		cfg.afterCreateCheck(req.VolumeID)
 	}
+	lease, epoch, lerr := cfg.creationEpoch(ctx, req.VolumeID)
+	if lerr != nil {
+		slog.Error("ebs.provider.volume.create: creation epoch failed", "volume", req.VolumeID, "err", lerr)
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("creation epoch: %v", lerr)})
+		return
+	}
+	defer cfg.leases.release(ctx, lease)
+	// Checked again under the lease: another node may have finished this
+	// creation between the first check and the claim, and a second map
+	// published over it would supersede that volume and its writes.
+	if existing, eerr := describeVolumeEngine(ctx, cfg, req.VolumeID); eerr == nil {
+		if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
+			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
+			return
+		}
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Volume: existing})
+		return
+	} else if !errors.Is(eerr, viperblock.ErrStateNotFound) {
+		slog.Error("ebs.provider.volume.create: existence recheck failed", "volume", req.VolumeID, "err", eerr)
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("check existing volume: %v", eerr)})
+		return
+	}
+	vbconfig.LeaseEpoch = epoch
 	s3cfg := cfg.volumeS3Config(req.VolumeID)
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
@@ -655,13 +653,11 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 	// The fence stubs, base and first head are durable before VBState, whose
 	// presence is what describe and a repeated create treat as created.
-	if cfg.MapFormatDefault == viperblock.MapFormatDelta {
-		// A seeded volume publishes its first head only once the seed is in.
-		if err := vb.InitMapDeltaCtx(ctx, len(req.SeedData) == 0); err != nil {
-			slog.Error("ebs.provider.volume.create: map init failed", "volume", req.VolumeID, "err", err)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("map init: %v", err)})
-			return
-		}
+	// A seeded volume publishes its first head only once the seed is in.
+	if err := vb.InitMapDeltaCtx(ctx, len(req.SeedData) == 0); err != nil {
+		slog.Error("ebs.provider.volume.create: map init failed", "volume", req.VolumeID, "err", err)
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("map init: %v", err)})
+		return
 	}
 	if len(req.SeedData) > 0 {
 		if err := seedVolume(ctx, vb, req.SeedData); err != nil {
@@ -1687,17 +1683,14 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
-	// Every launch of a format-2 volume takes its own epoch, a shared open on
-	// this node included. A format-1 volume gets none, so a plugin that
-	// predates lease_epoch still mounts it.
-	var launchEpoch uint64
-	if vb.IsMapDelta() {
-		launchEpoch, err = lease.launchEpoch(ctx)
-		if err != nil {
-			ebsResponse.Error = err.Error()
-			ebsResponse.Retryable = true
-			return ebsResponse, err
-		}
+	// Every launch takes its own epoch, a shared open on this node included:
+	// a format-2 volume commits under it, and a format-1 volume converts
+	// under it.
+	launchEpoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		ebsResponse.Error = err.Error()
+		ebsResponse.Retryable = true
+		return ebsResponse, err
 	}
 
 	useTCP := cfg.NBDTransport == NBDTransportTCP

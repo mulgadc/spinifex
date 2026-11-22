@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **36 operations** in the ELBv2 `2015-12-01` API model.
+Spinifex implements **34 operations** in the ELBv2 `2015-12-01` API model.
 
 ### Two data planes
 
@@ -108,7 +108,6 @@ Behaviour against AWS was not compared, and the cases above were not run with an
 | `DeleteTargetGroup` |
 | `DeregisterTargets` |
 | `DescribeAccountLimits` |
-| `DescribeListenerAttributes` |
 | `DescribeListenerCertificates` |
 | `DescribeListeners` |
 | `DescribeLoadBalancerAttributes` |
@@ -120,7 +119,6 @@ Behaviour against AWS was not compared, and the cases above were not run with an
 | `DescribeTargetGroups` |
 | `DescribeTargetHealth` |
 | `ModifyListener` |
-| `ModifyListenerAttributes` |
 | `ModifyLoadBalancerAttributes` |
 | `ModifyRule` |
 | `ModifyTargetGroup` |

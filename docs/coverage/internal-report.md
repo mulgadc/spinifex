@@ -948,7 +948,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## elasticloadbalancingv2
 
-`2015-12-01` — 36 of 51 modelled operations implemented (70.6%), 0 stubbed, 3 require SDK v2, 0 not applicable, 2 registered outside the pinned model.
+`2015-12-01` — 34 of 51 modelled operations implemented (66.7%), 2 stubbed, 3 require SDK v2, 0 not applicable, 2 registered outside the pinned model.
 
 ### Not implemented
 
@@ -970,6 +970,11 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `DescribeCapacityReservation`
 - `ModifyCapacityReservation`
 - `ModifyIpPools`
+
+### Stubbed
+
+- `DescribeListenerAttributes`
+- `ModifyListenerAttributes`
 
 ### Registered outside the pinned model
 

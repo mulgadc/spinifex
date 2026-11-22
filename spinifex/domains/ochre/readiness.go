@@ -100,20 +100,3 @@ func waitReadyAll(ctx context.Context, client *http.Client, targets map[string]r
 	wg.Wait()
 	return errors.Join(errs...)
 }
-
-// probeOnce, used by the reaper, issues a single GET and reports whether it returned HTTP 200.
-// Any transport error (guest not listening yet) or non-200 status counts as
-// not-yet-ready, not a failure — the caller's context deadline is what
-// eventually turns "not yet" into an error.
-func probeOnce(ctx context.Context, client *http.Client, url string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}

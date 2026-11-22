@@ -66,30 +66,6 @@ func TestParseVLLMMetrics_NoKnownSeriesIsError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestScrapeMetrics_ReadsLiveEndpoint(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/metrics", r.URL.Path)
-		_, _ = w.Write([]byte("vllm:num_requests_running 1.0\nvllm:num_requests_waiting 2.0\nvllm:request_success_total 9\n"))
-	}))
-	defer srv.Close()
-
-	m, err := scrapeMetrics(t.Context(), srv.Client(), srv.URL)
-	require.NoError(t, err)
-	assert.Equal(t, 3, m.inFlight())
-	assert.InDelta(t, 9.0, m.successTotal, 0)
-}
-
-func TestScrapeMetrics_Non200IsFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-
-	_, err := scrapeMetrics(t.Context(), srv.Client(), srv.URL)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "503")
-}
-
 // The counter clause is the point of the definition: a request that started
 // and finished entirely between two sweeps leaves both queues at zero, and
 // only the advanced counter says it happened.

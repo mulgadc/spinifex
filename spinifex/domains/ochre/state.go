@@ -113,7 +113,8 @@ type EndpointRecord struct {
 	// seeded from ReadyAt; it is the LRU ordering key. InFlight and SuccessTotal
 	// are the last successful scrape's queue depth and completed-request count,
 	// the latter being idleness's "unchanged since the previous tick" comparison
-	// point. ScrapeFailures counts consecutive failed scrapes.
+	// point. ScrapeFailures is a count older reapers wrote; a healthy probe
+	// resets it, and a failed one now holds the endpoint instead.
 	LastActiveAt   time.Time `json:"last_active_at,omitzero"`
 	InFlight       int       `json:"in_flight,omitempty"`
 	SuccessTotal   float64   `json:"success_total,omitempty"`

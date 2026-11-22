@@ -32,7 +32,7 @@ func readRecord(t *testing.T, s *Service, key string) (EndpointRecord, uint64) {
 func reserveObserved(t *testing.T, s *Service, key string) uint64 {
 	t.Helper()
 	rec, rev := readRecord(t, s, key)
-	next, err := s.reserveHealthHold(t.Context(), key, rec, rev, testHold())
+	_, next, err := s.reserveHealthHold(t.Context(), key, rec, rev, testHold())
 	require.NoError(t, err)
 	return next
 }
@@ -45,7 +45,7 @@ func TestHealthHold_ReserveAndClearAtTheObservedRevision(t *testing.T) {
 
 	observed, rev := readRecord(t, s, key)
 	hold := HealthHold{Token: "sweep-1", Epoch: 7, ReservedAt: time.Now().UTC().Truncate(time.Second)}
-	heldRev, err := s.reserveHealthHold(t.Context(), key, observed, rev, hold)
+	_, heldRev, err := s.reserveHealthHold(t.Context(), key, observed, rev, hold)
 	require.NoError(t, err)
 
 	held, storedRev := readRecord(t, s, key)
@@ -57,7 +57,7 @@ func TestHealthHold_ReserveAndClearAtTheObservedRevision(t *testing.T) {
 	want.Generation = seeded.Generation + 1
 	assert.Equal(t, want, held, "the hold must change nothing else")
 
-	clearedRev, err := s.clearHealthHold(t.Context(), key, held, heldRev)
+	_, clearedRev, err := s.clearHealthHold(t.Context(), key, held, heldRev, nil)
 	require.NoError(t, err)
 	cleared, storedRev := readRecord(t, s, key)
 	assert.Equal(t, clearedRev, storedRev)
@@ -78,7 +78,7 @@ func TestHealthHold_ChangedRecordConflicts(t *testing.T) {
 	rewriteVictim(t, s, func(rec *EndpointRecord) { rec.LastActiveAt = time.Now().UTC() })
 	moved, _ := readRecord(t, s, key)
 
-	_, err := s.reserveHealthHold(t.Context(), key, stale, staleRev, testHold())
+	_, _, err := s.reserveHealthHold(t.Context(), key, stale, staleRev, testHold())
 	require.ErrorIs(t, err, kvstore.ErrConflict)
 	after, _ := readRecord(t, s, key)
 	assert.Equal(t, moved, after, "a conflicting reserve must write nothing")
@@ -88,7 +88,7 @@ func TestHealthHold_ChangedRecordConflicts(t *testing.T) {
 	rewriteVictim(t, s, func(rec *EndpointRecord) { rec.InFlight = 1 })
 	changed, _ := readRecord(t, s, key)
 
-	_, err = s.clearHealthHold(t.Context(), key, held, heldRev)
+	_, _, err = s.clearHealthHold(t.Context(), key, held, heldRev, nil)
 	require.ErrorIs(t, err, kvstore.ErrConflict)
 	after, _ = readRecord(t, s, key)
 	assert.Equal(t, changed, after, "a clear from an older revision must leave the hold in place")
@@ -102,18 +102,18 @@ func TestHealthHold_RefusesTheWrongStartingState(t *testing.T) {
 	key := EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel)
 
 	ready, readyRev := readRecord(t, s, key)
-	_, err := s.clearHealthHold(t.Context(), key, ready, readyRev)
+	_, _, err := s.clearHealthHold(t.Context(), key, ready, readyRev, nil)
 	require.ErrorIs(t, err, errHoldAbsent)
 
 	rewriteVictim(t, s, func(rec *EndpointRecord) { rec.State = StateStarting; rec.Generation++ })
 	starting, startingRev := readRecord(t, s, key)
-	_, err = s.reserveHealthHold(t.Context(), key, starting, startingRev, testHold())
+	_, _, err = s.reserveHealthHold(t.Context(), key, starting, startingRev, testHold())
 	require.ErrorIs(t, err, errHoldNotReady)
 
 	rewriteVictim(t, s, func(rec *EndpointRecord) { rec.State = StateReady; rec.Generation++ })
 	reserveObserved(t, s, key)
 	held, heldRev := readRecord(t, s, key)
-	_, err = s.reserveHealthHold(t.Context(), key, held, heldRev, testHold())
+	_, _, err = s.reserveHealthHold(t.Context(), key, held, heldRev, testHold())
 	require.ErrorIs(t, err, errHoldExists)
 
 	after, afterRev := readRecord(t, s, key)
@@ -142,7 +142,7 @@ func TestHealthHold_UncertainWriteIsNotRetried(t *testing.T) {
 				return 0, errHoldAckLost
 			}
 			observed, rev := readRecord(t, s, key)
-			_, err := s.reserveHealthHold(t.Context(), key, observed, rev, testHold())
+			_, _, err := s.reserveHealthHold(t.Context(), key, observed, rev, testHold())
 			require.ErrorIs(t, err, errHoldAckLost)
 			assert.NotErrorIs(t, err, kvstore.ErrConflict)
 			assert.Equal(t, 1, calls, "an uncertain hold must not be retried")
@@ -152,9 +152,9 @@ func TestHealthHold_UncertainWriteIsNotRetried(t *testing.T) {
 			assert.Equal(t, landed, after.Held())
 			if landed {
 				// The writer never saw the new revision, so it cannot clear from it.
-				_, err = s.clearHealthHold(t.Context(), key, after, rev)
+				_, _, err = s.clearHealthHold(t.Context(), key, after, rev, nil)
 				require.ErrorIs(t, err, kvstore.ErrConflict)
-				_, err = s.clearHealthHold(t.Context(), key, after, afterRev)
+				_, _, err = s.clearHealthHold(t.Context(), key, after, afterRev, nil)
 				require.NoError(t, err)
 			} else {
 				assert.Equal(t, rev, afterRev)
@@ -183,7 +183,7 @@ func TestHealthHold_ClearRefusesAHeldRecordPastReady(t *testing.T) {
 			}
 			held, heldRev := readRecord(t, s, key)
 			require.True(t, held.Held())
-			_, err := s.clearHealthHold(t.Context(), key, held, heldRev)
+			_, _, err := s.clearHealthHold(t.Context(), key, held, heldRev, nil)
 			require.ErrorIs(t, err, errHoldNotReady)
 			assert.Zero(t, calls, "no write may be attempted")
 
@@ -194,28 +194,30 @@ func TestHealthHold_ClearRefusesAHeldRecordPastReady(t *testing.T) {
 	}
 }
 
-func TestReaper_NeverReapsHeldEndpoint(t *testing.T) {
+// A held endpoint whose probe fails stays held and idle; the next direct
+// healthy probe clears the hold, and only then does idle reclaim apply.
+func TestReaper_LaterHealthyProbeClearsTheHold(t *testing.T) {
 	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Minute})
 	rec := f.ready(t)
-	f.age(t, 10*time.Minute, 10*time.Minute)
-	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
-	heldRev := reserveObserved(t, f.svc, key)
+	aged := f.age(t, 10*time.Minute, 10*time.Minute)
+	f.transport.breakScrapes()
 
 	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
-	cur, found := f.current(t)
+	held, found := f.current(t)
 	require.True(t, found)
-	assert.Equal(t, StateReady, cur.State)
-	assert.True(t, cur.Held())
+	require.True(t, held.Held(), "a failed probe must leave the hold it reserved")
+	assert.Equal(t, StateReady, held.State)
+	assert.True(t, held.LastActiveAt.Equal(aged.LastActiveAt), "a failed probe is not activity")
+	assert.Zero(t, held.ScrapeFailures)
 	assert.Empty(t, f.harness.launcher.terminations())
 
-	held, _ := readRecord(t, f.svc, key)
-	_, err := f.svc.clearHealthHold(t.Context(), key, held, heldRev)
-	require.NoError(t, err)
+	f.transport.serve(0, 0, 0)
 	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	_, found = f.current(t)
-	assert.False(t, found, "once cleared, the idle endpoint is reclaimed as before")
+	assert.False(t, found, "once a healthy probe clears the hold, the idle endpoint is reclaimed as before")
 	assert.Contains(t, f.harness.launcher.terminations(), rec.InstanceID)
+	assert.EqualValues(t, 1, f.harness.launcher.launchCount.Load(), "nothing is relaunched")
 }
 
 // A reclaim that observed the record before a hold landed must not tear it

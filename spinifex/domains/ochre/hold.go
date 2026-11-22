@@ -27,14 +27,14 @@ func (r EndpointRecord) Held() bool {
 }
 
 // reserveHealthHold adds hold to observed, the READY record read at rev, by a
-// single CAS at rev. A conflict is kvstore.ErrConflict; any other error leaves
-// the outcome unknown, and neither is retried.
-func (s *Service) reserveHealthHold(ctx context.Context, key string, observed EndpointRecord, rev uint64, hold HealthHold) (uint64, error) {
+// single CAS at rev, returning the record written and its revision. A conflict
+// is kvstore.ErrConflict; any other error leaves the outcome unknown.
+func (s *Service) reserveHealthHold(ctx context.Context, key string, observed EndpointRecord, rev uint64, hold HealthHold) (EndpointRecord, uint64, error) {
 	switch {
 	case observed.State != StateReady:
-		return 0, errHoldNotReady
+		return EndpointRecord{}, 0, errHoldNotReady
 	case observed.Held():
-		return 0, errHoldExists
+		return EndpointRecord{}, 0, errHoldExists
 	}
 	next := observed
 	next.HealthHold = &hold
@@ -43,25 +43,30 @@ func (s *Service) reserveHealthHold(ctx context.Context, key string, observed En
 }
 
 // clearHealthHold removes the hold from observed, the held READY record read at
-// rev, by a single CAS at rev, with the same outcomes as reserveHealthHold. A
-// record past READY belongs to its delete or launch and is never rewritten.
-func (s *Service) clearHealthHold(ctx context.Context, key string, observed EndpointRecord, rev uint64) (uint64, error) {
+// rev, applying observe (if any) in the same CAS at rev. Outcomes are as for
+// reserveHealthHold; a record past READY is never rewritten.
+func (s *Service) clearHealthHold(ctx context.Context, key string, observed EndpointRecord, rev uint64, observe func(*EndpointRecord)) (EndpointRecord, uint64, error) {
 	switch {
 	case observed.State != StateReady:
-		return 0, errHoldNotReady
+		return EndpointRecord{}, 0, errHoldNotReady
 	case !observed.Held():
-		return 0, errHoldAbsent
+		return EndpointRecord{}, 0, errHoldAbsent
 	}
 	next := observed
+	if observe != nil {
+		observe(&next)
+	}
 	next.HealthHold = nil
 	next.Generation = observed.Generation + 1
 	return s.writeHold(ctx, key, next, rev)
 }
 
-func (s *Service) writeHold(ctx context.Context, key string, next EndpointRecord, rev uint64) (uint64, error) {
+func (s *Service) writeHold(ctx context.Context, key string, next EndpointRecord, rev uint64) (EndpointRecord, uint64, error) {
 	write := func() (uint64, error) { return s.store.CompareAndSet(ctx, key, &next, rev) }
 	if s.holdWrite != nil {
-		return s.holdWrite(write)
+		written, err := s.holdWrite(write)
+		return next, written, err
 	}
-	return write()
+	written, err := write()
+	return next, written, err
 }

@@ -21,7 +21,6 @@ const (
 	reaperLeaseTTL        = 60 * time.Second
 	defaultReaperInterval = 30 * time.Second
 	defaultIdleTTL        = 15 * time.Minute // How long an endpoint must have been idle before its GPU is taken back.
-	maxScrapeFailures     = 5                // How many consecutive failed scrapes mean the serving process is wedged rather than briefly busy.
 	defaultScrapeTimeout  = 5 * time.Second  // Per-scrape budget.
 )
 
@@ -125,7 +124,7 @@ func (r *Reaper) IsLeader() bool {
 	return r.lease.Held()
 }
 
-// sweepOnce scrapes every READY endpoint, acts on what it saw, then re-probes
+// sweepOnce holds and probes every READY endpoint, acts on what it saw, then re-probes
 // parked launches in every account, while the acquisition lost belongs to
 // holds. One endpoint's failure does not stop the pass.
 func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
@@ -173,56 +172,122 @@ func reaperScrapesMetrics(rec EndpointRecord) bool {
 	return false
 }
 
-// sweepEndpoint decides one endpoint's fate from a single probe.
-func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord, lost <-chan struct{}) error {
+// sweepEndpoint holds one READY endpoint, probes it once without following a
+// redirect, and releases the hold only on a direct healthy answer. A failed
+// probe leaves the hold and changes nothing else: no activity, no teardown.
+func (r *Reaper) sweepEndpoint(ctx context.Context, listed EndpointRecord, lost <-chan struct{}) error {
+	key := resolveKey(awsidentifiers.GlobalAccountID, listed.ModelID)
+	rec, rev, ok, err := r.holdForProbe(ctx, key, lost)
+	if err != nil || !ok {
+		return err
+	}
+
 	scrapeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
 
 	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
 	// it is kept warm and only liveness-probed rather than idle-scraped.
 	if !reaperScrapesMetrics(rec) {
-		return r.sweepLiveness(scrapeCtx, rec, lost)
+		r.sweepLiveness(scrapeCtx, key, rec, rev, lost)
+		return nil
 	}
 
-	sample, err := scrapeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
+	sample, err := probeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
 	if err != nil {
-		return r.recordScrapeFailure(ctx, rec, err, lost)
+		slog.WarnContext(ctx, "bedrock reaper: metrics probe failed; endpoint held",
+			"model", rec.ModelID, "instanceId", rec.InstanceID,
+			"redirected", errors.Is(err, errMetricsRedirected), "err", err)
+		return nil
 	}
 
 	now := time.Now().UTC()
-	updated := rec
-	updated.ScrapeFailures = 0
-	updated.InFlight = sample.inFlight()
-	updated.SuccessTotal = sample.successTotal
-	if !sample.idle(rec.SuccessTotal) {
-		updated.LastActiveAt = now
-	}
-
-	if r.shouldReap(updated, now) {
-		slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
-			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"idle_ms", otelsetup.Millis(now.Sub(updated.LastActive())))
-		if _, err := r.reclaim(ctx, rec, lost); err != nil {
-			return fmt.Errorf("reap idle endpoint: %w", err)
+	updated, ok := r.releaseHold(ctx, key, rec, rev, lost, func(next *EndpointRecord) {
+		next.ScrapeFailures = 0
+		next.InFlight = sample.inFlight()
+		next.SuccessTotal = sample.successTotal
+		if !sample.idle(rec.SuccessTotal) {
+			next.LastActiveAt = now
 		}
+	})
+	if !ok || !r.shouldReap(updated, now) {
 		return nil
 	}
-	return r.persistObservation(ctx, rec, updated)
+	slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
+		"model", rec.ModelID, "instanceId", rec.InstanceID,
+		"idle_ms", otelsetup.Millis(now.Sub(updated.LastActive())))
+	if _, err := r.reclaim(ctx, updated, lost); err != nil {
+		return fmt.Errorf("reap idle endpoint: %w", err)
+	}
+	return nil
 }
 
 // sweepLiveness keeps a service-only bundle (embed/rerank, no generative
-// member) up without idle-reclaim: it probes /health and only escalates a
-// persistently unreachable, unpinned endpoint. A healthy probe refreshes the
-// warm clock; there is deliberately no scale-to-zero for a bundle whose whole
-// purpose is to stay warm on the retrieval hot path.
-func (r *Reaper) sweepLiveness(ctx context.Context, rec EndpointRecord, lost <-chan struct{}) error {
-	if !probeOnce(ctx, r.svc.httpClient(), rec.BaseURL+"/health") {
-		return r.recordScrapeFailure(ctx, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL), lost)
+// member) warm without idle-reclaim: a direct 200 on /health refreshes the
+// warm clock and releases the hold; anything else leaves the endpoint held.
+func (r *Reaper) sweepLiveness(ctx context.Context, key string, rec EndpointRecord, rev uint64, lost <-chan struct{}) {
+	if outcome := probeLiveness(ctx, r.svc.httpClient(), rec.BaseURL+"/health"); outcome != livenessLive {
+		slog.WarnContext(ctx, "bedrock reaper: liveness probe failed; endpoint held",
+			"model", rec.ModelID, "instanceId", rec.InstanceID,
+			"endpoint", endpointLogID(rec.BaseURL), "redirected", outcome == livenessRedirected)
+		return
 	}
-	updated := rec
-	updated.ScrapeFailures = 0
-	updated.LastActiveAt = time.Now().UTC()
-	return r.persistObservation(ctx, rec, updated)
+	now := time.Now().UTC()
+	r.releaseHold(ctx, key, rec, rev, lost, func(next *EndpointRecord) {
+		next.ScrapeFailures = 0
+		next.LastActiveAt = now
+	})
+}
+
+// holdForProbe reads key and returns the record and revision of that one read,
+// held: an existing hold is observed, otherwise one is reserved by CAS from the
+// read. false means yield, with nothing torn down.
+func (r *Reaper) holdForProbe(ctx context.Context, key string, lost <-chan struct{}) (EndpointRecord, uint64, bool, error) {
+	rec, rev, found, err := r.svc.store.getRevision(ctx, key)
+	if err != nil {
+		return EndpointRecord{}, 0, false, err
+	}
+	if !found || rec.State != StateReady {
+		return EndpointRecord{}, 0, false, nil
+	}
+	if rec.Held() {
+		return rec, rev, true, nil
+	}
+	if !leading(lost) {
+		return EndpointRecord{}, 0, false, nil
+	}
+	held, heldRev, err := r.svc.reserveHealthHold(ctx, key, rec, rev, HealthHold{ReservedAt: time.Now().UTC()})
+	if err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			slog.InfoContext(ctx, "bedrock reaper: endpoint changed before its health hold; yielding",
+				"model", rec.ModelID, "instanceId", rec.InstanceID)
+		} else {
+			slog.WarnContext(ctx, "bedrock reaper: reserving a health hold is unconfirmed; yielding",
+				"model", rec.ModelID, "instanceId", rec.InstanceID, "err", err)
+		}
+		return EndpointRecord{}, 0, false, nil
+	}
+	return held, heldRev, true, nil
+}
+
+// releaseHold clears the hold on rec, read at rev, with observe applied in the
+// same CAS, after a direct healthy probe. false means the record moved, the
+// write was uncertain or the lease is gone; the hold then stays for a later sweep.
+func (r *Reaper) releaseHold(ctx context.Context, key string, rec EndpointRecord, rev uint64, lost <-chan struct{}, observe func(*EndpointRecord)) (EndpointRecord, bool) {
+	if !leading(lost) {
+		return EndpointRecord{}, false
+	}
+	cleared, _, err := r.svc.clearHealthHold(ctx, key, rec, rev, observe)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			slog.InfoContext(ctx, "bedrock reaper: held endpoint changed during its probe; yielding",
+				"model", rec.ModelID, "instanceId", rec.InstanceID)
+		} else {
+			slog.WarnContext(ctx, "bedrock reaper: clearing a health hold is unconfirmed; yielding",
+				"model", rec.ModelID, "instanceId", rec.InstanceID, "err", err)
+		}
+		return EndpointRecord{}, false
+	}
+	return cleared, true
 }
 
 // shouldReap applies the two rules an idle endpoint must clear before its GPU
@@ -238,50 +303,6 @@ func (r *Reaper) shouldReap(rec EndpointRecord, now time.Time) bool {
 	return now.Sub(rec.LastActive()) >= ttl && now.Sub(rec.ReadyAt) >= ttl
 }
 
-// recordScrapeFailure counts an unknown sample and escalates a persistently
-// unreachable endpoint to terminate-and-relaunch. Never treats the failure as
-// idleness: a wedged VM must not be mistaken for a quiet one.
-func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, cause error, lost <-chan struct{}) error {
-	updated := rec
-	updated.ScrapeFailures = rec.ScrapeFailures + 1
-
-	// A pinned endpoint is operator- or commitment-managed: the reaper never
-	// tears it down, exactly as shouldReap never idle-reclaims one. Keep
-	// counting and logging so the failure stays visible, but never escalate.
-	if rec.Pinned {
-		slog.WarnContext(ctx, "bedrock reaper: scrape failed for a pinned endpoint; not reaping",
-			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-		return r.persistObservation(ctx, rec, updated)
-	}
-
-	if updated.ScrapeFailures < maxScrapeFailures {
-		slog.WarnContext(ctx, "bedrock reaper: metrics scrape failed",
-			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-		return r.persistObservation(ctx, rec, updated)
-	}
-
-	slog.ErrorContext(ctx, "bedrock reaper: endpoint unreachable; terminating and relaunching",
-		"model", rec.ModelID, "instanceId", rec.InstanceID,
-		"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-	reclaimed, err := r.reclaim(ctx, rec, lost)
-	if err != nil {
-		return fmt.Errorf("terminate unreachable endpoint: %w", err)
-	}
-	if !reclaimed || !leading(lost) {
-		return nil
-	}
-	// A relaunch that cannot be admitted (the device did not come back, or
-	// another model took it) is not a sweep failure: the endpoint is gone, which
-	// was the point, and the next invoke will ask for it again.
-	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
-		slog.WarnContext(ctx, "bedrock reaper: relaunch of an unreachable endpoint was refused",
-			"model", rec.ModelID, "err", err)
-	}
-	return nil
-}
-
 // reclaim tears rec down if it is still the record this sweep read and lost
 // has not closed, reporting whether it did. A refusal leaves the endpoint to
 // whoever changed it or now leads, so it is not a failed sweep.
@@ -293,32 +314,4 @@ func (r *Reaper) reclaim(ctx context.Context, rec EndpointRecord, lost <-chan st
 		return false, nil
 	}
 	return err == nil, err
-}
-
-// persistObservation CAS-writes the sweep's findings, and only when they
-// changed: a steady-state idle endpoint would otherwise cost a KV write per
-// tick per endpoint forever.
-func (r *Reaper) persistObservation(ctx context.Context, prev, next EndpointRecord) error {
-	if prev.LastActiveAt.Equal(next.LastActiveAt) && prev.InFlight == next.InFlight &&
-		prev.SuccessTotal == next.SuccessTotal && prev.ScrapeFailures == next.ScrapeFailures {
-		return nil
-	}
-	key := resolveKey(awsidentifiers.GlobalAccountID, next.ModelID)
-	current, rev, found, err := r.svc.store.getRevision(ctx, key)
-	if err != nil {
-		return err
-	}
-	if !found || current.Generation != prev.Generation || current.State != StateReady || !sameIncarnation(current, prev) {
-		// The record moved since this pass read it — a delete, or a relaunch that
-		// reused the key. The next sweep re-reads rather than clobbering it.
-		return nil
-	}
-	next.Generation = current.Generation + 1
-	if _, err := r.svc.store.CompareAndSet(ctx, key, &next, rev); err != nil {
-		if errors.Is(err, kvstore.ErrConflict) {
-			return nil
-		}
-		return err
-	}
-	return nil
 }

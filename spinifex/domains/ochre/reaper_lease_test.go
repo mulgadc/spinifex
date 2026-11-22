@@ -94,9 +94,9 @@ func TestReaper_ADR0003S7_IdleReclaimStopsWhenTheLeaseIsLostMidSweep(t *testing.
 	assert.NotContains(t, f.harness.launcher.terminations(), rec.InstanceID)
 }
 
-// ADR-0003:S7 invariant for the unreachable path: the escalating scrape
-// failure of a sweep that lost the lease neither terminates nor relaunches.
-func TestReaper_ADR0003S7_UnreachableEscalationStopsWhenTheLeaseIsLostMidSweep(t *testing.T) {
+// ADR-0003:S7 invariant for the unreachable path: a failed scrape in a sweep
+// that lost the lease neither terminates nor relaunches.
+func TestReaper_ADR0003S7_UnreachableStaysWhenTheLeaseIsLostMidSweep(t *testing.T) {
 	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	rec := f.ready(t)
@@ -216,7 +216,14 @@ func TestReaper_StaleObservationDoesNotOverwriteAReplacement(t *testing.T) {
 	swept := make(chan struct{})
 	go func() { defer close(swept); assert.NoError(t, f.reaper.sweepOnce(t.Context(), nil)) }()
 	<-gate.entered
-	_, replacement := f.replace(t)
+	// The sweep holds the endpoint while it probes, so the old record's
+	// generation is one ahead and replace's equal-generation premise is moot.
+	old, _ := f.current(t)
+	require.True(t, old.Held())
+	_, err := f.svc.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	replacement := f.ready(t)
+	require.NotEqual(t, old.InstanceID, replacement.InstanceID)
 	close(gate.release)
 	<-swept
 
@@ -225,4 +232,5 @@ func TestReaper_StaleObservationDoesNotOverwriteAReplacement(t *testing.T) {
 	assert.Equal(t, replacement.InstanceID, cur.InstanceID)
 	assert.Equal(t, replacement.Generation, cur.Generation)
 	assert.Zero(t, cur.InFlight, "the stale sweep's observation must not be written")
+	assert.False(t, cur.Held(), "the stale sweep's hold must not reach the replacement")
 }

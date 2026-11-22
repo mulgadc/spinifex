@@ -285,28 +285,30 @@ func TestReaper_AdvancedCounterCountsAsActivity(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestReaper_ScrapeFailuresEscalateToRelaunch(t *testing.T) {
+// maxScrapeFailures is enough consecutive failed sweeps that any count-based
+// escalation would have fired.
+const maxScrapeFailures = 5
+
+// An unreachable endpoint is unknown, never idle: however many sweeps fail,
+// it stays READY and held, and is neither torn down nor relaunched.
+func TestReaper_FailedScrapesHoldWithoutTeardownOrRelaunch(t *testing.T) {
 	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	rec := f.ready(t)
 	f.transport.breakScrapes()
 
-	for range maxScrapeFailures - 1 {
+	for range maxScrapeFailures + 1 {
 		require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
-		got, found := f.current(t)
-		require.True(t, found, "an unreachable endpoint is unknown, never idle")
-		assert.Empty(t, f.harness.launcher.terminated)
-		assert.Positive(t, got.ScrapeFailures)
 	}
-
-	// The escalating sweep tears the wedged VM down and asks for it back.
-	f.transport.serve(0, 0, 0)
-	f.transport.breakScrapes()
-	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	f.svc.WaitLaunches()
 
-	assert.Contains(t, f.harness.launcher.terminated, rec.InstanceID)
-	assert.EqualValues(t, 2, f.harness.launcher.launchCount.Load(), "the endpoint must be relaunched, not just removed")
+	got, found := f.current(t)
+	require.True(t, found)
+	assert.Equal(t, StateReady, got.State)
+	assert.True(t, got.Held())
+	assert.Equal(t, rec.InstanceID, got.InstanceID)
+	assert.Empty(t, f.harness.launcher.terminations())
+	assert.EqualValues(t, 1, f.harness.launcher.launchCount.Load(), "a failed probe must not relaunch")
 }
 
 // A pinned endpoint is operator/commitment-managed: a persistent scrape
@@ -333,7 +335,7 @@ func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
 	got, found := f.current(t)
 	require.True(t, found, "a pinned endpoint is never reaped on scrape failure")
 	assert.Empty(t, f.harness.launcher.terminated)
-	assert.Positive(t, got.ScrapeFailures, "the failure is still counted and logged")
+	assert.True(t, got.Held(), "the failure leaves the endpoint held")
 }
 
 // A service-only bundle (no generative vLLM member) exposes no vLLM load
@@ -371,26 +373,29 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 	_ = rev
 }
 
+// A failure count written by an older reaper is reset by the healthy probe
+// that clears the hold.
 func TestReaper_SuccessfulScrapeResetsFailureCount(t *testing.T) {
 	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	f.ready(t)
-
-	f.transport.breakScrapes()
-	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
-	got, _ := f.current(t)
-	require.Equal(t, 1, got.ScrapeFailures)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+	rec, rev, _, err := f.store.getRevision(t.Context(), key)
+	require.NoError(t, err)
+	rec.ScrapeFailures = 3
+	_, err = f.store.CompareAndSet(t.Context(), key, &rec, rev)
+	require.NoError(t, err)
 
 	f.transport.serve(1, 0, 0)
 	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
-	got, _ = f.current(t)
+	got, _ := f.current(t)
 	assert.Zero(t, got.ScrapeFailures)
+	assert.False(t, got.Held())
 }
 
-// A steady-state idle endpoint is the common case and must cost a scrape per
-// tick and nothing else; a KV write per endpoint per tick forever is the
-// failure mode being guarded against.
-func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
+// A steady-state idle endpoint costs one scrape, one hold and one clear per
+// tick, and the clear changes nothing else about the record.
+func TestReaper_UnchangedObservationOnlyHoldsAndClears(t *testing.T) {
 	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	f.ready(t)
@@ -401,7 +406,10 @@ func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
 	after, found := f.current(t)
 
 	require.True(t, found)
-	assert.Equal(t, before.Generation, after.Generation, "an unchanged observation must not bump the record")
+	assert.False(t, after.Held())
+	assert.Equal(t, before.Generation+4, after.Generation, "each sweep writes exactly the hold and its clear")
+	after.Generation = before.Generation
+	assert.Equal(t, before, after, "an unchanged observation must change nothing else")
 	assert.Equal(t, 2, f.transport.scrapeCount(), "the endpoint is still scraped every tick")
 }
 

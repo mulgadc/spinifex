@@ -48,36 +48,11 @@ func (m endpointMetrics) inFlight() int {
 	return int(m.running + m.waiting)
 }
 
-// scrapeMetrics reads baseURL + "/metrics" and extracts the three series
-// idleness needs. Any failure is the caller's cue to treat the sample as
-// unknown — never as idle, since a wedged VM must not be mistaken for a quiet
-// one.
-func scrapeMetrics(ctx context.Context, client *http.Client, baseURL string) (endpointMetrics, error) {
-	url := baseURL + "/metrics"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return endpointMetrics{}, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return endpointMetrics{}, fmt.Errorf("bedrock: scrape %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return endpointMetrics{}, fmt.Errorf("bedrock: scrape %s: HTTP %d", url, resp.StatusCode)
-	}
-	m, err := parseVLLMMetrics(io.LimitReader(resp.Body, metricsBodyLimit))
-	if err != nil {
-		return endpointMetrics{}, fmt.Errorf("bedrock: scrape %s: %w", url, err)
-	}
-	return m, nil
-}
-
 // errMetricsRedirected is a metrics probe answered with a redirect, which is
 // neither followed nor read as metrics.
 var errMetricsRedirected = errors.New("bedrock: metrics probe was redirected")
 
-// probeMetrics is scrapeMetrics through a no-follow copy of client. A redirect,
+// probeMetrics reads baseURL + "/metrics" through a no-follow copy of client. A redirect,
 // including one with a malformed or missing Location, is errMetricsRedirected;
 // errors name the endpoint by scheme and host and never quote a Location.
 func probeMetrics(ctx context.Context, client *http.Client, baseURL string) (endpointMetrics, error) {

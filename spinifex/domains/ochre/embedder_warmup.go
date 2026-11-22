@@ -104,7 +104,7 @@ func (p *warmupProbe) Ready() bool {
 // probeEmbedderHealth issues a single bounded GET against baseURL+
 // embedderHealthPath and reports whether it returned HTTP 200. Any
 // transport error (connection refused while TEI is still starting) or
-// non-200 status counts as not-yet-ready, mirroring readiness.go's probeOnce.
+// non-200 status counts as not-yet-ready.
 func probeEmbedderHealth(client *http.Client, baseURL string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), embedderWarmupProbeTimeout)
 	defer cancel()

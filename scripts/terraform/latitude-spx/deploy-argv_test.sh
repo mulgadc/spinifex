@@ -102,19 +102,33 @@ check_result() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: wa
 check_result "three nodes without --distro stop" "$( (NODES=3 DISTRO="" require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
 check_result "three nodes with --distro go on" "$( (NODES=3 DISTRO=/tmp/x.tar.gz require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" ran
 check_result "one node without --distro goes on" "$( (NODES=1 DISTRO="" require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with one address goes on" "$( (NODES=1 TF_VAR_elastic_ip_count=1 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with no setting goes on" "$( (NODES=1 TF_VAR_elastic_ip_count="" require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with two addresses stops" "$( (NODES=1 TF_VAR_elastic_ip_count=2 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
-check_result "three nodes with three addresses go on" "$( (NODES=3 TF_VAR_elastic_ip_count=3 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
 # The effective count is read from Terraform, and a count of 0 is refused before anything is applied.
 # shellcheck disable=SC2034 # read by the sourced functions
 TF_BIN=tofu SCRIPT_DIR="$work" TF_STATE="$work/x.tfstate" NAME=t1 SITE=DAL PLAN=p OS=o PROJECT="" PROJECT_ID="" SSH_KEY="$work/k"
-check_result "a count of 1 goes on" "$( (FAKE_TF_COUNT=1 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "a count of 3 goes on" "$( (FAKE_TF_COUNT=3 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "a count of 0 stops" "$( (FAKE_TF_COUNT=0 require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
-check_result "a count that cannot be read stops" "$( (FAKE_TF_COUNT="" require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "a count of 1 goes on" "$( (FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 3 goes on" "$( (FAKE_TF_COUNT=3 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 0 stops" "$( (FAKE_TF_COUNT=0 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "a count that cannot be read stops" "$( (FAKE_TF_COUNT="" require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "one node with one address goes on" "$( (NODES=1 FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "one node with two addresses stops" "$( (NODES=1 FAKE_TF_COUNT=2 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "three nodes with three addresses go on" "$( (NODES=3 FAKE_TF_COUNT=3 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+for v in TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply; do
+    check_result "$v set stops" "$( (export "$v=-var elastic_ip_count=0"; FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+done
+# preflight reads the count only while the terraform step is not recorded, and reads it before anything else.
+mkdir -p "$work/state"
+# shellcheck disable=SC2034 # read by the sourced functions
+STATE_DIR="$work/state" DISTRO=/tmp/x.tar.gz
+got="$( (FAKE_TF_COUNT=0 preflight) 2>&1 || true)"
+check_result "preflight stops on a count of 0" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 1
+got="$( (FAKE_TF_COUNT=1 preflight) 2>&1 || true)"
+check_result "preflight goes past a count of 1" "$(grep -c 'SSH key' <<<"$got" || true)" 1
+: > "$work/state/step.terraform"
+got="$( (FAKE_TF_COUNT=0 preflight) 2>&1 || true)"
+check_result "preflight does not read the count once the terraform step is recorded" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 0
+rm -f "$work/state/step.terraform"
 : > "$FAKE_ARGV"
-(FAKE_TF_COUNT=1 require_bought_address) >/dev/null 2>&1 || true
+(FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 || true
 check_result "the read adds no -var for the count" "$(grep -c 'elastic_ip_count' "$FAKE_ARGV" || true)" 0
 check_result "the read is a console and no apply" "$(grep -c '^tofu .*\(apply\|destroy\)' "$FAKE_ARGV" || true)" 0
 # A count set in terraform.tfvars is seen as Terraform sees it, which the stand-in cannot show: the real
@@ -124,10 +138,10 @@ if [ -n "$real_tofu" ]; then
     cp "$here"/*.tf "$work/mod/"
     if (cd "$work/mod" && "$real_tofu" init -backend=false -input=false >/dev/null 2>&1); then
         echo 'elastic_ip_count = 0' > "$work/mod/terraform.tfvars"
-        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_bought_address) 2>&1 || true)"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_effective_count) 2>&1 || true)"
         check_result "a count of 0 in terraform.tfvars stops" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 1
         echo 'elastic_ip_count = 2' > "$work/mod/terraform.tfvars"
-        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_bought_address) >/dev/null 2>&1 && echo ran || echo stopped)"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)"
         check_result "a count of 2 in terraform.tfvars goes on" "$got" ran
     else
         echo "skip a count in terraform.tfvars: tofu could not initialise the module here"

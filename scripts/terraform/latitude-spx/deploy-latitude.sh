@@ -313,11 +313,9 @@ require_branch_build() {
     [ -n "$DISTRO" ] || die "--nodes 3 needs --distro: the latitude pool is not in a release yet, and a released spx rejects source=\"latitude\" and crash-loops; build one with 'make distro-amd64' and pass its tarball"
 }
 
-# require_effective_count reads elastic_ip_count the way Terraform will see it (TF_VAR_, terraform.tfvars,
-# *.auto.tfvars and the state), without a -var that would override it, and refuses a count this script
-# cannot use. It buys and records its own addresses, so 0 is for Terraform alone. A one-node pool
-# publishes one address and never tries a second pool, so more would be paid for and unused.
-# TF_CLI_ARGS can change the count after this read, so they are refused.
+# Reads elastic_ip_count as Terraform will see it, with no overriding -var, and refuses 0 (this script buys
+# its own addresses) or, on one node, anything but 1. TF_CLI_ARGS could change the count after the read, so
+# it is refused.
 require_effective_count() {
     local count v
     for v in TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply; do

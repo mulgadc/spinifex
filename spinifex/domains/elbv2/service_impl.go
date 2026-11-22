@@ -586,6 +586,14 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*Syst
 	}
 	lb := index[rc.InstanceID]
 	if lb == nil {
+		// Another node may have launched or relaunched this VM since the index was built.
+		s.invalidateRecoveryLBIndex()
+		if index, err = s.loadRecoveryLBIndex(s.ctx); err != nil {
+			return nil, err
+		}
+		lb = index[rc.InstanceID]
+	}
+	if lb == nil {
 		return nil, fmt.Errorf("no LB record references instance %s", rc.InstanceID)
 	}
 	if len(lb.Subnets) == 0 || len(lb.ENIs) == 0 {

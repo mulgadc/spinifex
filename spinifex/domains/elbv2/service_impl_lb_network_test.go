@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -676,9 +677,18 @@ func TestSetSubnets_RelaunchRefreshesRecoveryIndex(t *testing.T) {
 	require.NoError(t, err)
 	svc.WaitLaunches()
 
-	// Populate the recovery index with the original VM.
-	_, err = svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+	// A second daemon on the same JetStream, as when SetSubnets lands on another node.
+	mk, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
+	other, err := NewELBv2ServiceImplWithNATS(svc.config, svc.nc, mk)
+	require.NoError(t, err)
+	other.VPCService = vpcSvc
+
+	// Populate both recovery indexes with the original VM.
+	for _, s := range []*ELBv2ServiceImpl{svc, other} {
+		_, err = s.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+		require.NoError(t, err)
+	}
 
 	mock.launchResult = &SystemInstanceOutput{InstanceID: "i-lb-new", PrivateIP: "10.0.40.6"}
 	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
@@ -690,6 +700,8 @@ func TestSetSubnets_RelaunchRefreshesRecoveryIndex(t *testing.T) {
 	rebuilt, err := svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-new", InstanceType: "sys.micro"})
 	require.NoError(t, err)
 	assert.Len(t, rebuilt.ExtraENIs, 1, "recovery must rebuild from the reshaped LB")
+	_, err = other.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-new", InstanceType: "sys.micro"})
+	require.NoError(t, err, "another node's stale index must reload on a miss")
 
 	_, err = svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
 	require.Error(t, err)

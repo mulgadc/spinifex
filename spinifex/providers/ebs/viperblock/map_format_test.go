@@ -2,15 +2,19 @@ package viperblock
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,6 +140,55 @@ func TestVolumeLease_LostLeaseTakesNoEpoch(t *testing.T) {
 	lease.mu.Unlock()
 	_, err = lease.launchEpoch(t.Context())
 	assert.ErrorIs(t, err, ErrLeaseStoreUnavailable)
+}
+
+// lateAckKV runs after once an Update is applied, before its acknowledgement
+// reaches the caller: the lease changes while the write is in flight.
+type lateAckKV struct {
+	jetstream.KeyValue
+
+	after func()
+}
+
+func (k lateAckKV) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	rev, err := k.KeyValue.Update(ctx, key, value, revision)
+	if k.after != nil {
+		k.after()
+	}
+	return rev, err
+}
+
+// An epoch acknowledged after the lease was given up, or after its validity
+// lapsed, authorises no launch.
+func TestVolumeLease_LateEpochAcknowledgementTakesNoEpoch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		during func(*volumeLeases, *volumeLease)
+	}{
+		{"given up", func(_ *volumeLeases, lease *volumeLease) {
+			lease.mu.Lock()
+			lease.lost = true
+			lease.mu.Unlock()
+		}},
+		{"lapsed", func(leases *volumeLeases, _ *volumeLease) {
+			late := time.Now().Add(2 * volumeLeaseValidity)
+			leases.now = func() time.Time { return late }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, natsURL := setupEmbeddedNATS(t)
+			leases := newTestLeases(t, natsURL, "node-a")
+			lease, err := leases.acquire(t.Context(), "vol-lateepoch-"+strings.ToLower(rand.Text()))
+			require.NoError(t, err)
+			lease.stop()
+			var once sync.Once
+			leases.kv = lateAckKV{KeyValue: leases.kv, after: func() { once.Do(func() { tc.during(leases, lease) }) }}
+			_, err = lease.launchEpoch(t.Context())
+			assert.ErrorIs(t, err, ErrLeaseStoreUnavailable)
+		})
+	}
 }
 
 func TestProviderHandlers_CreateVolume_FormatTwoNeedsALeaseStore(t *testing.T) {

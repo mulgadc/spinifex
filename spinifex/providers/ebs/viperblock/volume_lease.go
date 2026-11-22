@@ -349,6 +349,17 @@ func (lease *volumeLease) launchEpoch(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("take a launch epoch for %s: %w", lease.volume, err)
 	}
 	lease.mu.Lock()
+	// As for a renewal: an acknowledgement that arrives after the lease was
+	// given up, or after its validity lapsed, authorises no launch.
+	if lease.lost {
+		lease.mu.Unlock()
+		return 0, fmt.Errorf("lease for %s was given up while taking a launch epoch: %w", lease.volume, ErrLeaseStoreUnavailable)
+	}
+	if lease.leases.clock().Sub(lease.confirmed) >= volumeLeaseValidity {
+		lease.mu.Unlock()
+		lease.surrender(ctx)
+		return 0, fmt.Errorf("lease for %s lapsed while taking a launch epoch: %w", lease.volume, ErrLeaseStoreUnavailable)
+	}
 	lease.revision = rev
 	lease.confirmed = sent
 	lease.unackedSince = time.Time{}

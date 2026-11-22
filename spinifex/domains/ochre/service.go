@@ -390,7 +390,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 
 // writeIdentity records the launched VM's identities in the STARTING claim at
 // claimRev, returning the new revision. On a conflict or unknown outcome the
-// VM is retained; a re-read only classifies the result for the log.
+// VM is retained and the worker stops; a re-read only labels the log.
 func (s *Service) writeIdentity(ctx context.Context, key string, rec EndpointRecord, claimRev uint64, groupID string) (uint64, bool) {
 	write := func() (uint64, error) { return s.store.CompareAndSet(ctx, key, &rec, claimRev) }
 	var rev uint64
@@ -403,23 +403,25 @@ func (s *Service) writeIdentity(ctx context.Context, key string, rec EndpointRec
 	if err == nil {
 		return rev, true
 	}
-	outcome := "unknown"
+	// Observations only: a write still in flight can land after this read, so
+	// none of these labels proves the write's outcome or authorizes an action.
+	observed := "unreadable"
 	if errors.Is(err, kvstore.ErrConflict) {
-		outcome = "claim changed"
+		observed = "claim changed"
 	} else if current, currentRev, found, gerr := s.store.getRevision(ctx, key); gerr == nil {
 		switch {
 		case !found:
-			outcome = "claim gone"
+			observed = "no claim observed"
 		case currentRev == claimRev:
-			outcome = "not written"
+			observed = "claim revision observed"
 		case current.InstanceID == rec.InstanceID && sameIncarnation(current, rec):
-			outcome = "written"
+			observed = "instance identity observed"
 		default:
-			outcome = "claim changed"
+			observed = "other record observed"
 		}
 	}
 	slog.ErrorContext(ctx, "bedrock: recording the launched VM in its claim failed; retaining the VM",
-		"group", groupID, "instanceId", rec.InstanceID, "outcome", outcome, "err", err)
+		"group", groupID, "instanceId", rec.InstanceID, "observed", observed, "err", err)
 	return 0, false
 }
 

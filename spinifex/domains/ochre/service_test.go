@@ -6,6 +6,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -554,7 +555,7 @@ func storedEndpoint(t *testing.T, s *Service) (EndpointRecord, bool) {
 	return rec, found
 }
 
-func TestEnsure_ChangedClaimIsNotOverwrittenByReady(t *testing.T) {
+func TestEnsure_ChangedClaimBeforeIdentityIsNotOverwritten(t *testing.T) {
 	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
@@ -571,6 +572,40 @@ func TestEnsure_ChangedClaimIsNotOverwrittenByReady(t *testing.T) {
 	assert.Equal(t, "node-other", got.NodeID)
 	assert.True(t, got.CreatedAt.Equal(changed.CreatedAt))
 	assert.Empty(t, got.InstanceID, "this launch's instance must not be written into another claim")
+	assertRetained(t, h)
+}
+
+// changingProbe changes the claim during the first readiness probe, after the
+// identity write, then answers 200.
+type changingProbe struct {
+	t       *testing.T
+	s       *Service
+	once    sync.Once
+	changed EndpointRecord
+}
+
+func (c *changingProbe) RoundTrip(*http.Request) (*http.Response, error) {
+	c.once.Do(func() { c.changed = changeClaim(c.t, c.s) })
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+}
+
+func TestEnsure_ChangedClaimDuringProbeIsNotOverwrittenByReady(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	probe := &changingProbe{t: t, s: s}
+	s.deps.HTTPClient = &http.Client{Transport: probe}
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	require.Equal(t, "i-1", probe.changed.InstanceID, "the change must land after the identity write")
+	got, found := storedEndpoint(t, s)
+	require.True(t, found)
+	assert.Equal(t, probe.changed, got, "READY must leave the newer record unchanged")
+	assert.Equal(t, StateStarting, got.State)
+	assert.Empty(t, got.BaseURL)
 	assertRetained(t, h)
 }
 
@@ -661,6 +696,49 @@ func TestEnsure_UncertainIdentityWriteRetainsTheLaunch(t *testing.T) {
 			assertRetained(t, h)
 		})
 	}
+}
+
+// countingProbe answers every readiness probe with 200 and counts them.
+type countingProbe struct{ hits atomic.Int32 }
+
+func (c *countingProbe) RoundTrip(*http.Request) (*http.Response, error) {
+	c.hits.Add(1)
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+}
+
+func TestEnsure_IdentityWriteLandingAfterItsTimeoutIsNotActedOn(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	probe := &countingProbe{}
+	s.deps.HTTPClient = &http.Client{Transport: probe}
+	release, landed := make(chan struct{}), make(chan error, 1)
+	s.identityWrite = func(write func() (uint64, error)) (uint64, error) {
+		go func() {
+			<-release
+			_, err := write()
+			landed <- err
+		}()
+		return 0, stderrors.New("nats: timeout")
+	}
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	before, found := storedEndpoint(t, s)
+	require.True(t, found)
+	require.Empty(t, before.InstanceID, "the in-flight write must not have landed before the worker's read")
+
+	close(release)
+	require.NoError(t, <-landed, "the delayed write lands at the claim revision")
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found, "the claim must not be deleted")
+	assert.Equal(t, StateStarting, got.State, "READY must not be published")
+	assert.Equal(t, "i-1", got.InstanceID)
+	assert.Zero(t, probe.hits.Load(), "the worker must not probe after an uncertain identity write")
+	assertRetained(t, h)
 }
 
 func TestEnsure_PanicAfterLaunchKeepsTheClaim(t *testing.T) {

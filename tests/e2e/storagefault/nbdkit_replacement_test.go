@@ -76,10 +76,8 @@ func (r *replacement) procStart(ctx context.Context, pid int) (string, error) {
 func (r *replacement) lookup(ctx context.Context) ([]string, error) {
 	out, err := r.f.SSH.Run(ctx, r.node, fmt.Sprintf(
 		`pids=$(sudo pgrep -x %s); rc=$?; [ $rc -le 1 ] || exit 3; `+
-			`for p in $pids; do `+
-			`if ! c=$(sudo cat /proc/$p/cmdline 2>/dev/null | tr '\0' '\n'); then sudo test -e /proc/$p && exit 4; continue; fi; `+
-			`[ -z "$c" ] && sudo test -e /proc/$p && exit 4; `+
-			`printf '%%s\n' "$c" | grep -qxF -- %q && echo $p; `+
+			`for p in $pids; do sudo grep -qzxF -- %q /proc/$p/cmdline 2>/dev/null; g=$?; `+
+			`if [ $g -eq 0 ]; then echo $p; elif [ $g -ge 2 ] && sudo test -e /proc/$p; then exit 4; fi; `+
 			`done; exit 0`,
 		nbdkitComm, r.socket))
 	if err != nil {

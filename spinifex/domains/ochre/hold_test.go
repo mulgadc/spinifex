@@ -121,8 +121,8 @@ func TestHealthHold_RefusesTheWrongStartingState(t *testing.T) {
 	assert.Equal(t, heldRev, afterRev, "a refused hold or clear must not write")
 }
 
-// An error other than a conflict leaves the outcome unknown. It is returned
-// once, unretried, and only a fresh read can tell whether the write landed.
+// An error other than a conflict leaves the outcome unknown and is returned
+// once, unretried. A later read shows only what was visible then.
 func TestHealthHold_UncertainWriteIsNotRetried(t *testing.T) {
 	t.Parallel()
 	for name, landed := range map[string]bool{"landed, ack lost": true, "never landed": false} {
@@ -159,6 +159,37 @@ func TestHealthHold_UncertainWriteIsNotRetried(t *testing.T) {
 			} else {
 				assert.Equal(t, rev, afterRev)
 			}
+		})
+	}
+}
+
+// A held record that has left READY, such as one an explicit delete has moved
+// to DRAINING, is never rewritten by a clear.
+func TestHealthHold_ClearRefusesAHeldRecordPastReady(t *testing.T) {
+	t.Parallel()
+	for _, state := range []EndpointState{StateDraining, StateStarting} {
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			s, _ := newTestService(t, newLaunchHarness(), 200, sufficientGPU())
+			seedReadyEndpoint(t, s, evictionVictimModel, time.Now().UTC().Add(-time.Hour))
+			key := EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel)
+			reserveObserved(t, s, key)
+			rewriteVictim(t, s, func(rec *EndpointRecord) { rec.State = state; rec.Generation++ })
+
+			calls := 0
+			s.holdWrite = func(write func() (uint64, error)) (uint64, error) {
+				calls++
+				return write()
+			}
+			held, heldRev := readRecord(t, s, key)
+			require.True(t, held.Held())
+			_, err := s.clearHealthHold(t.Context(), key, held, heldRev)
+			require.ErrorIs(t, err, errHoldNotReady)
+			assert.Zero(t, calls, "no write may be attempted")
+
+			after, afterRev := readRecord(t, s, key)
+			assert.Equal(t, held, after)
+			assert.Equal(t, heldRev, afterRev, "the owner's revision must survive")
 		})
 	}
 }

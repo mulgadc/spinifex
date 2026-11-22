@@ -16,7 +16,7 @@ type HealthHold struct {
 }
 
 var (
-	errHoldNotReady = errors.New("bedrock: health hold needs a READY endpoint")
+	errHoldNotReady = errors.New("bedrock: health hold applies only to a READY endpoint")
 	errHoldExists   = errors.New("bedrock: endpoint already carries a health hold")
 	errHoldAbsent   = errors.New("bedrock: endpoint carries no health hold")
 )
@@ -42,10 +42,14 @@ func (s *Service) reserveHealthHold(ctx context.Context, key string, observed En
 	return s.writeHold(ctx, key, next, rev)
 }
 
-// clearHealthHold removes the hold from observed, the held record read at rev,
-// by a single CAS at rev, with the same outcomes as reserveHealthHold.
+// clearHealthHold removes the hold from observed, the held READY record read at
+// rev, by a single CAS at rev, with the same outcomes as reserveHealthHold. A
+// record past READY belongs to its delete or launch and is never rewritten.
 func (s *Service) clearHealthHold(ctx context.Context, key string, observed EndpointRecord, rev uint64) (uint64, error) {
-	if !observed.Held() {
+	switch {
+	case observed.State != StateReady:
+		return 0, errHoldNotReady
+	case !observed.Held():
 		return 0, errHoldAbsent
 	}
 	next := observed

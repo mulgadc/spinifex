@@ -170,6 +170,9 @@ type Config struct {
 	// afterCreateCheck, when set by a test, runs between a format-2 create's
 	// first existence check and its claim of the new volume's lease.
 	afterCreateCheck func(volumeID string)
+	// onCreateReply, when set by a test, runs as a create replies, after its
+	// lease is released.
+	onCreateReply func(volumeID string)
 
 	// WALBaseDir puts every volume's WAL under this directory instead of
 	// BaseDir, so a WAL fsync is not queued behind the node's other IO.

@@ -342,3 +342,24 @@ func TestSealVolumeVB_ConvertedVolumeWithAFormatOneVBStateSealsAsFormatTwo(t *te
 	require.NoError(t, err)
 	assert.Equal(t, seed, got)
 }
+
+// A create releases the new volume's lease before it replies, so a caller that
+// publishes or snapshots the volume as soon as it exists never finds it held.
+func TestProviderHandlers_CreateVolume_ReleasesTheLeaseBeforeReplying(t *testing.T) {
+	t.Parallel()
+	cfg, create := formatTwoProvider(t)
+	volumeName := "vol-leasereply-" + strings.ToLower(rand.Text())
+	var replied bool
+	cfg.onCreateReply = func(id string) {
+		replied = true
+		_, err := cfg.leases.kv.Get(t.Context(), id)
+		assert.Error(t, err, "the lease is still held when the create replies")
+	}
+	resp := create(marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion,
+		"volume_id":      volumeName,
+		"capacity_range": map[string]any{"required_bytes": int64(1) << 30},
+	}))
+	require.Nil(t, resp.Error)
+	assert.True(t, replied, "the create replied without passing through its lease release")
+}

@@ -158,10 +158,68 @@ func TestEnsure_ReachesReady(t *testing.T) {
 	assert.Equal(t, StateReady, desc.Endpoint.State)
 	assert.NotEmpty(t, desc.Endpoint.BaseURL)
 	assert.False(t, desc.Endpoint.ReadyAt.IsZero())
-	assert.EqualValues(t, 2, desc.Endpoint.Generation)
+	assert.EqualValues(t, 3, desc.Endpoint.Generation, "claim, identity and READY are one write each")
 }
 
-func TestEnsure_ReadinessTimeoutAbortsToAbsent(t *testing.T) {
+// probeSnapshot answers every readiness probe with 200 and records the stored
+// endpoint as the first probe saw it.
+type probeSnapshot struct {
+	t    *testing.T
+	s    *Service
+	once sync.Once
+	rec  EndpointRecord
+	ok   bool
+}
+
+func (p *probeSnapshot) RoundTrip(*http.Request) (*http.Response, error) {
+	p.once.Do(func() {
+		rec, _, found, err := p.s.store.getRevision(context.Background(), resolveKey(awsidentifiers.GlobalAccountID, testModelID))
+		assert.NoError(p.t, err)
+		p.rec, p.ok = rec, found
+	})
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+}
+
+func TestEnsure_IdentityIsRecordedBeforeTheProbe(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	probe := &probeSnapshot{t: t, s: s}
+	s.deps.HTTPClient = &http.Client{Transport: probe}
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	require.True(t, probe.ok, "the claim must exist when the probe runs")
+	seen := probe.rec
+	assert.Equal(t, StateStarting, seen.State)
+	assert.Equal(t, "i-1", seen.InstanceID)
+	assert.NotEmpty(t, seen.ENIID)
+	assert.NotEmpty(t, seen.PrivateIP)
+	require.Contains(t, seen.Members, testModelID)
+	assert.Equal(t, vllmServePort, seen.Members[testModelID].Port)
+	assert.NotEmpty(t, seen.Members[testModelID].WeightsVolumeID)
+	assert.Equal(t, seen.Members[testModelID].WeightsVolumeID, seen.WeightsVolumeID)
+	assert.Empty(t, seen.BaseURL, "the serving address is published with READY, not before")
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found)
+	assert.Equal(t, StateReady, got.State)
+	assert.Equal(t, seen.InstanceID, got.InstanceID)
+	assert.Equal(t, seen.Members, got.Members)
+	assert.NotEmpty(t, got.BaseURL)
+}
+
+// assertRetained checks that nothing the launch realized was torn down.
+func assertRetained(t *testing.T, h *launchHarness) {
+	t.Helper()
+	assert.Empty(t, h.launcher.terminations(), "the launched VM must not be terminated")
+	assert.Empty(t, h.vpc.deleted, "the launched ENI must not be deleted")
+	assert.Empty(t, h.volumes.deleted, "the weights volume must not be deleted")
+}
+
+func TestEnsure_ReadinessTimeoutRetainsTheLaunch(t *testing.T) {
 	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusServiceUnavailable, sufficientGPU())
@@ -170,13 +228,13 @@ func TestEnsure_ReadinessTimeoutAbortsToAbsent(t *testing.T) {
 	require.NoError(t, err)
 	s.WaitLaunches()
 
-	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
-	require.NoError(t, err)
-	assert.Equal(t, StateAbsent, desc.Endpoint.State, "a launch that never becomes ready must revert, not stick STARTING")
-
-	assert.NotEmpty(t, h.launcher.terminated, "the VM that never became ready must be unwound")
-	assert.NotEmpty(t, h.vpc.deleted)
-	assert.NotEmpty(t, h.volumes.deleted)
+	got, found := storedEndpoint(t, s)
+	require.True(t, found, "a launch that never became ready keeps its claim")
+	assert.Equal(t, StateStarting, got.State)
+	assert.Equal(t, "i-1", got.InstanceID, "the retained claim names the VM it holds")
+	assert.NotEmpty(t, got.ENIID)
+	assert.NotEmpty(t, got.WeightsVolumeID)
+	assertRetained(t, h)
 }
 
 func TestDelete_ReadyToAbsent(t *testing.T) {
@@ -513,6 +571,7 @@ func TestEnsure_ChangedClaimIsNotOverwrittenByReady(t *testing.T) {
 	assert.Equal(t, "node-other", got.NodeID)
 	assert.True(t, got.CreatedAt.Equal(changed.CreatedAt))
 	assert.Empty(t, got.InstanceID, "this launch's instance must not be written into another claim")
+	assertRetained(t, h)
 }
 
 func TestEnsure_LaunchFailureAbortIsGuardedOnTheClaim(t *testing.T) {
@@ -548,7 +607,7 @@ func TestEnsure_LaunchFailureAbortIsGuardedOnTheClaim(t *testing.T) {
 	}
 }
 
-func TestEnsure_TimeoutAbortIsGuardedOnTheClaim(t *testing.T) {
+func TestEnsure_ChangedClaimAtIdentityWriteRetainsTheLaunch(t *testing.T) {
 	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusServiceUnavailable, sufficientGPU())
@@ -559,12 +618,88 @@ func TestEnsure_TimeoutAbortIsGuardedOnTheClaim(t *testing.T) {
 	s.WaitLaunches()
 
 	got, found := storedEndpoint(t, s)
-	require.True(t, found, "a readiness timeout must not remove a changed claim")
+	require.True(t, found, "a conflicting identity write must not remove the changed claim")
 	assert.Equal(t, "node-other", got.NodeID)
-	assert.NotEmpty(t, h.launcher.terminated, "the unready VM is still unwound")
+	assert.Empty(t, got.InstanceID, "the launched VM must not be written into another claim")
+	assertRetained(t, h)
 }
 
-func TestEnsure_LaunchPanicAbortIsGuardedOnTheClaim(t *testing.T) {
+func TestEnsure_UncertainIdentityWriteRetainsTheLaunch(t *testing.T) {
+	t.Parallel()
+	errLost := stderrors.New("nats: timeout")
+	for _, tc := range []struct {
+		name   string
+		landed bool
+	}{
+		{name: "write landed and its reply was lost", landed: true},
+		{name: "write never landed", landed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			s.identityWrite = func(write func() (uint64, error)) (uint64, error) {
+				if tc.landed {
+					_, err := write()
+					assert.NoError(t, err)
+				}
+				return 0, errLost
+			}
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			s.WaitLaunches()
+
+			got, found := storedEndpoint(t, s)
+			require.True(t, found, "an uncertain identity write must not delete the claim")
+			assert.Equal(t, StateStarting, got.State, "READY must not follow an uncertain identity write")
+			if tc.landed {
+				assert.Equal(t, "i-1", got.InstanceID)
+			} else {
+				assert.Empty(t, got.InstanceID)
+			}
+			assertRetained(t, h)
+		})
+	}
+}
+
+func TestEnsure_PanicAfterLaunchKeepsTheClaim(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		written bool
+	}{
+		{name: "after the identity write", written: true},
+		{name: "before the identity write", written: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			s.identityWrite = func(write func() (uint64, error)) (uint64, error) {
+				if tc.written {
+					_, err := write()
+					assert.NoError(t, err)
+				}
+				panic("worker exploded")
+			}
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			s.WaitLaunches()
+
+			got, found := storedEndpoint(t, s)
+			require.True(t, found, "a panic after the VM was returned must keep its claim")
+			assert.Equal(t, StateStarting, got.State)
+			if tc.written {
+				assert.Equal(t, "i-1", got.InstanceID)
+			}
+			assertRetained(t, h)
+		})
+	}
+}
+
+func TestEnsure_PanicBeforeLaunchReturnsAbortIsGuardedOnTheClaim(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string

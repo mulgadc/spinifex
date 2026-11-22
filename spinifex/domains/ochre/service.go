@@ -78,6 +78,10 @@ type Service struct {
 	// afterEvictionSelect, nil outside tests, runs between choosing an
 	// eviction victim and its guarded teardown.
 	afterEvictionSelect func(EndpointRecord)
+
+	// identityWrite, nil outside tests, wraps the launch's identity write so a
+	// test can replace its outcome.
+	identityWrite func(write func() (uint64, error)) (uint64, error)
 }
 
 var _ EndpointService = (*Service)(nil)
@@ -241,13 +245,17 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	// written.
 	launchCtx := context.Background()
 	s.launchWG.Go(func() {
+		realized := false
 		defer func() {
 			if r := recover(); r != nil {
-				slog.ErrorContext(launchCtx, "bedrock: launch panic", "model", in.ModelID, "panic", r)
-				s.abortLaunch(launchCtx, key, in.ModelID, claimRev)
+				slog.ErrorContext(launchCtx, "bedrock: launch panic", "model", in.ModelID, "panic", r, "realized", realized)
+				// Once the VM exists the claim may be its only record, so keep it.
+				if !realized {
+					s.abortLaunch(launchCtx, key, in.ModelID, claimRev)
+				}
 			}
 		}()
-		s.runLaunch(launchCtx, key, rec, claimRev, spec)
+		s.runLaunch(launchCtx, key, rec, claimRev, spec, &realized)
 	})
 
 	return &EnsureEndpointOutput{Endpoint: rec}, nil
@@ -311,10 +319,9 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 }
 
 // runLaunch performs the slow launch + readiness probe and writes the
-// terminal state. Every write is guarded on claimRev, the revision of this
-// launch's own claim, so a claim that changed meanwhile is never overwritten
-// or removed. It launches the VM exactly once for the whole group.
-func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, claimRev uint64, spec CoServeGroupSpec) {
+// terminal state. Every write is guarded on the revision of this launch's own
+// last write, so a claim that changed meanwhile is never overwritten or removed.
+func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, claimRev uint64, spec CoServeGroupSpec, realized *bool) {
 	members := make([]LaunchMemberInput, 0, len(spec.Members))
 	for _, m := range spec.Members {
 		members = append(members, LaunchMemberInput{ModelID: m.ModelID, Family: m.Family, VLLMArgs: m.VLLMArgs})
@@ -329,6 +336,9 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		s.abortLaunch(ctx, key, rec.ModelID, claimRev)
 		return
 	}
+	// From here a running VM exists that only this claim can lead back to, so
+	// nothing below unwinds it or deletes the claim.
+	*realized = true
 
 	rec.InstanceID = out.InstanceID
 	rec.ENIID = out.ENIID
@@ -337,21 +347,21 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	for modelID, m := range out.Members {
 		rec.Members[modelID] = MemberEndpoint(m)
 	}
-	// BaseURL/WeightsVolumeID mirror the generative member, for callers (the
-	// reaper's Prometheus scrape, the CLI summary) that only ever care about
-	// the bundle's primary model.
-	if primary, ok := out.Members[out.PrimaryModelID]; ok {
-		rec.BaseURL = "http://" + net.JoinHostPort(out.PrivateIP, strconv.Itoa(primary.Port))
+	primary, hasPrimary := out.Members[out.PrimaryModelID]
+	if hasPrimary {
 		rec.WeightsVolumeID = primary.WeightsVolumeID
+	}
+	rec.Generation++
+	identityRev, ok := s.writeIdentity(ctx, key, rec, claimRev, spec.GroupID)
+	if !ok {
+		return
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.startupTimeout())
 	defer cancel()
 	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberReadinessTargets(), s.pollInterval()); err != nil {
-		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; unwinding launch",
+		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; retaining the launched VM",
 			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
-		out.Unwind(ctx)
-		s.abortLaunch(ctx, key, rec.ModelID, claimRev)
 		return
 	}
 
@@ -359,11 +369,16 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		slog.ErrorContext(ctx, "bedrock: illegal transition to READY", "group", spec.GroupID, "err", err)
 		return
 	}
+	// BaseURL mirrors the generative member for callers (the reaper's
+	// Prometheus scrape, the CLI summary) that only care about the primary.
+	if hasPrimary {
+		rec.BaseURL = "http://" + net.JoinHostPort(out.PrivateIP, strconv.Itoa(primary.Port))
+	}
 	rec.State = StateReady
 	rec.ReadyAt = time.Now().UTC()
 	rec.Generation++
 
-	if _, err := s.store.CompareAndSet(ctx, key, &rec, claimRev); err != nil {
+	if _, err := s.store.CompareAndSet(ctx, key, &rec, identityRev); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
 			slog.WarnContext(ctx, "bedrock: endpoint claim changed during launch; not publishing READY",
 				"group", spec.GroupID, "instanceId", rec.InstanceID)
@@ -371,6 +386,41 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		}
 		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
+}
+
+// writeIdentity records the launched VM's identities in the STARTING claim at
+// claimRev, returning the new revision. On a conflict or unknown outcome the
+// VM is retained; a re-read only classifies the result for the log.
+func (s *Service) writeIdentity(ctx context.Context, key string, rec EndpointRecord, claimRev uint64, groupID string) (uint64, bool) {
+	write := func() (uint64, error) { return s.store.CompareAndSet(ctx, key, &rec, claimRev) }
+	var rev uint64
+	var err error
+	if s.identityWrite != nil {
+		rev, err = s.identityWrite(write)
+	} else {
+		rev, err = write()
+	}
+	if err == nil {
+		return rev, true
+	}
+	outcome := "unknown"
+	if errors.Is(err, kvstore.ErrConflict) {
+		outcome = "claim changed"
+	} else if current, currentRev, found, gerr := s.store.getRevision(ctx, key); gerr == nil {
+		switch {
+		case !found:
+			outcome = "claim gone"
+		case currentRev == claimRev:
+			outcome = "not written"
+		case current.InstanceID == rec.InstanceID && sameIncarnation(current, rec):
+			outcome = "written"
+		default:
+			outcome = "claim changed"
+		}
+	}
+	slog.ErrorContext(ctx, "bedrock: recording the launched VM in its claim failed; retaining the VM",
+		"group", groupID, "instanceId", rec.InstanceID, "outcome", outcome, "err", err)
+	return 0, false
 }
 
 // resolveKey derives the bundle's KV storage key for modelID: the shared

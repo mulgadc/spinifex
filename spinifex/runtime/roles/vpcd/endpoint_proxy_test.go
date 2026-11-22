@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/netip"
@@ -694,7 +695,11 @@ func startGate(t *testing.T, p *testPKI, maxVersion uint8) uint16 {
 				if err != nil || h.Version > maxVersion {
 					return
 				}
-				_, _ = c.Read(make([]byte, 1))
+				// The gate serves the guest's TLS session inside, as predastore does.
+				inner := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+				if inner.Handshake() == nil {
+					_, _ = inner.Read(make([]byte, 1))
+				}
 			}()
 		}
 	}()
@@ -725,8 +730,39 @@ func TestGateAccepts_OnlyAFormationCertificateIsAccepted(t *testing.T) {
 	require.Error(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1), "a gate outside the formation is not trusted")
 }
 
+// A gate that reads the header and answers nothing has not shown it accepted
+// it, so a slow refusal is never read as version 2.
+func TestGateAccepts_Version2NeedsTheGateToAnswer(t *testing.T) {
+	formation := newTestPKI(t)
+	certFile, keyFile := formation.issue(t, "gate")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	require.NoError(t, err)
+	ln, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert}, ClientCAs: formation.pool,
+		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	nodeCert, nodeKey := formation.issue(t, "node")
+	dial, err := newEndpointDialer(nodeCert, nodeKey, formation.caFile, uint16(ln.Addr().(*net.TCPAddr).Port))
+	require.NoError(t, err)
+	require.Error(t, gateAccepts(dial)(t.Context(), netip.MustParseAddr("127.0.0.1"), endpointproxy.ContractVersion2))
+}
+
 // The version 2 check passes only on a gate that reads a version 2 header and
-// keeps the session, and a gate that closes it reads as one at version 1.
+// answers the session inside it, and a gate that closes it reads as version 1.
 func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
 	formation := newTestPKI(t)
 	loopback := netip.MustParseAddr("127.0.0.1")
@@ -753,7 +789,6 @@ func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
 	}
 }
 
-// The probe's header is one the gate validates, so only its version decides.
 func TestNewEndpointDialer_RefusesMissingMaterial(t *testing.T) {
 	p := newTestPKI(t)
 	cert, key := p.issue(t, "node")

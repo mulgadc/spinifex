@@ -47,8 +47,8 @@ const (
 	endpointProbeRetry = 30 * time.Second
 	// endpointDialTimeout bounds the TCP connect to a node's endpoint listener.
 	endpointDialTimeout = 5 * time.Second
-	// gateVerdictWait is how long the gate probe waits for the gate to refuse
-	// its certificate after the client's handshake completes.
+	// gateVerdictWait bounds the gate probe's wait for the gate to refuse its
+	// certificate, or to answer the session after a version 2 header.
 	gateVerdictWait = time.Second
 )
 
@@ -473,9 +473,8 @@ func unavailableDialer(cause error) guestmetadata.EndpointDialFunc {
 }
 
 // gateAccepts reports whether the gate at addr completes a session with the
-// proxy's certificate and, from version 2, a header at that version. TLS 1.3
-// finishes the client's handshake before the server has checked that
-// certificate, so a refusal of either arrives on the first read.
+// proxy's certificate and, from version 2, answers the TLS session after a
+// header at that version. A refused certificate arrives on the first read.
 func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, addr netip.Addr, version uint8) error {
 	return func(ctx context.Context, addr netip.Addr, version uint8) error {
 		var hdr []byte
@@ -499,6 +498,7 @@ func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, 
 			if _, err := c.Write(hdr); err != nil {
 				return fmt.Errorf("write probe header: %w", err)
 			}
+			return innerHandshake(c)
 		}
 		_, err = c.Read(make([]byte, 1))
 		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
@@ -509,6 +509,17 @@ func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, 
 		}
 		return fmt.Errorf("gate refused the session: %w", err)
 	}
+}
+
+// innerHandshake proves a gate accepted the header before it: only then does
+// it start the guest's TLS session, so a slow refusal cannot read as consent.
+// Nothing is sent inside, so the gate's certificate is not checked.
+func innerHandshake(c net.Conn) error {
+	inner := tls.Client(c, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec // G402: proves the gate answered; no data is sent.
+	if err := inner.Handshake(); err != nil {
+		return fmt.Errorf("gate did not answer after the header: %w", err)
+	}
+	return nil
 }
 
 // gateProbeHeader is a well-formed version 2 header naming no real endpoint,

@@ -25,6 +25,15 @@ resource "latitudesh_project" "deploy" {
 resource "latitudesh_ssh_key" "deploy" {
   name       = "spinifex-${var.deployment_name}"
   public_key = trimspace(file(pathexpand(var.ssh_public_key_path)))
+
+  # A project Terraform creates is deleted on destroy with anything in it, so an address kept outside
+  # Terraform needs a project it does not own. The key exists on every deployment, so this is always checked.
+  lifecycle {
+    precondition {
+      condition     = var.elastic_ip_count > 0 || (var.project != "" && var.project_id != "")
+      error_message = "elastic_ip_count = 0 keeps an address outside Terraform, so set project and project_id to an existing project: a project Terraform creates is deleted on destroy with everything in it."
+    }
+  }
 }
 
 # Host preparation only. Latitude substitutes double-brace variables inside user data, so the file

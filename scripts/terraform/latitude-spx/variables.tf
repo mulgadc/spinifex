@@ -50,10 +50,10 @@ variable "node_count" {
 variable "elastic_ip_count" {
   type        = number
   default     = 1
-  description = "Elastic IPs to buy, each 4 USD a month. Every one starts on a server and keeps it unless Spinifex moves it. latitude.sh allows 5 per team."
+  description = "Elastic IPs to buy, each 4 USD a month. Every one starts on a server and keeps it unless Spinifex moves it. latitude.sh allows 5 per team. 0 buys none, for an address bought outside Terraform, and needs project and project_id."
   validation {
-    condition     = var.elastic_ip_count >= 1 && var.elastic_ip_count <= 5 && floor(var.elastic_ip_count) == var.elastic_ip_count
-    error_message = "elastic_ip_count must be a whole number from 1 to 5."
+    condition     = var.elastic_ip_count >= 0 && var.elastic_ip_count <= 5 && floor(var.elastic_ip_count) == var.elastic_ip_count
+    error_message = "elastic_ip_count must be a whole number from 0 to 5."
   }
 }
 

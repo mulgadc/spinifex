@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/readiness"
@@ -30,9 +31,17 @@ func recreate(t *testing.T, js jetstream.JetStream, bucket string) jetstream.Key
 	return createBucket(t, js, bucket)
 }
 
+const markerKey = "_readiness.marker.5be0a2c4"
+
+// observe writes a value marker if the bucket has none and binds to it.
 func observe(t *testing.T, js jetstream.JetStream, bucket string) readiness.Binding {
 	t.Helper()
-	b, err := readiness.Observe(t.Context(), js, bucket)
+	kv, err := js.KeyValue(t.Context(), bucket)
+	require.NoError(t, err)
+	if _, err := kv.Create(t.Context(), markerKey, []byte("5be0a2c4")); err != nil {
+		require.ErrorIs(t, err, jetstream.ErrKeyExists)
+	}
+	b, err := readiness.Observe(t.Context(), js, bucket, markerKey)
 	require.NoError(t, err)
 	return b
 }
@@ -64,7 +73,7 @@ func TestStream_AttachNeverCreatesMissingStream(t *testing.T) {
 
 			_, _, err := readiness.Attach(t.Context(), js, b)
 			require.ErrorIs(t, err, readiness.ErrStreamMissing)
-			_, err = readiness.Observe(t.Context(), js, bucket)
+			_, err = readiness.Observe(t.Context(), js, bucket, markerKey)
 			require.ErrorIs(t, err, readiness.ErrStreamMissing)
 			_, err = js.KeyValue(t.Context(), bucket)
 			require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "attaching must not recreate the stream")
@@ -116,10 +125,8 @@ func TestStream_DelayedWritesLandInReplacementThatStaysUnusable(t *testing.T) {
 			s, delayed, err := readiness.Attach(ctx, js, b)
 			require.NoError(t, err)
 
-			for _, key := range []string{"a", "b"} {
-				_, err = original.Put(ctx, key, []byte("original"))
-				require.NoError(t, err)
-			}
+			_, err = original.Put(ctx, "a", []byte("original"))
+			require.NoError(t, err)
 			expected, err := original.Put(ctx, "acct.model", []byte("original"))
 			require.NoError(t, err)
 			require.Equal(t, uint64(3), expected)
@@ -164,7 +171,20 @@ func TestStream_AttachRefusesIncompleteBinding(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	createBucket(t, js, readiness.KVBucket)
 
-	_, _, err := readiness.Attach(t.Context(), js, readiness.Binding{Bucket: readiness.KVBucket})
+	b := observe(t, js, readiness.KVBucket)
+	for name, mutate := range map[string]func(*readiness.Binding){
+		"no bucket":      func(b *readiness.Binding) { b.Bucket = "" },
+		"no created":     func(b *readiness.Binding) { b.Created = time.Time{} },
+		"no marker key":  func(b *readiness.Binding) { b.Marker.Key = "" },
+		"no marker seq":  func(b *readiness.Binding) { b.Marker.Seq = 0 },
+		"no marker time": func(b *readiness.Binding) { b.Marker.Time = time.Time{} },
+	} {
+		incomplete := b
+		mutate(&incomplete)
+		_, _, err := readiness.Attach(t.Context(), js, incomplete)
+		require.ErrorIs(t, err, readiness.ErrInvalid, name)
+	}
+	_, err := readiness.Observe(t.Context(), js, readiness.KVBucket, "")
 	require.ErrorIs(t, err, readiness.ErrInvalid)
 }
 
@@ -250,7 +270,7 @@ func TestStream_AnswerWithoutLeaderFailsClosed(t *testing.T) {
 		hooked.arm(strip, nil)
 		require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamUnavailable, name)
 		hooked.arm(strip, nil)
-		_, err := readiness.Observe(t.Context(), hooked, bucket)
+		_, err := readiness.Observe(t.Context(), hooked, bucket, markerKey)
 		require.ErrorIs(t, err, readiness.ErrStreamUnavailable, name)
 	}
 	require.NoError(t, s.Verify(t.Context()), "a leaderless answer blocks without quarantining")
@@ -267,4 +287,96 @@ func TestStream_AttachRefusesReplacementDuringOpen(t *testing.T) {
 	_, kv, err := readiness.Attach(t.Context(), hooked, b)
 	require.ErrorIs(t, err, readiness.ErrStreamReplaced, "the check after opening must catch a replacement made during the open")
 	assert.Nil(t, kv)
+}
+
+func TestStream_MarkerMayBeAValueOrADeleteMarker(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	kv := createBucket(t, js, readiness.KVBucket)
+	require.NoError(t, kv.Delete(t.Context(), markerKey))
+	b, err := readiness.Observe(t.Context(), js, readiness.KVBucket, markerKey)
+	require.NoError(t, err)
+	s, _, err := readiness.Attach(t.Context(), js, b)
+	require.NoError(t, err)
+
+	_, err = kv.Put(t.Context(), "other", []byte("v"))
+	require.NoError(t, err)
+	require.NoError(t, kv.Delete(t.Context(), "other"))
+	require.NoError(t, s.Verify(t.Context()), "writes to other keys leave the marker's position unchanged")
+}
+
+func TestStream_ChangedMarkerQuarantines(t *testing.T) {
+	for name, change := range map[string]func(*testing.T, jetstream.KeyValue){
+		"rewritten with the same bytes": func(t *testing.T, kv jetstream.KeyValue) {
+			_, err := kv.Put(t.Context(), markerKey, []byte("5be0a2c4"))
+			require.NoError(t, err)
+		},
+		"deleted": func(t *testing.T, kv jetstream.KeyValue) {
+			require.NoError(t, kv.Delete(t.Context(), markerKey))
+		},
+		"purged by key": func(t *testing.T, kv jetstream.KeyValue) {
+			require.NoError(t, kv.Purge(t.Context(), markerKey))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			kv := createBucket(t, js, readiness.KVBucket)
+			b := observe(t, js, readiness.KVBucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			change(t, kv)
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamReplaced)
+			_, _, err = readiness.Attach(t.Context(), js, b)
+			require.ErrorIs(t, err, readiness.ErrStreamReplaced)
+		})
+	}
+	t.Run("removed from the stream", func(t *testing.T) {
+		_, _, js := testutil.StartTestJetStream(t)
+		createBucket(t, js, readiness.KVBucket)
+		b := observe(t, js, readiness.KVBucket)
+		s, _, err := readiness.Attach(t.Context(), js, b)
+		require.NoError(t, err)
+
+		st, err := js.Stream(t.Context(), "KV_"+readiness.KVBucket)
+		require.NoError(t, err)
+		require.NoError(t, st.Purge(t.Context(), jetstream.WithPurgeSubject("$KV."+readiness.KVBucket+"."+markerKey)))
+		require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamMissing)
+		_, err = js.KeyValue(t.Context(), readiness.KVBucket)
+		require.NoError(t, err, "the stream itself survives; only its marker is gone")
+	})
+}
+
+func TestStream_MarkerCatchesAReplacementReportingTheBoundCreation(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	createBucket(t, js, readiness.KVBucket)
+	b := observe(t, js, readiness.KVBucket)
+	require.Equal(t, uint64(1), b.Marker.Seq)
+
+	recreate(t, js, readiness.KVBucket)
+	replaced := observe(t, js, readiness.KVBucket)
+	require.Equal(t, b.Marker.Seq, replaced.Marker.Seq, "the replacement's marker reuses the sequence")
+
+	hooked := &hookJS{JetStream: js}
+	var forge func(*jetstream.StreamInfo)
+	forge = func(info *jetstream.StreamInfo) {
+		info.Created = b.Created
+		hooked.arm(forge, nil)
+	}
+	hooked.arm(forge, nil)
+	_, _, err := readiness.Attach(t.Context(), hooked, b)
+	require.ErrorIs(t, err, readiness.ErrStreamReplaced, "the marker's storage time differs even when creation and sequence match")
+	require.ErrorContains(t, err, "marker")
+}
+
+func TestStream_UnreadableMarkerBlocksWithoutQuarantine(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	createBucket(t, js, readiness.KVBucket)
+	hooked := &hookJS{JetStream: js}
+	s, _, err := readiness.Attach(t.Context(), hooked, observe(t, js, readiness.KVBucket))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	hooked.arm(func(*jetstream.StreamInfo) { cancel() }, nil)
+	require.ErrorIs(t, s.Verify(ctx), readiness.ErrStreamUnavailable)
+	require.NoError(t, s.Verify(t.Context()))
 }

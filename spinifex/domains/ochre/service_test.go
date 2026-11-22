@@ -1,6 +1,8 @@
 package ochre
 
 import (
+	"context"
+	stderrors "errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"sync"
@@ -468,4 +470,155 @@ func TestEnsure_GroupMemberConvergesOnOneBundle(t *testing.T) {
 	assert.NotEqual(t, llmURL, embURL, "each member resolves to its own port on the shared VM")
 	assert.Contains(t, llmURL, ":8000", "the vLLM primary keeps the well-known port")
 	assert.Contains(t, embURL, ":8001", "a TEI member takes a port above the vLLM one")
+}
+
+// changeClaim rewrites the endpoint record as another writer would, through a
+// CAS on its current revision. It runs on the launch worker, so it reports
+// failures with assert rather than stopping the test goroutine.
+func changeClaim(t *testing.T, s *Service) EndpointRecord {
+	t.Helper()
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+	rec, rev, found, err := s.store.getRevision(context.Background(), key)
+	if !assert.NoError(t, err) || !assert.True(t, found, "the claim must exist while its launch runs") {
+		return EndpointRecord{}
+	}
+	rec.NodeID = "node-other"
+	rec.CreatedAt = rec.CreatedAt.Add(time.Second)
+	_, err = s.store.CompareAndSet(context.Background(), key, &rec, rev)
+	assert.NoError(t, err)
+	return rec
+}
+
+func storedEndpoint(t *testing.T, s *Service) (EndpointRecord, bool) {
+	t.Helper()
+	rec, _, found, err := s.store.getRevision(t.Context(), resolveKey(awsidentifiers.GlobalAccountID, testModelID))
+	require.NoError(t, err)
+	return rec, found
+}
+
+func TestEnsure_ChangedClaimIsNotOverwrittenByReady(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	var changed EndpointRecord
+	h.launcher.onLaunch = func() { changed = changeClaim(t, s) }
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found, "a changed claim must not be removed")
+	assert.Equal(t, StateStarting, got.State, "READY must not be published over a changed claim")
+	assert.Equal(t, "node-other", got.NodeID)
+	assert.True(t, got.CreatedAt.Equal(changed.CreatedAt))
+	assert.Empty(t, got.InstanceID, "this launch's instance must not be written into another claim")
+}
+
+func TestEnsure_LaunchFailureAbortIsGuardedOnTheClaim(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change bool
+	}{
+		{name: "own claim is removed", change: false},
+		{name: "changed claim stays", change: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			h.launcher.failLaunch = stderrors.New("launch refused")
+			if tc.change {
+				h.launcher.onLaunch = func() { changeClaim(t, s) }
+			}
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			s.WaitLaunches()
+
+			got, found := storedEndpoint(t, s)
+			if !tc.change {
+				assert.False(t, found, "a failed launch must revert its own claim")
+				return
+			}
+			require.True(t, found, "an abort must not remove a claim it no longer holds")
+			assert.Equal(t, "node-other", got.NodeID)
+		})
+	}
+}
+
+func TestEnsure_TimeoutAbortIsGuardedOnTheClaim(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusServiceUnavailable, sufficientGPU())
+	h.launcher.onLaunch = func() { changeClaim(t, s) }
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found, "a readiness timeout must not remove a changed claim")
+	assert.Equal(t, "node-other", got.NodeID)
+	assert.NotEmpty(t, h.launcher.terminated, "the unready VM is still unwound")
+}
+
+func TestEnsure_LaunchPanicAbortIsGuardedOnTheClaim(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change bool
+	}{
+		{name: "own claim is removed", change: false},
+		{name: "changed claim stays", change: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			h.launcher.onLaunch = func() {
+				if tc.change {
+					changeClaim(t, s)
+				}
+				panic("launcher exploded")
+			}
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			s.WaitLaunches()
+
+			got, found := storedEndpoint(t, s)
+			if !tc.change {
+				assert.False(t, found, "a panicked launch must revert its own claim")
+				return
+			}
+			require.True(t, found, "a panicked launch must not remove a claim it no longer holds")
+			assert.Equal(t, "node-other", got.NodeID)
+		})
+	}
+}
+
+func TestEnsure_NewClaimAfterGuardedAbortReachesReady(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	h.launcher.failLaunch = stderrors.New("launch refused")
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+	_, found := storedEndpoint(t, s)
+	require.False(t, found)
+
+	h.launcher.failLaunch = nil
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateStarting, out.Endpoint.State)
+	s.WaitLaunches()
+
+	got, found := storedEndpoint(t, s)
+	require.True(t, found)
+	assert.Equal(t, StateReady, got.State, "a claim over the guarded delete's tombstone must publish READY")
+	assert.EqualValues(t, 2, h.launcher.launchCount.Load())
 }

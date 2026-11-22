@@ -164,8 +164,8 @@ func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor,
 	}
 
 	// Every marker write has definitively finished; re-observe before binding.
-	// A store that changes after this check can still be bound, but is then
-	// reported as a failure rather than a successful binding.
+	// A store that changes after this check can still be bound; the check after
+	// the bind detects only changes still visible when it runs.
 	in.step("verify")
 	bound := pending
 	bound.Phase = AnchorBound
@@ -192,8 +192,9 @@ func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor,
 	if _, err := in.writeAnchor(ctx, bound, pendingRev); err != nil {
 		return pending, err
 	}
-	// The anchor is now bound, but a store that changed meanwhile is reported as
-	// a failure with the stored anchor, never as a successful binding.
+	// The anchor is now bound. This verification detects changes visible when it
+	// runs; it cannot guarantee detection of a change after that check or one
+	// repaired before it.
 	for _, b := range bound.Bound {
 		if err := (&Stream{js: in.js, binding: b}).Verify(ctx); err != nil {
 			return bound, err

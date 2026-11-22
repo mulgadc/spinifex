@@ -308,6 +308,10 @@ type fakeInstanceLauncher struct {
 	// onTerminate, when set, runs before a termination is recorded, so a test
 	// can land another daemon's writes while this teardown is in flight.
 	onTerminate func(instanceID string)
+
+	// onLaunch, when set, runs on the launch worker before the launch outcome,
+	// so a test can change the endpoint claim mid-launch or panic there.
+	onLaunch func()
 }
 
 var _ systeminstance.SystemInstanceLauncher = (*fakeInstanceLauncher)(nil)
@@ -317,6 +321,9 @@ func (f *fakeInstanceLauncher) LaunchSystemInstance(in *systeminstance.SystemIns
 	f.mu.Lock()
 	f.requests = append(f.requests, in)
 	f.mu.Unlock()
+	if f.onLaunch != nil {
+		f.onLaunch()
+	}
 	if f.failLaunch != nil {
 		return nil, f.failLaunch
 	}

@@ -222,7 +222,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 
 		OperatorReserved: in.Pinned && in.OperatorReserved,
 	}
-	if _, err := s.store.Create(ctx, key, &rec); err != nil {
+	claimRev, err := s.store.Create(ctx, key, &rec)
+	if err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			// Lost the cross-replica race after the read above: some other
 			// replica's Ensure claimed the key in between. Its record is the
@@ -243,10 +244,10 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		defer func() {
 			if r := recover(); r != nil {
 				slog.ErrorContext(launchCtx, "bedrock: launch panic", "model", in.ModelID, "panic", r)
-				s.abortLaunch(launchCtx, key, in.ModelID)
+				s.abortLaunch(launchCtx, key, in.ModelID, claimRev)
 			}
 		}()
-		s.runLaunch(launchCtx, key, rec, spec)
+		s.runLaunch(launchCtx, key, rec, claimRev, spec)
 	})
 
 	return &EnsureEndpointOutput{Endpoint: rec}, nil
@@ -310,11 +311,10 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 }
 
 // runLaunch performs the slow launch + readiness probe and writes the
-// terminal state. Only this goroutine writes key while the record is
-// STARTING (guaranteed by Ensure returning early for any concurrent caller
-// that observes STARTING), so no CAS-conflict retry loop is needed here. It
-// launches the VM exactly once for the whole group, never one per member.
-func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, spec CoServeGroupSpec) {
+// terminal state. Every write is guarded on claimRev, the revision of this
+// launch's own claim, so a claim that changed meanwhile is never overwritten
+// or removed. It launches the VM exactly once for the whole group.
+func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, claimRev uint64, spec CoServeGroupSpec) {
 	members := make([]LaunchMemberInput, 0, len(spec.Members))
 	for _, m := range spec.Members {
 		members = append(members, LaunchMemberInput{ModelID: m.ModelID, Family: m.Family, VLLMArgs: m.VLLMArgs})
@@ -326,7 +326,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "bedrock: launch serving VM failed", "group", spec.GroupID, "err", err)
-		s.abortLaunch(ctx, key, rec.ModelID)
+		s.abortLaunch(ctx, key, rec.ModelID, claimRev)
 		return
 	}
 
@@ -351,7 +351,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; unwinding launch",
 			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
 		out.Unwind(ctx)
-		s.abortLaunch(ctx, key, rec.ModelID)
+		s.abortLaunch(ctx, key, rec.ModelID, claimRev)
 		return
 	}
 
@@ -363,12 +363,12 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	rec.ReadyAt = time.Now().UTC()
 	rec.Generation++
 
-	_, rev, gerr := s.readCurrent(ctx, key)
-	if gerr != nil {
-		slog.ErrorContext(ctx, "bedrock: re-read endpoint before READY write failed", "group", spec.GroupID, "err", gerr)
-		return
-	}
-	if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+	if _, err := s.store.CompareAndSet(ctx, key, &rec, claimRev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			slog.WarnContext(ctx, "bedrock: endpoint claim changed during launch; not publishing READY",
+				"group", spec.GroupID, "instanceId", rec.InstanceID)
+			return
+		}
 		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
 }
@@ -387,31 +387,22 @@ func resolveKey(accountID, modelID string) string {
 	return EndpointKey(accountID, spec.GroupID)
 }
 
-// abortLaunch reverts a STARTING record to ABSENT (deletes the key) so a
-// retried Ensure gets a clean claim instead of a dead record. Runs on the
-// launch's own background context: the reader that triggered this failure
-// may already be gone, but the revert must still happen.
-func (s *Service) abortLaunch(ctx context.Context, key, modelID string) {
+// abortLaunch reverts this launch's STARTING claim to ABSENT so a retried
+// Ensure gets a clean claim. The delete is guarded on claimRev: a claim that
+// changed since, including one this launch already moved to READY, stays.
+func (s *Service) abortLaunch(ctx context.Context, key, modelID string, claimRev uint64) {
 	if err := validateTransition(StateStarting, StateAbsent); err != nil {
 		slog.ErrorContext(ctx, "bedrock: illegal abort transition", "model", modelID, "err", err)
 		return
 	}
-	if err := s.store.Purge(ctx, key); err != nil {
+	if err := s.store.CompareAndDelete(ctx, key, claimRev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			slog.WarnContext(ctx, "bedrock: endpoint claim changed during launch; leaving it", "model", modelID)
+			return
+		}
 		slog.ErrorContext(ctx, "bedrock: revert of failed launch failed; record may be stuck STARTING",
 			"model", modelID, "err", err)
 	}
-}
-
-// readCurrent re-reads key's current record and revision.
-func (s *Service) readCurrent(ctx context.Context, key string) (EndpointRecord, uint64, error) {
-	rec, rev, found, err := s.store.getRevision(ctx, key)
-	if err != nil {
-		return EndpointRecord{}, 0, err
-	}
-	if !found {
-		return EndpointRecord{}, 0, fmt.Errorf("bedrock: endpoint key %s vanished mid-launch", key)
-	}
-	return rec, rev, nil
 }
 
 // Describe returns modelID's current endpoint record, or a synthetic ABSENT

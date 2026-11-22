@@ -388,7 +388,9 @@ func TestStream_WholeStreamPurgeKeepsCreationButLosesTheMarker(t *testing.T) {
 			kv := createBucket(t, js, bucket)
 			_, err := kv.Put(t.Context(), "record", []byte("v"))
 			require.NoError(t, err)
-			b := observe(t, js, bucket)
+			require.NoError(t, kv.Delete(t.Context(), markerKey))
+			b, err := readiness.Observe(t.Context(), js, bucket, markerKey)
+			require.NoError(t, err)
 			s, _, err := readiness.Attach(t.Context(), js, b)
 			require.NoError(t, err)
 

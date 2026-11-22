@@ -249,6 +249,9 @@ func (r *replacement) guard(t *testing.T, volumeID string, atKill leaseSnapshot,
 	kv := leaseKV(ctx, t, r.f)
 	r.stopped = make(chan struct{})
 	r.cancel = cancel
+	// Registered after the dial, so it runs first: a guard outliving its NATS
+	// connection would read no renewals and fence a replacement being reaped.
+	t.Cleanup(r.stopGuard)
 	go func() {
 		defer close(r.stopped)
 		lastRev, renewedAt := seenRev, seenAt

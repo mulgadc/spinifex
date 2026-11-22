@@ -1,0 +1,1 @@
+import{S as e,ct as t}from"./fetch-http-handler-COJUSHzX.js";import{ya as n}from"./aws-client-brcKBv9-.js";var r=e(n,`AmazonBedrockFrontendService`,`BedrockRuntimeClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

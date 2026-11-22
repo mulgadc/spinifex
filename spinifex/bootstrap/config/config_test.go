@@ -382,8 +382,8 @@ func TestGetServicesFollowsEBSProvider(t *testing.T) {
 	assert.Equal(t, AllServices, viperblockd.GetServices())
 	assert.True(t, viperblockd.HasService("viperblock"))
 
-	explicit := Config{Services: []string{"nats", "viperblock"}, EBS: EBSConfig{Provider: EBSProviderOCIBSD}}
-	assert.Equal(t, []string{"nats", "viperblock"}, explicit.GetServices(), "an explicit list is returned as configured")
+	cluster := ClusterConfig{Node: "n1", Nodes: map[string]Config{"n1": ocibsd, "n2": {}}}
+	assert.Equal(t, ocibsd.GetServices(), cluster.NodeServices("n2"), "a peer stanza without a provider takes the local node's")
 }
 
 // Tests for NodeBaseDir

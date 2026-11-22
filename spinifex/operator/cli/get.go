@@ -224,7 +224,7 @@ func runGetNodes(cmd *cobra.Command, args []string) {
 				nodeCfg.AZ,
 				"-",
 				"-",
-				strings.Join(nodeCfg.GetServices(), ","),
+				strings.Join(cfg.NodeServices(name), ","),
 			})
 		}
 	}

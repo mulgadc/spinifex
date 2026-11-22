@@ -688,6 +688,16 @@ func (cc *ClusterConfig) NodesRunning(service string) []string {
 	return nodes
 }
 
+// NodeServices returns the named node's service list. A peer stanza omits its
+// EBS provider, so it takes the local node's: every node shares one provider.
+func (cc *ClusterConfig) NodeServices(name string) []string {
+	node := cc.Nodes[name]
+	if node.EBS.Provider == "" {
+		node.EBS.Provider = cc.Nodes[cc.Node].EBS.Provider
+	}
+	return node.GetServices()
+}
+
 // GetServices returns the configured service list, defaulting to AllServices
 // with the viperblock service swapped for ocibsd on an ocibsd-provider node.
 func (c Config) GetServices() []string {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -532,6 +533,61 @@ func TestInit_UnreadableAnchorBlocks(t *testing.T) {
 			_, err = newInit(js).Initialize(t.Context(), firstRollout)
 			require.ErrorIs(t, err, readiness.ErrUnsupported)
 			assert.Equal(t, data, string(anchorEntry(t, js).Value()), "an unreadable anchor is never rewritten")
+		})
+	}
+}
+
+// infoJS fails stream-info requests once fail is set.
+type infoJS struct {
+	jetstream.JetStream
+	fail atomic.Bool
+}
+
+func (j *infoJS) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	if j.fail.Load() {
+		return nil, context.DeadlineExceeded
+	}
+	return j.JetStream.Stream(ctx, name)
+}
+
+func TestInit_StoreChangedDuringInitializationIsNotBound(t *testing.T) {
+	capEndpoints := func(t *testing.T, js jetstream.JetStream) {
+		updateStream(t, js, endpointBucket, func(c *jetstream.StreamConfig) { c.MaxBytes = 1 << 20 })
+	}
+	for name, tc := range map[string]struct {
+		at      string
+		change  func(*testing.T, *infoJS)
+		want    error
+		phase   readiness.AnchorPhase
+		loadErr error
+	}{
+		"capped before the binding check": {at: "verify", change: func(t *testing.T, j *infoJS) { capEndpoints(t, j.JetStream) },
+			want: readiness.ErrNotDurable, phase: readiness.AnchorPending, loadErr: readiness.ErrBindingPending},
+		"capped before the binding write": {at: "bind", change: func(t *testing.T, j *infoJS) { capEndpoints(t, j.JetStream) },
+			want: readiness.ErrNotDurable, phase: readiness.AnchorBound, loadErr: readiness.ErrNotDurable},
+		"unreadable after the binding write": {at: "bind", change: func(_ *testing.T, j *infoJS) { j.fail.Store(true) },
+			want: readiness.ErrStreamUnavailable, phase: readiness.AnchorBound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			js := initEnv(t)
+			wrapped := &infoJS{JetStream: js}
+			in := newInit(wrapped)
+			readiness.SetInitStepHook(in, func(step string) {
+				if step == tc.at {
+					tc.change(t, wrapped)
+				}
+			})
+			a, err := in.Initialize(t.Context(), firstRollout)
+			require.ErrorIs(t, err, tc.want, "a changed or unreadable store is not reported as bound")
+			assert.Equal(t, tc.phase, a.Phase, "the error carries the anchor as written")
+
+			wrapped.fail.Store(false)
+			_, err = newInit(js).Load(t.Context())
+			if tc.loadErr == nil {
+				require.NoError(t, err, "a store that only went unreadable attaches once readable")
+				return
+			}
+			require.ErrorIs(t, err, tc.loadErr)
 		})
 	}
 }

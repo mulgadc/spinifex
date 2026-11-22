@@ -99,9 +99,9 @@ type Bound struct {
 	ControlKV   jetstream.KeyValue
 }
 
-// Initialize binds both streams for the first time. It returns the bound
-// anchor, or an error that leaves any pending intent in place to block
-// activation; an unknown write outcome is never retried.
+// Initialize binds both streams for the first time; only a nil error is a
+// successful binding. An error returns the anchor as far as it was written, and
+// an unknown write outcome is never retried.
 func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor, error) {
 	if err := in.cfg.validate(); err != nil {
 		return Anchor{}, err
@@ -164,16 +164,16 @@ func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor,
 	}
 
 	// Every marker write has definitively finished; re-observe before binding
-	// so a successful write on a replacement is never taken as the original.
+	// so a replacement or a store that stopped being durable is never bound.
 	in.step("verify")
 	bound := pending
 	bound.Phase = AnchorBound
 	for i, si := range pending.Streams {
-		created, err := streamCreated(ctx, in.js, si.Bucket)
+		info, err := in.durable(ctx, si.Bucket)
 		if err != nil {
 			return pending, err
 		}
-		if !created.Equal(si.Created) {
+		if created := info.Created; !created.Equal(si.Created) {
 			return pending, fmt.Errorf("%w: %s created %s, pending intent %s", ErrStreamReplaced, si.Bucket,
 				created.Format(time.RFC3339Nano), si.Created.Format(time.RFC3339Nano))
 		}
@@ -184,12 +184,19 @@ func (in *Initializer) Initialize(ctx context.Context, ev FirstRollout) (Anchor,
 		if m.Seq != seqs[i] {
 			return pending, fmt.Errorf("%w: %s marker at seq %d, acknowledged %d", ErrStreamReplaced, si.Bucket, m.Seq, seqs[i])
 		}
-		bound.Bound = append(bound.Bound, Binding{Bucket: si.Bucket, Created: created, Marker: m})
+		bound.Bound = append(bound.Bound, Binding{Bucket: si.Bucket, Created: info.Created, Marker: m})
 	}
 
 	in.step("bind")
 	if _, err := in.writeAnchor(ctx, bound, pendingRev); err != nil {
 		return pending, err
+	}
+	// The anchor is now bound, but a store that changed meanwhile is reported as
+	// a failure with the stored anchor, never as a successful binding.
+	for _, b := range bound.Bound {
+		if err := (&Stream{js: in.js, binding: b}).Verify(ctx); err != nil {
+			return bound, err
+		}
 	}
 	return bound, nil
 }

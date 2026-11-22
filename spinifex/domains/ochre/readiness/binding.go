@@ -30,8 +30,8 @@ type Binding struct {
 }
 
 // Marker is the last message on a never-rewritten key, as the stream leader
-// reported it. The server assigns Seq and Time, so a later write of the same
-// key, here or on a replacement stream, cannot reproduce both.
+// reported it. Comparing Seq and Time detects a rewrite or a recreated stream;
+// a restore or replay that preserves both is left to recovery.
 type Marker struct {
 	Key  string    `json:"key"`
 	Seq  uint64    `json:"seq"`

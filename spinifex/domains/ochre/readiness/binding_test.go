@@ -380,3 +380,32 @@ func TestStream_UnreadableMarkerBlocksWithoutQuarantine(t *testing.T) {
 	require.ErrorIs(t, s.Verify(ctx), readiness.ErrStreamUnavailable)
 	require.NoError(t, s.Verify(t.Context()))
 }
+
+func TestStream_WholeStreamPurgeKeepsCreationButLosesTheMarker(t *testing.T) {
+	for _, bucket := range boundBuckets {
+		t.Run(bucket, func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			kv := createBucket(t, js, bucket)
+			_, err := kv.Put(t.Context(), "record", []byte("v"))
+			require.NoError(t, err)
+			b := observe(t, js, bucket)
+			s, _, err := readiness.Attach(t.Context(), js, b)
+			require.NoError(t, err)
+
+			st, err := js.Stream(t.Context(), "KV_"+bucket)
+			require.NoError(t, err)
+			require.NoError(t, st.Purge(t.Context()))
+
+			st, err = js.Stream(t.Context(), "KV_"+bucket)
+			require.NoError(t, err)
+			require.True(t, st.CachedInfo().Created.Equal(b.Created), "a whole-stream purge keeps the creation time")
+			require.Zero(t, st.CachedInfo().State.Msgs)
+			_, err = kv.Get(t.Context(), "record")
+			require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the purge erased the stored record")
+
+			require.ErrorIs(t, s.Verify(t.Context()), readiness.ErrStreamMissing, "the missing marker refuses the emptied stream")
+			_, _, err = readiness.Attach(t.Context(), js, b)
+			require.ErrorIs(t, err, readiness.ErrStreamMissing)
+		})
+	}
+}

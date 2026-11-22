@@ -422,3 +422,33 @@ func WaitGuestS3(t *testing.T, budget time.Duration, probe func() (GuestCurl, er
 	}, budget, 2*time.Second)
 	return last, time.Since(start).Milliseconds()
 }
+
+// GuestS3DeleteObjectsCmd is a guest command that deletes keys from bucket in
+// one DeleteObjects request at addr:port signed with the curl config at
+// cfgPath. The command always exits 0; parse it with ParseGuestCurl.
+func GuestS3DeleteObjectsCmd(cfgPath, region, addr string, port int, bucket string, keys []string) string {
+	var body strings.Builder
+	body.WriteString("<Delete>")
+	for _, k := range keys {
+		body.WriteString("<Object><Key>" + k + "</Key></Object>")
+	}
+	body.WriteString("</Delete>")
+	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/" + bucket + "?delete="
+	return fmt.Sprintf(
+		"rm -f /tmp/vpce-body; printf '%%s' %s > /tmp/vpce-delete.xml; "+
+			"sha=$(sha256sum /tmp/vpce-delete.xml | cut -d' ' -f1); md5=$(openssl dgst -md5 -binary /tmp/vpce-delete.xml | base64); "+
+			"code=$(curl -sk -K %s --aws-sigv4 %s --connect-timeout 5 --max-time 10 -X POST "+
+			"-H \"x-amz-content-sha256: $sha\" -H \"Content-MD5: $md5\" -H 'Content-Type: application/xml' "+
+			"--data-binary @/tmp/vpce-delete.xml -o /tmp/vpce-body -w '%%{http_code}' %s); rc=$?; "+
+			"printf 'vpce-probe %%s %%s\\n' \"$code\" \"$rc\"; head -c 4096 /tmp/vpce-body 2>/dev/null; true",
+		ShellQuote(body.String()), ShellQuote(cfgPath), ShellQuote("aws:amz:"+region+":s3"), ShellQuote(url))
+}
+
+// ProbeGuestS3DeleteObjects runs one GuestS3DeleteObjectsCmd on privIP through bastion.
+func ProbeGuestS3DeleteObjects(bastion SSHTarget, privIP, cfgPath, region, addr string, port int, bucket string, keys []string) (GuestCurl, error) {
+	out, err := GuestExecViaBastion(bastion, privIP, GuestS3DeleteObjectsCmd(cfgPath, region, addr, port, bucket, keys), 45*time.Second)
+	if err != nil {
+		return GuestCurl{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+	}
+	return ParseGuestCurl(out)
+}

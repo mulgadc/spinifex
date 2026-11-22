@@ -3,6 +3,7 @@
 package single
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -358,6 +360,12 @@ func runVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "after", "egress_restored", "probe", g.String(), "converge_ms", ms)
 	})
 
+	t.Run("EndpointPolicy", func(t *testing.T) {
+		vpceEndpointPolicy(t, c, epID, gate, bucket, allowed, func(keys []string) (harness.GuestCurl, error) {
+			return harness.ProbeGuestS3DeleteObjects(bastion, privIP, vpceCredAllow, region, gate, port, bucket, keys)
+		}, allowedProbe, listed)
+	})
+
 	t.Run("ModifyRemovesAndRestores", func(t *testing.T) {
 		harness.Step(t, "modify-vpc-endpoint %s remove %s", epID, privRT)
 		_, err := c.EC2.ModifyVpcEndpoint(&ec2.ModifyVpcEndpointInput{
@@ -397,6 +405,70 @@ func runVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 		g, ms := harness.WaitGuestS3(t, vpceConvergeBudget, allowedProbe, timedOut, "a timed-out connection (curl exit 28)")
 		harness.Detail(t, "after", "delete", "probe", g.String(), "converge_ms", ms)
 	})
+}
+
+// vpceEndpointPolicy proves a custom endpoint policy is a second check on
+// requests through the endpoint only: it denies a listing the identity policy
+// allows, leaves the direct path alone, and decides each key of a batch delete.
+func vpceEndpointPolicy(t *testing.T, c *harness.AWSClient, epID, gate, bucket string, p harness.S3Principal,
+	deleteObjects func(keys []string) (harness.GuestCurl, error), list func() (harness.GuestCurl, error), listed func(harness.GuestCurl) bool,
+) {
+	const dropKey, keepKey = "vpce-policy-drop", "vpce-policy-keep"
+	direct, err := harness.PredastoreS3WithCreds(gate, p.AccessKeyID, p.SecretAccessKey)
+	require.NoError(t, err, "s3 client for %s", p.UserName)
+	for _, k := range []string{dropKey, keepKey} {
+		_, err := direct.PutObject(&s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(k), Body: strings.NewReader("endpoint policy e2e\n")})
+		require.NoError(t, err, "put-object %s/%s", bucket, k)
+		t.Cleanup(func() { _, _ = direct.DeleteObject(&s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(k)}) })
+	}
+
+	doc, err := json.Marshal(map[string]any{"Version": "2012-10-17", "Statement": []map[string]any{
+		{"Effect": "Allow", "Principal": "*", "Action": "s3:*", "Resource": "*"},
+		{"Effect": "Deny", "Principal": "*", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::" + bucket},
+		{"Effect": "Deny", "Principal": "*", "Action": "s3:DeleteObject", "Resource": "arn:aws:s3:::" + bucket + "/" + keepKey},
+	}})
+	require.NoError(t, err, "marshal endpoint policy")
+	harness.Step(t, "modify-vpc-endpoint %s with a policy denying ListBucket on %s and DeleteObject on %s", epID, bucket, keepKey)
+	_, err = c.EC2.ModifyVpcEndpoint(&ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(epID), PolicyDocument: aws.String(string(doc))})
+	require.NoError(t, err, "modify-vpc-endpoint policy")
+	reset := false
+	resetPolicy := func() error {
+		_, rerr := c.EC2.ModifyVpcEndpoint(&ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(epID), ResetPolicy: aws.Bool(true)})
+		return rerr
+	}
+	t.Cleanup(func() {
+		if !reset {
+			if rerr := resetPolicy(); rerr != nil {
+				t.Logf("cleanup: reset the policy on %s: %v", epID, rerr)
+			}
+		}
+	})
+	ep, live, err := harness.DescribeVpcEndpoint(c, epID)
+	require.NoError(t, err, "describe-vpc-endpoints %s", epID)
+	require.True(t, live, "%s is not described", epID)
+	assert.JSONEq(t, string(doc), aws.StringValue(ep.PolicyDocument), "the stored policy")
+
+	denied := func(g harness.GuestCurl) bool { return g.Code == "403" && strings.Contains(g.Body, "AccessDenied") }
+	g, ms := harness.WaitGuestS3(t, vpceConvergeBudget, list, denied, "a listing denied by the endpoint policy")
+	harness.Detail(t, "after", "endpoint_policy_deny", "probe", g.String(), "converge_ms", ms)
+	_, err = direct.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+	require.NoError(t, err, "the endpoint policy must not hold a request on the direct path")
+
+	g, err = deleteObjects([]string{dropKey, keepKey})
+	require.NoError(t, err, "guest delete-objects")
+	require.Equalf(t, "200", g.Code, "a mixed batch answers 200 with per-key results; got %s: %s", g, g.Body)
+	assert.Contains(t, g.Body, "<Deleted><Key>"+dropKey+"</Key>", "the allowed key is reported deleted")
+	assert.Regexp(t, "<Error><Key>"+keepKey+"</Key><Code>AccessDenied</Code>", g.Body, "the denied key is reported in Errors")
+	_, err = direct.HeadObject(&s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(keepKey)})
+	require.NoError(t, err, "the denied key must still exist")
+	_, err = direct.HeadObject(&s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(dropKey)})
+	require.Error(t, err, "the allowed key must be gone")
+
+	harness.Step(t, "modify-vpc-endpoint %s reset-policy", epID)
+	require.NoError(t, resetPolicy(), "modify-vpc-endpoint reset-policy")
+	reset = true
+	g, ms = harness.WaitGuestS3(t, vpceConvergeBudget, list, listed, "a listing of the bucket")
+	harness.Detail(t, "after", "endpoint_policy_reset", "probe", g.String(), "converge_ms", ms)
 }
 
 // vpceDeleteVpcFence proves DeleteVpc is refused while an endpoint is the

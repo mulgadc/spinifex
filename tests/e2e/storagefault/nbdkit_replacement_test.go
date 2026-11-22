@@ -40,6 +40,11 @@ type replacement struct {
 	node   harness.Node
 	socket string
 
+	// launchMu makes a launch and a fence exclusive: a fence before the
+	// launch cancels it, and one during it waits until the pid is known.
+	launchMu sync.Mutex
+	fenced   bool
+
 	mu      sync.Mutex
 	pid     int
 	start   string
@@ -56,7 +61,7 @@ func newReplacement(f *Fixture, node harness.Node, socket string) *replacement {
 // the pid does not exist.
 func (r *replacement) procStart(ctx context.Context, pid int) (string, error) {
 	out, err := r.f.SSH.Run(ctx, r.node, fmt.Sprintf(
-		"if [ -e /proc/%d/stat ]; then sudo awk '{print $22}' /proc/%d/stat; else echo GONE; fi", pid, pid))
+		"sudo sh -c 'if [ -e /proc/%d/stat ]; then awk \"{print \\$22}\" /proc/%d/stat; else echo GONE; fi'", pid, pid))
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errReplacementUnknown, err)
 	}
@@ -66,10 +71,16 @@ func (r *replacement) procStart(ctx context.Context, pid int) (string, error) {
 	return "", nil
 }
 
-// lookup lists the nbdkit pids whose argv names this socket exactly.
+// lookup lists the nbdkit pids whose argv names this socket exactly. A failed
+// enumeration, or an unreadable argv of a live process, is an error.
 func (r *replacement) lookup(ctx context.Context) ([]string, error) {
 	out, err := r.f.SSH.Run(ctx, r.node, fmt.Sprintf(
-		`for p in $(pgrep -x %s); do sudo tr '\0' '\n' < /proc/$p/cmdline 2>/dev/null | grep -qxF -- %q && echo $p; done; true`,
+		`pids=$(sudo pgrep -x %s); rc=$?; [ $rc -le 1 ] || exit 3; `+
+			`for p in $pids; do `+
+			`if ! c=$(sudo cat /proc/$p/cmdline 2>/dev/null | tr '\0' '\n'); then sudo test -e /proc/$p && exit 4; continue; fi; `+
+			`[ -z "$c" ] && sudo test -e /proc/$p && exit 4; `+
+			`printf '%%s\n' "$c" | grep -qxF -- %q && echo $p; `+
+			`done; exit 0`,
 		nbdkitComm, r.socket))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errReplacementUnknown, err)
@@ -168,10 +179,42 @@ func (r *replacement) awaitGone(ctx context.Context, wait time.Duration) (bool, 
 	}
 }
 
-// fence SIGKILLs the replacement at once and confirms it exited.
+// fence SIGKILLs the replacement at once and confirms it exited. Taking
+// launchMu first means a pending launch either never starts or has finished
+// and recorded its pid.
 func (r *replacement) fence(ctx context.Context) (bool, error) {
+	r.launchMu.Lock()
+	r.fenced = true
+	r.launchMu.Unlock()
 	r.signal(ctx, "KILL")
 	return r.awaitGone(ctx, 30*time.Second)
+}
+
+// launch runs start unless a fence came first, then records the pid while
+// still holding launchMu, so the process is identified as it is launched.
+func (r *replacement) launch(ctx context.Context, start func() error) error {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	if r.fenced {
+		return errors.New("the lease guard fenced the replacement before it launched")
+	}
+	r.mu.Lock()
+	r.spawned = true
+	r.mu.Unlock()
+	if err := start(); err != nil {
+		return err
+	}
+	if _, err := r.resolve(ctx); err != nil {
+		return fmt.Errorf("identify the replacement at launch: %w", err)
+	}
+	return nil
+}
+
+// isFenced reports whether the guard has fenced the replacement.
+func (r *replacement) isFenced() bool {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	return r.fenced
 }
 
 // reap stops the replacement, SIGTERM then SIGKILL, and reports whether its

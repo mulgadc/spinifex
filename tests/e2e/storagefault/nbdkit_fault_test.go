@@ -435,9 +435,6 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 		t.Logf("relaunching %s at lease epoch %d, above the killed launch's %d", volumeID, epoch, k.leaseEpoch)
 		r.guard(t, volumeID, k.lease, epoch, seenAt)
 	}
-	r.mu.Lock()
-	r.spawned = true
-	r.mu.Unlock()
 	start := fmt.Sprintf(
 		"sudo rm -f %s; sudo touch %s && sudo chmod 666 %s && "+
 			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; exec setsid %s' "+
@@ -445,7 +442,12 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 		k.socket, log, log, nbdkitUser, k.envFile, cmdline, log, log)
 	// The early output is read here rather than only on failure: a later query
 	// can fail on its own and take the reason with it.
-	early, err := f.SSH.Run(ctx, node, start)
+	var early []byte
+	err := r.launch(ctx, func() error {
+		var runErr error
+		early, runErr = f.SSH.Run(ctx, node, start)
+		return runErr
+	})
 	if err != nil {
 		t.Fatalf("relaunch nbdkit for %s on %s: %v", volumeID, node.Name, err)
 	}
@@ -461,10 +463,16 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 		k.socket, k.socket, qemuUser, k.socket)
 	deadline := time.Now().Add(nbdkitRelaunchTimeout)
 	for time.Now().Before(deadline) {
+		if r.isFenced() {
+			t.Fatalf("the lease guard fenced the replacement for %s before it was ready", volumeID)
+		}
 		if _, err := f.SSH.Run(ctx, node, ready); err == nil {
 			t.Logf("relaunched nbdkit for %s on %s, socket %s is back", volumeID, node.Name, k.socket)
-			if found, err := r.resolve(ctx); !found {
-				t.Fatalf("cannot identify the relaunched nbdkit on %s: found=%v err=%v", k.socket, found, err)
+			r.mu.Lock()
+			pid := r.pid
+			r.mu.Unlock()
+			if pid == 0 {
+				t.Fatalf("the relaunched nbdkit on %s was not running at launch, so the socket is not its", k.socket)
 			}
 			return
 		}

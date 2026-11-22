@@ -121,16 +121,19 @@ Buy the address in the project the servers use, in the same site as the servers,
 latitude.sh assigns an address to a server when it is bought, so the first purchase is made while the first deployment's servers exist.
 
 1. Use an existing project and an empty state directory.
-   Set `project`, `project_id` and `elastic_ip_count = 0` for the deployment.
+   Set `project`, `project_id`, `node_count = 3` and `elastic_ip_count = 0` for the deployment.
+   The operator collection forms a cluster of three nodes with a private network, and `node_count = 3` is what creates it.
    A count of 0 without both project settings fails the plan, because a project Terraform creates is deleted on destroy with everything in it.
 2. Read `tofu plan` before applying.
    On a deployment that already has state, setting `project` plans the deletion of the project Terraform created, with every address in it, and setting `elastic_ip_count = 0` plans the deletion of the addresses it bought.
    Terraform cannot read its prior state in an expression, so the plan review is the guard: stop on any `latitudesh_project` or `latitudesh_elastic_ip` destroy.
 3. Put the address ID in the collection's `latitude_elastic_ip_ids`.
-   The collection never creates or deletes an address, so it survives `destroy` and the next deployment.
+   `docs/examples/latitude-cluster.yml` in spinifex-ansible shows the inventory.
+   Terraform did not buy the address, so its state does not hold it and `destroy` has nothing to delete.
+   The collection never creates or deletes an address either.
    The address bills monthly until you release it by hand in the dashboard.
 
-Not yet seen live: what latitude.sh leaves of an address after its server is deleted, and whether a second deployment accepts it again.
+Not yet seen live: that the address is still in the dashboard after its server is deleted, and that a second deployment accepts it and a guest answers on it again.
 
 ## Unverified
 
@@ -154,6 +157,6 @@ Guest launch, public reachability of the Elastic IP and the Terraform workbooks 
 `bash deploy-argv_test.sh` checks that neither API token, nor the five characters used to find the node key, is an argument of any external command in the node token paths, and that the SSH peer address comes from the same connection after sudo's environment reset.
 `scripts/install-node_test.sh` (part of `make preflight`) checks that the join token reaches `spx admin join` only on stdin, so sudo's log never holds it.
 `tofu init -backend=false && tofu test` plans the module against a mocked provider and checks the default count, a count of 0 with an existing project, the refusal without one, and the upper bound.
-`deploy-argv_test.sh` also checks that a count of 0, including one in `terraform.tfvars`, stops the wrapper before anything is applied.
+`deploy-argv_test.sh` also checks that an effective count of 0, including one in `terraform.tfvars`, or a set `TF_CLI_ARGS` stops `preflight` before anything is applied.
 The first two and the `tofu test` run are not part of `make preflight`.
 The Go side: `cd spinifex && GOWORK=off go test ./providers/cloud/latitude/ ./domains/network/external/floating/ ./bootstrap/config/ ./runtime/daemon/`.

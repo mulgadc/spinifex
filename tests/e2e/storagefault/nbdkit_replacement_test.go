@@ -74,11 +74,13 @@ func (r *replacement) procStart(ctx context.Context, pid int) (string, error) {
 // lookup lists the nbdkit pids whose argv names this socket exactly. A failed
 // enumeration, or an unreadable argv of a live process, is an error.
 func (r *replacement) lookup(ctx context.Context) ([]string, error) {
+	// One sudo for the whole script: on the nodes, a shell that writes to the
+	// session after running sudo itself dies of SIGPIPE.
 	out, err := r.f.SSH.Run(ctx, r.node, fmt.Sprintf(
-		`pids=$(sudo pgrep -x %s); rc=$?; [ $rc -le 1 ] || exit 3; `+
-			`for p in $pids; do sudo grep -qzxF -- %q /proc/$p/cmdline 2>/dev/null; g=$?; `+
-			`if [ $g -eq 0 ]; then echo $p; elif [ $g -ge 2 ] && sudo test -e /proc/$p; then exit 4; fi; `+
-			`done; exit 0`,
+		`sudo sh -c 'pids=$(pgrep -x %s); rc=$?; [ $rc -le 1 ] || exit 3; `+
+			`for p in $pids; do grep -qzxF -- %q /proc/$p/cmdline 2>/dev/null; g=$?; `+
+			`if [ $g -eq 0 ]; then echo $p; elif [ $g -ge 2 ] && [ -e /proc/$p ]; then exit 4; fi; `+
+			`done; exit 0'`,
 		nbdkitComm, r.socket))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errReplacementUnknown, err)

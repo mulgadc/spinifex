@@ -249,6 +249,10 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 		}
 		return "", nil
 	case StateStarting:
+		if out.Endpoint.Parked() {
+			// The launch stopped waiting; nothing will become ready on its own.
+			return "", nil
+		}
 		// A launch is already in flight, so asking for another changes nothing.
 		// Waiting on it is still worth doing when the deployment asked for that.
 		return r.awaitReady(ctx, accountID, modelID)
@@ -292,6 +296,9 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 		out, err := r.svc.Describe(ctx, &DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, accountID)
 		if err != nil {
 			return "", err
+		}
+		if out.Endpoint.Parked() {
+			return "", nil
 		}
 		if out.Endpoint.State == StateReady {
 			if url := out.Endpoint.MemberBaseURL(modelID); url != "" {

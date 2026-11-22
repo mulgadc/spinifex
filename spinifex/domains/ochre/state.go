@@ -89,6 +89,11 @@ type EndpointRecord struct {
 	CreatedAt time.Time `json:"created_at,omitzero"`
 	ReadyAt   time.Time `json:"ready_at,omitzero"`
 
+	// ParkedReason and ParkedAt mark a STARTING launch whose readiness wait
+	// ended without READY. Its realization is retained; it is not serving.
+	ParkedReason ParkReason `json:"parked_reason,omitempty"`
+	ParkedAt     time.Time  `json:"parked_at,omitzero"`
+
 	// Pinned exempts this endpoint from the idle-reclaim sweep and from eviction.
 	Pinned bool `json:"pinned,omitempty"`
 	// OperatorReserved marks a pin an operator made explicitly, as opposed to
@@ -114,6 +119,22 @@ type EndpointRecord struct {
 	// a concurrent Ensure that lost the local-mutex race re-reads the record and
 	// checks Generation before deciding whether a launch is still needed.
 	Generation uint64 `json:"generation"`
+}
+
+// ParkReason is the fixed reason a launch's readiness wait ended unready.
+type ParkReason string
+
+// The reasons a launch is parked: a member answered its readiness route with
+// a redirect, or not every member became ready before the startup timeout.
+const (
+	ParkReadinessRedirected ParkReason = "readiness-redirected"
+	ParkReadinessTimedOut   ParkReason = "readiness-timed-out"
+)
+
+// Parked reports a STARTING record whose launch has stopped waiting, so no
+// READY will follow without recovery.
+func (r EndpointRecord) Parked() bool {
+	return r.State == StateStarting && r.ParkedReason != ""
 }
 
 // LastActive is the instant this endpoint was last known to be doing work: the

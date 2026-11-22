@@ -82,6 +82,8 @@ type Service struct {
 	// identityWrite, nil outside tests, wraps the launch's identity write so a
 	// test can replace its outcome.
 	identityWrite func(write func() (uint64, error)) (uint64, error)
+	// parkWrite is the same seam for the park write.
+	parkWrite func(write func() (uint64, error)) (uint64, error)
 }
 
 var _ EndpointService = (*Service)(nil)
@@ -360,13 +362,16 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.startupTimeout())
 	defer cancel()
 	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberReadinessTargets(), s.pollInterval()); err != nil {
+		reason := ParkReadinessTimedOut
 		if errors.Is(err, errReadinessRedirected) {
-			slog.ErrorContext(ctx, "bedrock: readiness probe was redirected; retaining the launched VM",
+			reason = ParkReadinessRedirected
+			slog.ErrorContext(ctx, "bedrock: readiness probe was redirected; parking the launched VM",
 				"group", spec.GroupID, "instanceId", rec.InstanceID)
-			return
+		} else {
+			slog.ErrorContext(ctx, "bedrock: readiness probe timed out; parking the launched VM",
+				"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
 		}
-		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; retaining the launched VM",
-			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
+		s.park(ctx, key, rec, identityRev, reason, spec.GroupID)
 		return
 	}
 
@@ -391,6 +396,32 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		}
 		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
+}
+
+// park marks the identity-bearing STARTING claim at identityRev with a fixed
+// reason. It is the worker's final write: on a conflict or unknown outcome the
+// VM is retained and nothing is retried.
+func (s *Service) park(ctx context.Context, key string, rec EndpointRecord, identityRev uint64, reason ParkReason, groupID string) {
+	rec.ParkedReason = reason
+	rec.ParkedAt = time.Now().UTC()
+	rec.Generation++
+	write := func() (uint64, error) { return s.store.CompareAndSet(ctx, key, &rec, identityRev) }
+	var err error
+	if s.parkWrite != nil {
+		_, err = s.parkWrite(write)
+	} else {
+		_, err = write()
+	}
+	if err == nil {
+		return
+	}
+	if errors.Is(err, kvstore.ErrConflict) {
+		slog.WarnContext(ctx, "bedrock: endpoint claim changed during launch; not parking it",
+			"group", groupID, "instanceId", rec.InstanceID, "reason", string(reason))
+		return
+	}
+	slog.ErrorContext(ctx, "bedrock: parking the launch failed or is unknown; retaining the VM",
+		"group", groupID, "instanceId", rec.InstanceID, "reason", string(reason), "err", err)
 }
 
 // writeIdentity records the launched VM's identities in the STARTING claim at

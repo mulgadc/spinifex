@@ -582,13 +582,18 @@ func TestEnsure_ChangedClaimBeforeIdentityIsNotOverwritten(t *testing.T) {
 type changingProbe struct {
 	t       *testing.T
 	s       *Service
+	code    int
 	once    sync.Once
 	changed EndpointRecord
 }
 
 func (c *changingProbe) RoundTrip(*http.Request) (*http.Response, error) {
 	c.once.Do(func() { c.changed = changeClaim(c.t, c.s) })
-	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	code := c.code
+	if code == 0 {
+		code = http.StatusOK
+	}
+	return &http.Response{StatusCode: code, Body: http.NoBody, Header: make(http.Header)}, nil
 }
 
 func TestEnsure_ChangedClaimDuringProbeIsNotOverwrittenByReady(t *testing.T) {
@@ -947,4 +952,140 @@ func TestEnsure_UnavailableThenReadyReachesReady(t *testing.T) {
 		assert.Equal(t, 3, probe.count(net.JoinHostPort(got.PrivateIP, strconv.Itoa(m.Port))), modelID)
 	}
 	assertRetained(t, h)
+}
+
+// assertParkedWithIdentity checks a parked record still carries every
+// identity the launch realized.
+func assertParkedWithIdentity(t *testing.T, got EndpointRecord, reason ParkReason) {
+	t.Helper()
+	assert.Equal(t, StateStarting, got.State)
+	assert.True(t, got.Parked())
+	assert.Equal(t, reason, got.ParkedReason)
+	assert.False(t, got.ParkedAt.IsZero())
+	assert.Equal(t, "i-1", got.InstanceID)
+	assert.NotEmpty(t, got.ENIID)
+	assert.NotEmpty(t, got.PrivateIP)
+	assert.NotEmpty(t, got.WeightsVolumeID)
+	assert.Empty(t, got.BaseURL)
+	assert.Len(t, got.Members, 3, "every bundle member's identity is retained")
+	for modelID, m := range got.Members {
+		assert.NotZero(t, m.Port, modelID)
+		assert.NotEmpty(t, m.WeightsVolumeID, modelID)
+	}
+	assert.EqualValues(t, 3, got.Generation, "claim, identity and park are one write each")
+}
+
+func TestEnsure_UnreadyLaunchIsParkedWithItsReason(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		probe  func(port string, n int) *http.Response
+		wait   time.Duration
+		reason ParkReason
+	}{
+		{
+			name: "redirect",
+			probe: func(port string, _ int) *http.Response {
+				if port == strconv.Itoa(vllmServePort) {
+					return probeAnswer(http.StatusFound, "http://"+redirectTarget+"/v1/models")
+				}
+				return probeAnswer(http.StatusServiceUnavailable, "")
+			},
+			wait:   time.Hour,
+			reason: ParkReadinessRedirected,
+		},
+		{
+			name:   "timeout",
+			probe:  func(string, int) *http.Response { return probeAnswer(http.StatusServiceUnavailable, "") },
+			wait:   50 * time.Millisecond,
+			reason: ParkReadinessTimedOut,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+			probe := &memberProbe{answer: tc.probe}
+			s.deps.HTTPClient = &http.Client{Transport: probe}
+			s.deps.StartupTimeout = tc.wait
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			waitLaunchesWithin(t, s, 30*time.Second)
+
+			got, found := storedEndpoint(t, s)
+			require.True(t, found)
+			assertParkedWithIdentity(t, got, tc.reason)
+			assert.Zero(t, probe.count(redirectTarget))
+			assertRetained(t, h)
+
+			desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			assert.Equal(t, tc.reason, desc.Endpoint.ParkedReason, "the reason is visible to a describe")
+		})
+	}
+}
+
+func TestEnsure_ChangedClaimBeforeParkIsNotParked(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+	probe := &changingProbe{t: t, s: s, code: http.StatusServiceUnavailable}
+	s.deps.HTTPClient = &http.Client{Transport: probe}
+	s.deps.StartupTimeout = 50 * time.Millisecond
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	require.Equal(t, "i-1", probe.changed.InstanceID, "the change must land after the identity write")
+	got, found := storedEndpoint(t, s)
+	require.True(t, found)
+	assert.Equal(t, probe.changed, got, "the park must leave the newer record unchanged")
+	assert.False(t, got.Parked())
+	assertRetained(t, h)
+}
+
+func TestEnsure_UncertainParkWriteIsNotRetried(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		landed bool
+	}{
+		{name: "park landed and its reply was lost", landed: true},
+		{name: "park never landed", landed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaunchHarness()
+			s, _ := newTestService(t, h, http.StatusServiceUnavailable, sufficientGPU())
+			s.deps.StartupTimeout = 50 * time.Millisecond
+			var calls atomic.Int32
+			s.parkWrite = func(write func() (uint64, error)) (uint64, error) {
+				calls.Add(1)
+				if tc.landed {
+					_, err := write()
+					assert.NoError(t, err)
+				}
+				return 0, stderrors.New("nats: timeout")
+			}
+
+			_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+			require.NoError(t, err)
+			s.WaitLaunches()
+
+			assert.EqualValues(t, 1, calls.Load(), "an uncertain park is not retried")
+			got, found := storedEndpoint(t, s)
+			require.True(t, found, "an uncertain park must not delete the claim")
+			if tc.landed {
+				assertParkedWithIdentity(t, got, ParkReadinessTimedOut)
+			} else {
+				assert.Equal(t, StateStarting, got.State)
+				assert.False(t, got.Parked())
+				assert.Equal(t, "i-1", got.InstanceID, "the identity write still stands")
+				assert.EqualValues(t, 2, got.Generation, "nothing after the identity write landed")
+			}
+			assertRetained(t, h)
+		})
+	}
 }

@@ -576,3 +576,69 @@ func TestDynamicEndpointResolver_IsLiveTrustsRecordsWithoutMembers(t *testing.T)
 
 	assert.True(t, r.isLive(context.Background(), rec, resolverTestModel, rec.BaseURL))
 }
+
+func parkedRecord() EndpointRecord {
+	return EndpointRecord{ModelID: resolverTestModel, State: StateStarting, InstanceID: "i-parked",
+		ParkedReason: ParkReadinessRedirected, ParkedAt: time.Now().UTC()}
+}
+
+// A parked launch has stopped waiting, so a configured cold-start wait must
+// not hold the caller on it, on either resolve path.
+func TestDynamicEndpointResolver_ParkedLaunchIsNotReadyAtOnce(t *testing.T) {
+	t.Parallel()
+	for name, resolve := range map[string]func(*DynamicEndpointResolver) (string, bool, error){
+		"global": func(r *DynamicEndpointResolver) (string, bool, error) {
+			return r.Endpoint(context.Background(), resolverTestModel)
+		},
+		"account": func(r *DynamicEndpointResolver) (string, bool, error) {
+			return r.EndpointForAccount(context.Background(), ptResolverAccount, resolverTestModel)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc := &fakeEndpointService{record: parkedRecord()}
+			r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
+
+			baseURL, ok, err := resolve(r)
+			require.NoError(t, err)
+			assert.False(t, ok)
+			assert.Empty(t, baseURL)
+			assert.Equal(t, int64(1), svc.describeCalls.Load(), "no wait on a parked launch")
+			assert.Zero(t, svc.ensureCalls.Load(), "a parked launch is not relaunched")
+		})
+	}
+}
+
+// A launch that parks while a caller waits on it ends that wait at the next
+// describe rather than at the cold-start budget.
+func TestDynamicEndpointResolver_LaunchParkedDuringTheWaitEndsIt(t *testing.T) {
+	t.Parallel()
+	for name, resolve := range map[string]func(*DynamicEndpointResolver) (string, bool, error){
+		"global": func(r *DynamicEndpointResolver) (string, bool, error) {
+			return r.Endpoint(context.Background(), resolverTestModel)
+		},
+		"account": func(r *DynamicEndpointResolver) (string, bool, error) {
+			return r.EndpointForAccount(context.Background(), ptResolverAccount, resolverTestModel)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
+			// The first describe precedes Ensure; the launch parks before the second.
+			svc.beforeDescribe = func() {
+				if svc.describeCalls.Load() == 2 {
+					svc.setRecord(parkedRecord())
+				}
+			}
+			r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
+
+			started := time.Now()
+			_, ok, err := resolve(r)
+			require.NoError(t, err)
+			assert.False(t, ok)
+			assert.Equal(t, int64(1), svc.ensureCalls.Load())
+			assert.Equal(t, int64(2), svc.describeCalls.Load(), "the wait ends at the first describe that sees the park")
+			assert.Less(t, time.Since(started), 10*time.Second, "the wait must not run to the budget")
+		})
+	}
+}

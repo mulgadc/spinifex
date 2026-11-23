@@ -560,7 +560,7 @@ For a build of your own checkout, run `make distro-amd64` at the repository root
 
 The driver keeps a formed cluster.
 Before it changes a host, it asks each node whether `spx admin init` has run on it.
-When every node answers yes, it does not form the cluster again, and on more than one node it keeps the clustered OVN configuration.
+When every node answers yes, it does not form the cluster again, and it keeps the OVN configuration of each node.
 When no node answers yes, it installs and forms a new cluster.
 The [Troubleshooting](#troubleshooting) section tells you what to do when it stops before it changes a host.
 
@@ -920,8 +920,10 @@ The deploy stops at the first failure and names the log it wrote, all under `.va
 **The driver stops with `could not read the formation state of <host>` or `the hosts disagree`.**
 It stopped before it changed a host.
 In the first case, make sure that you can connect to each named host with SSH, and run the command again.
-In the second case, some nodes are formed and some are not, often after a formation that failed part of the way through.
-The driver does not repair that cluster: destroy it and deploy again, or form the remaining nodes by hand.
+In the second case, some nodes are formed and some are not.
+Make sure that the hosts file or Terraform state names the nodes of one cluster, then examine `/etc/spinifex/spinifex.toml` on each named node.
+A formation that failed part of the way through can also cause this, and the driver does not repair it.
+Destroy and deploy again only a deployment that holds no data you need.
 
 **The driver stops with `cloud-init did not finish on <host>`.**
 The node did not write `/var/lib/cloud/instance/boot-finished` within 20 minutes, or it did not answer.

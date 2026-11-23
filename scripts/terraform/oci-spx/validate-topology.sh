@@ -508,10 +508,14 @@ mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
 classify_cluster() {
     local host answer formed=() fresh=() failed=()
     for host in "${HOSTS[@]}"; do
-        answer="$(ssh_node "$host" 'f=/etc/spinifex/spinifex.toml
-            if [ ! -e "$f" ]; then echo fresh
-            elif grep -q "^data_dir = " "$f"; then echo formed
-            elif [ -r "$f" ]; then echo fresh; fi' 2>/dev/null)" || answer=""
+        # As root, so a file the login user cannot read is not taken as absent.
+        answer="$(ssh_node "$host" 'sudo sh -s' 2>/dev/null <<'PROBE'
+f=/etc/spinifex/spinifex.toml
+[ -e "$f" ] || { echo fresh; exit; }
+grep -q '^data_dir = ' "$f"
+case $? in 0) echo formed ;; 1) echo fresh ;; esac
+PROBE
+)" || answer=""
         case "$answer" in
             formed) formed+=("$host") ;;
             fresh) fresh+=("$host") ;;
@@ -835,7 +839,8 @@ for host in "${HOSTS[@]}"; do
     until gate_ssh "$host" 'test -f /var/lib/cloud/instance/boot-finished' 2>/dev/null; do
         [ "$SECONDS" -lt "$CLOUD_INIT_DEADLINE" ] \
             || die "cloud-init did not finish on $host within $CLOUD_INIT_TIMEOUT s"
-        sleep 10
+        left=$((CLOUD_INIT_DEADLINE - SECONDS))
+        [ "$left" -le 0 ] || sleep $((left < 10 ? left : 10))
     done
     gate_ssh "$host" '
         set -e
@@ -859,11 +864,10 @@ record "cloud-init units" PASS
 classify_cluster
 log "cluster state: $CLUSTER_STATE"
 # setup-ovn.sh --management is the standalone first install. On a formed cluster it
-# replaces the clustered NB/SB client configuration, so it must not run again there.
+# replaces the clustered NB/SB client configuration, and a host list can name only
+# part of a cluster, so it runs on no formed host.
 PRESERVE_CLUSTER_OVN=0
-if [ "$CLUSTER_STATE" = formed ] && [ "$NODES" -gt 1 ]; then
-    PRESERVE_CLUSTER_OVN=1
-fi
+[ "$CLUSTER_STATE" = fresh ] || PRESERVE_CLUSTER_OVN=1
 log "installing Spinifex on each node ($([ -n "$DISTRO" ] && echo "$(basename "$DISTRO")" || echo "published release"))"
 for host in "${HOSTS[@]}"; do
     # A retry after OVN formation must not re-run setup.sh: the installer invokes
@@ -1048,11 +1052,16 @@ case "$TOPO_EBS_PROVIDER:$API_KEY_EBS" in
     ocibsd:1) want_ebs='EBS provider: ocibsd (from the existing config)' ;;
     *)        want_ebs='EBS provider: viperblockd (from SPINIFEX_EBS_PROVIDER)' ;;
 esac
-ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
-case "$ebs_line" in
-    "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
-    *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
-esac
+# A formed cluster did not run init in this run, so there is no choice to check.
+if [ "$CLUSTER_STATE" = formed ]; then
+    record "ebs provider choice" SKIP "init did not run: the cluster was already formed"
+else
+    ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
+    case "$ebs_line" in
+        "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
+        *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
+    esac
+fi
 
 # ocibsd tags every volume and backup with the cluster_id spx admin init generated,
 # and no Terraform state holds them, so e2e-oci.sh sweeps by that tag after the

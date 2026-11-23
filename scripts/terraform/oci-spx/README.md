@@ -348,7 +348,7 @@ For infrastructure configured with `instance_principal = "off"`, supply the API-
 `--reinstall` runs the installer again on every node, for example to put a new build on a kept deployment.
 Before it changes a host, the run asks each host whether `spx admin init` wrote `data_dir` to `/etc/spinifex/spinifex.toml`:
 
-- **Every host has it:** the cluster is formed. The run does not form it again, and on more than one node the installer does not run `setup-ovn.sh --management`, so the clustered NB/SB client configuration stays.
+- **Every host has it:** the cluster is formed. The run does not form it again, and the installer does not run `setup-ovn.sh --management`, so the clustered NB/SB client configuration stays.
 - **No host has it:** the run installs and forms a new cluster.
 - **A host does not answer, or the hosts disagree:** the run stops before it changes a host, and names the hosts.
 

@@ -112,6 +112,9 @@ var (
 	ErrInvalid           = errors.New("invalid readiness control request")
 	// ErrTokenReleased refuses work on an Operation after its release attempt.
 	ErrTokenReleased = errors.New("readiness control token was released")
+	// ErrTokenFenced refuses journal and release on an Operation whose journal
+	// write has an unknown outcome; only orphan-token recovery may clear it.
+	ErrTokenFenced = errors.New("readiness control token is fenced")
 	// ErrUnsupported is a record in a version or form this code does not know.
 	ErrUnsupported = errors.New("unsupported readiness control record")
 	// ErrContended is a token update that kept losing to other writers.
@@ -136,18 +139,69 @@ const (
 type Control struct {
 	js          jetstream.JetStream
 	kv          KV
+	guard       []*Stream
 	beforeWrite func(op string)
+	afterRead   func()
 }
 
-// New returns a Control over an already-opened kv; js serves leader reads.
-func New(js jetstream.JetStream, kv KV) *Control {
-	return &Control{js: js, kv: kv}
+// NewGuarded returns a Control that checks both bound streams before and after
+// each read and write. The checks hold for these handles only: they are not a
+// durable quarantine, and recovery after a restart is separate.
+func NewGuarded(js jetstream.JetStream, b *Bound) (*Control, error) {
+	if js == nil || b == nil || b.Endpoints == nil || b.Control == nil {
+		return nil, fmt.Errorf("%w: guarded control needs both bound streams", ErrInvalid)
+	}
+	ctl, ep := b.Control.binding.Bucket, b.Endpoints.binding.Bucket
+	if ctl != KVBucket || ep == "" || ep == KVBucket {
+		return nil, fmt.Errorf("%w: guarded control bucket %q, endpoint bucket %q", ErrInvalid, ctl, ep)
+	}
+	if !sameJetStream(js, b.Endpoints.js) || !sameJetStream(js, b.Control.js) {
+		return nil, fmt.Errorf("%w: guarded control must use the connection and API that bound its streams", ErrInvalid)
+	}
+	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}}, nil
+}
+
+// bucketName names the bound control bucket; the guarded Control never uses
+// another handle on it.
+type bucketName string
+
+func (b bucketName) Bucket() string { return string(b) }
+
+var _ KV = bucketName("")
+
+// sameJetStream reports whether a and b send on one connection to one
+// JetStream API, so a check through one speaks for a write through the other.
+func sameJetStream(a, b jetstream.JetStream) bool {
+	if a == nil || b == nil || a.Conn() == nil || a.Conn() != b.Conn() {
+		return false
+	}
+	ao, bo := a.Options(), b.Options()
+	return ao.Domain == bo.Domain && kvstore.APIPrefix(ao) == kvstore.APIPrefix(bo)
+}
+
+// verify checks every guarded stream; an unguarded Control checks none.
+func (c *Control) verify(ctx context.Context) error {
+	for _, s := range c.guard {
+		if err := s.Verify(ctx); err != nil {
+			return fmt.Errorf("readiness control binding: %w", err)
+		}
+	}
+	return nil
 }
 
 // Read returns the record and its revision from the stream leader.
 func (c *Control) Read(ctx context.Context) (Record, uint64, error) {
+	if err := c.verify(ctx); err != nil {
+		return Record{}, 0, err
+	}
 	bucket := c.kv.Bucket()
 	msg, err := kvstore.LeaderMsgGet(ctx, c.js, "KV_"+bucket, kvstore.MsgGetRequest{LastFor: "$KV." + bucket + "." + Key})
+	if c.afterRead != nil {
+		c.afterRead()
+	}
+	if verr := c.verify(ctx); verr != nil {
+		return Record{}, 0, verr
+	}
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
 		return Record{}, 0, ErrAbsent
 	}
@@ -286,6 +340,7 @@ type Operation struct {
 
 	mu       sync.Mutex
 	released bool
+	fenced   error
 }
 
 // ID is the token's unique ID, which the owner must never reuse.
@@ -323,7 +378,8 @@ func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (*
 }
 
 // Journal records j on the token before its write is sent. New claims and
-// holds need an active phase and a token from the current epoch.
+// holds need an active phase and a token from the current epoch. An unknown
+// outcome fences the Operation, since that publish may still land.
 func (o *Operation) Journal(ctx context.Context, j Journal) (uint64, error) {
 	if j.Incarnation == "" || j.Key == "" || !validIntent(j.Intent) {
 		return 0, fmt.Errorf("%w: journal %+v", ErrInvalid, j)
@@ -333,7 +389,10 @@ func (o *Operation) Journal(ctx context.Context, j Journal) (uint64, error) {
 	if o.released {
 		return 0, fmt.Errorf("%w: %s", ErrTokenReleased, o.id)
 	}
-	return o.c.update(ctx, "journal", func(r *Record) error {
+	if o.fenced != nil {
+		return 0, o.fenced
+	}
+	rev, err := o.c.update(ctx, "journal", func(r *Record) error {
 		tok, ok := r.Tokens[o.id]
 		if !ok {
 			return fmt.Errorf("%w: %s", ErrTokenNotFound, o.id)
@@ -348,14 +407,21 @@ func (o *Operation) Journal(ctx context.Context, j Journal) (uint64, error) {
 		r.Tokens[o.id] = tok
 		return nil
 	})
+	if errors.Is(err, ErrOutcomeUnknown) {
+		o.fenced = fmt.Errorf("%w: %s after journal: %w", ErrTokenFenced, o.id, err)
+	}
+	return rev, err
 }
 
-// Release removes the token in any phase. The owner calls it only after every
-// covered call, side effect and retry has stopped, and resumes no work after
-// it, even when its outcome is unknown; only the release itself may be retried.
+// Release removes the token once every covered call, side effect and retry has
+// stopped. The owner resumes no work after it; only a release may be retried,
+// and a fenced Operation refuses, so its token keeps finalization closed.
 func (o *Operation) Release(ctx context.Context) (uint64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.fenced != nil {
+		return 0, o.fenced
+	}
 	o.released = true
 	return o.c.update(ctx, "release", func(r *Record) error {
 		if _, ok := r.Tokens[o.id]; !ok {
@@ -452,7 +518,23 @@ func (c *Control) write(ctx context.Context, op string, rec Record, rev uint64) 
 	if c.beforeWrite != nil {
 		c.beforeWrite(op)
 	}
+	if err := c.verify(ctx); err != nil {
+		return 0, err
+	}
 	bucket := c.kv.Bucket()
 	msg := &nats.Msg{Subject: "$KV." + bucket + "." + Key, Data: data}
-	return publishOnce(ctx, c.js, msg, bucket, rev, op)
+	newRev, err := publishOnce(ctx, c.js, msg, bucket, rev, op)
+	if verr := c.verify(ctx); verr != nil {
+		// The answer may come from a replacement, so even a conflict is not
+		// retryable and an acknowledgement does not confirm the write.
+		return 0, fmt.Errorf("%w: %s answered (%s) but %w", ErrOutcomeUnknown, op, publishResult(newRev, err), verr)
+	}
+	return newRev, err
+}
+
+func publishResult(rev uint64, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("acknowledged at revision %d", rev)
 }

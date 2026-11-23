@@ -170,7 +170,7 @@ Run the printed command on the private instance. It has the form `curl -sk https
 The request is unsigned, so S3 answers with an `AccessDenied` error document, which shows that the path through the endpoint works.
 
 > **Note:** On AWS, S3 is at `s3.<region>.amazonaws.com` on port 443. On Spinifex, use an address from the `s3_gateway_addresses` output and the port from the `s3_gate_port` output (8443 by default). The security group egress rule uses the same port.
-> `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA.
+> `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA. `--cacert` with the cluster CA verifies the certificate only if the certificate names the address that you dial.
 
 If the command times out or the connection resets, more than one fault can cause it. Do these checks:
 

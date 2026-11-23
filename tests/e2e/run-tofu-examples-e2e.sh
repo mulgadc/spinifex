@@ -370,13 +370,20 @@ assert_bastion_s3_endpoint() {
 # offers only once every node reaches the endpoint feature level.
 require_s3_endpoint_service() {
     local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names left
+    local want="com.amazonaws.${CLUSTER_REGION}.s3"
+    if [ -z "$CLUSTER_REGION" ]; then
+        log "  no region in the spinifex profile, so the S3 endpoint service name is unknown"
+        return 1
+    fi
     while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
-        names=$(timeout "$left" aws ec2 describe-vpc-endpoint-services --query 'ServiceNames' --output text 2>&1) || true
-        grep -qE '(^|[[:space:]])com\.amazonaws\.[^[:space:]]+\.s3([[:space:]]|$)' <<<"$names" && return 0
+        if names=$(timeout "$left" aws ec2 describe-vpc-endpoint-services --service-names "$want" \
+            --query 'ServiceNames' --output text 2>&1) && tr '\t' '\n' <<<"$names" | grep -qxF "$want"; then
+            return 0
+        fi
         [ $((deadline - SECONDS)) -gt 5 ] || break
         sleep 5
     done
-    log "  the cluster does not offer the S3 gateway endpoint service (last answer: ${names:-none}); check spx admin cluster status for a node below feature level 2"
+    log "  the cluster does not offer ${want} (last answer: ${names:-none}); check spx admin cluster status for a node below feature level 2"
     return 1
 }
 

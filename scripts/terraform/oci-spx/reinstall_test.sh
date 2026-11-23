@@ -14,7 +14,8 @@ fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
 mkdir -p "$TMP/bin" "$TMP/remote"
 # NODE_STATE is formed or fresh. HANG_PROBE makes the cloud-init probe never return,
-# and NO_MARKER makes it answer at once that boot-finished is absent.
+# and NO_MARKER makes it answer at once that boot-finished is absent. FAIL_HOST
+# does not answer the formation probe, and FRESH_HOST answers it as fresh.
 cat > "$TMP/bin/ssh" <<'EOF'
 #!/bin/bash
 while [ $# -gt 0 ]; do case "$1" in ubuntu@*) host="${1#ubuntu@}"; shift; break ;; *) shift ;; esac; done
@@ -22,11 +23,12 @@ cmd="$*"
 printf '[%s] %s\n' "$host" "$cmd" >> "$T/ssh.log"
 formed() { [ "$NODE_STATE" = formed ]; }
 case "$cmd" in
-    *"bash -s"*) PATH="$T/remote:$PATH" HOST="$host" bash -s >> "$T/remote.log" 2>&1; exit $? ;;
+    *"bash -s"*) export PATH="$T/remote:$PATH" HOST="$host"; eval "$cmd" >> "$T/remote.log" 2>&1; exit $? ;;
     *boot-finished*) [ -z "${HANG_PROBE:-}" ] || exec -a reinstall_test_hang tail -f /dev/null
                      [ -z "${NO_MARKER:-}" ] || exit 1
                      exit 0 ;;
-    *"^data_dir = "*) formed ;;
+    *"^data_dir = "*) [ "$host" != "${FAIL_HOST:-}" ] || exit 255
+                      if formed && [ "$host" != "${FRESH_HOST:-}" ]; then echo formed; else echo fresh; fi ;;
     *"command -v spx"*) formed ;;
     *"spx version"*) echo "spx v-test" ;;
     *ovn-remote*) formed && echo '"tcp:10.0.0.1:6642,tcp:10.0.0.2:6642,tcp:10.0.0.3:6642"' ;;
@@ -114,6 +116,27 @@ elif grep -q 'cloud-init did not finish' "$TMP/out" && ! grep -q 'installing Spi
 else
     fail "the gate let the run continue without boot-finished: $(grep -m1 -E 'installing|ERROR' "$TMP/out")"
 fi
+
+# stopped_unchanged <case> <expected message>: the run failed with the message and
+# no install or formation step reached a host.
+stopped_unchanged() {
+    local rc="$1" msg="$2"
+    if [ "$rc" = 0 ] || ! grep -q "$msg" "$TMP/out"; then
+        fail "the run did not stop with \"$msg\": $(grep -m1 ERROR "$TMP/out")"
+    elif [ -s "$TMP/sudo.log" ] || grep -q -e 'installing Spinifex' -e 'forming the cluster' "$TMP/out"; then
+        fail "the run changed a host before it stopped"
+    else
+        pass "the run stopped before it changed a host"
+    fi
+}
+
+echo "-- a host that does not answer the formation probe stops the run"
+FAIL_HOST=10.0.0.2 run formed 1 --reinstall
+stopped_unchanged $? "formation state of 10.0.0.2"
+
+echo "-- hosts that disagree on formation stop the run"
+FRESH_HOST=10.0.0.3 run formed 0
+stopped_unchanged $? "the hosts disagree"
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails failure(s)"

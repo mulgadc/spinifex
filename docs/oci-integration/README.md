@@ -553,6 +553,17 @@ For existing infrastructure using the API-key path (`instance_principal = "off"`
 
 Add `--dry-run` to print the plan and change nothing.
 
+### Reinstall Spinifex on a deployment
+
+To put a new build on a deployment, run the same command with `--reinstall` added.
+For a build of your own checkout, run `make distro-amd64` at the repository root, and add `--distro ../../../dist/spinifex-<version>-linux-amd64.tar.gz --setup-sh ../../../scripts/setup.sh`.
+
+The driver keeps a formed cluster.
+Before it changes a host, it asks each node whether `spx admin init` has run on it.
+When every node answers yes, it does not form the cluster again, and on more than one node it keeps the clustered OVN configuration.
+When no node answers yes, it installs and forms a new cluster.
+The [Troubleshooting](#troubleshooting) section tells you what to do when it stops before it changes a host.
+
 > [!NOTE]
 > **If `--channel dev` fails to download, pass a tag instead.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited by Github. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
@@ -905,5 +916,16 @@ The deploy stops at the first failure and names the log it wrote, all under `.va
 - [A node that was fine and then was not](../oci-architecture/README.md#a-node-that-was-fine-and-then-was-not), where one command answers all of it
 - [Guests cannot reach instance metadata](../oci-architecture/README.md#guests-cannot-reach-instance-metadata), because OCI and AWS guests want the same address
 - [Addresses and quotas](../oci-architecture/README.md#addresses-and-quotas), including why a detached address still bills
+
+**The driver stops with `could not read the formation state of <host>` or `the hosts disagree`.**
+It stopped before it changed a host.
+In the first case, make sure that you can connect to each named host with SSH, and run the command again.
+In the second case, some nodes are formed and some are not, often after a formation that failed part of the way through.
+The driver does not repair that cluster: destroy it and deploy again, or form the remaining nodes by hand.
+
+**The driver stops with `cloud-init did not finish on <host>`.**
+The node did not write `/var/lib/cloud/instance/boot-finished` within 20 minutes, or it did not answer.
+Log in and run `cloud-init status --long` to find the module that failed.
+Set `OCI_CLOUD_INIT_TIMEOUT` to a number of seconds to change the limit.
 
 Installing by hand instead of with Terraform is [Deploying without Terraform](../oci-architecture/README.md#deploying-without-terraform).

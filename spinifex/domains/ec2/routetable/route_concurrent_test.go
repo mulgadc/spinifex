@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -16,6 +17,7 @@ import (
 // deterministically discards the change of whichever call writes first.
 type simultaneousRouteReads struct {
 	jetstream.KeyValue
+
 	mu    sync.Mutex
 	reads int
 	ready chan struct{}
@@ -57,11 +59,7 @@ func runBoth(first, second func() error) [2]error {
 	var errs [2]error
 	var wg sync.WaitGroup
 	for i, fn := range []func() error{first, second} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs[i] = fn()
-		}()
+		wg.Go(func() { errs[i] = fn() })
 	}
 	wg.Wait()
 	return errs
@@ -147,4 +145,47 @@ func TestReplaceRoute_ConcurrentWithDeleteRouteBothPersist(t *testing.T) {
 	require.NotContains(t, routes, "10.101.0.0/16", "the deleted route stays deleted")
 	require.Equal(t, "igw-test1", routes["10.100.0.0/16"].GatewayId, "the replaced target stays replaced")
 	require.Empty(t, routes["10.100.0.0/16"].NatGatewayId)
+}
+
+// eventsAtWrite records how many add-igw-route events were already queued
+// when the route-table record was written.
+type eventsAtWrite struct {
+	jetstream.KeyValue
+
+	t      *testing.T
+	svc    *RouteTableServiceImpl
+	sub    *nats.Subscription
+	queued []int
+}
+
+func (kv *eventsAtWrite) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	kv.queued = append(kv.queued, pendingEvents(kv.t, kv.svc, kv.sub))
+	return kv.KeyValue.Update(ctx, key, value, last)
+}
+
+// TestCreateRoute_PublishesAddEventBeforeWrite checks that CreateRoute still
+// publishes the add event before it writes the route.
+func TestCreateRoute_PublishesAddEventBeforeWrite(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+	_, err := svc.AssociateRouteTable(t.Context(), &ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	kv := &eventsAtWrite{KeyValue: svc.rtbKV, t: t, svc: svc, sub: sub}
+	svc.rtbKV = kv
+
+	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, []int{1}, kv.queued, "the add event must be queued before the single record write")
 }

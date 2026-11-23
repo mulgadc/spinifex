@@ -216,21 +216,28 @@ func TestReaper_StaleObservationDoesNotOverwriteAReplacement(t *testing.T) {
 	swept := make(chan struct{})
 	go func() { defer close(swept); assert.NoError(t, f.reaper.sweepOnce(t.Context(), nil)) }()
 	<-gate.entered
-	// The sweep holds the endpoint while it probes, so the old record's
-	// generation is one ahead and replace's equal-generation premise is moot.
 	old, _ := f.current(t)
 	require.True(t, old.Held())
 	_, err := f.svc.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
-	replacement := f.ready(t)
+	f.ready(t)
+	// Give the replacement the held observation's generation, so only the
+	// revision can tell the two apart.
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+	replacement, rev, found, err := f.store.getRevision(t.Context(), key)
+	require.NoError(t, err)
+	require.True(t, found)
 	require.NotEqual(t, old.InstanceID, replacement.InstanceID)
+	replacement.Generation = old.Generation
+	rev, err = f.store.CompareAndSet(t.Context(), key, &replacement, rev)
+	require.NoError(t, err)
 	close(gate.release)
 	<-swept
 
-	cur, found := f.current(t)
+	cur, curRev, found, err := f.store.getRevision(t.Context(), key)
+	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, replacement.InstanceID, cur.InstanceID)
-	assert.Equal(t, replacement.Generation, cur.Generation)
-	assert.Zero(t, cur.InFlight, "the stale sweep's observation must not be written")
-	assert.False(t, cur.Held(), "the stale sweep's hold must not reach the replacement")
+	assert.Equal(t, replacement, cur, "the stale sweep's clear and observation must not land")
+	assert.Equal(t, rev, curRev)
+	assert.Equal(t, []string{old.InstanceID}, f.harness.launcher.terminations(), "only the explicit delete terminated anything")
 }

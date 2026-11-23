@@ -249,6 +249,12 @@ func (r *Reaper) holdForProbe(ctx context.Context, key string, lost <-chan struc
 	if !found || rec.State != StateReady {
 		return EndpointRecord{}, 0, false, nil
 	}
+	if resolveAccountID(rec.AccountID) != awsidentifiers.GlobalAccountID ||
+		resolveKey(resolveAccountID(rec.AccountID), rec.ModelID) != key {
+		slog.WarnContext(ctx, "bedrock reaper: endpoint record does not belong to its key; not probing",
+			"model", rec.ModelID)
+		return EndpointRecord{}, 0, false, nil
+	}
 	if rec.Held() {
 		return rec, rev, true, nil
 	}
@@ -271,7 +277,7 @@ func (r *Reaper) holdForProbe(ctx context.Context, key string, lost <-chan struc
 
 // releaseHold clears the hold on rec, read at rev, with observe applied in the
 // same CAS, after a direct healthy probe. false means the record moved, the
-// write was uncertain or the lease is gone; the hold then stays for a later sweep.
+// lease is gone, or the clear's outcome is unconfirmed; nothing is reclaimed.
 func (r *Reaper) releaseHold(ctx context.Context, key string, rec EndpointRecord, rev uint64, lost <-chan struct{}, observe func(*EndpointRecord)) (EndpointRecord, bool) {
 	if !leading(lost) {
 		return EndpointRecord{}, false

@@ -192,3 +192,26 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 		})
 	}
 }
+
+// A tenant record stored under a global key is not the endpoint that key
+// addresses: it is neither held, probed nor reaped, though idle past its TTL.
+func TestReaper_TenantRecordUnderAGlobalKeyIsRefused(t *testing.T) {
+	t.Parallel()
+	f, rec := idleFixture(t)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+	stored, rev := readRecord(t, f.svc, key)
+	stored.AccountID = testAccountID
+	rev, err := f.store.CompareAndSet(t.Context(), key, &stored, rev)
+	require.NoError(t, err)
+	writes := holdWriteAt(f, 0, nil)
+
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
+
+	got, gotRev := readRecord(t, f.svc, key)
+	assert.Equal(t, stored, got)
+	assert.Equal(t, rev, gotRev, "no write may land on a mismatched record")
+	assert.Zero(t, *writes)
+	assert.Zero(t, f.transport.scrapeCount())
+	assert.Empty(t, f.harness.launcher.terminations(), rec.InstanceID)
+	assert.EqualValues(t, 1, f.harness.launcher.launchCount.Load())
+}

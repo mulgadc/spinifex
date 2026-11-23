@@ -34,14 +34,16 @@ func (o *Operation) readEndpointLocked(ctx context.Context, key string) (Subject
 	return rev, err
 }
 
-// Settlement is one proposed settle: the token making it, the key, the
-// observed revision and value, and the replacement, nil for a removal. Owned
-// reports that Revision is this Operation's own confirmed write.
+// Settlement is one proposed settle: the admitted token, the key, the observed
+// revision and value, and the replacement, nil for a removal. Owned reports
+// that Revision is this Operation's own confirmed write.
 type Settlement struct {
 	TokenID  string
 	Kind     TokenKind
 	Epoch    uint64
 	Rollback string
+	Node     string
+	Target   string
 	Key      string
 	Revision uint64
 	Owned    bool
@@ -67,9 +69,9 @@ func (o *Operation) WriteEndpoint(ctx context.Context, key string, intent Intent
 	})
 }
 
-// SettleEndpoint rewrites the live value at exactly expected, the revision
-// observed, as the SettleCheck allows. A launch or sweep token may only rewrite
-// its own confirmed write; a drain token may rewrite an observed record.
+// SettleEndpoint rewrites the live value at exactly expected as the SettleCheck
+// allows; only a drain token may rewrite a record it did not write. ErrChanged
+// voids the observation and any probe of it: re-read and re-probe first.
 func (o *Operation) SettleEndpoint(ctx context.Context, key string, value []byte, expected uint64) (uint64, error) {
 	if value == nil {
 		return 0, fmt.Errorf("%w: settle of %s needs a value; remove through DeleteEndpoint", ErrInvalid, key)
@@ -115,7 +117,7 @@ func (o *Operation) checkSettle(ctx context.Context, key string, expected uint64
 		return fmt.Errorf("%w: %s holds %s at revision %d, not a value at %d", ErrNotSettlement, key, cur.Op, cur.Seq, expected)
 	}
 	s := Settlement{
-		TokenID: o.id, Kind: o.tok.Kind, Epoch: o.tok.Epoch, Rollback: o.tok.Rollback,
+		TokenID: o.id, Kind: o.tok.Kind, Epoch: o.tok.Epoch, Rollback: o.tok.Rollback, Node: o.tok.Node, Target: o.tok.Target,
 		Key: key, Revision: expected, Owned: owned, Old: bytes.Clone(cur.Value), Next: bytes.Clone(next),
 	}
 	if err := o.c.settles(s); err != nil {

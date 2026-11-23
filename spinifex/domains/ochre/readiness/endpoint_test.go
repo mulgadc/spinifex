@@ -604,7 +604,7 @@ func TestEndpoint_DrainRewritesHeldOrMarkedRecords(t *testing.T) {
 			assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent())
 			require.Len(t, *seen, 1)
 			assert.Equal(t, readiness.Settlement{
-				TokenID: "drain-1", Kind: readiness.TokenDrain, Epoch: 1, Rollback: "rb-1",
+				TokenID: "drain-1", Kind: readiness.TokenDrain, Epoch: 1, Rollback: "rb-1", Node: "node-1",
 				Key: endpointKey, Revision: rev, Owned: false, Old: tc.old, Next: tc.next,
 			}, (*seen)[0], "the rule sees the token, its kind and the observed identity")
 
@@ -821,4 +821,53 @@ func TestEndpoint_SameKeySettleNeedsTheDomainRule(t *testing.T) {
 		assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent())
 		release(t, e.op)
 	})
+}
+
+// The rule sees the admitted token's own node and target, so it can check the
+// key and worker against what the token was admitted for.
+func TestEndpoint_SettleCheckSeesTheAdmittedTarget(t *testing.T) {
+	ctx := t.Context()
+	var seen []readiness.Settlement
+	e := newEndpointEnvWith(t, func(s readiness.Settlement) error {
+		seen = append(seen, s)
+		if s.Target != "acct/model" || s.Node != "node-1" {
+			return errors.New("token not admitted for this endpoint")
+		}
+		return testSettles(s)
+	})
+	own, err := e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentClaim, recStarting, 0)
+	require.NoError(t, err)
+	_, err = e.op.SettleEndpoint(ctx, endpointKey, recReady, own)
+	require.NoError(t, err)
+	require.Len(t, seen, 1)
+	assert.Equal(t, "launch-1", seen[0].TokenID)
+	assert.Equal(t, readiness.TokenLaunch, seen[0].Kind)
+	assert.Equal(t, "node-1", seen[0].Node)
+	assert.Equal(t, "acct/model", seen[0].Target)
+	assert.True(t, seen[0].Owned)
+	release(t, e.op)
+
+	rev, err := e.bound.EndpointsKV.Put(ctx, endpointKey, recHeld)
+	require.NoError(t, err)
+	freeze(t, e.raw(), "rb-1")
+	for _, tok := range []readiness.Token{
+		{ID: "drain-other", Kind: readiness.TokenDrain, Epoch: 1, Node: "node-1", Target: "acct/other"},
+		{ID: "drain-node", Kind: readiness.TokenDrain, Epoch: 1, Node: "node-2", Target: "acct/model"},
+	} {
+		op, _, err := e.c.AdmitDrain(ctx, "rb-1", tok)
+		require.NoError(t, err)
+		e.pub.sent()
+		_, err = op.SettleEndpoint(ctx, endpointKey, recCleared, rev)
+		require.ErrorIs(t, err, readiness.ErrNotSettlement, tok.ID)
+		assert.Empty(t, e.pub.sent())
+		got := seen[len(seen)-1]
+		assert.Equal(t, []string{tok.Node, tok.Target}, []string{got.Node, got.Target})
+		release(t, op)
+	}
+	op, _, err := e.c.AdmitDrain(ctx, "rb-1", readiness.Token{ID: "drain-1", Kind: readiness.TokenDrain, Epoch: 1, Node: "node-1", Target: "acct/model"})
+	require.NoError(t, err)
+	_, err = op.SettleEndpoint(ctx, endpointKey, recCleared, rev)
+	require.NoError(t, err)
+	assert.Equal(t, recCleared, e.stored(t).Value)
+	release(t, op)
 }

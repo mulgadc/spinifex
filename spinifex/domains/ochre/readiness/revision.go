@@ -80,3 +80,14 @@ func WriteAt(ctx context.Context, js jetstream.JetStream, bucket, key string, va
 	msg := &nats.Msg{Subject: "$KV." + bucket + "." + key, Data: value}
 	return publishOnce(ctx, js, msg, bucket, expected, "write "+bucket)
 }
+
+// deleteAt publishes a delete marker on key exactly once, only while key's
+// last-subject revision is expected, with WriteAt's outcomes.
+func deleteAt(ctx context.Context, js jetstream.JetStream, bucket, key string, expected uint64) (uint64, error) {
+	if err := checkKey(bucket, key); err != nil {
+		return 0, err
+	}
+	msg := nats.NewMsg("$KV." + bucket + "." + key)
+	msg.Header.Set("KV-Operation", OpDel)
+	return publishOnce(ctx, js, msg, bucket, expected, "delete "+bucket)
+}

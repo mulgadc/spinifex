@@ -487,3 +487,43 @@ func TestStream_NonDurableConfigQuarantinesTheHandle(t *testing.T) {
 		})
 	}
 }
+
+// A replacement that reports the bound creation and reuses the marker
+// sequence still gets its own incarnation, as does any other field change.
+func TestBinding_IncarnationCoversEveryIdentityField(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	createBucket(t, js, readiness.KVBucket)
+	b := observe(t, js, readiness.KVBucket)
+	recreate(t, js, readiness.KVBucket)
+	replaced := observe(t, js, readiness.KVBucket)
+	replaced.Created = b.Created
+	require.Equal(t, b.Marker.Seq, replaced.Marker.Seq)
+	require.NotEqual(t, b.Marker.Time, replaced.Marker.Time)
+
+	want, err := b.Incarnation()
+	require.NoError(t, err)
+	other, err := replaced.Incarnation()
+	require.NoError(t, err)
+	assert.NotEqual(t, want, other, "the marker's storage time separates the replacement")
+
+	same := b
+	same.Created, same.Marker.Time = b.Created.In(time.FixedZone("x", 3600)), b.Marker.Time.In(time.FixedZone("y", -7200))
+	got, err := same.Incarnation()
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "the same instants in another zone are the same incarnation")
+
+	changes := map[string]func(*readiness.Binding){
+		"bucket":      func(c *readiness.Binding) { c.Bucket = "other" },
+		"created":     func(c *readiness.Binding) { c.Created = c.Created.Add(time.Nanosecond) },
+		"marker key":  func(c *readiness.Binding) { c.Marker.Key = markerKey + "x" },
+		"marker seq":  func(c *readiness.Binding) { c.Marker.Seq++ },
+		"marker time": func(c *readiness.Binding) { c.Marker.Time = c.Marker.Time.Add(time.Nanosecond) },
+	}
+	for name, change := range changes {
+		c := b
+		change(&c)
+		got, err := c.Incarnation()
+		require.NoError(t, err)
+		assert.NotEqual(t, want, got, name)
+	}
+}

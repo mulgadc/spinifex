@@ -115,6 +115,9 @@ var (
 	// ErrTokenFenced refuses journal and release on an Operation whose journal
 	// write has an unknown outcome; only orphan-token recovery may clear it.
 	ErrTokenFenced = errors.New("readiness control token is fenced")
+	// ErrNotSettlement refuses a settle that would not finish or remove an
+	// existing obligation.
+	ErrNotSettlement = errors.New("readiness endpoint write is not a settlement")
 	// ErrUnsupported is a record in a version or form this code does not know.
 	ErrUnsupported = errors.New("unsupported readiness control record")
 	// ErrContended is a token update that kept losing to other writers.
@@ -141,6 +144,7 @@ type Control struct {
 	kv          KV
 	guard       []*Stream
 	endpoints   *Stream
+	settles     SettleCheck
 	beforeWrite func(op string)
 	afterRead   func()
 }
@@ -148,7 +152,7 @@ type Control struct {
 // NewGuarded returns a Control that checks both bound streams before and after
 // each read and write. The checks hold for these handles only: they are not a
 // durable quarantine, and recovery after a restart is separate.
-func NewGuarded(js jetstream.JetStream, b *Bound) (*Control, error) {
+func NewGuarded(js jetstream.JetStream, b *Bound, settles SettleCheck) (*Control, error) {
 	if js == nil || b == nil || b.Endpoints == nil || b.Control == nil {
 		return nil, fmt.Errorf("%w: guarded control needs both bound streams", ErrInvalid)
 	}
@@ -159,7 +163,7 @@ func NewGuarded(js jetstream.JetStream, b *Bound) (*Control, error) {
 	if !sameJetStream(js, b.Endpoints.js) || !sameJetStream(js, b.Control.js) {
 		return nil, fmt.Errorf("%w: guarded control must use the connection and API that bound its streams", ErrInvalid)
 	}
-	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}, endpoints: b.Endpoints}, nil
+	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}, endpoints: b.Endpoints, settles: settles}, nil
 }
 
 // bucketName names the bound control bucket; the guarded Control never uses
@@ -342,6 +346,9 @@ type Operation struct {
 	mu       sync.Mutex
 	released bool
 	fenced   error
+	// owned maps each endpoint key to the revision this Operation last wrote
+	// and saw confirmed.
+	owned map[string]uint64
 }
 
 // ID is the token's unique ID, which the owner must never reuse.

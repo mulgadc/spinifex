@@ -2,6 +2,7 @@ package readiness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -41,10 +42,16 @@ type Marker struct {
 
 func (m Marker) complete() bool { return m.Key != "" && m.Seq != 0 && !m.Time.IsZero() }
 
-// Incarnation names the bound stream for an endpoint write journal: its
-// bucket, its leader-reported creation and its marker revision.
-func (b Binding) Incarnation() string {
-	return fmt.Sprintf("%s@%s#%d", b.Bucket, b.Created.UTC().Format(time.RFC3339Nano), b.Marker.Seq)
+// Incarnation names the bound stream for an endpoint write journal. It is the
+// JSON form of every binding field, times in UTC, so two bindings that differ
+// in any field never share it.
+func (b Binding) Incarnation() (string, error) {
+	b.Created, b.Marker.Time = b.Created.UTC(), b.Marker.Time.UTC()
+	data, err := json.Marshal(b)
+	if err != nil {
+		return "", fmt.Errorf("%w: encode binding: %w", ErrInvalid, err)
+	}
+	return string(data), nil
 }
 
 func streamName(bucket string) string { return "KV_" + bucket }

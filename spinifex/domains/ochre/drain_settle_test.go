@@ -363,9 +363,9 @@ type drainEnv struct {
 	drain func(target string) *readiness.Operation
 }
 
-// newDrainEnv stores rec at its key, binds a deployment whose guarded control
-// uses CheckDrainSettlement, and freezes it for rollback rb-1.
-func newDrainEnv(t *testing.T, value []byte) (drainEnv, uint64) {
+// newGuardedControl stores value at key, then binds a deployment whose
+// guarded control uses settles and activates epoch 1.
+func newGuardedControl(t *testing.T, settles readiness.SettleCheck, key string, value []byte) (*readiness.Control, jetstream.KeyValue, uint64) {
 	t.Helper()
 	ctx := t.Context()
 	_, _, js := testutil.StartTestJetStream(t)
@@ -375,7 +375,7 @@ func newDrainEnv(t *testing.T, value []byte) (drainEnv, uint64) {
 	}
 	kv, err := js.KeyValue(ctx, KVBucketEndpoints)
 	require.NoError(t, err)
-	rev, err := kv.Put(ctx, drainKey(), value)
+	rev, err := kv.Put(ctx, key, value)
 	require.NoError(t, err)
 
 	in := readiness.NewInitializer(js, readiness.InitConfig{ConfigBucket: "spinifex-cluster-config", EndpointBucket: KVBucketEndpoints})
@@ -383,12 +383,21 @@ func newDrainEnv(t *testing.T, value []byte) (drainEnv, uint64) {
 	require.NoError(t, err)
 	b, err := in.Load(ctx)
 	require.NoError(t, err)
-	c, err := readiness.NewGuarded(js, b, CheckDrainSettlement)
+	c, err := readiness.NewGuarded(js, b, settles)
 	require.NoError(t, err)
 	initRev, err := c.Initialize(ctx)
 	require.NoError(t, err)
 	_, err = c.Activate(ctx, 1, initRev)
 	require.NoError(t, err)
+	return c, kv, rev
+}
+
+// newDrainEnv stores value at its key under a guarded control that uses
+// CheckDrainSettlement, frozen for rollback rb-1.
+func newDrainEnv(t *testing.T, value []byte) (drainEnv, uint64) {
+	t.Helper()
+	ctx := t.Context()
+	c, kv, rev := newGuardedControl(t, CheckDrainSettlement, drainKey(), value)
 	_, controlRev, err := c.Read(ctx)
 	require.NoError(t, err)
 	_, err = c.Freeze(ctx, "rb-1", controlRev)

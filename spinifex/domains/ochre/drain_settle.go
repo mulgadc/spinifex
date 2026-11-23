@@ -76,18 +76,27 @@ func CheckDrainSettlement(s readiness.Settlement) error {
 	}
 	want.Generation = old.Generation + 1
 
-	wantJSON, err := json.Marshal(want)
+	same, err := sameEncoding(want, next)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errDrainSettlement, err)
 	}
-	nextJSON, err := json.Marshal(next)
-	if err != nil {
-		return fmt.Errorf("%w: %w", errDrainSettlement, err)
-	}
-	if !bytes.Equal(wantJSON, nextJSON) {
+	if !same {
 		return fmt.Errorf("%w: new record changes more than the %s settlement allows", errDrainSettlement, old.State)
 	}
 	return nil
+}
+
+// sameEncoding reports whether want and next encode to the same bytes.
+func sameEncoding(want, next EndpointRecord) (bool, error) {
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		return false, err
+	}
+	nextJSON, err := json.Marshal(next)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(wantJSON, nextJSON), nil
 }
 
 // heldReady checks that rec is a complete READY bundle on its own primary

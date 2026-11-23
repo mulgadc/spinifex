@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -185,7 +187,7 @@ func TestDeleteSnapshot_UnreadableGlobalSnapshotDocumentScansEveryAccount(t *tes
 
 	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
-	assert.Contains(t, store.reads, foreignKey, "the foreign prefix must have been read")
+	assert.Contains(t, store.readKeys(), foreignKey, "the foreign prefix must have been read")
 	requireSnapshotSurvives(t, svc, snapshotID)
 }
 
@@ -263,20 +265,31 @@ func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableVolume(t *testing.T) {
 
 // readFailingObjectStore fails the read of named keys the way predastore fails
 // an object whose shards can no longer reconstruct: a 500, not a missing key.
+// The metadata collector fetches in parallel, so reads is guarded by mu.
 type readFailingObjectStore struct {
 	objectstore.ObjectStore
 
 	failing map[string]bool
-	reads   []string
+
+	mu    sync.Mutex
+	reads []string
 }
 
 func (s *readFailingObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 	key := aws.StringValue(input.Key)
+	s.mu.Lock()
 	s.reads = append(s.reads, key)
+	s.mu.Unlock()
 	if s.failing[key] {
 		return nil, fmt.Errorf("InternalError: reconstruct %s: every data shard rejected stale_epoch", key)
 	}
 	return s.ObjectStore.GetObject(ctx, input)
+}
+
+func (s *readFailingObjectStore) readKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.reads)
 }
 
 // The incident this reproduces was an object whose read returns 500 forever,
@@ -297,7 +310,7 @@ func TestDeleteSnapshot_TeardownDrainsPastAForeignUnreadableObject(t *testing.T)
 	})
 
 	require.NoError(t, deleteSnapshot(svc, snapshotID))
-	assert.NotContains(t, store.reads, foreignKey,
+	assert.NotContains(t, store.readKeys(), foreignKey,
 		"the foreign object must not be read at all, or a 500 there can still refuse a teardown")
 }
 

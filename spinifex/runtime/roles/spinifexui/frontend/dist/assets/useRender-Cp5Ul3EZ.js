@@ -1,1 +1,0 @@
-import{Tt as e}from"./schemas-D770-E21.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

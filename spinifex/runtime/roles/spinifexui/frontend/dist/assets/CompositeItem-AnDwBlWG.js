@@ -1,1 +1,0 @@
-import{Dt as e,Ot as t,Tt as n}from"./schemas-D770-E21.js";import{r}from"./CompositeRoot-Cqxu8Ej7.js";function i(i){let{render:a,className:o,style:s,state:c=t,props:l=e,refs:u=e,metadata:d,stateAttributesMapping:f,tag:p=`div`,...m}=i,{compositeProps:h,compositeRef:g}=r({metadata:d});return n(p,i,{state:c,ref:[g,...u],props:[h,...l,m],stateAttributesMapping:f})}export{i as t};

@@ -99,6 +99,11 @@ func (d Deps) resumeDeletion(
 	revision uint64,
 	now time.Time,
 ) bool {
+	// Without its cleanup this gateway would take the job over only to fail it;
+	// leaving it unwritten keeps it resumable by a gateway that has one.
+	if d.PlatformCleaner == nil || d.ComputeCleaner == nil || d.StorageCleaner == nil {
+		return false
+	}
 	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner, append([]accountteardown.ClusterOption{accountteardown.WithComputeCleanup(d.ComputeCleaner, d.StorageCleaner)}, d.teardownOptions...)...)
 	if err != nil {
 		// Nothing was written, so a later scan retries.

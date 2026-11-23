@@ -871,3 +871,43 @@ func TestEndpoint_SettleCheckSeesTheAdmittedTarget(t *testing.T) {
 	assert.Equal(t, recCleared, e.stored(t).Value)
 	release(t, op)
 }
+
+func TestEndpoint_SweepReachesTheRuleForAnUnownedRevision(t *testing.T) {
+	ctx := t.Context()
+	var seen []readiness.Settlement
+	e := newEndpointEnvWith(t, func(s readiness.Settlement) error {
+		seen = append(seen, s)
+		return nil
+	})
+	keys := []string{"000000000000/held-a", "000000000001/parked-b"}
+	revs := map[string]uint64{}
+	for _, k := range keys {
+		rev, err := e.bound.EndpointsKV.Put(ctx, k, []byte("written by an earlier sweep"))
+		require.NoError(t, err)
+		revs[k] = rev
+	}
+
+	_, err := e.op.SettleEndpoint(ctx, keys[0], []byte("x"), revs[keys[0]])
+	require.ErrorIs(t, err, readiness.ErrNotSettlement, "a launch token still needs its own revision")
+	require.Empty(t, seen, "the launch token never reaches the rule")
+
+	sweep, _, err := e.c.Admit(ctx, readiness.Token{ID: "sweep-2", Kind: readiness.TokenSweep, Epoch: 1, Node: "node-2", Target: "sweep"})
+	require.NoError(t, err)
+	e.pub.sent()
+	for _, k := range keys {
+		_, err := sweep.SettleEndpoint(ctx, k, []byte("settled"), revs[k])
+		require.NoError(t, err)
+	}
+	require.Len(t, seen, 2)
+	for i, s := range seen {
+		assert.Equal(t, readiness.TokenSweep, s.Kind)
+		assert.False(t, s.Owned, "the rule is told the sweep did not write this revision")
+		assert.Equal(t, keys[i], s.Key)
+		assert.Equal(t, "node-2", s.Node)
+	}
+	rec, _ := read(t, e.raw())
+	assert.Equal(t, []readiness.Journal{
+		{Incarnation: e.journal(t, readiness.IntentSettle, 0).Incarnation, Key: keys[0], ExpectedRevision: revs[keys[0]], Intent: readiness.IntentSettle},
+		{Incarnation: e.journal(t, readiness.IntentSettle, 0).Incarnation, Key: keys[1], ExpectedRevision: revs[keys[1]], Intent: readiness.IntentSettle},
+	}, rec.Tokens["sweep-2"].Journal, "one token covers the sweep and journals each key")
+}

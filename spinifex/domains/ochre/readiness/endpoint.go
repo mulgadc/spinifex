@@ -70,8 +70,8 @@ func (o *Operation) WriteEndpoint(ctx context.Context, key string, intent Intent
 }
 
 // SettleEndpoint rewrites the live value at exactly expected as the SettleCheck
-// allows; only a drain token may rewrite a record it did not write. ErrChanged
-// voids the observation and any probe of it: re-read and re-probe first.
+// allows; only a drain or sweep token may rewrite a record it did not write.
+// ErrChanged voids the observation and any probe of it: re-read and re-probe.
 func (o *Operation) SettleEndpoint(ctx context.Context, key string, value []byte, expected uint64) (uint64, error) {
 	if value == nil {
 		return 0, fmt.Errorf("%w: settle of %s needs a value; remove through DeleteEndpoint", ErrInvalid, key)
@@ -80,7 +80,7 @@ func (o *Operation) SettleEndpoint(ctx context.Context, key string, value []byte
 	return o.endpointWrite(ctx, key, IntentSettle, expected, false, func(ctx context.Context) error {
 		own, ok := o.owned[key]
 		owned := ok && own == expected && expected != 0
-		if !owned && o.tok.Kind != TokenDrain {
+		if !owned && o.tok.Kind != TokenDrain && o.tok.Kind != TokenSweep {
 			return fmt.Errorf("%w: %s at revision %d is not this operation's confirmed write", ErrNotSettlement, key, expected)
 		}
 		return o.checkSettle(ctx, key, expected, owned, value)

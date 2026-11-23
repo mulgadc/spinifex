@@ -32,19 +32,29 @@ func CheckDrainSettlement(s readiness.Settlement) error {
 	case s.Target == "" || s.Target != s.Key:
 		return fmt.Errorf("%w: token target %q is not key %q", errDrainSettlement, s.Target, s.Key)
 	}
-	old, err := strictRecord(s.Old)
-	if err != nil {
-		return fmt.Errorf("%w: stored record: %w", errDrainSettlement, err)
+	if err := checkRecovery(s.Key, s.Old, s.Next, nil); err != nil {
+		return fmt.Errorf("%w: %w", errDrainSettlement, err)
 	}
-	next, err := strictRecord(s.Next)
+	return nil
+}
+
+// checkRecovery allows next to clear the hold of the READY record old, with
+// a bounded fresh observation, or to promote the parked complete bundle old
+// to READY. readyScope, when set, must also accept a held READY record.
+func checkRecovery(key string, oldData, nextData []byte, readyScope func(EndpointRecord) error) error {
+	old, err := strictRecord(oldData)
 	if err != nil {
-		return fmt.Errorf("%w: new record: %w", errDrainSettlement, err)
+		return fmt.Errorf("stored record: %w", err)
 	}
-	if resolveKey(resolveAccountID(old.AccountID), old.ModelID) != s.Key {
-		return fmt.Errorf("%w: record does not belong at key %q", errDrainSettlement, s.Key)
+	next, err := strictRecord(nextData)
+	if err != nil {
+		return fmt.Errorf("new record: %w", err)
+	}
+	if resolveKey(resolveAccountID(old.AccountID), old.ModelID) != key {
+		return fmt.Errorf("record does not belong at key %q", key)
 	}
 	if old.Generation == math.MaxUint64 {
-		return fmt.Errorf("%w: generation cannot advance", errDrainSettlement)
+		return errors.New("generation cannot advance")
 	}
 
 	want := old
@@ -52,6 +62,11 @@ func CheckDrainSettlement(s readiness.Settlement) error {
 	case old.State == StateReady:
 		if err := heldReady(old); err != nil {
 			return err
+		}
+		if readyScope != nil {
+			if err := readyScope(old); err != nil {
+				return err
+			}
 		}
 		if err := freshObservation(old, next); err != nil {
 			return err
@@ -65,23 +80,23 @@ func CheckDrainSettlement(s readiness.Settlement) error {
 			return err
 		}
 		if next.ReadyAt.IsZero() {
-			return fmt.Errorf("%w: a promoted record needs its ready time", errDrainSettlement)
+			return errors.New("a promoted record needs its ready time")
 		}
 		want.State = StateReady
 		want.ParkedReason, want.ParkedAt = "", time.Time{}
 		want.BaseURL = primaryURL
 		want.ReadyAt = next.ReadyAt
 	default:
-		return fmt.Errorf("%w: no drain settlement from %s", errDrainSettlement, old.State)
+		return fmt.Errorf("no settlement from %s", old.State)
 	}
 	want.Generation = old.Generation + 1
 
 	same, err := sameEncoding(want, next)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errDrainSettlement, err)
+		return err
 	}
 	if !same {
-		return fmt.Errorf("%w: new record changes more than the %s settlement allows", errDrainSettlement, old.State)
+		return fmt.Errorf("new record changes more than the %s settlement allows", old.State)
 	}
 	return nil
 }
@@ -105,22 +120,22 @@ func sameEncoding(want, next EndpointRecord) (bool, error) {
 func heldReady(rec EndpointRecord) error {
 	h := rec.HealthHold
 	if rec.ReadyAt.IsZero() {
-		return fmt.Errorf("%w: READY record has no ready time", errDrainSettlement)
+		return errors.New("READY record has no ready time")
 	}
 	bundle, err := catalogBundle(rec)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errDrainSettlement, err)
+		return err
 	}
 	if rec.BaseURL != bundle.targets[bundle.primary].BaseURL {
-		return fmt.Errorf("%w: base URL differs from the primary member", errDrainSettlement)
+		return errors.New("base URL differs from the primary member")
 	}
 	switch {
 	case h == nil:
-		return fmt.Errorf("%w: READY record carries no health hold", errDrainSettlement)
+		return errors.New("READY record carries no health hold")
 	case h.Token == "" || h.Epoch == 0 || h.ReservedAt.IsZero():
-		return fmt.Errorf("%w: health hold has no complete token", errDrainSettlement)
+		return errors.New("health hold has no complete token")
 	case rec.ParkedReason != "" || !rec.ParkedAt.IsZero():
-		return fmt.Errorf("%w: READY record carries a park marker", errDrainSettlement)
+		return errors.New("READY record carries a park marker")
 	}
 	return nil
 }
@@ -131,34 +146,35 @@ func heldReady(rec EndpointRecord) error {
 func freshObservation(old, next EndpointRecord) error {
 	switch {
 	case next.InFlight < 0 || next.InFlight > maxExactCount:
-		return fmt.Errorf("%w: queue depth %d is out of range", errDrainSettlement, next.InFlight)
+		return fmt.Errorf("queue depth %d is out of range", next.InFlight)
 	case next.SuccessTotal < 0 || next.SuccessTotal > maxExactCount || next.SuccessTotal != math.Trunc(next.SuccessTotal):
-		return fmt.Errorf("%w: success count is not a whole representable number", errDrainSettlement)
+		return errors.New("success count is not a whole representable number")
 	case next.ScrapeFailures != old.ScrapeFailures && next.ScrapeFailures != 0:
-		return fmt.Errorf("%w: a healthy observation only resets the failure count", errDrainSettlement)
+		return errors.New("a healthy observation only resets the failure count")
 	case !next.LastActiveAt.Equal(old.LastActiveAt) && (next.LastActiveAt.IsZero() || next.LastActiveAt.Before(old.LastActive())):
-		return fmt.Errorf("%w: activity time moves back", errDrainSettlement)
+		return errors.New("activity time moves back")
 	case (next.InFlight > 0 || next.SuccessTotal != old.SuccessTotal) && !next.LastActiveAt.After(old.LastActive()):
-		return fmt.Errorf("%w: a sample showing work needs a newer activity time", errDrainSettlement)
+		return errors.New("a sample showing work needs a newer activity time")
 	}
 	return nil
 }
 
 // markedBundle checks that rec is a parked STARTING claim with a valid launch
-// owner and its complete co-serve group, and returns the primary's base URL.
+// owner, no observation and its complete co-serve group, and returns the
+// primary's base URL.
 func markedBundle(rec EndpointRecord) (string, error) {
 	if _, ok, err := rec.Owner(); err != nil || !ok {
-		return "", fmt.Errorf("%w: STARTING record has no valid launch owner", errDrainSettlement)
+		return "", errors.New("STARTING record has no valid launch owner")
 	}
-	if !rec.Parked() || rec.HealthHold != nil || !rec.ReadyAt.IsZero() {
-		return "", fmt.Errorf("%w: STARTING record is not a parked launch", errDrainSettlement)
+	if !rec.Parked() || rec.HealthHold != nil || !rec.ReadyAt.IsZero() || !unobserved(rec) {
+		return "", errors.New("STARTING record is not a parked launch")
 	}
 	_, primaryURL, err := parkedTargets(rec)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", errDrainSettlement, err)
+		return "", err
 	}
 	if rec.BaseURL != "" && rec.BaseURL != primaryURL {
-		return "", fmt.Errorf("%w: base URL differs from the primary member", errDrainSettlement)
+		return "", errors.New("base URL differs from the primary member")
 	}
 	return primaryURL, nil
 }

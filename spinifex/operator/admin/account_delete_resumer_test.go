@@ -10,6 +10,7 @@ import (
 	"time"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -139,6 +140,24 @@ func TestDeletionResumerStopsWithItsContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumer did not stop")
 	}
+}
+
+// A bucket that first appears a minute after the gateway starts changes the
+// cluster's bucket list under the replica audit and repair.
+func TestDeletionResumerOpensItsBucketAtStart(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	js, err := jetstream.New(gw.NATS)
+	require.NoError(t, err)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound)
+
+	stop := gw.StartDeletionResumer(t.Context())
+	t.Cleanup(stop)
+	require.Eventually(t, func() bool {
+		_, err := js.KeyValue(t.Context(), KVBucketAccountDeletions)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond, "the bucket must exist well before the first scan")
 }
 
 // A gateway whose cleanup failed to build must leave an abandoned job for one

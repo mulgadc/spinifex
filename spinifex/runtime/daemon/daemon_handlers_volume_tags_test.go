@@ -13,9 +13,9 @@ import (
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -47,6 +47,7 @@ func volumeTagsCluster(t *testing.T) (*nats.Conn, *ebsmetadata.Store) {
 	d.tagsService = ec2tags.NewTagsServiceImplWithStore(cfg, store, tagsKV)
 	d.volumeService = ec2volume.NewVolumeServiceImplWithStore(cfg, store, nc, snapshotKV)
 	d.volumeService.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	d.tagsService.SetVolumeTagReader(d.volumeService)
 	require.NoError(t, d.subscribeAll())
 	require.NoError(t, nc.Flush())
 

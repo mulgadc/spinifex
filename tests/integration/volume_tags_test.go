@@ -17,8 +17,7 @@ import (
 // and tag services over NATS.
 func TestDescribeTags_ReturnsCreateVolumeCreationTags(t *testing.T) {
 	gw := StartGateway(t)
-	StartDaemonLite(t, gw)
-	StartVolumeDaemonLite(t, gw)
+	StartDaemonLite(t, gw, WithVolumeTagReader(StartVolumeDaemonLite(t, gw)))
 	c := gw.EC2Client(t)
 
 	out, err := c.CreateVolume(&ec2.CreateVolumeInput{

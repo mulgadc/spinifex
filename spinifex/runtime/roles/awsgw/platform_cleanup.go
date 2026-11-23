@@ -54,10 +54,33 @@ func platformCleaner(ctx context.Context, node *config.Config, nc *nats.Conn, js
 	}), nil
 }
 
+// cleanupBuildBackoff is the wait before each retry of a cleanup build, so a
+// slow JetStream answer during a coordinated restart costs at most 15 s.
+var cleanupBuildBackoff = [...]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+
+// retryCleanupBuild runs build until it succeeds or every attempt is spent,
+// returning the last error.
+func retryCleanupBuild(name string, wait func(time.Duration), build func() error) error {
+	attempts := len(cleanupBuildBackoff) + 1
+	for attempt := 1; ; attempt++ {
+		err := build()
+		if err == nil || attempt == attempts {
+			return err
+		}
+		delay := cleanupBuildBackoff[attempt-1]
+		slog.Warn("awsgw: cleanup build failed, retrying", "cleanup", name, "attempt", attempt, "attempts", attempts, "retryIn", delay, "err", err)
+		wait(delay)
+	}
+}
+
 // withPlatformCleaner binds the cleanup every DeleteAccount runs. When it cannot
 // be built the field stays nil, which refuses the request instead of half-running it.
-func withPlatformCleaner(d operatoradmin.Deps, _ func(time.Duration), build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
-	cleaner, err := build()
+func withPlatformCleaner(d operatoradmin.Deps, wait func(time.Duration), build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
+	var cleaner accountlifecycle.PlatformCleaner
+	err := retryCleanupBuild("platform", wait, func() (err error) {
+		cleaner, err = build()
+		return err
+	})
 	if err != nil {
 		slog.Error("awsgw: EC2 platform cleanup unavailable", "err", err)
 		return d

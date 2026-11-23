@@ -159,8 +159,15 @@ func computeCleaners(ctx context.Context, node *config.Config, nc *nats.Conn, js
 
 // withComputeCleaners binds the compute and storage cleanup every DeleteAccount
 // runs. When it cannot be built both fields stay nil, which refuses the request.
-func withComputeCleaners(d operatoradmin.Deps, _ func(time.Duration), build func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error)) operatoradmin.Deps {
-	compute, storage, err := build()
+func withComputeCleaners(d operatoradmin.Deps, wait func(time.Duration), build func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error)) operatoradmin.Deps {
+	var (
+		compute accountlifecycle.ComputeStage
+		storage accountlifecycle.StorageStage
+	)
+	err := retryCleanupBuild("compute and storage", wait, func() (err error) {
+		compute, storage, err = build()
+		return err
+	})
 	if err != nil {
 		slog.Error("awsgw: EC2 compute and storage cleanup unavailable", "err", err)
 		return d

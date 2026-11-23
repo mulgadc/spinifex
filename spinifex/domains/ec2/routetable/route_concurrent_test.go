@@ -21,6 +21,41 @@ type simultaneousRouteReads struct {
 	mu    sync.Mutex
 	reads int
 	ready chan struct{}
+
+	// The first two conditional writes are held the same way, so both CAS
+	// attempts read one revision and the losing call must retry.
+	writes     []uint64
+	writeReady chan struct{}
+}
+
+func (kv *simultaneousRouteReads) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	kv.mu.Lock()
+	kv.writes = append(kv.writes, last)
+	n := len(kv.writes)
+	if n == 2 {
+		close(kv.writeReady)
+	}
+	kv.mu.Unlock()
+	if n <= 2 {
+		select {
+		case <-kv.writeReady:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return kv.KeyValue.Update(ctx, key, value, last)
+}
+
+// requireRetried asserts that the first two writes raced on one revision and
+// that exactly one retry followed.
+func requireRetried(t *testing.T, svc *RouteTableServiceImpl) {
+	t.Helper()
+	kv := svc.rtbKV.(*simultaneousRouteReads)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	require.Len(t, kv.writes, 3, "two racing writes and one retry")
+	require.Equal(t, kv.writes[0], kv.writes[1], "both first writes expect the same revision")
+	require.Greater(t, kv.writes[2], kv.writes[0], "the retry expects the winner's revision")
 }
 
 func (kv *simultaneousRouteReads) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
@@ -50,7 +85,7 @@ func seedRoutes(t *testing.T, svc *RouteTableServiceImpl, routes ...RouteRecord)
 	require.NoError(t, err)
 	record.Routes = append(record.Routes, routes...)
 	require.NoError(t, svc.putRouteTable(t.Context(), testAccountID, record))
-	svc.rtbKV = &simultaneousRouteReads{KeyValue: svc.rtbKV, ready: make(chan struct{})}
+	svc.rtbKV = &simultaneousRouteReads{KeyValue: svc.rtbKV, ready: make(chan struct{}), writeReady: make(chan struct{})}
 	return id
 }
 
@@ -97,6 +132,7 @@ func TestDeleteRoute_ConcurrentDeletesBothPersist(t *testing.T) {
 	require.NotContains(t, routes, "0.0.0.0/0")
 	require.NotContains(t, routes, "10.100.0.0/16")
 	require.Len(t, routes, 1, "only the local route remains")
+	requireRetried(t, svc)
 }
 
 func TestCreateRoute_ConcurrentCreatesBothPersist(t *testing.T) {
@@ -118,6 +154,7 @@ func TestCreateRoute_ConcurrentCreatesBothPersist(t *testing.T) {
 	routes := routesByDest(t, svc, id)
 	require.Equal(t, "igw-test1", routes["10.100.0.0/16"].GatewayId)
 	require.Equal(t, "igw-test1", routes["10.101.0.0/16"].GatewayId)
+	requireRetried(t, svc)
 }
 
 func TestReplaceRoute_ConcurrentWithDeleteRouteBothPersist(t *testing.T) {
@@ -145,6 +182,7 @@ func TestReplaceRoute_ConcurrentWithDeleteRouteBothPersist(t *testing.T) {
 	require.NotContains(t, routes, "10.101.0.0/16", "the deleted route stays deleted")
 	require.Equal(t, "igw-test1", routes["10.100.0.0/16"].GatewayId, "the replaced target stays replaced")
 	require.Empty(t, routes["10.100.0.0/16"].NatGatewayId)
+	requireRetried(t, svc)
 }
 
 // eventsAtWrite records how many add-igw-route events were already queued

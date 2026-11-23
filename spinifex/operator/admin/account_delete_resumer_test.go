@@ -4,6 +4,7 @@ package admin
 // with a retried request are unexported.
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,16 +159,23 @@ func TestDeletionResumerOpensItsBucketAtStart(t *testing.T) {
 	require.NoError(t, err, "the bucket must exist once the resumer has started, before the gateway serves")
 }
 
-// A gateway that cannot run a teardown still creates the job bucket on its scan,
-// so a failed open at start is retried on every gateway.
-func TestDeletionScanWithoutTeardownCreatesTheBucket(t *testing.T) {
+// A failed open at start leaves the bucket to the scan, which creates it even on
+// a gateway that cannot run a teardown.
+func TestDeletionScanCreatesTheBucketAfterAFailedStartOpen(t *testing.T) {
 	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	gw.Termination = nil
-	assert.Zero(t, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+	failed, cancel := context.WithCancel(t.Context())
+	cancel()
+	gw.StartDeletionResumer(failed)()
 
 	js, err := jetstream.New(gw.NATS)
 	require.NoError(t, err)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "the open at start must have failed")
+
+	assert.Zero(t, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+
 	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
 	require.NoError(t, err)
 }

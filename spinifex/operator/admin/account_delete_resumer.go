@@ -27,8 +27,8 @@ const accountDeletionOpenTimeout = 10 * time.Second
 // one started by a request.
 func (d Deps) StartDeletionResumer(ctx context.Context) (stop func()) {
 	if d.NATS != nil {
-		// Opened before serving, so the bucket list never grows under a replica
-		// audit; on failure the scan retries and requests open it on demand.
+		// Opened before serving, so a successful open keeps the bucket list from
+		// growing under a replica audit; on failure the scan and requests create it.
 		openCtx, cancelOpen := context.WithTimeout(ctx, accountDeletionOpenTimeout)
 		_, _ = d.accountDeletionStore(openCtx)
 		cancelOpen()

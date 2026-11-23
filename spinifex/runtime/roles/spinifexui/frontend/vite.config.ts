@@ -1,5 +1,5 @@
 /// <reference types="vitest/config" />
-import { request } from "node:https"
+import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath, URL } from "node:url"
 
 import tailwindcss from "@tailwindcss/vite"
@@ -7,7 +7,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite"
 import basicSsl from "@vitejs/plugin-basic-ssl"
 import react from "@vitejs/plugin-react"
 import { cn as cnTables } from "cn/vite"
-import { createLogger, defineConfig, type Plugin } from "vite"
+import { createLogger, defineConfig } from "vite"
 
 // React Compiler emits a Todo diagnostic per function it cannot compile. Those
 // are its own unimplemented syntax, not defects here, and they bury the build
@@ -23,72 +23,30 @@ logger.warn = (msg, options) => {
   warn(msg, options)
 }
 
-const hopByHopHeaders = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-connection",
-  "transfer-encoding",
-  "upgrade",
-])
+// /api and /proxy (the AWS gateway and S3 routes) are served by the Go console,
+// so dev forwards them there. Its certificate is signed by the cluster CA,
+// which Node does not trust by default.
+const clusterCaPath = process.env.SPINIFEX_CA ?? "/etc/spinifex/ca.pem"
 
-// /api and /proxy (the same-origin AWS gateway and S3 routes) are served by the
-// Go console, not Vite. Forward them to the local console in dev; a middleware,
-// as server.proxy would drop Vite to HTTP/1.1 and serialise module loads.
-const consoleApi = (target = "https://localhost:3000"): Plugin => ({
-  name: "spinifex-console-api",
-  apply: "serve",
-  configureServer(server) {
-    server.middlewares.use((req, res, next) => {
-      if (!/^\/(?:api|proxy)\//.test(req.url ?? "")) {
-        next()
-
-        return
-      }
-
-      const upstream = request(
-        new URL(req.url ?? "/", target),
-        {
-          method: req.method,
-          // HTTP/2 pseudo-headers (:method, :path) are not valid HTTP/1.1.
-          headers: Object.fromEntries(
-            Object.entries(req.headers).filter(
-              ([name]) => !name.startsWith(":"),
-            ),
-          ),
-          rejectUnauthorized: false,
-        },
-        (response) => {
-          // Connection-specific headers are forbidden on HTTP/2 responses.
-          const headers = Object.fromEntries(
-            Object.entries(response.headers).filter(
-              ([name]) => !hopByHopHeaders.has(name),
-            ),
-          )
-
-          res.writeHead(response.statusCode ?? 502, headers)
-          response.pipe(res)
-        },
-      )
-
-      upstream.on("error", (error) => {
-        res.statusCode = 502
-        res.end(`console API unreachable at ${target}: ${error.message}`)
-      })
-      req.pipe(upstream)
-    })
-  },
-})
+const consoleProxy = {
+  target: "https://localhost:3000",
+  ...(existsSync(clusterCaPath) && {
+    ca: readFileSync(clusterCaPath, "utf-8"),
+  }),
+}
 
 export default defineConfig(({ mode }) => ({
   customLogger: logger,
   envDir: "../",
+  server: {
+    proxy: { "^/(?:api|proxy)/": consoleProxy },
+  },
   build: {
     target: "es2023",
     chunkSizeWarningLimit: 1500,
   },
   plugins: [
     basicSsl(),
-    consoleApi(),
     tanstackRouter({
       target: "react",
       autoCodeSplitting: true,

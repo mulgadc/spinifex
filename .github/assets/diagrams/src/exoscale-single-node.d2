@@ -1,0 +1,56 @@
+...@aws
+direction: down
+
+laptop: "Your laptop\naws-cli · Terraform\nboto3" {class: res; icon: icons/Res_Client_48_Light.svg}
+internet: "Internet" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+zone: "Exoscale zone de-fra-1\npublic network 91.92.116.0/23" {
+  class: datacenter
+
+  eip: "Elastic IP\n89.145.163.1\nSpinifex creates it" {class: res; icon: icons/Res_Amazon-EC2_Elastic-IP-Address_48.svg}
+
+  node: "spinifex-node-01 · standard.huge\n8 vCPU / 32 GiB · Ubuntu 26.04" {
+    class: server
+
+    eth0: "eth0 · 91.92.116.250/23\nonly NIC · default route\nAPI :9999 · SSH · masquerade" {class: box}
+    nat: "spx-nat-host ⇄ spx-nat-ovs\ntransit 100.127.0.0/24" {class: box}
+
+    cp: "Spinifex control plane · spx service <name>" {
+      class: group
+      grid-columns: 4
+      awsgw: "awsgw :9999" {class: box}
+      daemon: daemon {class: box}
+      vpcd: vpcd {class: box}
+      nats: NATS {class: box}
+      predastore: predastore {class: box}
+      viperblock: viperblock {class: box}
+      northstar: northstar {class: box}
+      ui: "ui :3000" {class: box}
+    }
+
+    region: "Spinifex region" {
+      class: region
+      vpca: "vpc-a\n172.31.0.0/16" {
+        class: vpc
+        width: 380
+        i1: "i-… 172.31.0.4\n→ 89.145.163.1" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+      vpcb: "vpc-b\n10.0.0.0/16" {
+        class: vpc
+        width: 380
+        i2: "i-… 10.0.1.9\nprivate, egress\nonly" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+    }
+
+    vol: "Block storage volume\n256 GiB+ · /dev/vdb\n→ /var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+  }
+}
+
+
+laptop -> zone.node.eth0: "API :9999 · SSH" {class: flow}
+internet -> zone.eip: {class: flow}
+zone.eip -> zone.node.eth0: {class: flow}
+zone.node.eth0 -> zone.node.nat: "EIP /32 routed in\nthe host never owns it" {class: flow}
+zone.node.nat -> zone.node.region.vpca.i1: {class: flow}
+zone.node.eth0 -> zone.node.cp: {class: flow}
+zone.node.cp -> zone.node.vol: {class: quiet}

@@ -1,0 +1,96 @@
+# Shared AWS-style classes for every diagram. Import with `...@aws`.
+# Colours follow the AWS Architecture Icons group palette. Pick the class that
+# says what a box IS; do not set colours inline.
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  # --- AWS groups. The render step puts each label beside its icon. ----------
+  region: {
+    icon: icons/group/Region_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#00A4A6"; stroke-dash: 4; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  vpc: {
+    icon: icons/group/Virtual-private-cloud-VPC_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#8C4FFF"; stroke-width: 1; font-color: "#8C4FFF"; bold: false; font-size: 14; border-radius: 0}
+  }
+  az: {
+    label.near: top-center
+    style: {fill: "#ffffff"; stroke: "#00A4A6"; stroke-dash: 4; stroke-width: 1; font-color: "#00A4A6"; bold: false; font-size: 14; border-radius: 0}
+  }
+  public-subnet: {
+    icon: icons/group/Public-subnet_32.svg
+    label.near: top-left
+    style: {fill: "#F2F6E8"; stroke: "#F2F6E8"; stroke-width: 1; font-color: "#248814"; bold: false; font-size: 14; border-radius: 0}
+  }
+  private-subnet: {
+    icon: icons/group/Private-subnet_32.svg
+    label.near: top-left
+    style: {fill: "#E6F6F7"; stroke: "#E6F6F7"; stroke-width: 1; font-color: "#007C7E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # A physical or virtual host and what runs on it.
+  server: {
+    icon: icons/group/Server-contents_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # A provider site or network that is not ours: a data centre, a cloud zone.
+  datacenter: {
+    icon: icons/group/Corporate-data-center_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # What runs inside one EC2 instance.
+  instance-contents: {
+    icon: icons/group/EC2-instance-contents_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#ED7100"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  auto-scaling: {
+    icon: icons/group/Auto-Scaling-group_32.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#ED7100"; stroke-dash: 4; stroke-width: 1; font-color: "#ED7100"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # Any other grouping, with no icon.
+  group: {
+    label.near: top-center
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-dash: 4; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+
+  # --- nodes ----------------------------------------------------------------
+  # A resource drawn as its icon with the label below, as AWS diagrams do.
+  res: {
+    shape: image
+    width: 48
+    height: 48
+    style: {font-color: "#232F3E"; font-size: 13}
+  }
+  # A thing with no AWS icon: a bridge, a port, a NIC, a config key.
+  box: {
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; font-size: 13; border-radius: 2}
+  }
+  # A box that marks a step that fails or a packet that is dropped.
+  deny: {
+    style: {fill: "#FDEDEF"; stroke: "#DD344C"; stroke-width: 1; font-color: "#232F3E"; font-size: 13; border-radius: 2}
+  }
+  # A standing caption. Use with `near: bottom-center`.
+  note: {
+    shape: text
+    style: {font-color: "#545B64"; font-size: 12; italic: false}
+  }
+
+  # --- edges ----------------------------------------------------------------
+  flow: {
+    style: {stroke: "#545B64"; stroke-width: 2; font-color: "#232F3E"; font-size: 12}
+  }
+  # A secondary or management path.
+  quiet: {
+    style: {stroke: "#7D8998"; stroke-width: 1; stroke-dash: 4; font-color: "#545B64"; font-size: 12}
+  }
+}

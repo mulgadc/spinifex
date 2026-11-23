@@ -1,0 +1,28 @@
+...@aws
+direction: right
+
+browser: "Browser\n(end user)" {class: res; icon: icons/Res_Client_48_Light.svg}
+
+region: Region {
+  class: region
+
+  vpc: "VPC 10.30.0.0/16" {
+    class: vpc
+
+    igw: "Internet\ngateway" {class: res; icon: icons/Res_Amazon-VPC_Internet-Gateway_48.svg}
+
+    public: "Public subnet\n10.30.1.0/24" {
+      class: public-subnet
+      app: "EC2 instance\nFlask webapp :80" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+    }
+
+    imds: "IMDS\n169.254.169.254" {class: res; icon: icons/Res_AWS-Identity-Access-Management_Temporary-Security-Credential_48.svg}
+  }
+
+  s3: "S3 (Predastore)\n:8443" {class: res; icon: icons/Arch_Amazon-Simple-Storage-Service_48.svg}
+}
+
+browser -> region.vpc.igw: "HTTP" {class: flow}
+region.vpc.igw -> region.vpc.public.app: {class: flow}
+region.vpc.public.app -> region.vpc.imds: "get short-lived\nSTS credentials" {class: quiet}
+region.vpc.public.app -> region.s3: "S3 API (boto3)" {class: flow}

@@ -1,0 +1,26 @@
+...@aws
+direction: right
+
+vm: "VM" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+
+ovs: "Open vSwitch · setup-ovn.sh" {
+  class: group
+  br-int: "br-int\nOVS bridge" {class: box}
+  pipeline: "OVN logical pipeline\nswitch → router\n→ SNAT/DNAT" {class: box}
+  br-ext: "br-ext\nOVS bridge" {class: box}
+  br-int -> pipeline: {class: flow}
+  pipeline -> br-ext: "localnet" {class: flow}
+}
+
+hostnet: "Host network" {
+  class: group
+  br-wan: "br-wan\nLinux bridge" {class: box}
+  nic: "Physical\nNIC" {class: box}
+  br-wan -> nic: {class: flow}
+}
+
+wan: "WAN" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+vm -> ovs.br-int: "TAP" {class: flow}
+ovs.br-ext -> hostnet.br-wan: "veth pair" {class: flow}
+hostnet.nic -> wan: {class: flow}

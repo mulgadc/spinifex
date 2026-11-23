@@ -1,0 +1,44 @@
+...@aws
+direction: down
+
+wan: "Physical network (WAN)" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+host: "Host bridges" {
+  class: group
+  br-wan: "br-wan · Linux bridge · WAN uplink" {class: box}
+  br-ext: "br-ext · OVS bridge\nbridge mapping external:br-ext" {class: box}
+  br-wan -> br-ext: "veth pair" {class: flow}
+}
+
+vpc: "VPC = OVN logical router" {
+  class: vpc
+
+  extsw: "External switch\nOVN logical switch · localnet port" {class: box}
+  router: "VPC router\ngateway port: public IP" {
+    class: box
+    icon: icons/Res_Amazon-VPC_Router_48.svg
+    width: 190
+    height: 100
+  }
+  tables: "NAT rules\nSNAT: VPC CIDR → gateway IP\ndnat_and_snat: public ↔ private\n\nRoutes\n0.0.0.0/0 → WAN gateway" {class: box}
+
+  subnet-a: "subnet-a (public)\n10.0.1.0/24" {
+    class: public-subnet
+    eni-1: eni-1 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+    eni-2: eni-2 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+  }
+  subnet-b: "subnet-b (private)\n10.0.2.0/24" {
+    class: private-subnet
+    eni-3: eni-3 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+    eni-4: eni-4 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+  }
+
+  extsw -> router: {class: flow}
+  router -- tables: {class: quiet}
+  router -> subnet-a: {class: flow}
+  router -> subnet-b: {class: flow}
+}
+
+wan -> host.br-wan: {class: flow}
+host.br-ext -> vpc.extsw: "localnet" {class: flow}
+

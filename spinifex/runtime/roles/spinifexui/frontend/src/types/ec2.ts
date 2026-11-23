@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { isValidJson } from "@/lib/json"
 import {
   cidrContains,
   cidrsOverlap,
@@ -312,6 +313,27 @@ export const createVpcPeeringConnectionSchema = z
 export type CreateVpcPeeringConnectionFormData = z.infer<
   typeof createVpcPeeringConnectionSchema
 >
+
+export const createVpcEndpointSchema = z
+  .object({
+    name: z.string().optional(),
+    serviceName: z.string().min(1, "Service is required"),
+    vpcId: z.string().min(1, "VPC is required"),
+    routeTableIds: z.array(z.string()),
+    policy: z.enum(["full", "custom"]),
+    policyDocument: z.string(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.policy === "custom" && !isValidJson(data.policyDocument)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["policyDocument"],
+        message: "Policy must be valid JSON",
+      })
+    }
+  })
+
+export type CreateVpcEndpointFormData = z.infer<typeof createVpcEndpointSchema>
 
 export const createInternetGatewaySchema = z.object({
   name: z.string().optional(),

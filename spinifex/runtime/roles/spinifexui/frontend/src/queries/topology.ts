@@ -6,6 +6,7 @@ import {
   DescribeNatGatewaysCommand,
   DescribeRouteTablesCommand,
   DescribeSubnetsCommand,
+  DescribeVpcEndpointsCommand,
   DescribeVpcPeeringConnectionsCommand,
   type Filter,
   type Instance,
@@ -14,6 +15,7 @@ import {
   type SecurityGroup,
   DescribeSecurityGroupsCommand,
   type Subnet,
+  type VpcEndpoint,
   type VpcPeeringConnection,
 } from "@aws-sdk/client-ec2"
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2"
@@ -204,6 +206,17 @@ async function readVpc(vpcId: string) {
       return { items: r.DBInstances ?? [], next: r.Marker }
     }),
     readPeerings(vpcId),
+    readPages(async (NextToken) => {
+      const r = await ec2.send(
+        new DescribeVpcEndpointsCommand({
+          Filters: inVpc,
+          MaxResults: MAP_PAGE_SIZE,
+          NextToken,
+        }),
+      )
+
+      return { items: r.VpcEndpoints ?? [], next: r.NextToken }
+    }),
   ])
 }
 
@@ -263,6 +276,7 @@ export interface MapAnchor {
   natGateway?: NatGateway
   routeTable?: RouteTable
   peeringConnection?: VpcPeeringConnection
+  vpcEndpoint?: VpcEndpoint
 }
 
 // Puts the pinned resource in its list, replacing any copy read.
@@ -323,8 +337,17 @@ export const networkMapQueryOptions = (vpcId: string, pin?: MapAnchor) =>
     // The whole pin, so a change to the resource reads the map again.
     queryKey: ["topology", "network", vpcId, pin ?? null],
     queryFn: async (): Promise<Omit<NetworkInputs, "vpc">> => {
-      const [subnets, routeTables, igws, nats, instances, lbs, dbs, pcxs] =
-        await readVpc(vpcId)
+      const [
+        subnets,
+        routeTables,
+        igws,
+        nats,
+        instances,
+        lbs,
+        dbs,
+        pcxs,
+        vpces,
+      ] = await readVpc(vpcId)
 
       const gaps: Gaps = { incomplete: [], failed: [] }
 
@@ -359,6 +382,11 @@ export const networkMapQueryOptions = (vpcId: string, pin?: MapAnchor) =>
           take("peeringConnections", pcxs, gaps),
           pin?.peeringConnection,
           (p) => p.VpcPeeringConnectionId,
+        ),
+        vpcEndpoints: withPin(
+          take("vpcEndpoints", vpces, gaps),
+          pin?.vpcEndpoint,
+          (e) => e.VpcEndpointId,
         ),
         addresses: take("addresses", addresses, gaps),
         instances: held,

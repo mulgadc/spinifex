@@ -112,6 +112,7 @@ describe("networkMapQueryOptions", () => {
       DescribeNatGatewaysCommand: MAP_PAGE_SIZE,
       DescribeRouteTablesCommand: MAP_PAGE_SIZE,
       DescribeSubnetsCommand: MAP_PAGE_SIZE,
+      DescribeVpcEndpointsCommand: MAP_PAGE_SIZE,
       DescribeVpcPeeringConnectionsCommand: MAP_PAGE_SIZE,
     })
   })
@@ -185,6 +186,42 @@ describe("networkMapQueryOptions", () => {
     )
 
     expect(result.peeringConnections).toStrictEqual([pcx])
+  })
+
+  it("reads the VPC's endpoints by VPC, and names them when the read fails", async () => {
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "DescribeVpcEndpointsCommand") {
+          throw new Error("denied")
+        }
+
+        return await Promise.resolve({})
+      },
+    )
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    const read = mockSend.mock.calls.find(
+      ([c]) => c.constructor.name === "DescribeVpcEndpointsCommand",
+    )?.[0]
+
+    expect(read.input.Filters).toStrictEqual([
+      { Name: "vpc-id", Values: ["vpc-1"] },
+    ])
+    expect(result.failed).toStrictEqual(["vpcEndpoints"])
+    expect(result.vpcEndpoints).toStrictEqual([])
+  })
+
+  it("draws a pinned endpoint the read missed", async () => {
+    mockSend.mockResolvedValue({})
+
+    const vpce = { VpcEndpointId: "vpce-pinned" }
+
+    const result = await callQueryFn(
+      networkMapQueryOptions("vpc-1", { vpcEndpoint: vpce }),
+    )
+
+    expect(result.vpcEndpoints).toStrictEqual([vpce])
   })
 
   it("asks for addresses only by the instances and NAT gateways it read", async () => {

@@ -75,6 +75,7 @@ function inputs(over: Partial<NetworkInputs> = {}): NetworkInputs {
       { NatGatewayId: "nat-gone", VpcId: VPC, State: "deleted" },
     ],
     peeringConnections: [],
+    vpcEndpoints: [],
     addresses: [
       { AllocationId: "eipalloc-nat", PublicIp: "203.0.113.10" },
       {
@@ -424,6 +425,80 @@ describe("peering connections", () => {
     })
 
     expect(cardOf(map, "pcx:pcx-1")?.highlighted).toBeTruthy()
+  })
+})
+
+const ENDPOINT_TABLE: RouteTable = {
+  ...PRIVATE_TABLE,
+  Routes: [
+    ...(PRIVATE_TABLE.Routes ?? []),
+    { DestinationPrefixListId: "pl-s3", GatewayId: "vpce-1" },
+  ],
+}
+
+function withEndpoint(over: Partial<NetworkInputs> = {}): NetworkInputs {
+  return inputs({
+    routeTables: [PUBLIC_TABLE, ENDPOINT_TABLE],
+    vpcEndpoints: [
+      {
+        VpcEndpointId: "vpce-1",
+        VpcEndpointType: "Gateway",
+        VpcId: VPC,
+        ServiceName: "com.amazonaws.ap-southeast-2.s3",
+        State: "Available",
+        RouteTableIds: ["rtb-private"],
+        Tags: [{ Key: "Name", Value: "s3" }],
+      },
+      { VpcEndpointId: "vpce-gone", VpcId: VPC, State: "Deleted" },
+      { VpcEndpointId: "vpce-elsewhere", VpcId: "vpc-2", State: "Available" },
+    ],
+    ...over,
+  })
+}
+
+describe("gateway endpoints", () => {
+  it("draws this VPC's live endpoint among the gateways, naming its service", () => {
+    const map = buildNetworkMap(withEndpoint(), VPC_FOCUS)
+
+    expect(
+      map.cards.filter((c) => c.kind === "vpce").map((c) => c.id),
+    ).toStrictEqual(["vpce:vpce-1"])
+    expect(cardOf(map, "vpce:vpce-1")).toMatchObject({
+      tier: "gateways",
+      label: "s3",
+      details: ["vpce-1", "com.amazonaws.ap-southeast-2.s3"],
+      rows: [{ label: "Type", value: "Gateway" }],
+    })
+  })
+
+  it("joins an endpoint only to the subnets whose table routes to it, by prefix list", () => {
+    const map = buildNetworkMap(withEndpoint(), VPC_FOCUS)
+
+    expect(
+      map.links
+        .filter((l) => l.source === "vpce:vpce-1" || l.target === "vpce:vpce-1")
+        .map((l) => `${l.target} ${l.label ?? ""}`.trim()),
+    ).toStrictEqual(["subnet:subnet-2 pl-s3"])
+  })
+
+  it("lights the subnets routing to a focused endpoint", () => {
+    const map = buildNetworkMap(withEndpoint(), { kind: "vpce", id: "vpce-1" })
+
+    expect(
+      map.cards
+        .filter((c) => c.highlighted)
+        .map((c) => c.id)
+        .toSorted(),
+    ).toStrictEqual(["subnet:subnet-2", "vpce:vpce-1"])
+  })
+
+  it("lights an endpoint when a route table that targets it is focused", () => {
+    const map = buildNetworkMap(withEndpoint(), {
+      kind: "routeTable",
+      id: "rtb-private",
+    })
+
+    expect(cardOf(map, "vpce:vpce-1")?.highlighted).toBeTruthy()
   })
 })
 

@@ -1,1 +1,0 @@
-import{Ct as e}from"./schemas-44v6SM61.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

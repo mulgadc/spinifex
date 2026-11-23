@@ -11,12 +11,15 @@ import {
   DescribeLaunchTemplateVersionsCommand,
   DescribeNatGatewaysCommand,
   DescribePlacementGroupsCommand,
+  DescribePrefixListsCommand,
   DescribeRegionsCommand,
   DescribeRouteTablesCommand,
   DescribeSecurityGroupsCommand,
   DescribeSnapshotsCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
+  DescribeVpcEndpointServicesCommand,
+  DescribeVpcEndpointsCommand,
   DescribeVpcPeeringConnectionsCommand,
   DescribeVpcsCommand,
   GetConsoleOutputCommand,
@@ -384,6 +387,57 @@ export const ec2VpcPeeringConnectionQueryOptions = (connectionId: string) =>
       return await getEc2Client().send(command)
     },
     refetchInterval: 5000,
+  })
+
+export const ec2VpcEndpointsQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcEndpoints"],
+  queryFn: async () => {
+    const command = new DescribeVpcEndpointsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2VpcEndpointQueryOptions = (endpointId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "vpcEndpoints", endpointId],
+    queryFn: async () => {
+      const command = new DescribeVpcEndpointsCommand({
+        VpcEndpointIds: [endpointId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+// The gateway services a VPC can reach. The list is empty until the formation
+// offers one, and a listed service says whether it takes a custom policy.
+export const ec2GatewayEndpointServicesQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcEndpointServices", "Gateway"],
+  queryFn: async () => {
+    const command = new DescribeVpcEndpointServicesCommand({
+      Filters: [{ Name: "service-type", Values: ["Gateway"] }],
+    })
+
+    return await getEc2Client().send(command)
+  },
+  staleTime: 60_000,
+})
+
+// The AWS-managed prefix list named after a service, which its routes target.
+export const ec2ServicePrefixListQueryOptions = (serviceName: string) =>
+  queryOptions({
+    queryKey: ["ec2", "prefixLists", serviceName],
+    queryFn: async () => {
+      const command = new DescribePrefixListsCommand({
+        Filters: [{ Name: "prefix-list-name", Values: [serviceName] }],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    staleTime: 300_000,
   })
 
 export const ec2LaunchTemplatesQueryOptions = queryOptions({

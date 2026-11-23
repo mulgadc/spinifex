@@ -1,1 +1,0 @@
-import{Mt as e,Pt as t}from"./schemas-44v6SM61.js";import{c as n}from"./detail-panel-CNAFk2ex.js";var r=e(),i=t();function a(e){let t=(0,r.c)(3),{children:a,panel:o}=e,s=n();if(!o)return a;if(!s)return o;let c;return t[0]!==a||t[1]!==o?(c=(0,i.jsxs)(i.Fragment,{children:[a,o]}),t[0]=a,t[1]=o,t[2]=c):c=t[2],c}export{a as t};

@@ -45,7 +45,8 @@ func CheckLaunchSettlement(s readiness.Settlement) error {
 		return fmt.Errorf("%w: record has no valid launch owner", errLaunchSettlement)
 	case owner.TokenID != s.TokenID || owner.Epoch != s.Epoch || old.NodeID != s.Node:
 		return fmt.Errorf("%w: token is not the record's launch worker", errLaunchSettlement)
-	case old.State != StateStarting || old.Parked() || old.HealthHold != nil || !old.ReadyAt.IsZero():
+	case old.State != StateStarting || old.ParkedReason != "" || !old.ParkedAt.IsZero() ||
+		old.HealthHold != nil || !old.ReadyAt.IsZero() || !unobserved(old):
 		return fmt.Errorf("%w: record is not an open launch claim", errLaunchSettlement)
 	case old.Generation == math.MaxUint64:
 		return fmt.Errorf("%w: generation cannot advance", errLaunchSettlement)
@@ -100,10 +101,14 @@ func CheckLaunchSettlement(s readiness.Settlement) error {
 }
 
 // bareClaim reports a STARTING claim as admission wrote it: a creation time
-// and node, with no realized resource, address or observation yet.
+// and node, with no realized resource or address yet.
 func bareClaim(rec EndpointRecord) bool {
 	return !rec.CreatedAt.IsZero() && rec.NodeID != "" &&
 		rec.InstanceID == "" && rec.ENIID == "" && rec.PrivateIP == "" && rec.WeightsVolumeID == "" &&
-		rec.Members == nil && rec.BaseURL == "" && rec.LastActiveAt.IsZero() &&
-		rec.InFlight == 0 && rec.SuccessTotal == 0 && rec.ScrapeFailures == 0
+		rec.Members == nil && rec.BaseURL == ""
+}
+
+// unobserved reports a record that carries no reaper observation.
+func unobserved(rec EndpointRecord) bool {
+	return rec.LastActiveAt.IsZero() && rec.InFlight == 0 && rec.SuccessTotal == 0 && rec.ScrapeFailures == 0
 }

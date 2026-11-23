@@ -288,6 +288,45 @@ func TestLaunchSettlement_RefusesWritesAfterTheFinalStep(t *testing.T) {
 	}
 }
 
+// A STARTING record with a stray marker field or a reaper observation is not
+// an open claim, so no launch step can carry it forward.
+func TestLaunchSettlement_RefusesInconsistentOpenClaims(t *testing.T) {
+	strays := map[string]func(*EndpointRecord){
+		"marker time with no reason": func(r *EndpointRecord) { r.ParkedAt = time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC) },
+		"activity time":              func(r *EndpointRecord) { r.LastActiveAt = r.CreatedAt },
+		"queue depth":                func(r *EndpointRecord) { r.InFlight = 1 },
+		"success count":              func(r *EndpointRecord) { r.SuccessTotal = 1 },
+		"failure count":              func(r *EndpointRecord) { r.ScrapeFailures = 1 },
+	}
+	steps := map[string]struct {
+		old  func() EndpointRecord
+		next func(EndpointRecord) EndpointRecord
+	}{
+		"identity": {old: bareClaimRecord, next: func(r EndpointRecord) EndpointRecord { return realizedOf(t, r) }},
+		"park": {
+			old:  func() EndpointRecord { return realizedOf(t, bareClaimRecord()) },
+			next: func(r EndpointRecord) EndpointRecord { return parkedOf(r, ParkReadinessTimedOut) },
+		},
+		"READY": {
+			old:  func() EndpointRecord { return realizedOf(t, bareClaimRecord()) },
+			next: func(r EndpointRecord) EndpointRecord { return readyOf(t, r) },
+		},
+	}
+	for stepName, step := range steps {
+		base := step.old()
+		require.NoError(t, checkLaunch(t, base, step.next(base)), "the clean %s step is allowed", stepName)
+		for strayName, stray := range strays {
+			t.Run(stepName+"/"+strayName, func(t *testing.T) {
+				old := step.old()
+				stray(&old)
+				err := checkLaunch(t, old, step.next(old))
+				require.ErrorIs(t, err, errLaunchSettlement)
+				require.ErrorContains(t, err, "not an open launch claim")
+			})
+		}
+	}
+}
+
 func heldOf(rec EndpointRecord) EndpointRecord {
 	rec.HealthHold = &HealthHold{Token: "launch-1", Epoch: 1, ReservedAt: rec.ReadyAt}
 	rec.Generation++

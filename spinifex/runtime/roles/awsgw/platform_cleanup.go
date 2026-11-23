@@ -54,13 +54,27 @@ func platformCleaner(ctx context.Context, node *config.Config, nc *nats.Conn, js
 	}), nil
 }
 
-// cleanupBuildBackoff is the wait before each retry of a cleanup build, so a
-// slow JetStream answer during a coordinated restart costs at most 15 s.
+// cleanupBuildBackoff is the wait before each retry of a cleanup build.
 var cleanupBuildBackoff = [...]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 
-// retryCleanupBuild runs build until it succeeds or every attempt is spent,
-// returning the last error.
-func retryCleanupBuild(name string, wait func(time.Duration), build func() error) error {
+// cleanupRetryBudget bounds how long both cleanup builds together may delay a
+// gateway's start, counting their JetStream calls as well as the waits.
+const cleanupRetryBudget = 15 * time.Second
+
+// startupRetry is the retry budget the cleanup builds share at gateway start.
+type startupRetry struct {
+	deadline time.Time
+	now      func() time.Time
+	wait     func(time.Duration)
+}
+
+func newStartupRetry(now func() time.Time, wait func(time.Duration)) *startupRetry {
+	return &startupRetry{deadline: now().Add(cleanupRetryBudget), now: now, wait: wait}
+}
+
+// retryCleanupBuild runs build until it succeeds, every attempt is spent, or
+// the next wait would overrun the shared budget, returning the last error.
+func retryCleanupBuild(name string, r *startupRetry, build func() error) error {
 	attempts := len(cleanupBuildBackoff) + 1
 	for attempt := 1; ; attempt++ {
 		err := build()
@@ -68,16 +82,20 @@ func retryCleanupBuild(name string, wait func(time.Duration), build func() error
 			return err
 		}
 		delay := cleanupBuildBackoff[attempt-1]
+		if r.now().Add(delay).After(r.deadline) {
+			slog.Warn("awsgw: cleanup build failed, startup retry budget spent", "cleanup", name, "attempt", attempt, "err", err)
+			return err
+		}
 		slog.Warn("awsgw: cleanup build failed, retrying", "cleanup", name, "attempt", attempt, "attempts", attempts, "retryIn", delay, "err", err)
-		wait(delay)
+		r.wait(delay)
 	}
 }
 
 // withPlatformCleaner binds the cleanup every DeleteAccount runs. When it cannot
 // be built the field stays nil, which refuses the request instead of half-running it.
-func withPlatformCleaner(d operatoradmin.Deps, wait func(time.Duration), build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
+func withPlatformCleaner(d operatoradmin.Deps, retry *startupRetry, build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
 	var cleaner accountlifecycle.PlatformCleaner
-	err := retryCleanupBuild("platform", wait, func() (err error) {
+	err := retryCleanupBuild("platform", retry, func() (err error) {
 		cleaner, err = build()
 		return err
 	})

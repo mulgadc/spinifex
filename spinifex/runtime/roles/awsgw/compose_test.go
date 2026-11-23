@@ -7,7 +7,6 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
-	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
@@ -104,31 +103,45 @@ func (fixedCleaner) CleanupPlatform(context.Context, *accountcleanup.Request) (*
 // binds. A cleanup that cannot be built must leave the field nil, which refuses
 // the request, rather than bind something half-working.
 func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
-	bound := withPlatformCleaner(operatoradmin.Deps{}, func(time.Duration) {}, func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
+	bound := withPlatformCleaner(operatoradmin.Deps{}, (&fakeStartup{}).retry(), func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
 	assert.NotNil(t, bound.PlatformCleaner)
 
-	unbound := withPlatformCleaner(operatoradmin.Deps{}, func(time.Duration) {}, func() (accountlifecycle.PlatformCleaner, error) {
+	unbound := withPlatformCleaner(operatoradmin.Deps{}, (&fakeStartup{}).retry(), func() (accountlifecycle.PlatformCleaner, error) {
 		return nil, errors.New("owner store unavailable")
 	})
 	assert.Nil(t, unbound.PlatformCleaner)
 }
 
-// The cleanup is bound where the operator deps are composed, or every delete is
-// refused on every gateway.
-func TestAwsgwBindsThePlatformCleanup(t *testing.T) {
+// Both cleanups are bound into the deps the operator registration is built
+// from, or every delete is refused on every gateway.
+func TestAwsgwBindsBothCleanupsIntoTheOperatorRegistration(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
 	require.NoError(t, err)
 
-	var bound bool
+	bound := map[string]bool{}
+	registered := false
 	ast.Inspect(file, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "withPlatformCleaner" {
-				bound = true
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			lhs, ok := n.Lhs[0].(*ast.Ident)
+			if !ok || lhs.Name != "operatorAdminDeps" {
+				break
+			}
+			if call, ok := n.Rhs[0].(*ast.CallExpr); ok {
+				if fn, ok := call.Fun.(*ast.Ident); ok {
+					bound[fn.Name] = true
+				}
+			}
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "NewRegistration" && len(n.Args) == 1 {
+				if arg, ok := n.Args[0].(*ast.Ident); ok && arg.Name == "operatorAdminDeps" && bound["withPlatformCleaner"] && bound["withComputeCleaners"] {
+					registered = true
+				}
 			}
 		}
 		return true
 	})
-	assert.True(t, bound, "awsgw.go must call withPlatformCleaner")
+	assert.True(t, registered, "awsgw.go must bind withPlatformCleaner and withComputeCleaners into operatorAdminDeps before NewRegistration")
 }
 
 // The ordinary delete may remove a live launch template only when EKS says no

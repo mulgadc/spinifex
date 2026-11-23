@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -159,12 +158,12 @@ func computeCleaners(ctx context.Context, node *config.Config, nc *nats.Conn, js
 
 // withComputeCleaners binds the compute and storage cleanup every DeleteAccount
 // runs. When it cannot be built both fields stay nil, which refuses the request.
-func withComputeCleaners(d operatoradmin.Deps, wait func(time.Duration), build func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error)) operatoradmin.Deps {
+func withComputeCleaners(d operatoradmin.Deps, retry *startupRetry, build func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error)) operatoradmin.Deps {
 	var (
 		compute accountlifecycle.ComputeStage
 		storage accountlifecycle.StorageStage
 	)
-	err := retryCleanupBuild("compute and storage", wait, func() (err error) {
+	err := retryCleanupBuild("compute and storage", retry, func() (err error) {
 		compute, storage, err = build()
 		return err
 	})

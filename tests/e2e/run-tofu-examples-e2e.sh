@@ -52,11 +52,16 @@ curl_public() {
 # SSH_OPTS itself: a hop added to every ssh would also divert the bastion's
 # inner ssh to a private address, which no proxy can reach.
 ssh_public() {
-    if [ -n "$PUBLIC_PROXY" ]; then
-        ssh -o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p" "$@"
-        return
-    fi
-    ssh "$@"
+    ssh_public_cmd
+    "${SSH_PUBLIC_CMD[@]}" "$@"
+}
+
+# Sets SSH_PUBLIC_CMD to the ssh argv ssh_public runs, for callers that must
+# put it under timeout(1), which cannot run a shell function.
+ssh_public_cmd() {
+    SSH_PUBLIC_CMD=(ssh)
+    [ -n "$PUBLIC_PROXY" ] && SSH_PUBLIC_CMD+=(-o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p")
+    return 0
 }
 
 # Fail here rather than letting every assertion time out in turn: a proxy that
@@ -326,13 +331,21 @@ assert_bastion_s3_endpoint() {
     # Sent on stdin through both SSH hops, so no quoting crosses a shell.
     # Prints the body, then the HTTP status, then curl's exit code.
     local probe='out=$(curl -sk --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "https://$1:$2/"); rc=$?; printf "%s\ncurl_exit=%s\n" "$out" "$rc"'
+    # 60s of wall clock per address covers every SSH hop, curl and pause.
+    local deadline left
+    ssh_public_cmd
     for addr in $addrs; do
         local ok=0
-        for attempt in $(seq 1 6); do
-            out=$(ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
+        deadline=$((SECONDS + 60))
+        attempt=0
+        while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+            attempt=$((attempt + 1))
+            out=$(timeout "$left" "${SSH_PUBLIC_CMD[@]}" "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
                 "${inner_ssh} bash -s -- ${addr} ${port}" <<<"$probe" 2>&1)
             rc=$?
-            if [ "$rc" -ne 0 ]; then
+            if [ "$rc" -eq 124 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: no answer before the 60s deadline"
+            elif [ "$rc" -ne 0 ]; then
                 log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: ssh exit ${rc}: $(tail -c 200 <<<"$out")"
             elif [ "$(sed -n '$p' <<<"$out")" != "curl_exit=0" ]; then
                 log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: curl failed, $(sed -n '$p' <<<"$out")"
@@ -346,25 +359,25 @@ assert_bastion_s3_endpoint() {
                 fi
                 log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: HTTP ${code}: $(head -c 200 <<<"$body")"
             fi
+            [ $((deadline - SECONDS)) -gt 5 ] || break
             sleep 5
         done
-        [ "$ok" -eq 1 ] || { log "  s3-endpoint ${addr}:${port}: no S3 AccessDenied after 6 attempts"; return 1; }
+        [ "$ok" -eq 1 ] || { log "  s3-endpoint ${addr}:${port}: no S3 AccessDenied within 60s (${attempt} attempts)"; return 1; }
     done
 }
 
 # The workbook's aws_vpc_endpoint needs the S3 service, which the cluster
 # offers only once every node reaches the endpoint feature level.
 require_s3_endpoint_service() {
-    local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names
-    while :; do
-        names=$(aws ec2 describe-vpc-endpoint-services --query 'ServiceNames' --output text 2>&1) || true
+    local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names left
+    while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+        names=$(timeout "$left" aws ec2 describe-vpc-endpoint-services --query 'ServiceNames' --output text 2>&1) || true
         grep -qE '(^|[[:space:]])com\.amazonaws\.[^[:space:]]+\.s3([[:space:]]|$)' <<<"$names" && return 0
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            log "  the cluster does not offer the S3 gateway endpoint service (services: ${names}); check spx admin cluster status for a node below feature level 2"
-            return 1
-        fi
+        [ $((deadline - SECONDS)) -gt 5 ] || break
         sleep 5
     done
+    log "  the cluster does not offer the S3 gateway endpoint service (last answer: ${names:-none}); check spx admin cluster status for a node below feature level 2"
+    return 1
 }
 
 assert_nginx_alb() {
@@ -767,6 +780,14 @@ run_workbook() {
 
     CURRENT_WORKBOOK="$example"
     log "=== ${example} ==="
+
+    # Before the state cleanup below, so a cluster that cannot run the
+    # workbook leaves the directory as it found it.
+    if [ "$example" = "bastion-private-subnet" ] && ! require_s3_endpoint_service; then
+        log "  FAIL ${example}: S3 gateway endpoint service not offered"
+        return 1
+    fi
+
     cd "$path"
     rm -rf .terraform terraform.tfstate* .terraform.lock.hcl
 
@@ -816,12 +837,6 @@ run_workbook() {
             "-var=s3_access_key=${access_key}"
             "-var=s3_secret_key=${secret_key}"
         )
-    fi
-
-    if [ "$example" = "bastion-private-subnet" ] && ! require_s3_endpoint_service; then
-        log "  FAIL ${example}: S3 gateway endpoint service not offered"
-        cd "$SCRIPT_DIR" || return 1
-        return 1
     fi
 
     if ! tofu init -input=false -no-color; then

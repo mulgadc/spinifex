@@ -2,9 +2,9 @@
 #
 # Deploys a VPC with both public and private subnets. A bastion host in the
 # public subnet provides SSH access to an isolated instance in the private
-# subnet. The private instance has no internet connectivity. It reaches S3
-# through a gateway VPC endpoint on its route table, so its traffic to S3
-# never leaves the VPC.
+# subnet. The private instance has no internet connectivity. SSH reaches it
+# only through the bastion, and it reaches S3 through a gateway VPC endpoint
+# on its route table, with no internet or NAT gateway.
 #
 # Architecture:
 #

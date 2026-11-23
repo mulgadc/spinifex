@@ -55,6 +55,6 @@
     <text x="110" y="40" font-family="'Segoe UI', sans-serif" font-size="10" fill="#ffc68a" text-anchor="middle">Predastore · S3 prefix list</text>
   </g>
 
-  <text x="330" y="200" font-family="'Segoe UI', sans-serif" font-size="10" fill="#71717a" text-anchor="middle" font-style="italic">App server has no route to the internet — all access hops through the bastion.</text>
-  <text x="330" y="216" font-family="'Segoe UI', sans-serif" font-size="10" fill="#71717a" text-anchor="middle" font-style="italic">Its only route out of the VPC is the S3 prefix list to the gateway endpoint.</text>
+  <text x="330" y="200" font-family="'Segoe UI', sans-serif" font-size="10" fill="#71717a" text-anchor="middle" font-style="italic">App server has no route to the internet. SSH to it hops through the bastion.</text>
+  <text x="330" y="216" font-family="'Segoe UI', sans-serif" font-size="10" fill="#71717a" text-anchor="middle" font-style="italic">S3 traffic uses the gateway endpoint, with no internet or NAT gateway.</text>
 </svg>

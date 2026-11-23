@@ -121,17 +121,13 @@ Its security group allows egress to the VPC, and to the S3 prefix list on the S3
 
 ### Step 5. Verify S3 Access Through the Endpoint
 
-On your workstation, get the command from the Terraform outputs:
+On your workstation, print the command:
 
 ```bash
-tofu output s3_check_from_private
+tofu output -raw s3_check_from_private
 ```
 
-Run it on the private instance:
-
-```bash
-curl -sk https://<s3_gateway_address>:8443/
-```
+Run the printed command on the private instance. It has the form `curl -sk https://<s3_gateway_address>:<s3_gate_port>/`, with the address and port that the workbook uses.
 
 The request is unsigned, so S3 answers with an `AccessDenied` error document.
 That answer shows that the private instance reaches S3 through the endpoint with no internet route.
@@ -182,13 +178,21 @@ Check that `aws ec2 describe-vpc-endpoint-services --profile spinifex` lists `co
 
 ### S3 Check Times Out or Resets
 
-A timeout means that the private route table is not associated with the endpoint:
+A timeout or a reset connection is a symptom, and more than one fault causes each. Do these checks:
 
-```bash
-aws ec2 describe-vpc-endpoints --profile spinifex --query 'VpcEndpoints[].RouteTableIds'
-```
+1. The private route table is associated with the endpoint:
 
-A reset connection means that the security group does not allow egress to the S3 prefix list on the port that you dial. Use the port from the `s3_gate_port` output.
+   ```bash
+   aws ec2 describe-vpc-endpoints --profile spinifex --query 'VpcEndpoints[].RouteTableIds'
+   ```
+
+2. The private security group allows egress to the S3 prefix list on the gate port:
+
+   ```bash
+   aws ec2 describe-security-groups --profile spinifex --filters Name=group-name,Values=bastion-demo-private-sg --query 'SecurityGroups[].IpPermissionsEgress'
+   ```
+
+3. You dial an address from the `s3_gateway_addresses` output on the port from the `s3_gate_port` output, and that port is the port that S3 serves on in your cluster.
 
 ### AMI Not Found
 

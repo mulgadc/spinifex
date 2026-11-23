@@ -1264,7 +1264,10 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1279,7 +1282,13 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 }
 
 func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		if _, err := decodeEKSToken(input.NextToken); err != nil {
+			return nil, err
+		}
+		return &eks.ListClustersOutput{Clusters: []*string{}}, nil
+	}
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "account bucket")
 	}
@@ -1682,10 +1691,13 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 }
 
 func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" || aws.StringValue(input.NodegroupName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(aws.StringValue(input.ClusterName))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1693,10 +1705,13 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 }
 
 func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(aws.StringValue(input.ClusterName))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1732,7 +1747,10 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(cluster)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2106,9 +2124,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	arn := aws.StringValue(input.ResourceArn)
 
 	if name, ok := clusterNameFromARN(arn); ok {
-		acctKV, err := s.accountBucket(ctx, accountID)
+		acctKV, err := s.openAccountBucket(ctx, accountID)
 		if err != nil {
-			return nil, err
+			return nil, eksTagErr(err)
 		}
 		meta, err := GetClusterMeta(ctx, acctKV, name)
 		if err != nil {
@@ -2118,9 +2136,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		acctKV, err := s.accountBucket(ctx, accountID)
+		acctKV, err := s.openAccountBucket(ctx, accountID)
 		if err != nil {
-			return nil, err
+			return nil, eksTagErr(err)
 		}
 		rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 		if err != nil {
@@ -2159,8 +2177,37 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	return err
 }
 
-// accountBucket returns the per-account KV bucket for accountID.
+// accountBucket returns the per-account KV bucket for accountID, creating it.
 func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := s.jetStream()
+	if err != nil {
+		return nil, err
+	}
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	return acctKV, nil
+}
+
+// openAccountBucket opens the per-account KV bucket without creating it. A
+// missing bucket holds no cluster, so it is reported as ErrClusterNotFound.
+func (s *EKSServiceImpl) openAccountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := s.jetStream()
+	if err != nil {
+		return nil, err
+	}
+	acctKV, err := OpenAccountBucket(ctx, js, accountID)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, fmt.Errorf("open account bucket: %w", ErrClusterNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open account bucket: %w", err)
+	}
+	return acctKV, nil
+}
+
+func (s *EKSServiceImpl) jetStream() (jetstream.JetStream, error) {
 	if s.deps.NATSConn == nil {
 		return nil, errors.New("eks: nil NATS connection")
 	}
@@ -2168,11 +2215,7 @@ func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (j
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
-	}
-	return acctKV, nil
+	return js, nil
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN

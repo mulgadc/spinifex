@@ -3,7 +3,6 @@ package ochre
 import (
 	"context"
 	"errors"
-	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
@@ -48,13 +47,25 @@ func (v *vllmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
 }
 
-// serve makes the next scrapes report these queue depths and completed count.
-func (v *vllmTransport) serve(running, waiting int, successTotal float64) {
+// serve makes the next scrapes report these queue depths and completed count
+// for testModelID, in the complete shape vLLM exports.
+func (v *vllmTransport) serve(running, waiting int, successTotal uint64) {
+	v.serveFor(testModelID, running, waiting, successTotal)
+}
+
+func (v *vllmTransport) serveFor(model string, running, waiting int, successTotal uint64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.fail = false
-	v.body = fmt.Sprintf("vllm:num_requests_running %d\nvllm:num_requests_waiting %d\nvllm:request_success_total %v\n",
-		running, waiting, successTotal)
+	v.body = vllmMetricsBody(model, running, waiting, successTotal)
+}
+
+// serveBody makes the next scrapes answer 200 with body.
+func (v *vllmTransport) serveBody(body string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.fail = false
+	v.body = body
 }
 
 func (v *vllmTransport) breakScrapes() {

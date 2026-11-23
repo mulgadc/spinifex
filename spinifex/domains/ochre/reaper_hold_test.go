@@ -161,7 +161,7 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func(*vllmTransport){
 		"failed probe":  func(v *vllmTransport) { v.breakScrapes() },
-		"healthy probe": func(v *vllmTransport) { v.serve(0, 0, 0) },
+		"healthy probe": func(v *vllmTransport) { v.serveFor(evictionVictimModel, 0, 0, 0) },
 	}
 	for name, answer := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -172,6 +172,11 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 			answer(transport)
 			s.deps.HTTPClient = &http.Client{Transport: transport}
 			seeded := seedReadyEndpoint(t, s, evictionVictimModel, time.Now().UTC().Add(-time.Hour))
+			victimKey := EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel)
+			victim, rev := readRecord(t, s, victimKey)
+			victim.Members = map[string]MemberEndpoint{evictionVictimModel: {Port: 8000, Family: FamilyMeta}}
+			_, err := s.store.CompareAndSet(t.Context(), victimKey, &victim, rev)
+			require.NoError(t, err)
 			reaper := testReaper(t, s, testNodeID, ReaperDeps{IdleTTL: 24 * time.Hour})
 
 			selected := 0

@@ -158,8 +158,8 @@ func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
 // reaperScrapesMetrics reports whether rec exposes the vLLM Prometheus series
 // idle-reclaim reads. Only a bundle with a generative (vLLM) member does; a
 // service-only bundle (embed/rerank) has no such load metrics and is
-// liveness-probed instead. A record with no members recorded (one predating
-// the Members field) is treated as vLLM, preserving the original behaviour.
+// liveness-probed instead. A record with no members recorded takes the vLLM
+// path, where its unknown primary identity keeps it held.
 func reaperScrapesMetrics(rec EndpointRecord) bool {
 	if len(rec.Members) == 0 {
 		return true
@@ -192,7 +192,13 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, listed EndpointRecord, lost 
 		return nil
 	}
 
-	sample, err := probeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
+	model, err := vllmModelFor(rec)
+	if err != nil {
+		slog.WarnContext(ctx, "bedrock reaper: metrics identity unknown; endpoint held",
+			"model", rec.ModelID, "instanceId", rec.InstanceID, "err", err)
+		return nil
+	}
+	sample, err := probeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL, model)
 	if err != nil {
 		slog.WarnContext(ctx, "bedrock reaper: metrics probe failed; endpoint held",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
@@ -204,7 +210,7 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, listed EndpointRecord, lost 
 	updated, ok := r.releaseHold(ctx, key, rec, rev, lost, func(next *EndpointRecord) {
 		next.ScrapeFailures = 0
 		next.InFlight = sample.inFlight()
-		next.SuccessTotal = sample.successTotal
+		next.SuccessTotal = float64(sample.successTotal)
 		if !sample.idle(rec.SuccessTotal) {
 			next.LastActiveAt = now
 		}

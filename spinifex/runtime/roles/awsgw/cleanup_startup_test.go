@@ -95,9 +95,11 @@ func TestCleanupBuildersGiveUpWithinTheStartupBudget(t *testing.T) {
 		return nil, nil, errJetStreamTimeout
 	})
 
-	assert.Equal(t, 5, platformCalls)
-	assert.Equal(t, 1, computeCalls, "the platform build spent the budget")
-	assert.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}, clock.waits)
+	// Each build fails at once, so each gets the retries that fit before the
+	// deadline: the platform build's leave room for the compute build's.
+	assert.Equal(t, 4, platformCalls)
+	assert.Equal(t, 4, computeCalls)
+	assert.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, time.Second, 2 * time.Second, 4 * time.Second}, clock.waits)
 	assert.LessOrEqual(t, clock.elapsed, cleanupRetryBudget)
 	assert.Nil(t, d.PlatformCleaner)
 	assert.Nil(t, d.ComputeCleaner)
@@ -127,4 +129,25 @@ func TestCleanupBuildTimeCountsAgainstTheStartupBudget(t *testing.T) {
 	assert.Equal(t, 3, calls)
 	assert.Equal(t, []time.Duration{time.Second, 2 * time.Second}, clock.waits)
 	assert.LessOrEqual(t, clock.elapsed, cleanupRetryBudget+5*time.Second, "at most one build in flight past the budget")
+}
+
+// Once the budget is spent no further build starts, so a build that ran past
+// the deadline is the only one that can.
+func TestNoCleanupBuildStartsOnceTheBudgetIsSpent(t *testing.T) {
+	t.Parallel()
+	clock := &fakeStartup{}
+	retry := clock.retry()
+	d := withPlatformCleaner(operatoradmin.Deps{}, retry, func() (accountlifecycle.PlatformCleaner, error) {
+		clock.elapsed += cleanupRetryBudget + time.Second
+		return nil, errJetStreamTimeout
+	})
+	computeCalls := 0
+	d = withComputeCleaners(d, retry, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
+		computeCalls++
+		return stubCompute{}, stubStorage{}, nil
+	})
+
+	assert.Nil(t, d.PlatformCleaner)
+	assert.Zero(t, computeCalls)
+	assert.Nil(t, d.ComputeCleaner)
 }

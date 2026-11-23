@@ -74,16 +74,19 @@ func newStartupRetry(now func() time.Time, wait func(time.Duration)) *startupRet
 }
 
 // retryCleanupBuild runs build until it succeeds, every attempt is spent, or
-// the next wait would overrun the shared budget, returning the last error.
+// the shared budget would be overrun; no build starts once it is spent.
 func retryCleanupBuild(name string, r *startupRetry, build func() error) error {
 	attempts := len(cleanupBuildBackoff) + 1
 	for attempt := 1; ; attempt++ {
+		if !r.now().Before(r.deadline) {
+			return fmt.Errorf("%s cleanup not built: startup retry budget spent", name)
+		}
 		err := build()
 		if err == nil || attempt == attempts {
 			return err
 		}
 		delay := cleanupBuildBackoff[attempt-1]
-		if r.now().Add(delay).After(r.deadline) {
+		if !r.now().Add(delay).Before(r.deadline) {
 			slog.Warn("awsgw: cleanup build failed, startup retry budget spent", "cleanup", name, "attempt", attempt, "err", err)
 			return err
 		}

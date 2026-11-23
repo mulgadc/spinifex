@@ -614,8 +614,10 @@ holds_deployment() {
     python3 -c '
 import json, sys
 try:
-    state = json.load(open(sys.argv[1]))
-    held = any(r["instances"] for r in state.get("resources", []))
+    resources = json.load(open(sys.argv[1]))["resources"]
+    if not isinstance(resources, list):
+        raise TypeError(resources)
+    held = any(r["instances"] for r in resources)
 except Exception:
     held = True
 sys.exit(0 if held else 1)

@@ -84,7 +84,7 @@ instances='{"resources": [{"instances": [{}]}]}'
 
 reset_vt; run_vt
 if [ -e "$marker" ]; then pass "a plain run is disposable"; else fail "plain run: $(cat "$TMP/vt/out")"; fi
-for owned in tfstate record unreadable empty shape; do
+for owned in tfstate record unreadable empty shape object; do
     reset_vt
     case "$owned" in
         tfstate) printf '%s\n' "$instances" > "$vtdir/terraform.tfstate" ;;
@@ -92,6 +92,7 @@ for owned in tfstate record unreadable empty shape; do
         unreadable) echo '{' > "$vtdir/terraform.tfstate" ;;
         empty) : > "$vtdir/terraform.tfstate" ;;
         shape) echo '{"resources": [{}]}' > "$vtdir/terraform.tfstate" ;;
+        object) echo '{}' > "$vtdir/terraform.tfstate" ;;
     esac
     run_vt
     if [ "$?" != 0 ] && [ ! -e "$marker" ] && [ ! -s "$tf_calls" ] && grep -q "does not own" "$TMP/vt/out"; then
@@ -161,6 +162,8 @@ state_dir vm-multi-ocibsd truncated 1 0
 : > "$TMP/root/.validate-vm-multi-ocibsd/terraform.tfstate"
 state_dir vm-single-ocibsd shape 1 0
 echo '{"resources": [{}]}' > "$TMP/root/.validate-vm-single-ocibsd/terraform.tfstate"
+state_dir bm-object object 1 0
+echo '{}' > "$TMP/root/.validate-bm-object/terraform.tfstate"
 SPX_REF=dev OCI_STATE_ROOT="$TMP/root" OCI_ARTIFACT_DIR="$TMP/art" \
     bash "$TMP/e2e/e2e-oci.sh" --sweep-only > "$TMP/e2e/out" 2>&1
 destroys=$(cat "$TMP/e2e/validate-topology.sh.calls")
@@ -175,7 +178,7 @@ if [ "$swept" = "--cluster destroyed --cluster killed " ]; then
 else
     fail "volume sweeps: '$swept'; $(cat "$TMP/e2e/out")"
 fi
-for odd in vm-single-principal vm-multi-ocibsd vm-single-ocibsd; do
+for odd in vm-single-principal vm-multi-ocibsd vm-single-ocibsd bm-object; do
     if grep -q "sweep $odd: FAIL" "$TMP/art/verdict.txt" && [ -s "$TMP/root/.validate-$odd/ocibsd-clusters" ]; then
         pass "$odd: state that cannot be read fails the sweep and keeps its record"
     else

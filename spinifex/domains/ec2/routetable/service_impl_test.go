@@ -583,6 +583,20 @@ func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
 	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
 }
 
+// TestReplaceRoute_MissingTableAndGateway checks that AWS reports the missing
+// route table ahead of the missing gateway.
+func TestReplaceRoute_MissingTableAndGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	_, err := svc.ReplaceRoute(t.Context(), &ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String("rtb-0000000000000dead"),
+		DestinationCidrBlock: aws.String("198.51.100.0/24"),
+		GatewayId:            aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "The routeTable ID 'rtb-0000000000000dead' does not exist")
+}
+
 func TestAssociateRouteTable(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

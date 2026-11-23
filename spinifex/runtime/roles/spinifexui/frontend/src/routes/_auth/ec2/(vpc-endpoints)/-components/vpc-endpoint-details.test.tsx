@@ -74,7 +74,8 @@ function render(
       { RouteTableId: "rtb-b1", VpcId: "vpc-b" },
     ],
   })
-  renderWithClient(
+
+  return renderWithClient(
     <VpcEndpointDetails
       endpoint={vpce}
       onClose={vi.fn()}
@@ -217,5 +218,73 @@ describe("VpcEndpointDetails", () => {
     expect(sent("DeleteVpcEndpointsCommand")).toStrictEqual([
       { VpcEndpointIds: ["vpce-1"] },
     ])
+  })
+
+  it("never removes a table that a refresh adds while the form is open", async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(endpoint(), ENFORCED)
+
+    await user.click(
+      screen.getByRole("button", { name: "Manage route tables" }),
+    )
+    rerender(
+      <VpcEndpointDetails
+        endpoint={endpoint({ RouteTableIds: ["rtb-a1", "rtb-a2"] })}
+        onClose={vi.fn()}
+        onTabChange={vi.fn()}
+        tab="overview"
+      />,
+    )
+
+    const form = screen.getByRole("region", { name: "Manage route tables" })
+
+    await user.click(
+      within(form).getByRole("switch", { name: "Route table rtb-a1" }),
+    )
+    await user.click(
+      within(form).getByRole("button", { name: "Save route tables" }),
+    )
+
+    await waitFor(() => {
+      expect(sent("ModifyVpcEndpointCommand")).toStrictEqual([
+        expect.objectContaining({
+          AddRouteTableIds: undefined,
+          RemoveRouteTableIds: ["rtb-a1"],
+        }),
+      ])
+    })
+  })
+
+  it("sends a stored policy back as one line, and keeps the draft when it is refused", async () => {
+    const user = userEvent.setup()
+    render(endpoint({ PolicyDocument: CUSTOM }), ENFORCED)
+    sdk.send.mockImplementation(async (command) => {
+      if (command.constructor.name === "ModifyVpcEndpointCommand") {
+        throw new Error(
+          "Custom VPC endpoint policies cannot be set at the moment.",
+        )
+      }
+
+      return {}
+    })
+
+    await user.click(screen.getByRole("button", { name: "Edit policy" }))
+
+    const form = screen.getByRole("region", { name: "Edit policy" })
+
+    await user.click(within(form).getByRole("button", { name: "Save policy" }))
+
+    await expect(
+      within(form).findByText(/cannot be set at the moment/),
+    ).resolves.toBeInTheDocument()
+    expect(sent("ModifyVpcEndpointCommand")).toStrictEqual([
+      expect.objectContaining({ PolicyDocument: CUSTOM }),
+    ])
+    expect(
+      JSON.parse(
+        within(form).getByRole("textbox", { name: "Policy document" })
+          .textContent ?? "",
+      ),
+    ).toStrictEqual(JSON.parse(CUSTOM))
   })
 })

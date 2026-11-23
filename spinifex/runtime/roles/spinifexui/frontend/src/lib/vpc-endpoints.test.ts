@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  compactPolicy,
   FULL_ACCESS_POLICY,
   isFullAccessPolicy,
+  nameTagSpecificationArg,
   routeTableChanges,
   routeTableDetail,
 } from "./vpc-endpoints"
@@ -67,5 +69,22 @@ describe("routeTableDetail", () => {
 
   it("is empty for an unnamed table with no associations", () => {
     expect(routeTableDetail({})).toBe("")
+  })
+})
+
+describe("compactPolicy", () => {
+  it("drops the editor's layout, and leaves text that is not JSON as typed", () => {
+    expect(compactPolicy(FULL_ACCESS_POLICY)).toBe(
+      '{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"}]}',
+    )
+    expect(compactPolicy("{ nope")).toBe("{ nope")
+  })
+})
+
+describe("nameTagSpecificationArg", () => {
+  it("keeps a quote and a comma in the name inside one shell argument", () => {
+    expect(nameTagSpecificationArg("it's, mine")).toBe(
+      `'[{"ResourceType":"vpc-endpoint","Tags":[{"Key":"Name","Value":"it'"'"'s, mine"}]}]'`,
+    )
   })
 })

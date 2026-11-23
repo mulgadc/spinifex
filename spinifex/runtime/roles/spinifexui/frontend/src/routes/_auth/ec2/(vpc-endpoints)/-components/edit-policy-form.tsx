@@ -11,7 +11,11 @@ import { FormActions } from "@/components/form-actions"
 import { FormLock } from "@/components/form-lock"
 import { FormPanel } from "@/components/form-panel"
 import { formatJson, isValidJson } from "@/lib/json"
-import { FULL_ACCESS_POLICY, isFullAccessPolicy } from "@/lib/vpc-endpoints"
+import {
+  compactPolicy,
+  FULL_ACCESS_POLICY,
+  isFullAccessPolicy,
+} from "@/lib/vpc-endpoints"
 import { useModifyVpcEndpoint } from "@/mutations/ec2"
 
 import { type PolicyMode, PolicyFields } from "./policy-fields"
@@ -21,13 +25,7 @@ function buildCommands(
   mode: PolicyMode,
   document: string,
 ): CliCommand[] {
-  let compact = document
-
-  try {
-    compact = JSON.stringify(JSON.parse(document))
-  } catch {
-    // Shown as typed; the form refuses to send it.
-  }
+  const compact = compactPolicy(document)
 
   return [
     {
@@ -75,7 +73,7 @@ export function EditPolicyForm({
       await modify.mutateAsync(
         mode === "full"
           ? { vpcEndpointId: id, resetPolicy: true }
-          : { vpcEndpointId: id, policyDocument: document },
+          : { vpcEndpointId: id, policyDocument: compactPolicy(document) },
       )
     } catch {
       // Shown beside the submit button through the mutation's error.

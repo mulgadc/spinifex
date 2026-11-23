@@ -201,7 +201,8 @@ Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuse
 The create panel asks for the VPC, the service and the route tables, and shows the AWS CLI command that sends the same request.
 Until the formation offers the service, the panel says so and cannot create an endpoint.
 An endpoint's panel shows its prefix list, its route tables and its policy, and its Topology tab draws it beside the gateways, with a line to each subnet whose route table sends traffic to it.
-The policy choice and **Edit policy** appear only while `DescribeVpcEndpointServices` lists the service, because that is when the gate enforces a custom policy.
+The console offers the policy choice and **Edit policy** only while `DescribeVpcEndpointServices` lists the service with `VpcEndpointPolicySupported`.
+During a rollback the service can still be listed; a policy write is then refused, and the refusal shows beside the submit button with the draft kept.
 
 ### Endpoint Policies
 

@@ -47,10 +47,13 @@ export function ManageRouteTablesForm({
   onClose: () => void
 }) {
   const id = endpoint.VpcEndpointId ?? ""
-  const current = endpoint.RouteTableIds ?? []
-  const [selected, setSelected] = useState<string[]>(current)
+  // The set the form opened on: a refresh while it is open must not turn a
+  // table someone else added into a removal the user never chose.
+  // oxlint-disable-next-line react/hook-use-state -- the opening set never changes
+  const [opening] = useState(() => endpoint.RouteTableIds ?? [])
+  const [selected, setSelected] = useState<string[]>(opening)
   const modify = useModifyVpcEndpoint()
-  const { add, remove } = routeTableChanges(current, selected)
+  const { add, remove } = routeTableChanges(opening, selected)
 
   async function onSubmit() {
     try {

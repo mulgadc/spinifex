@@ -1,5 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
+import { useState } from "react"
 import {
   type DeepPartialSkipArrayKey,
   useForm,
@@ -21,7 +22,11 @@ import { FormLock } from "@/components/form-lock"
 import { PickerNoticeText } from "@/components/picker-notice"
 import { Field, FieldDescription, FieldTitle } from "@/components/ui/field"
 import { VpcSelectField } from "@/components/vpc-select-field"
-import { FULL_ACCESS_POLICY } from "@/lib/vpc-endpoints"
+import {
+  compactPolicy,
+  FULL_ACCESS_POLICY,
+  nameTagSpecificationArg,
+} from "@/lib/vpc-endpoints"
 import { useCreateVpcEndpoint } from "@/mutations/ec2"
 import {
   ec2GatewayEndpointServicesQueryOptions,
@@ -72,25 +77,36 @@ export function CreateVpcEndpointPage({ onClose }: CreateVpcEndpointPageProps) {
   })
 
   const values = useWatch({ control })
+  const [attempt, setAttempt] = useState<{ key: string; token: string }>()
 
   const service = services.find((s) => s.ServiceName === values.serviceName)
   // A service that takes a policy is offered only once the gate enforces it.
   const policySupported = service?.VpcEndpointPolicySupported === true
 
   const onSubmit = async (data: CreateVpcEndpointFormData) => {
+    const request = {
+      vpcId: data.vpcId,
+      serviceName: data.serviceName,
+      routeTableIds: data.routeTableIds,
+      policyDocument:
+        policySupported && data.policy === "custom"
+          ? compactPolicy(data.policyDocument)
+          : undefined,
+      name: data.name?.trim() ?? undefined,
+    }
+
+    // A retry of the same request reuses its token; a changed one gets a new one.
+    const key = JSON.stringify(request)
+
+    const clientToken =
+      attempt?.key === key ? attempt.token : crypto.randomUUID()
+
+    setAttempt({ key, token: clientToken })
+
     let result
 
     try {
-      result = await createMutation.mutateAsync({
-        vpcId: data.vpcId,
-        serviceName: data.serviceName,
-        routeTableIds: data.routeTableIds,
-        policyDocument:
-          policySupported && data.policy === "custom"
-            ? data.policyDocument
-            : undefined,
-        name: data.name?.trim() ?? undefined,
-      })
+      result = await createMutation.mutateAsync({ ...request, clientToken })
     } catch {
       // Surfaced beside the submit button through the mutation's error.
       return
@@ -220,15 +236,6 @@ export function CreateVpcEndpointPage({ onClose }: CreateVpcEndpointPageProps) {
   )
 }
 
-// The JSON as one line, so the shell reads it as one argument.
-function compactPolicy(document: string): string {
-  try {
-    return JSON.stringify(JSON.parse(document))
-  } catch {
-    return document
-  }
-}
-
 function buildCreateVpcEndpointCommands(
   values: DeepPartialSkipArrayKey<CreateVpcEndpointFormData>,
   policySupported: boolean,
@@ -267,8 +274,7 @@ function buildCreateVpcEndpointCommands(
         ),
         ...optionalFlag(
           "\\\n  --tag-specifications",
-          tagName &&
-            `'ResourceType=vpc-endpoint,Tags=[{Key=Name,Value=${tagName}}]'`,
+          tagName ? nameTagSpecificationArg(tagName) : undefined,
         ),
       ],
     },

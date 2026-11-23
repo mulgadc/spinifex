@@ -1,6 +1,7 @@
 import type { RouteTable } from "@aws-sdk/client-ec2"
 import { z } from "zod"
 
+import { shellSingleQuote } from "@/components/cli-command-panel"
 import { getNameTag } from "@/lib/utils"
 
 // AWS's default gateway endpoint policy, which grants everything the service allows.
@@ -38,6 +39,26 @@ export function isFullAccessPolicy(document: string | undefined): boolean {
   } catch {
     return false
   }
+}
+
+// A policy as one line, for the API and the CLI alike: the editor's layout
+// would count against the 20,480-character limit.
+export function compactPolicy(document: string): string {
+  try {
+    return JSON.stringify(JSON.parse(document))
+  } catch {
+    return document
+  }
+}
+
+// A Name tag as the CLI's --tag-specifications JSON, quoted for the shell, so
+// a quote or comma in the name cannot change the command.
+export function nameTagSpecificationArg(name: string): string {
+  return shellSingleQuote(
+    JSON.stringify([
+      { ResourceType: "vpc-endpoint", Tags: [{ Key: "Name", Value: name }] },
+    ]),
+  )
 }
 
 // What ModifyVpcEndpoint must add and remove to move from one set to another.

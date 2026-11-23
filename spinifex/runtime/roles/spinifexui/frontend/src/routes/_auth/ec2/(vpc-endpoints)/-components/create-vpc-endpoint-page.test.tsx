@@ -110,6 +110,7 @@ describe("CreateVpcEndpointPage", () => {
     })
     expect(created()).toStrictEqual([
       {
+        ClientToken: expect.any(String),
         VpcEndpointType: "Gateway",
         VpcId: "vpc-a",
         ServiceName: S3,
@@ -173,11 +174,9 @@ describe("CreateVpcEndpointPage", () => {
     await waitFor(() => {
       expect(onClose).toHaveBeenCalledWith("vpce-new")
     })
-    // The editor lays the document out on blur; the policy itself is unchanged.
+    // Sent as one line, whatever the editor's layout.
     expect(created()).toStrictEqual([
-      expect.objectContaining({
-        PolicyDocument: JSON.stringify(JSON.parse(policy), null, 2),
-      }),
+      expect.objectContaining({ PolicyDocument: policy }),
     ])
   })
 
@@ -200,5 +199,65 @@ describe("CreateVpcEndpointPage", () => {
     expect(
       screen.getByRole("button", { name: "Create endpoint" }),
     ).toBeDisabled()
+  })
+
+  it("retries the same request with its token, and a changed one with a new token", async () => {
+    const user = userEvent.setup()
+    setup(OFFERED)
+    sdk.send.mockRejectedValueOnce(new Error("socket hang up"))
+
+    await pickVpc("vpc-a (10.0.0.0/16)")
+    await user.click(screen.getByRole("button", { name: "Create endpoint" }))
+    await expect(
+      screen.findByText(/socket hang up/),
+    ).resolves.toBeInTheDocument()
+
+    sdk.send.mockRejectedValueOnce(new Error("socket hang up"))
+    await user.click(screen.getByRole("button", { name: "Create endpoint" }))
+    await waitFor(() => {
+      expect(created()).toHaveLength(2)
+    })
+
+    await pickVpc("vpc-b (10.1.0.0/16)")
+    await user.click(screen.getByRole("button", { name: "Create endpoint" }))
+    await waitFor(() => {
+      expect(created()).toHaveLength(3)
+    })
+
+    const tokens = created().map((input) =>
+      String(new Map(Object.entries(input)).get("ClientToken")),
+    )
+
+    expect(tokens[1]).toBe(tokens[0])
+    expect(tokens[2]).not.toBe(tokens[0])
+  })
+
+  it("keeps the form and its policy when the service refuses a custom policy", async () => {
+    const user = userEvent.setup()
+    const onClose = setup(OFFERED)
+    sdk.send.mockRejectedValueOnce(
+      new Error("Custom VPC endpoint policies cannot be set at the moment."),
+    )
+
+    await pickVpc("vpc-a (10.0.0.0/16)")
+    await user.click(screen.getByRole("radio", { name: "Custom" }))
+
+    const editor = screen.getByRole("textbox", { name: "Policy document" })
+
+    const policy =
+      '{"Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"*"}]}'
+
+    await user.clear(editor)
+    await user.click(editor)
+    await user.paste(policy)
+    await user.click(screen.getByRole("button", { name: "Create endpoint" }))
+
+    await expect(
+      screen.findByText(/cannot be set at the moment/),
+    ).resolves.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(JSON.parse(editor.textContent ?? "")).toStrictEqual(
+      JSON.parse(policy),
+    )
   })
 })

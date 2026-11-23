@@ -1546,8 +1546,11 @@ export function useCreateVpcEndpoint() {
       // Left out for the default full-access policy.
       policyDocument?: string
       name?: string
+      // The same for every retry of one request, so a replay creates nothing.
+      clientToken: string
     }) => {
       const command = new CreateVpcEndpointCommand({
+        ClientToken: params.clientToken,
         VpcEndpointType: "Gateway",
         VpcId: params.vpcId,
         ServiceName: params.serviceName,

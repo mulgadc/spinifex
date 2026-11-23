@@ -41,6 +41,12 @@ type Marker struct {
 
 func (m Marker) complete() bool { return m.Key != "" && m.Seq != 0 && !m.Time.IsZero() }
 
+// Incarnation names the bound stream for an endpoint write journal: its
+// bucket, its leader-reported creation and its marker revision.
+func (b Binding) Incarnation() string {
+	return fmt.Sprintf("%s@%s#%d", b.Bucket, b.Created.UTC().Format(time.RFC3339Nano), b.Marker.Seq)
+}
+
 func streamName(bucket string) string { return "KV_" + bucket }
 
 // Observe reads the binding of an existing bucket's stream and marker without

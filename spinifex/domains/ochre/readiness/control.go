@@ -140,6 +140,7 @@ type Control struct {
 	js          jetstream.JetStream
 	kv          KV
 	guard       []*Stream
+	endpoints   *Stream
 	beforeWrite func(op string)
 	afterRead   func()
 }
@@ -158,7 +159,7 @@ func NewGuarded(js jetstream.JetStream, b *Bound) (*Control, error) {
 	if !sameJetStream(js, b.Endpoints.js) || !sameJetStream(js, b.Control.js) {
 		return nil, fmt.Errorf("%w: guarded control must use the connection and API that bound its streams", ErrInvalid)
 	}
-	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}}, nil
+	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}, endpoints: b.Endpoints}, nil
 }
 
 // bucketName names the bound control bucket; the guarded Control never uses
@@ -392,6 +393,11 @@ func (o *Operation) Journal(ctx context.Context, j Journal) (uint64, error) {
 	if o.fenced != nil {
 		return 0, o.fenced
 	}
+	return o.journalLocked(ctx, j)
+}
+
+// journalLocked records j while the caller holds o.mu.
+func (o *Operation) journalLocked(ctx context.Context, j Journal) (uint64, error) {
 	rev, err := o.c.update(ctx, "journal", func(r *Record) error {
 		tok, ok := r.Tokens[o.id]
 		if !ok {

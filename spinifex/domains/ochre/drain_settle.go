@@ -116,22 +116,21 @@ func heldReady(rec EndpointRecord) error {
 	return nil
 }
 
-// maxWholeCount is the largest count a float64 holds without loss.
-const maxWholeCount = 1 << 53
-
-// freshObservation checks the probe data a hold clear may record with it: a
-// whole, representable queue depth and success count, an activity time that
-// does not move back, and a failure count that is kept or reset.
+// freshObservation checks the probe data a hold clear may record with it:
+// whole counts within the metrics bounds, a failure count kept or reset, and
+// a newer activity time whenever the sample shows work.
 func freshObservation(old, next EndpointRecord) error {
 	switch {
-	case next.InFlight < 0 || next.InFlight > maxWholeCount:
+	case next.InFlight < 0 || next.InFlight > maxExactCount:
 		return fmt.Errorf("%w: queue depth %d is out of range", errDrainSettlement, next.InFlight)
-	case next.SuccessTotal < 0 || next.SuccessTotal > maxWholeCount || next.SuccessTotal != math.Trunc(next.SuccessTotal):
+	case next.SuccessTotal < 0 || next.SuccessTotal > maxExactCount || next.SuccessTotal != math.Trunc(next.SuccessTotal):
 		return fmt.Errorf("%w: success count is not a whole representable number", errDrainSettlement)
 	case next.ScrapeFailures != old.ScrapeFailures && next.ScrapeFailures != 0:
 		return fmt.Errorf("%w: a healthy observation only resets the failure count", errDrainSettlement)
 	case !next.LastActiveAt.Equal(old.LastActiveAt) && (next.LastActiveAt.IsZero() || next.LastActiveAt.Before(old.LastActive())):
 		return fmt.Errorf("%w: activity time moves back", errDrainSettlement)
+	case (next.InFlight > 0 || next.SuccessTotal != old.SuccessTotal) && !next.LastActiveAt.After(old.LastActive()):
+		return fmt.Errorf("%w: a sample showing work needs a newer activity time", errDrainSettlement)
 	}
 	return nil
 }

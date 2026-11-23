@@ -33,7 +33,9 @@ func heldReadyBundle(t *testing.T) EndpointRecord {
 	return rec
 }
 
+// clearedOf is rec with its hold cleared by a probe that saw it serving.
 func clearedOf(rec EndpointRecord) EndpointRecord {
+	rec.LastActiveAt = rec.LastActive().Add(time.Minute)
 	rec.HealthHold = nil
 	rec.Generation++
 	return rec
@@ -88,7 +90,13 @@ func TestDrainSettlement_AllowsOnlyTheTwoTransitions(t *testing.T) {
 	reset := clearedOf(idle)
 	reset.ScrapeFailures, idle.ScrapeFailures = 0, 2
 	counterReset := clearedOf(heldReadyBundle(t))
-	counterReset.SuccessTotal = 0
+	counterReset.SuccessTotal, counterReset.LastActiveAt = 0, time.Now().UTC()
+	completed := clearedOf(idle)
+	completed.SuccessTotal, completed.LastActiveAt = 41, time.Now().UTC()
+	idleCleared := clearedOf(idle)
+	idleCleared.LastActiveAt = idle.LastActiveAt
+	maxCounts := clearedOf(heldReadyBundle(t))
+	maxCounts.InFlight, maxCounts.SuccessTotal, maxCounts.LastActiveAt = maxExactCount, maxExactCount, time.Now().UTC()
 
 	for name, pair := range map[string][2]EndpointRecord{
 		"clear the hold of a legacy READY record": {heldReadyBundle(t), clearedOf(heldReadyBundle(t))},
@@ -96,6 +104,9 @@ func TestDrainSettlement_AllowsOnlyTheTwoTransitions(t *testing.T) {
 		"record a busy probe with the clear":      {idle, busy},
 		"reset the failure count with the clear":  {idle, reset},
 		"record a restarted success count":        {heldReadyBundle(t), counterReset},
+		"record completed requests with no queue":  {idle, completed},
+		"keep an idle sample's activity time":      {idle, idleCleared},
+		"record counts at the metrics maximum":     {heldReadyBundle(t), maxCounts},
 		"promote a marked complete bundle":        {marked, promotedOf(t, marked)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -172,10 +183,24 @@ func TestDrainSettlement_ClearKeepsEveryOtherField(t *testing.T) {
 		},
 		"owner added":          func(old, next *EndpointRecord) { next.LaunchOwner = Owned(drainOwner) },
 		"negative queue depth": func(old, next *EndpointRecord) { next.InFlight = -1 },
-		"huge queue depth":     func(old, next *EndpointRecord) { next.InFlight = maxWholeCount + 1 },
-		"fractional successes": func(old, next *EndpointRecord) { next.SuccessTotal = 40.5 },
-		"negative successes":   func(old, next *EndpointRecord) { next.SuccessTotal = -1 },
-		"huge successes":       func(old, next *EndpointRecord) { next.SuccessTotal = 2 * maxWholeCount },
+		"queue depth past the maximum": func(old, next *EndpointRecord) {
+			next.InFlight, next.LastActiveAt = maxExactCount+1, time.Now().UTC()
+		},
+		"successes past the maximum": func(old, next *EndpointRecord) {
+			next.SuccessTotal, next.LastActiveAt = maxExactCount+1, time.Now().UTC()
+		},
+		"completed requests, stale activity": func(old, next *EndpointRecord) {
+			old.InFlight, next.InFlight, next.SuccessTotal, next.LastActiveAt = 0, 0, old.SuccessTotal+1, old.LastActiveAt
+		},
+		"queued requests, stale activity": func(old, next *EndpointRecord) { next.LastActiveAt = old.LastActiveAt },
+		"successes reset, stale activity": func(old, next *EndpointRecord) {
+			next.SuccessTotal, next.LastActiveAt = 0, old.LastActiveAt
+		},
+		"work shown at the old activity time": func(old, next *EndpointRecord) {
+			next.SuccessTotal, next.LastActiveAt = old.SuccessTotal+1, old.LastActiveAt
+		},
+		"fractional successes": func(old, next *EndpointRecord) { next.SuccessTotal, next.LastActiveAt = 40.5, time.Now().UTC() },
+		"negative successes":   func(old, next *EndpointRecord) { next.SuccessTotal, next.LastActiveAt = -1, time.Now().UTC() },
 		"failures raised":      func(old, next *EndpointRecord) { next.ScrapeFailures = old.ScrapeFailures + 1 },
 		"activity moved back":  func(old, next *EndpointRecord) { next.LastActiveAt = old.LastActiveAt.Add(-time.Second) },
 		"activity before ready": func(old, next *EndpointRecord) {

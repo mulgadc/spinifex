@@ -327,20 +327,44 @@ sweep_ocibsd() {
 # It works from the state files rather than by name filter, so it can only ever
 # destroy what one of these runs created.
 sweep() {
-    local found=0 dir topology
+    local found=0 dir topology held
     local sweep_env=(env)
+    if [ "$DRY_RUN" = 1 ]; then
+        log "dry run: no sweep"
+        return
+    fi
     for dir in "$STATE_ROOT"/.validate-*; do
         [ -d "$dir" ] || continue
+        topology="${dir##*/.validate-}"
+        # A --keep deployment, existing infrastructure, a failure left up to inspect,
+        # or state from before the marker: none of it is this sweep's to remove.
+        if [ ! -e "$dir/disposable" ]; then
+            log "sweep: $topology is not marked disposable, leaving it"
+            continue
+        fi
         if [ ! -s "$dir/terraform.tfstate" ]; then
             sweep_ocibsd "$dir"
             continue
         fi
         python3 -c '
 import json, sys
-state = json.load(open(sys.argv[1]))
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(2)
 sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
-' "$dir/terraform.tfstate" 2>/dev/null || { sweep_ocibsd "$dir"; continue; }
-        topology="${dir##*/.validate-}"
+' "$dir/terraform.tfstate" 2>/dev/null
+        held=$?
+        if [ "$held" = 1 ]; then
+            sweep_ocibsd "$dir"
+            continue
+        fi
+        # Its instances may still be running, so its volumes may still be in use.
+        if [ "$held" != 0 ]; then
+            log "sweep: cannot read $dir/terraform.tfstate, leaving its instances and volumes"
+            echo "sweep $topology: FAIL (unreadable Terraform state)" >> "$VERDICT"
+            continue
+        fi
         # The child reads OCI_STATE_ROOT from the environment, so it looks in the
         # same place this loop found the state rather than beside its own script.
         found=1

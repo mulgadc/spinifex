@@ -726,6 +726,10 @@ The four are `oracle-10.1-x86_64`, `oracle-10.1-arm64`, `oracle-9.8-x86_64` and 
 
 It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
 
+The ocibsd EBS volumes and backups are in no Terraform state, so the destroy leaves them.
+A successful destroy marks the state directory for the sweep, and `./e2e-oci.sh --sweep-only` with the same `OCI_STATE_ROOT` then deletes every volume and backup tagged with the cluster ID.
+Nothing deletes them before you run the sweep, and a sweep never reaches a `--keep` deployment that you have not destroyed.
+
 If this was the only Spinifex cluster using the instance-principal Dynamic Group and policy, remove those tenancy-wide resources as well:
 
 ```bash

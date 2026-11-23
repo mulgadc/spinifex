@@ -291,6 +291,16 @@ The `ebs provider` gate then checks the units, the viperblock mask, the daemon's
 
 `e2e-oci.sh` deletes everything tagged with each recorded `cluster_id` once that topology's nodes are destroyed, including from `--sweep-only`, and fails the run if anything tagged remains. A standalone `validate-topology.sh` run does not sweep, so follow it with `./e2e-oci.sh --sweep-only`.
 
+**The sweep reaches only a state directory marked `disposable`.**
+A run that will tear itself down writes the marker before it creates anything, so a killed run is still swept.
+`--keep`, existing infrastructure and a failure left up by `--keep-on-fail` remove it, so the sweep leaves those deployments and their volumes alone.
+A successful `--destroy-only` writes it, which makes the destroyed deployment's volumes and backups eligible for the next sweep.
+
+A run without `--keep` stops with an error when its directory holds Terraform instances, unreadable state or a cluster record and has no marker: that is a deployment it does not own.
+Use it with `--keep`, or remove it with `--destroy-only`.
+`--dry-run` does not sweep and does not change the marker.
+A sweep from before this marker existed ignores it, so keep a deployment in its own `OCI_STATE_ROOT` while any older checkout shares the root.
+
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
 ### Validate infrastructure Terraform already created

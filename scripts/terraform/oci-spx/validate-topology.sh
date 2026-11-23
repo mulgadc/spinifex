@@ -307,6 +307,9 @@ NODES="$TOPO_DEFAULT_NODES"
 # git clean -ffdx: it would delete the Terraform state of a killed run before the
 # sweep could read it, leaving instances running that nothing can find.
 STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
+CLOUD_INIT_TIMEOUT="${OCI_CLOUD_INIT_TIMEOUT:-1200}"
+[[ "$CLOUD_INIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "OCI_CLOUD_INIT_TIMEOUT must be a whole number of seconds"
+unset SSH_LIMIT
 mkdir -p "$STATE_ROOT"
 STATE_SUFFIX=""
 [ "$EXISTING_INFRA" = 1 ] && STATE_SUFFIX="-existing"
@@ -453,8 +456,10 @@ ssh_node() {
     shift
     # LogLevel=ERROR: the host-key warning is unavoidable with a throwaway known-hosts
     # file, and it lands in the middle of whatever the remote command reported.
-    ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 "ubuntu@$host" "$@"
+    # SSH_LIMIT, when set, ends the call after that many seconds.
+    ${SSH_LIMIT:+timeout "$SSH_LIMIT"} ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 \
+        "ubuntu@$host" "$@"
 }
 
 # record <gate> <PASS|FAIL|SKIPPED|INFO> [detail]
@@ -497,14 +502,32 @@ record() {
 stage_done() { [ -f "$STATE_DIR/stage-$1.done" ]; }
 mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
 
-formation_complete() {
-    local host
-    stage_done formation || return 1
-    # A line only init writes, not a non-empty file: an ocibsd API-key run seeds the
-    # file with the credential before init, so a fresh node already has one.
+# Sets CLUSTER_STATE to formed or fresh from the hosts, and stops when a host does
+# not answer or the hosts disagree. A line only init writes, not a non-empty file:
+# an ocibsd API-key run seeds the file with the credential before init.
+classify_cluster() {
+    local host answer formed=() fresh=() failed=()
     for host in "${HOSTS[@]}"; do
-        ssh_node "$host" "grep -q '^data_dir = ' /etc/spinifex/spinifex.toml" || return 1
+        # As root, so a file the login user cannot read is not taken as absent, and
+        # limited, so a session that stops answering is a failed probe.
+        answer="$(SSH_LIMIT=30 ssh_node "$host" 'sudo sh -s' 2>/dev/null <<'PROBE'
+f=/etc/spinifex/spinifex.toml
+[ -e "$f" ] || { echo fresh; exit; }
+grep -q '^data_dir = ' "$f"
+case $? in 0) echo formed ;; 1) echo fresh ;; esac
+PROBE
+)" || answer=""
+        case "$answer" in
+            formed) formed+=("$host") ;;
+            fresh) fresh+=("$host") ;;
+            *) failed+=("$host") ;;
+        esac
     done
+    [ "${#failed[@]}" = 0 ] \
+        || die "could not read the formation state of ${failed[*]}; no host was changed"
+    [ "${#formed[@]}" = 0 ] || [ "${#fresh[@]}" = 0 ] \
+        || die "the hosts disagree: formed ${formed[*]}, not formed ${fresh[*]}; no host was changed"
+    if [ "${#formed[@]}" -gt 0 ]; then CLUSTER_STATE=formed; else CLUSTER_STATE=fresh; fi
 }
 
 pool_complete() {
@@ -804,15 +827,24 @@ log "$SHAPE, $NODES node(s), oci_auth $([ "$PRINCIPAL_MODE" = off ] && echo "fro
 # cloud-init owns the volume, the ports and br-wan, and all three are units now, so
 # the question is whether they converged rather than whether a runcmd happened to
 # run. This is the gate the bare-metal findings were about.
+# One deadline for the whole gate, and each call ends at it, since ConnectTimeout
+# does not limit a session that connected and then stopped answering.
 log "waiting for cloud-init on each node"
+CLOUD_INIT_DEADLINE=$((SECONDS + CLOUD_INIT_TIMEOUT))
+gate_ssh() {
+    local left=$((CLOUD_INIT_DEADLINE - SECONDS))
+    [ "$left" -gt 0 ] || return 124
+    SSH_LIMIT="$left" ssh_node "$@"
+}
 for host in "${HOSTS[@]}"; do
-    for _ in $(seq 1 120); do
-        if ssh_node "$host" 'cloud-init status --wait >/dev/null 2>&1 || true; test -f /var/lib/cloud/instance/boot-finished' 2>/dev/null; then
-            break
-        fi
-        sleep 10
+    until gate_ssh "$host" 'test -f /var/lib/cloud/instance/boot-finished' 2>/dev/null; do
+        [ "$SECONDS" -lt "$CLOUD_INIT_DEADLINE" ] \
+            || die "cloud-init did not finish on $host within $CLOUD_INIT_TIMEOUT s"
+        left=$((CLOUD_INIT_DEADLINE - SECONDS))
+        [ "$left" -le 0 ] || sleep $((left < 10 ? left : 10))
     done
-    ssh_node "$host" '
+    rc=0
+    gate_ssh "$host" '
         set -e
         for u in spinifex-data-volume spinifex-service-ports spinifex-wan-bridge; do
             printf "%s=%s " "$u" "$(systemctl is-active "$u" 2>&1)"
@@ -820,11 +852,23 @@ for host in "${HOSTS[@]}"; do
         echo
         findmnt --noheadings --output SOURCE,TARGET /var/lib/spinifex
         ip -br addr show br-wan
-    ' > "$STATE_DIR/cloudinit-$host.txt" 2>&1 \
-        || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
+    ' > "$STATE_DIR/cloudinit-$host.txt" 2>&1 || rc=$?
+    # 124: the call ran out of the gate's time, which is the gate's timeout, not a unit failure.
+    [ "$rc" != 124 ] || die "cloud-init did not finish on $host within $CLOUD_INIT_TIMEOUT s"
+    [ "$rc" = 0 ] || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
     log "$host cloud-init: $(head -1 "$STATE_DIR/cloudinit-$host.txt")"
 done
 record "cloud-init units" PASS
+
+# Decided before the first change to a host, and kept for the run: nothing before
+# formation writes data_dir, so the answer cannot change until formation runs.
+classify_cluster
+log "cluster state: $CLUSTER_STATE"
+# setup-ovn.sh --management is the standalone first install. On a formed cluster it
+# replaces the clustered NB/SB client configuration, and a host list can name only
+# part of a cluster, so it runs on no formed host.
+PRESERVE_CLUSTER_OVN=0
+[ "$CLUSTER_STATE" = fresh ] || PRESERVE_CLUSTER_OVN=1
 
 # With --distro the bytes are the ref under test; without it they are the published
 # release, which answers a different question -- what a customer following the
@@ -849,7 +893,7 @@ for host in "${HOSTS[@]}"; do
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
     # the installer then fails on. The timers are stopped so no new run starts, and
     # the locks must stay free for three polls, since a run frees them between phases.
-    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' bash -s" \
+    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' PRESERVE_CLUSTER_OVN='$PRESERVE_CLUSTER_OVN' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
@@ -904,7 +948,11 @@ else
         curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
     fi
 fi
-sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
+if [ "$PRESERVE_CLUSTER_OVN" = 1 ]; then
+    echo "keeping the clustered OVN configuration of a formed cluster"
+else
+    sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
+fi
 REMOTE
     INSTALLED_VERSION="$(ssh_node "$host" 'spx version' 2>&1 | head -1)"
     log "$host installed: $INSTALLED_VERSION"
@@ -924,7 +972,7 @@ INIT_EBS_PROVIDER=""
 API_KEY_EBS=0
 [ "$TOPO_EBS_PROVIDER" = ocibsd ] && [ "$PRINCIPAL_MODE" = off ] && API_KEY_EBS=1
 PRESEEDED_EBS=0
-if [ "$API_KEY_EBS" = 1 ] && ! formation_complete; then
+if [ "$API_KEY_EBS" = 1 ] && [ "$CLUSTER_STATE" = fresh ]; then
     log "running the credential hook before formation, so init can check the ocibsd credential"
     "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
         || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
@@ -950,9 +998,9 @@ fi
 # A single node is its own documented path: install-node.sh refuses fewer than two
 # hosts, because there is nothing to join. Both branches use the flags the guide
 # names, so what is validated is what the guide tells a customer to type.
-if formation_complete; then
+if [ "$CLUSTER_STATE" = formed ]; then
     log "cluster formation already completed (resuming; formation skipped)"
-    record formation SKIP "checkpoint verified"
+    record formation SKIP "every host is formed"
 elif [ "$NODES" = 1 ]; then
     log "initializing the single node"
     ssh_node "${HOSTS[0]}" "INIT_EBS_PROVIDER=$INIT_EBS_PROVIDER PRESEEDED_EBS=$PRESEEDED_EBS bash -s" \
@@ -970,7 +1018,6 @@ sudo env -u SPINIFEX_EBS_PROVIDER ${ebs_env[@]+"${ebs_env[@]}"} spx admin init $
     --external-mode=nat --ipsec=false
 sudo systemctl start spinifex.target
 REMOTE
-    mark_stage formation
     record formation PASS
 else
     log "forming the cluster"
@@ -990,7 +1037,6 @@ else
         --ipsec off \
         --yes > "$STATE_DIR/form.log" 2>&1 \
         || die "formation failed; see $STATE_DIR/form.log"
-    mark_stage formation
     record formation PASS
 fi
 
@@ -1011,11 +1057,16 @@ case "$TOPO_EBS_PROVIDER:$API_KEY_EBS" in
     ocibsd:1) want_ebs='EBS provider: ocibsd (from the existing config)' ;;
     *)        want_ebs='EBS provider: viperblockd (from SPINIFEX_EBS_PROVIDER)' ;;
 esac
-ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
-case "$ebs_line" in
-    "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
-    *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
-esac
+# A formed cluster did not run init in this run, so there is no choice to check.
+if [ "$CLUSTER_STATE" = formed ]; then
+    record "ebs provider choice" SKIP "init did not run: the cluster was already formed"
+else
+    ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
+    case "$ebs_line" in
+        "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
+        *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
+    esac
+fi
 
 # ocibsd tags every volume and backup with the cluster_id spx admin init generated,
 # and no Terraform state holds them, so e2e-oci.sh sweeps by that tag after the

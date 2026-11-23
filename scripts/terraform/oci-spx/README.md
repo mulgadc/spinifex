@@ -343,6 +343,33 @@ For infrastructure configured with `instance_principal = "off"`, supply the API-
 
 `--existing-state-file` skips Terraform apply and destroy, and automatically keeps the hosts. If state is unavailable, replace it with `--existing-hosts-file /path/to/hosts`, containing one public SSH IP address per line. A hosts file carries no authentication metadata, so pass either `--instance-principal` or `--credential-hook` explicitly.
 
+### Reinstall a formed cluster
+
+`--reinstall` runs the installer again on every node, for example to put a new build on a kept deployment.
+Before it changes a host, the run asks each host whether `spx admin init` wrote `data_dir` to `/etc/spinifex/spinifex.toml`:
+
+- **Every host has it:** the cluster is formed. The run does not form it again, and the installer does not run `setup-ovn.sh --management`, so the clustered NB/SB client configuration stays.
+- **No host has it:** the run installs and forms a new cluster.
+- **A host does not answer, or the hosts disagree:** the run stops before it changes a host, and names the hosts.
+
+To install a build of your checkout, build the bundle at the repository root, then give the bundle and its `setup.sh` to the run:
+
+```bash
+make distro-amd64
+cd scripts/terraform/oci-spx
+./validate-topology.sh \
+  --topology vm-multi \
+  --existing-state-file "$PWD/terraform.tfstate" \
+  --instance-principal \
+  --reinstall \
+  --distro ../../../dist/spinifex-<version>-linux-amd64.tar.gz \
+  --setup-sh ../../../scripts/setup.sh \
+  --skip-workload
+```
+
+The cloud-init gate waits for `/var/lib/cloud/instance/boot-finished` on every node for at most `OCI_CLOUD_INIT_TIMEOUT` seconds in total, 1200 by default.
+At that limit it stops with `cloud-init did not finish on <host>`, also when an SSH call to the host does not return.
+
 ## Common Commands
 
 Show the current outputs:

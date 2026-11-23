@@ -17,7 +17,8 @@ fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
 mkdir -p "$TMP/bin" "$TMP/remote"
 # NODE_STATE is formed or fresh. HANG_PROBE makes the cloud-init probe never return,
-# and NO_MARKER makes it answer at once that boot-finished is absent.
+# and NO_MARKER makes it answer at once that boot-finished is absent. HANG_UNITS
+# makes the unit diagnostic after the marker never return.
 cat > "$TMP/bin/ssh" <<'EOF'
 #!/bin/bash
 while [ $# -gt 0 ]; do case "$1" in ubuntu@*) host="${1#ubuntu@}"; shift; break ;; *) shift ;; esac; done
@@ -30,6 +31,7 @@ case "$cmd" in
     *boot-finished*) [ -z "${HANG_PROBE:-}" ] || exec -a "$HANG_TAG" tail -f /dev/null
                      [ -z "${NO_MARKER:-}" ] || exit 1
                      exit 0 ;;
+    *spinifex-data-volume*) [ -z "${HANG_UNITS:-}" ] || exec -a "$HANG_TAG" tail -f /dev/null ;;
     *"command -v spx"*) formed ;;
     *"spx version"*) echo "spx v-test" ;;
     *ovn-remote*) formed && echo '"tcp:10.0.0.1:6642,tcp:10.0.0.2:6642,tcp:10.0.0.3:6642"' ;;
@@ -158,6 +160,10 @@ stopped_at_gate "probe never returns"
 echo "-- a boot-finished marker that never appears stops the gate at its elapsed limit"
 NO_MARKER=1 run vm-multi fresh 0
 stopped_at_gate "marker never appears"
+
+echo "-- a unit diagnostic that never returns stops the gate at its elapsed limit"
+HANG_UNITS=1 run vm-multi fresh 0
+stopped_at_gate "diagnostic never returns"
 
 # stopped_unchanged <expected message>: the run failed with the message and no
 # install or formation step reached a host.

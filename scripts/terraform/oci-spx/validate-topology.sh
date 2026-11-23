@@ -842,6 +842,7 @@ for host in "${HOSTS[@]}"; do
         left=$((CLOUD_INIT_DEADLINE - SECONDS))
         [ "$left" -le 0 ] || sleep $((left < 10 ? left : 10))
     done
+    rc=0
     gate_ssh "$host" '
         set -e
         for u in spinifex-data-volume spinifex-service-ports spinifex-wan-bridge; do
@@ -850,15 +851,14 @@ for host in "${HOSTS[@]}"; do
         echo
         findmnt --noheadings --output SOURCE,TARGET /var/lib/spinifex
         ip -br addr show br-wan
-    ' > "$STATE_DIR/cloudinit-$host.txt" 2>&1 \
-        || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
+    ' > "$STATE_DIR/cloudinit-$host.txt" 2>&1 || rc=$?
+    # 124: the call ran out of the gate's time, which is the gate's timeout, not a unit failure.
+    [ "$rc" != 124 ] || die "cloud-init did not finish on $host within $CLOUD_INIT_TIMEOUT s"
+    [ "$rc" = 0 ] || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
     log "$host cloud-init: $(head -1 "$STATE_DIR/cloudinit-$host.txt")"
 done
 record "cloud-init units" PASS
 
-# With --distro the bytes are the ref under test; without it they are the published
-# release, which answers a different question -- what a customer following the
-# guide gets today. A nightly judging a branch must pass --distro.
 # Decided before the first change to a host, and kept for the run: nothing before
 # formation writes data_dir, so the answer cannot change until formation runs.
 classify_cluster
@@ -868,6 +868,10 @@ log "cluster state: $CLUSTER_STATE"
 # part of a cluster, so it runs on no formed host.
 PRESERVE_CLUSTER_OVN=0
 [ "$CLUSTER_STATE" = fresh ] || PRESERVE_CLUSTER_OVN=1
+
+# With --distro the bytes are the ref under test; without it they are the published
+# release, which answers a different question -- what a customer following the
+# guide gets today. A nightly judging a branch must pass --distro.
 log "installing Spinifex on each node ($([ -n "$DISTRO" ] && echo "$(basename "$DISTRO")" || echo "published release"))"
 for host in "${HOSTS[@]}"; do
     # A retry after OVN formation must not re-run setup.sh: the installer invokes

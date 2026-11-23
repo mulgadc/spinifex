@@ -182,7 +182,9 @@ func TestVolumeLease_LateEpochAcknowledgementTakesNoEpoch(t *testing.T) {
 			leases := newTestLeases(t, natsURL, "node-a")
 			lease, err := leases.acquire(t.Context(), "vol-lateepoch-"+strings.ToLower(rand.Text()))
 			require.NoError(t, err)
-			lease.stop()
+			// The renew loop reads leases.kv and leases.now, so it must have
+			// exited before either is replaced.
+			stopRenewals(lease)
 			var once sync.Once
 			leases.kv = lateAckKV{KeyValue: leases.kv, after: func() { once.Do(func() { tc.during(leases, lease) }) }}
 			_, err = lease.launchEpoch(t.Context())

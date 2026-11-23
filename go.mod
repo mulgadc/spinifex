@@ -6,11 +6,11 @@ require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.27
-	github.com/aws/aws-sdk-go-v2/config v1.33.18
-	github.com/aws/aws-sdk-go-v2/credentials v1.21.0
+	github.com/aws/aws-sdk-go-v2/config v1.33.20
+	github.com/aws/aws-sdk-go-v2/credentials v1.21.2
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.9
-	github.com/aws/aws-sdk-go-v2/service/lambda v1.114.4
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
+	github.com/aws/aws-sdk-go-v2/service/lambda v1.117.0
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.53.0
 	github.com/aws/smithy-go v1.28.9
 	github.com/cenkalti/backoff/v4 v4.3.0
@@ -28,15 +28,15 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.25.1-0.20261118003950-05fa4c716542
+	github.com/mulgadc/bluebottle v1.25.1-0.20261122232302-0b8b9d2d0484
 	github.com/mulgadc/northstar v1.25.0
-	github.com/mulgadc/predastore v1.25.1-0.20261118011524-52d20d2d1793
+	github.com/mulgadc/predastore v1.25.1-0.20261122232703-1c3a544a7b61
 	github.com/mulgadc/viperblock v1.25.1-0.20261121235246-1b6c57c4f92c
 	github.com/nats-io/nats-server/v2 v2.15.3
-	github.com/nats-io/nats.go v1.55.0
+	github.com/nats-io/nats.go v1.56.0
 	github.com/nats-io/nkeys v0.4.17
 	github.com/opencontainers/runtime-spec v1.3.0
-	github.com/oracle/oci-go-sdk/v65 v65.130.0
+	github.com/oracle/oci-go-sdk/v65 v65.131.0
 	github.com/ovn-kubernetes/libovsdb v0.9.1
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pterm/pterm v0.12.84
@@ -44,9 +44,9 @@ require (
 	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
-	go.etcd.io/etcd/api/v3 v3.7.3
-	go.etcd.io/etcd/client/pkg/v3 v3.7.3
-	go.etcd.io/etcd/client/v3 v3.7.3
+	go.etcd.io/etcd/api/v3 v3.7.4
+	go.etcd.io/etcd/client/pkg/v3 v3.7.4
+	go.etcd.io/etcd/client/v3 v3.7.4
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
@@ -60,7 +60,7 @@ require (
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	golang.org/x/time v0.16.0
-	golang.org/x/tools v0.52.0
+	golang.org/x/tools v0.53.0
 	google.golang.org/grpc v1.85.0
 	gopkg.in/ini.v1 v1.68.0
 )
@@ -80,7 +80,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.12 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.13.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
@@ -205,9 +205,9 @@ require (
 	go.uber.org/nilaway v0.0.0-20260721205819-4a0f7653488a // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
+	golang.org/x/mod v0.43.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
+	golang.org/x/telemetry v0.0.0-20261116191925-e77a43154acb // indirect
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/vuln v1.6.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect

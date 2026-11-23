@@ -1,0 +1,1 @@
+import{r as e}from"./rolldown-runtime-XKyaHtl9.js";import{tt as t,zt as n}from"./schemas-D770-E21.js";var r=e(n(),1),i=r.createContext(void 0);function a(e){let n=r.useContext(i);if(n===void 0&&!e)throw Error(t(69));return n}export{a as t};

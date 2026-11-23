@@ -287,6 +287,8 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// The relaunched VM has a new instance ID; drop the memoised recovery index.
+	s.invalidateRecoveryLBIndex()
 	if err := s.store.ResumeLBHealth(ctx, lb.LoadBalancerID, lb.InstanceID); err != nil {
 		slog.WarnContext(ctx, "SetSubnets: failed to lift data-path suspension", "lbId", lb.LoadBalancerID, "err", err)
 	}

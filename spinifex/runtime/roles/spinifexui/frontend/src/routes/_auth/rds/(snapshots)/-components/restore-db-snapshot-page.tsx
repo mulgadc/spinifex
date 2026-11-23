@@ -130,6 +130,14 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const selectedSubnetGroup = values.dbSubnetGroupName ?? ""
   const selectedSecurityGroups = values.vpcSecurityGroupIds ?? []
 
+  const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
+  const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
+
+  const placementVpcId =
+    subnetGroups.find(
+      (group) => group.DBSubnetGroupName === selectedSubnetGroup,
+    )?.VpcId ?? snapshot?.VpcId
+
   const setSecurityGroups = (next: string[]) => {
     clearErrors("vpcSecurityGroupIds")
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
@@ -208,20 +216,12 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     instanceTypes,
   )
 
-  const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
-
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsData.DBParameterGroups ?? [],
     engineVersionsData.DBEngineVersions ?? [],
     engine,
   )
 
-  const subnetGroupVpc = subnetGroups.find(
-    (group) => group.DBSubnetGroupName === selectedSubnetGroup,
-  )?.VpcId
-
-  const placementVpcId = subnetGroupVpc ?? snapshot.VpcId
-  const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
   const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)
 
   return (

@@ -570,6 +570,13 @@ func (s *ELBv2ServiceImpl) loadRecoveryLBIndex(ctx context.Context) (map[string]
 	return s.recoveryLBIndex, nil
 }
 
+// invalidateRecoveryLBIndex forces the next recovery lookup to re-list LB records.
+func (s *ELBv2ServiceImpl) invalidateRecoveryLBIndex() {
+	s.recoveryLBIndexMu.Lock()
+	s.recoveryLBIndex = nil
+	s.recoveryLBIndexMu.Unlock()
+}
+
 // RebuildSystemInstanceInput reconstructs the launch input for host-reboot recovery.
 // The instance→LB map is memoised so concurrent recovery candidates share one ListLoadBalancers call.
 func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*SystemInstanceInput, error) {
@@ -578,6 +585,14 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*Syst
 		return nil, err
 	}
 	lb := index[rc.InstanceID]
+	if lb == nil {
+		// Another node may have launched or relaunched this VM since the index was built.
+		s.invalidateRecoveryLBIndex()
+		if index, err = s.loadRecoveryLBIndex(s.ctx); err != nil {
+			return nil, err
+		}
+		lb = index[rc.InstanceID]
+	}
 	if lb == nil {
 		return nil, fmt.Errorf("no LB record references instance %s", rc.InstanceID)
 	}
@@ -2227,7 +2242,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		if existing.Protocol == protocol && existing.ProtocolVersion == protocolVersion && existing.Port == port &&
 			existing.TargetType == targetType && existing.HealthCheck == hc {
 			return &elbv2.CreateTargetGroupOutput{
-				TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(existing, nil)},
+				TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(existing)},
 			}, nil
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateTargetGroup,
@@ -2265,8 +2280,16 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
+		TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(record)},
 	}, nil
+}
+
+// AWS omits LoadBalancerArns from a CreateTargetGroup result, while
+// DescribeTargetGroups and ModifyTargetGroup return it as an empty list.
+func (s *ELBv2ServiceImpl) createdTGToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+	tg := s.tgRecordToSDK(r, nil)
+	tg.LoadBalancerArns = nil
+	return tg
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {

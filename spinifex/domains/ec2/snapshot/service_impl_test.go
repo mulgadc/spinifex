@@ -1447,8 +1447,7 @@ func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, "999988887777")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+	assertSnapshotNotFound(t, err, aws.StringValue(src.SnapshotId))
 
 	_, ok := provider.Snapshot(aws.StringValue(src.SnapshotId))
 	require.True(t, ok, "the source must survive a refused copy")

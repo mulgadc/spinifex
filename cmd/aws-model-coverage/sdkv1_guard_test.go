@@ -15,12 +15,14 @@ type serviceOperation struct {
 }
 
 // stubsKeptWithoutSDKV1 lists the operations registered as a stub or a refusal
-// although aws-sdk-go v1 cannot call them. Each one returns an error and never
-// a fake success. Do not add to it: delete the registration instead.
+// although aws-sdk-go v1 cannot call them. Do not add to it unless a client
+// fails without the operation: delete the registration instead.
 var stubsKeptWithoutSDKV1 = map[serviceOperation]string{
-	{awsmodel.ECR, "ListRepositories"}:              "returns NotImplemented (501); registered before the SDK v1 check existed",
-	{awsmodel.ECR, "ReplicateImage"}:                "returns NotImplemented (501); registered before the SDK v1 check existed",
-	{awsmodel.ECR, "GetImageScanningConfiguration"}: "returns OperationNotSupportedException because Spinifex runs no scanner; registered before the SDK v1 check existed",
+	{awsmodel.ElasticLoadBalancingV2, "DescribeListenerAttributes"}: "returns protocol defaults; terraform-provider-aws fails to read a listener without it",
+	{awsmodel.ElasticLoadBalancingV2, "ModifyListenerAttributes"}:   "echoes the request without persisting it; terraform-provider-aws calls it when a listener sets attributes",
+	{awsmodel.ECR, "ListRepositories"}:                              "returns NotImplemented (501); registered before the SDK v1 check existed",
+	{awsmodel.ECR, "ReplicateImage"}:                                "returns NotImplemented (501); registered before the SDK v1 check existed",
+	{awsmodel.ECR, "GetImageScanningConfiguration"}:                 "returns OperationNotSupportedException because Spinifex runs no scanner; registered before the SDK v1 check existed",
 }
 
 // noSDKV1Violations returns the stubbed or refused operations absent from

@@ -1,1 +1,0 @@
-import"./aws-client-BL_G_cl8.js";export{t as EventStreamSerde,r as eventStreamSerdeProvider}from"./index.browser-W7YTqRT_.js";

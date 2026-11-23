@@ -283,8 +283,9 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 	} else if held != "" {
 		return nil, s.routeExists(held)
 	}
+	var policy string
 	if input.PolicyDocument != nil {
-		if _, err := checkPolicy(aws.StringValue(input.PolicyDocument)); err != nil {
+		if policy, err = checkPolicy(aws.StringValue(input.PolicyDocument)); err != nil {
 			return nil, err
 		}
 	}
@@ -301,6 +302,7 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 		ServiceName:     s.serviceName(),
 		Type:            TypeGateway,
 		RouteTableIds:   tables,
+		PolicyDocument:  policy,
 		DnsRecordIpType: dnsType,
 		Generation:      1,
 		Tags:            awstags.Extract(input.TagSpecifications, ec2.ResourceTypeVpcEndpoint),
@@ -374,16 +376,19 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 	case reset:
 		m.policy = aws.String("")
 	}
-	// A new route needs every node able to carry it; a rollback in progress
-	// refuses it. Admission is held to the last write.
-	if len(input.AddRouteTableIds) > 0 {
+	// A new route or a custom policy needs every node able to carry it; a
+	// rollback in progress refuses either. Admission is held to the last write.
+	if len(input.AddRouteTableIds) > 0 || (m.policy != nil && *m.policy != "") {
 		done, ok, err := s.admit(ctx)
 		defer done()
 		if err != nil {
 			return nil, internalError(ctx, "ModifyVpcEndpoint", err)
 		}
-		if !ok {
+		if !ok && len(input.AddRouteTableIds) > 0 {
 			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "Route tables cannot be added to VPC endpoints at the moment.")
+		}
+		if !ok {
+			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "Custom VPC endpoint policies cannot be set at the moment.")
 		}
 	}
 	if m.add, err = s.checkTables(ctx, accountID, rec.VpcID, input.AddRouteTableIds); err != nil {

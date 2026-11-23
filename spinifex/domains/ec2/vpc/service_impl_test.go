@@ -891,6 +891,25 @@ func TestDeleteVpc_RejectsEgressOnlyInternetGateway(t *testing.T) {
 	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the gateway and retry")
 }
 
+// AWS refuses DeleteVpc while a NAT gateway is in the VPC, even once its subnet
+// is gone; deleting it anyway orphans the gateway and its EIP association.
+func TestDeleteVpc_RejectsNatGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.70.0.0/16")
+
+	_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc",
+		[]byte(`{"nat_gateway_id":"nat-0abc","vpc_id":"`+vpcID+`","subnet_id":"subnet-0gone","state":"available"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(t.Context(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	desc, err := svc.DescribeVpcs(t.Context(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the NAT gateway and retry")
+}
+
 // A gateway attached to some other VPC must not block this one.
 func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
 	t.Parallel()

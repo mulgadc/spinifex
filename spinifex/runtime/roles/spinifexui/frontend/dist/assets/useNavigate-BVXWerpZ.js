@@ -1,0 +1,1 @@
+import{r as e}from"./rolldown-runtime-XKyaHtl9.js";import{t}from"./useRouter-Dg_vkym_.js";import{zt as n}from"./schemas-D770-E21.js";var r=e(n(),1);function i(e){let n=t();return r.useCallback(t=>n.navigate({...t,from:t.from??e?.from}),[e?.from,n])}export{i as t};

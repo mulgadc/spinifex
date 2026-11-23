@@ -371,6 +371,27 @@ func TestGetServices(t *testing.T) {
 	}
 }
 
+func TestGetServicesFollowsEBSProvider(t *testing.T) {
+	ocibsd := Config{EBS: EBSConfig{Provider: EBSProviderOCIBSD}}
+	assert.Equal(t, []string{"nats", "predastore", "ocibsd", "daemon", "awsgw", "vpcd", "ui"}, ocibsd.GetServices())
+	assert.False(t, ocibsd.HasService("viperblock"), "an ocibsd node does not run viperblock")
+	assert.True(t, ocibsd.HasService("ocibsd"))
+	assert.Equal(t, []string{"nats", "predastore", "viperblock", "daemon", "awsgw", "vpcd", "ui"}, AllServices, "the default list itself is untouched")
+
+	qemunbd := Config{EBS: EBSConfig{Provider: EBSProviderQEMUNBD}}
+	assert.Equal(t, AllServices, qemunbd.GetServices(), "a qemunbd node keeps the default list")
+
+	viperblockd := Config{EBS: EBSConfig{Provider: EBSProviderViperblockd}}
+	assert.Equal(t, AllServices, viperblockd.GetServices())
+	assert.True(t, viperblockd.HasService("viperblock"))
+	assert.Equal(t, AllServices, Config{}.GetServices(), "an unset provider is viperblockd")
+	embedded := Config{EBS: EBSConfig{Provider: EBSProviderEmbedded}}
+	assert.Equal(t, AllServices, embedded.GetServices(), "an unsupported provider keeps the defaults")
+
+	cluster := ClusterConfig{Node: "n1", Nodes: map[string]Config{"n1": ocibsd, "n2": {}}}
+	assert.Equal(t, ocibsd.GetServices(), cluster.NodeServices("n2"), "a peer stanza without a provider takes the local node's")
+}
+
 // Tests for NodeBaseDir
 
 func TestNodeBaseDir_HappyPath(t *testing.T) {

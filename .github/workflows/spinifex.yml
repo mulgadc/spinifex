@@ -157,7 +157,7 @@ jobs:
           fetch-depth: 2
 
       - name: Setup Go
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: spinifex/go.mod
           cache: false

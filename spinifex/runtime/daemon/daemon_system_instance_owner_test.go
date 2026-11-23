@@ -64,3 +64,16 @@ func TestLaunchSystemInstance_UnwritableOwnerStampFailsTheLaunch(t *testing.T) {
 	require.Eventually(t, func() bool { return len(f.d.vmMgr.Snapshot()) == 0 }, 5*time.Second, 20*time.Millisecond,
 		"the failed launch must leave no VM behind")
 }
+
+func TestLaunchSystemInstance_UnwritableRecordFailsTheLaunch(t *testing.T) {
+	f := newSysInstFixture(t)
+	sysInstLaunchRuns(f.d)
+	breakLocalStateWrite(t, f.d)
+
+	_, err := f.d.LaunchSystemInstance(f.input(f.newENI(t)))
+	require.ErrorContains(t, err, "write instance record",
+		"a system VM with no record cannot be found by ownership checks or recovery and must not be launched")
+
+	require.Eventually(t, func() bool { return len(f.d.vmMgr.Snapshot()) == 0 }, 5*time.Second, 20*time.Millisecond,
+		"the failed launch must be rolled back")
+}

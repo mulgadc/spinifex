@@ -15,6 +15,7 @@ import (
 const (
 	TestRootAccount = testRootAccount
 	TestRootAZ      = testRootAZ
+	TestRootBucket  = testRootBucket
 )
 
 // NewProviderRootVolumeTestService is the in-package provider fixture over an
@@ -23,6 +24,14 @@ func NewProviderRootVolumeTestService(t *testing.T) *InstanceServiceImpl {
 	t.Helper()
 	return providerRootVolumeService(t, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
 		rootVolumeAMILoader(), objectstore.NewMemoryObjectStore())
+}
+
+// NewProviderRootVolumeTestServiceWithStore is NewProviderRootVolumeTestService
+// over store, so a real volume service can share the launch's metadata.
+func NewProviderRootVolumeTestServiceWithStore(t *testing.T, store objectstore.ObjectStore) *InstanceServiceImpl {
+	t.Helper()
+	return providerRootVolumeService(t, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		rootVolumeAMILoader(), store)
 }
 
 func (s *InstanceServiceImpl) MetadataStore() *ebsmetadata.Store { return s.metadata }

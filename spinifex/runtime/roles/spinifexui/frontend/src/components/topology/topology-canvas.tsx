@@ -1,4 +1,3 @@
-import "@xyflow/react/dist/style.css"
 import {
   Background,
   BaseEdge,
@@ -514,7 +513,7 @@ export function TopologyCanvas<N extends Node>({
   return (
     <HoverContext value={hoverContext}>
       <ReactFlow
-        colorMode={theme === "dark" ? "dark" : "light"}
+        forceColorMode={theme === "dark" ? "dark" : "light"}
         edgeTypes={EDGE_TYPES}
         edges={focused}
         fitView

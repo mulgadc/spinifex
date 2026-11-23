@@ -32,6 +32,7 @@ import {
 } from "@/queries/ec2"
 import type { CreateInstanceFormData, CreateInstanceParams } from "@/types/ec2"
 
+import { type KeyPairFlow, KeyPairFlowSection } from "./key-pair-field"
 import { buildRunInstancesCommands } from "./run-instances-cli"
 import {
   defaultTypeName,
@@ -222,6 +223,17 @@ export function RunInstancesPage({
     }
   }
 
+  const [keyPairFlow, setKeyPairFlow] = useState<KeyPairFlow | null>(null)
+
+  // Only the key field changes, so the rest of the launch form keeps its values.
+  function closeKeyPairFlow(_keyPairId?: string, keyName?: string) {
+    setKeyPairFlow(null)
+
+    if (keyName) {
+      setValue("keyName", keyName, { shouldDirty: true, shouldValidate: true })
+    }
+  }
+
   const onSubmit = async (data: CreateInstanceFormData) => {
     // The banner above says why; without compute only a template can launch.
     if (!data.launchTemplateId && !hasCompute) {
@@ -267,92 +279,103 @@ export function RunInstancesPage({
 
   return (
     <>
-      {!hasCompute && !selectedTemplateId && (
-        <ErrorBanner msg="No compute available. No new instances can be created until compute is available." />
+      {keyPairFlow && (
+        <KeyPairFlowSection flow={keyPairFlow} onClose={closeKeyPairFlow} />
       )}
 
-      <form onSubmit={handleSubmit(onSubmit)}>
-        <FormLock
-          className="flex flex-col gap-4"
-          locked={isSubmitting || createMutation.isPending}
-        >
-          {showTemplates && (
-            <LaunchTemplateSection
-              control={control}
-              countField={countField}
-              launchTemplates={launchTemplates}
-              selectedTemplateId={selectedTemplateId}
-            />
-          )}
+      {/* Hidden, not unmounted, so the launch entries survive the key flow. */}
+      <div
+        className={keyPairFlow ? undefined : "contents"}
+        hidden={keyPairFlow !== null}
+      >
+        {!hasCompute && !selectedTemplateId && (
+          <ErrorBanner msg="No compute available. No new instances can be created until compute is available." />
+        )}
 
-          {!selectedTemplateId && (
-            <>
-              <ImageSection
-                arch={arch}
-                architectures={architectures}
-                control={control}
-                errors={errors}
-                images={images}
-                onSelectArchitecture={selectArchitecture}
-                onSelectImage={selectImage}
-              />
-
-              <InstanceSection
-                allInstanceTypes={allInstanceTypes}
-                arch={arch}
-                archTypeNames={archTypeNames}
-                archTypes={archTypes}
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <FormLock
+            className="flex flex-col gap-4"
+            locked={isSubmitting || createMutation.isPending}
+          >
+            {showTemplates && (
+              <LaunchTemplateSection
                 control={control}
                 countField={countField}
-                errors={errors}
-                hasCompute={hasCompute}
-                instanceTypeCapacity={instanceTypeCapacity}
-                keyPairs={keyPairs}
-                placementGroups={placementGroups}
-                register={register}
+                launchTemplates={launchTemplates}
+                selectedTemplateId={selectedTemplateId}
               />
+            )}
 
-              <NetworkSection
-                control={control}
-                defaultSubnet={defaultSubnet}
-                effectiveSubnet={effectiveSubnet}
-                effectiveVpcId={effectiveVpcId}
-                errors={errors}
-                otherSubnets={otherSubnets}
-                routeTables={routeTables}
-                register={register}
-                securityGroups={securityGroups}
-                selectedSubnetId={selectedSubnetId}
-                setValue={setValue}
-              />
+            {!selectedTemplateId && (
+              <>
+                <ImageSection
+                  arch={arch}
+                  architectures={architectures}
+                  control={control}
+                  errors={errors}
+                  images={images}
+                  onSelectArchitecture={selectArchitecture}
+                  onSelectImage={selectImage}
+                />
 
-              <RootVolumeSection
-                control={control}
-                errors={errors}
-                images={images}
-                register={register}
-              />
-            </>
-          )}
+                <InstanceSection
+                  allInstanceTypes={allInstanceTypes}
+                  arch={arch}
+                  archTypeNames={archTypeNames}
+                  archTypes={archTypes}
+                  control={control}
+                  countField={countField}
+                  errors={errors}
+                  hasCompute={hasCompute}
+                  instanceTypeCapacity={instanceTypeCapacity}
+                  keyPairs={keyPairs}
+                  placementGroups={placementGroups}
+                  onStartKeyPairFlow={setKeyPairFlow}
+                  register={register}
+                />
 
-          <CliCommandPanel
-            commands={buildRunInstancesCommands(values, effectiveVpcId)}
-          />
+                <NetworkSection
+                  control={control}
+                  defaultSubnet={defaultSubnet}
+                  effectiveSubnet={effectiveSubnet}
+                  effectiveVpcId={effectiveVpcId}
+                  errors={errors}
+                  otherSubnets={otherSubnets}
+                  routeTables={routeTables}
+                  register={register}
+                  securityGroups={securityGroups}
+                  selectedSubnetId={selectedSubnetId}
+                  setValue={setValue}
+                />
 
-          <FormActions
-            error={createMutation.error}
-            errorMsg="Failed to create instance"
-            isPending={createMutation.isPending}
-            isSubmitting={isSubmitting}
-            onCancel={() => {
-              onClose()
-            }}
-            pendingLabel="Creating…"
-            submitDisabled={!hasCompute && !selectedTemplateId}
-            submitLabel="Create Instance"
-          />
-        </FormLock>
-      </form>
+                <RootVolumeSection
+                  control={control}
+                  errors={errors}
+                  images={images}
+                  register={register}
+                />
+              </>
+            )}
+
+            <CliCommandPanel
+              commands={buildRunInstancesCommands(values, effectiveVpcId)}
+            />
+
+            <FormActions
+              error={createMutation.error}
+              errorMsg="Failed to create instance"
+              isPending={createMutation.isPending}
+              isSubmitting={isSubmitting}
+              onCancel={() => {
+                onClose()
+              }}
+              pendingLabel="Creating…"
+              submitDisabled={!hasCompute && !selectedTemplateId}
+              submitLabel="Create Instance"
+            />
+          </FormLock>
+        </form>
+      </div>
     </>
   )
 }

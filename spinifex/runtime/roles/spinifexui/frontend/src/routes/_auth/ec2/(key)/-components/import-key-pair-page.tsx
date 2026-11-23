@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
+import { useId } from "react"
 import {
   type DeepPartialSkipArrayKey,
   useForm,
@@ -20,12 +21,16 @@ import { useImportKeyPair } from "@/mutations/ec2"
 import { type ImportKeyPairData, importKeyPairSchema } from "@/types/ec2"
 
 interface ImportKeyPairPageProps {
-  // Called with the imported key pair's ID, or with nothing on cancel.
-  onClose: (keyPairId?: string) => void
+  // Called with the imported key pair's ID and name, or with nothing on cancel.
+  onClose: (keyPairId?: string, keyName?: string) => void
 }
 
 export function ImportKeyPairPage({ onClose }: ImportKeyPairPageProps) {
   const importMutation = useImportKeyPair()
+  // Unique ids, so the form can open over another form that has a key field.
+  const keyNameId = useId()
+  const publicKeyId = useId()
+  const publicKeyDescriptionId = useId()
 
   const {
     handleSubmit,
@@ -48,7 +53,7 @@ export function ImportKeyPairPage({ onClose }: ImportKeyPairPageProps) {
       return
     }
 
-    onClose(response.KeyPairId)
+    onClose(response.KeyPairId, data.keyName)
   }
 
   return (
@@ -59,11 +64,11 @@ export function ImportKeyPairPage({ onClose }: ImportKeyPairPageProps) {
       >
         <Field>
           <FieldTitle>
-            <label htmlFor="keyName">Key Pair Name</label>
+            <label htmlFor={keyNameId}>Key Pair Name</label>
           </FieldTitle>
           <Input
             aria-invalid={!!errors.keyName}
-            id="keyName"
+            id={keyNameId}
             placeholder="my-key-pair…"
             {...register("keyName")}
           />
@@ -72,17 +77,18 @@ export function ImportKeyPairPage({ onClose }: ImportKeyPairPageProps) {
 
         <Field>
           <FieldTitle>
-            <label htmlFor="publicKeyMaterial">Public Key</label>
+            <label htmlFor={publicKeyId}>Public Key</label>
           </FieldTitle>
           <p
             className="text-xs text-muted-foreground"
-            id="publicKey-description"
+            id={publicKeyDescriptionId}
           >
             Paste your OpenSSH public key (e.g. the contents of id_rsa.pub)
           </p>
           <Textarea
             aria-invalid={!!errors.publicKeyMaterial}
-            id="publicKeyMaterial"
+            aria-describedby={publicKeyDescriptionId}
+            id={publicKeyId}
             placeholder="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC…"
             rows={8}
             {...register("publicKeyMaterial")}

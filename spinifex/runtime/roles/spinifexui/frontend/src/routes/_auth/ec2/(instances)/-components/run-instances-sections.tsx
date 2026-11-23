@@ -54,6 +54,7 @@ import { ec2LaunchTemplateVersionsQueryOptions } from "@/queries/ec2"
 import { type CreateInstanceFormData, VOLUME_TYPES } from "@/types/ec2"
 
 import { ImagePicker } from "./image-picker"
+import { KeyPairField, type KeyPairFlow } from "./key-pair-field"
 import { LocationTile } from "./location-tile"
 import {
   describeTypeSize,
@@ -363,6 +364,7 @@ interface InstanceSectionProps {
   hasCompute: boolean
   instanceTypeCapacity: Record<string, number>
   keyPairs: readonly KeyPairInfo[]
+  onStartKeyPairFlow: (flow: KeyPairFlow) => void
   placementGroups: readonly PlacementGroup[]
   register: FormRegister
 }
@@ -378,6 +380,7 @@ export function InstanceSection({
   hasCompute,
   instanceTypeCapacity,
   keyPairs,
+  onStartKeyPairFlow,
   placementGroups,
   register,
 }: InstanceSectionProps) {
@@ -407,7 +410,12 @@ export function InstanceSection({
 
         {countField}
 
-        <KeyPairField control={control} errors={errors} keyPairs={keyPairs} />
+        <KeyPairField
+          control={control}
+          errors={errors}
+          keyPairs={keyPairs}
+          onStartFlow={onStartKeyPairFlow}
+        />
 
         <PlacementGroupField
           control={control}
@@ -420,7 +428,11 @@ export function InstanceSection({
 
 type InstanceTypeFieldProps = Omit<
   InstanceSectionProps,
-  "countField" | "keyPairs" | "placementGroups" | "register"
+  | "countField"
+  | "keyPairs"
+  | "onStartKeyPairFlow"
+  | "placementGroups"
+  | "register"
 >
 
 function InstanceTypeField({
@@ -494,50 +506,6 @@ function GpuDescription({ device }: { device: GpuDeviceInfo }) {
         ` · ${formatVRAMMiB(device.MemoryInfo.SizeInMiB)} VRAM`}
       {migProfile && ` · MIG ${migProfile} slice`}
     </FieldDescription>
-  )
-}
-
-function KeyPairField({
-  control,
-  errors,
-  keyPairs,
-}: {
-  control: FormControl
-  errors: FormErrors
-  keyPairs: readonly KeyPairInfo[]
-}) {
-  return (
-    <Field>
-      <FieldTitle>
-        <label htmlFor="keyName">Key Pair</label>
-      </FieldTitle>
-      <Controller
-        control={control}
-        name="keyName"
-        render={({ field }) => (
-          <Select onValueChange={field.onChange} value={field.value ?? ""}>
-            <SelectTrigger
-              aria-invalid={!!errors.keyName}
-              className="w-full"
-              id="keyName"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {keyPairs.map((keyPair) => (
-                <SelectItem
-                  key={keyPair.KeyPairId}
-                  value={keyPair.KeyName ?? ""}
-                >
-                  {keyPair.KeyName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      />
-      <FieldError errors={[errors.keyName]} />
-    </Field>
   )
 }
 

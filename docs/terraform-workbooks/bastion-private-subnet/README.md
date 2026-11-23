@@ -62,7 +62,6 @@ It reaches S3 through an S3 gateway VPC endpoint on its route table, so its S3 t
 - Spinifex installed and running (see [Installing Spinifex](/docs/install))
 - An Ubuntu 26.04 AMI imported (see [Setting Up Your Cluster](/docs/setting-up-your-cluster))
 - OpenTofu or Terraform installed
-- The S3 gateway endpoint service offered by the cluster: `aws ec2 describe-vpc-endpoint-services --profile spinifex` must list `com.amazonaws.<region>.s3`. The cluster offers the service when every node reports feature level 2 in `spx admin cluster status`.
 
 ## Instructions
 
@@ -119,23 +118,6 @@ curl --connect-timeout 5 https://deb.debian.org || echo "No internet access (exp
 The private instance can communicate within the VPC (`10.20.0.0/16`) and with S3 through the gateway endpoint.
 Its security group allows egress to the VPC, and to the S3 prefix list on the S3 port.
 
-### Step 5. Verify S3 Access Through the Endpoint
-
-On your workstation, print the command:
-
-```bash
-tofu output -raw s3_check_from_private
-```
-
-Run the printed command on the private instance. It has the form `curl -sk https://<s3_gateway_address>:<s3_gate_port>/`, with the address and port that the workbook uses.
-
-The request is unsigned, so S3 answers with an `AccessDenied` error document.
-That answer shows that the private instance reaches S3 through the endpoint with no internet route.
-A signed request from a principal with `s3:ListAllMyBuckets` permission, for example from the AWS CLI, lists your buckets.
-
-> **Note:** On AWS, S3 is at `s3.<region>.amazonaws.com` on port 443. On Spinifex, use an address from the `s3_gateway_addresses` output and the port from the `s3_gate_port` output (8443 by default). The security group egress rule uses the same port.
-> `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA. `--cacert` with the cluster CA verifies the certificate only if the certificate names the address that you dial.
-
 ### Clean Up
 
 ```bash
@@ -176,9 +158,21 @@ Also verify that the private security group egress allows only the VPC CIDR (`10
 The apply fails on `aws_vpc_endpoint.s3`, or the `aws_vpc_endpoint_service` data source finds no service, when the cluster does not offer the S3 gateway endpoint service yet.
 Check that `aws ec2 describe-vpc-endpoint-services --profile spinifex` lists `com.amazonaws.<region>.s3`. Use `spx admin cluster status` to find the node that has not reached feature level 2.
 
-### S3 Check Times Out or Resets
+### Private Instance Cannot Reach S3
 
-A timeout or a reset connection is a symptom, and more than one fault causes each. Do these checks:
+On your workstation, print the S3 check command:
+
+```bash
+tofu output -raw s3_check_from_private
+```
+
+Run the printed command on the private instance. It has the form `curl -sk https://<s3_gateway_address>:<s3_gate_port>/`.
+The request is unsigned, so S3 answers with an `AccessDenied` error document, which shows that the path through the endpoint works.
+
+> **Note:** On AWS, S3 is at `s3.<region>.amazonaws.com` on port 443. On Spinifex, use an address from the `s3_gateway_addresses` output and the port from the `s3_gate_port` output (8443 by default). The security group egress rule uses the same port.
+> `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA.
+
+If the command times out or the connection resets, more than one fault can cause it. Do these checks:
 
 1. The private route table is associated with the endpoint:
 

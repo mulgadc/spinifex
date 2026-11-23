@@ -87,6 +87,8 @@ func TestDescribeTags_ReturnsCreateVolumeCreationTags(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	require.Len(t, described.Volumes[0].Tags, 1, "DescribeVolumes is the owner's view of the creation tags")
+	assert.Equal(t, "Name", aws.StringValue(described.Volumes[0].Tags[0].Key))
+	assert.Equal(t, "data", aws.StringValue(described.Volumes[0].Tags[0].Value))
 
 	assert.Equal(t, map[string]string{"Name": "data"}, describeVolumeTags(t, caller, aws.StringValue(created.VolumeId)))
 }

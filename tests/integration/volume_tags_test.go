@@ -36,6 +36,8 @@ func TestDescribeTags_ReturnsCreateVolumeCreationTags(t *testing.T) {
 	require.NoError(t, err, "DescribeVolumes")
 	require.Len(t, desc.Volumes, 1)
 	require.Len(t, desc.Volumes[0].Tags, 1, "DescribeVolumes returns the creation tag")
+	assert.Equal(t, "Name", aws.StringValue(desc.Volumes[0].Tags[0].Key))
+	assert.Equal(t, "data", aws.StringValue(desc.Volumes[0].Tags[0].Value))
 
 	tags, err := c.DescribeTags(&ec2.DescribeTagsInput{Filters: []*ec2.Filter{{
 		Name: aws.String("resource-id"), Values: []*string{aws.String(volumeID)},

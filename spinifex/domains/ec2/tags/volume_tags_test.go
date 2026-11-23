@@ -2,11 +2,13 @@ package tags
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,4 +112,46 @@ func TestDescribeTags_InstanceTypeFilterSkipsVolumes(t *testing.T) {
 	rows := describeRows(t, svc, filter("resource-type", "instance"))
 	assert.Equal(t, []row{{"i-test1", "instance", "Stale", "index"}}, rows)
 	assert.Empty(t, vols.calls, "no volume read when the type filter excludes volumes")
+}
+
+// failingVolumeTags fails every read, so a test can show a request never
+// reaches the volume records.
+type failingVolumeTags struct{}
+
+func (failingVolumeTags) VolumeTags(context.Context, string, []string) (map[string]map[string]string, error) {
+	return nil, errors.New("volume store unavailable")
+}
+
+func TestDescribeTags_PatternThatCannotMatchAVolumeSkipsVolumeReads(t *testing.T) {
+	svc, _ := volumeTagsService(t)
+	svc.SetVolumeTagReader(failingVolumeTags{})
+
+	rows := describeRows(t, svc, filter("resource-id", "i-*"))
+	assert.Equal(t, []row{{"i-test1", "instance", "Stale", "index"}}, rows)
+}
+
+func TestDescribeTags_PatternThatCanMatchAVolumeListsVolumes(t *testing.T) {
+	for _, pattern := range []string{"*", "v*", "vol-?aa", "*aaa"} {
+		svc, vols := volumeTagsService(t)
+		describeRows(t, svc, filter("resource-id", pattern))
+		assert.Equal(t, [][]string{nil}, vols.calls, "pattern %q", pattern)
+	}
+}
+
+// unlistableKV fails any listing of the tag bucket.
+type unlistableKV struct{ jetstream.KeyValue }
+
+func (unlistableKV) Keys(context.Context, ...jetstream.WatchOpt) ([]string, error) {
+	return nil, errors.New("tag bucket unavailable")
+}
+
+func TestDescribeTags_ExactVolumeIDsDoNotListTheTagStore(t *testing.T) {
+	svc, _ := volumeTagsService(t)
+	svc.kv = unlistableKV{svc.kv}
+
+	rows := describeRows(t, svc, filter("resource-id", "vol-bbb"))
+	assert.ElementsMatch(t, []row{
+		{"vol-bbb", "volume", "Name", "root"},
+		{"vol-bbb", "volume", "Team", "storage"},
+	}, rows)
 }

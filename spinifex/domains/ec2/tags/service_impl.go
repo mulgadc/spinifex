@@ -356,10 +356,16 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 
 	var tags []*ec2.TagDescription
 
-	resourceIDs, err := s.taggedResourceIDs(ctx, accountID)
-	if err != nil {
-		slog.ErrorContext(ctx, "DescribeTags failed to list tagged resources", "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	// A request for exact volume IDs only, as Terraform sends, needs no scan
+	// of the tag store: its rows come from the volume records.
+	var resourceIDs []string
+	if s.volumes == nil || !exactVolumeIDsOnly(filters["resource-id"]) {
+		var err error
+		resourceIDs, err = s.taggedResourceIDs(ctx, accountID)
+		if err != nil {
+			slog.ErrorContext(ctx, "DescribeTags failed to list tagged resources", "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	volumeTags, err := s.describeVolumeTags(ctx, accountID, filters)
@@ -430,6 +436,24 @@ func isVolumeID(resourceID string) bool {
 	return strings.HasPrefix(resourceID, "vol-")
 }
 
+const filterWildcards = `*?\`
+
+func exactVolumeIDsOnly(ids []string) bool {
+	return len(ids) > 0 && !slices.ContainsFunc(ids, func(id string) bool {
+		return strings.ContainsAny(id, filterWildcards) || !isVolumeID(id)
+	})
+}
+
+// mayMatchVolumeID reports whether a wildcard resource-id pattern can match a
+// volume ID, judged from its literal text before the first wildcard.
+func mayMatchVolumeID(pattern string) bool {
+	lit := pattern
+	if i := strings.IndexAny(pattern, filterWildcards); i >= 0 {
+		lit = pattern[:i]
+	}
+	return strings.HasPrefix(lit, "vol-") || strings.HasPrefix("vol-", lit)
+}
+
 // describeVolumeTags reads the volume rows DescribeTags can return. Exact
 // resource-id filters are point reads; any other filter lists the account.
 func (s *TagsServiceImpl) describeVolumeTags(ctx context.Context, accountID string, filters map[string][]string) (map[string]map[string]string, error) {
@@ -442,8 +466,11 @@ func (s *TagsServiceImpl) describeVolumeTags(ctx context.Context, accountID stri
 	}
 	var volumeIDs []string
 	for _, id := range ids {
-		if strings.ContainsAny(id, `*?\`) {
-			return s.volumes.VolumeTags(ctx, accountID, nil)
+		if strings.ContainsAny(id, filterWildcards) {
+			if mayMatchVolumeID(id) {
+				return s.volumes.VolumeTags(ctx, accountID, nil)
+			}
+			continue
 		}
 		if isVolumeID(id) && taggableIDShape.MatchString(id) {
 			volumeIDs = append(volumeIDs, id)

@@ -382,15 +382,20 @@ func (in *Initializer) publishMarker(ctx context.Context, si StreamIntent) (uint
 	return in.publishOnce(ctx, msg, si.Bucket, 0, "marker "+si.Bucket, extra...)
 }
 
+// publishOnce sends msg once through the initializer's connection.
+func (in *Initializer) publishOnce(ctx context.Context, msg *nats.Msg, bucket string, expected uint64, what string, extra ...jetstream.PublishOpt) (uint64, error) {
+	return publishOnce(ctx, in.js, msg, bucket, expected, what, extra...)
+}
+
 // publishOnce sends msg once to bucket's stream, conditional on the subject's
 // last sequence. A refused condition is ErrChanged; anything else that is not
 // an acknowledgement is ErrOutcomeUnknown.
-func (in *Initializer) publishOnce(ctx context.Context, msg *nats.Msg, bucket string, expected uint64, what string, extra ...jetstream.PublishOpt) (uint64, error) {
+func publishOnce(ctx context.Context, js jetstream.JetStream, msg *nats.Msg, bucket string, expected uint64, what string, extra ...jetstream.PublishOpt) (uint64, error) {
 	opts := append([]jetstream.PublishOpt{
 		jetstream.WithExpectStream(streamName(bucket)),
 		jetstream.WithExpectLastSequencePerSubject(expected),
 		jetstream.WithRetryAttempts(0)}, extra...)
-	ack, err := in.js.PublishMsg(ctx, msg, opts...)
+	ack, err := js.PublishMsg(ctx, msg, opts...)
 	switch {
 	case err == nil && ack != nil && ack.Stream == streamName(bucket):
 		return ack.Sequence, nil

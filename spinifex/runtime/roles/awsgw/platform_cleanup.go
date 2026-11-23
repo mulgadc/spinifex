@@ -73,14 +73,11 @@ func newStartupRetry(now func() time.Time, wait func(time.Duration)) *startupRet
 	return &startupRetry{deadline: now().Add(cleanupRetryBudget), now: now, wait: wait}
 }
 
-// retryCleanupBuild runs build until it succeeds, every attempt is spent, or
-// the shared budget would be overrun; no build starts once it is spent.
+// retryCleanupBuild always makes the first attempt, then retries only while
+// each wait ends before the shared deadline, returning the last error.
 func retryCleanupBuild(name string, r *startupRetry, build func() error) error {
 	attempts := len(cleanupBuildBackoff) + 1
 	for attempt := 1; ; attempt++ {
-		if !r.now().Before(r.deadline) {
-			return fmt.Errorf("%s cleanup not built: startup retry budget spent", name)
-		}
 		err := build()
 		if err == nil || attempt == attempts {
 			return err

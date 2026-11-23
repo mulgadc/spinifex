@@ -131,23 +131,24 @@ func TestCleanupBuildTimeCountsAgainstTheStartupBudget(t *testing.T) {
 	assert.LessOrEqual(t, clock.elapsed, cleanupRetryBudget+5*time.Second, "at most one build in flight past the budget")
 }
 
-// Once the budget is spent no further build starts, so a build that ran past
-// the deadline is the only one that can.
-func TestNoCleanupBuildStartsOnceTheBudgetIsSpent(t *testing.T) {
+// A platform build that outlasts the budget still leaves the compute and
+// storage build its first attempt, so a gateway is not left without them.
+func TestEachCleanupBuildGetsAFirstAttemptAfterTheBudget(t *testing.T) {
 	t.Parallel()
 	clock := &fakeStartup{}
 	retry := clock.retry()
 	d := withPlatformCleaner(operatoradmin.Deps{}, retry, func() (accountlifecycle.PlatformCleaner, error) {
 		clock.elapsed += cleanupRetryBudget + time.Second
-		return nil, errJetStreamTimeout
+		return fixedCleaner{}, nil
 	})
 	computeCalls := 0
 	d = withComputeCleaners(d, retry, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
 		computeCalls++
-		return stubCompute{}, stubStorage{}, nil
+		return nil, nil, errJetStreamTimeout
 	})
 
-	assert.Nil(t, d.PlatformCleaner)
-	assert.Zero(t, computeCalls)
+	assert.NotNil(t, d.PlatformCleaner)
+	assert.Equal(t, 1, computeCalls, "a first attempt, and no retry past the deadline")
+	assert.Empty(t, clock.waits)
 	assert.Nil(t, d.ComputeCleaner)
 }

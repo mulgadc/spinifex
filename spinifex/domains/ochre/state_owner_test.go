@@ -193,3 +193,36 @@ func TestEndpointRecord_AmbiguousOwnerIsInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestEndpointRecord_OwnedRecordNeedsOneExactNodeID(t *testing.T) {
+	const owner = `"launch_owner":{"worker_nonce":"nonce-1","token_id":"launch-1","epoch":3}`
+	head := `{"account_id":"000000000000","model_id":"model","state":"STARTING","generation":4,`
+	for name, data := range map[string]string{
+		"node repeated, owner's node first": head + `"node_id":"node-1","node_id":"node-2",` + owner + `}`,
+		"node repeated, owner's node last":  head + `"node_id":"node-2","node_id":"node-1",` + owner + `}`,
+		"node key in another case":          head + `"Node_ID":"node-1",` + owner + `}`,
+		"node key and a case alias":         head + `"node_id":"node-1","NODE_ID":"node-2",` + owner + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := decode(t, data)
+			_, ok, err := rec.Owner()
+			require.ErrorIs(t, err, ochre.ErrLaunchOwnerInvalid)
+			assert.True(t, ok, "an ambiguous node makes the owner damaged, not absent")
+			assert.Equal(t, uint64(4), rec.Generation, "the rest of the record is kept")
+			_, err = json.Marshal(rec)
+			require.ErrorIs(t, err, ochre.ErrLaunchOwnerInvalid)
+		})
+	}
+
+	rec := decode(t, head+`"node_id":"node-1",`+owner+`}`)
+	got, ok, err := rec.Owner()
+	require.NoError(t, err, "one exact node_id is accepted")
+	assert.True(t, ok)
+	assert.Equal(t, completeOwner, got)
+
+	legacy := decode(t, head+`"node_id":"node-1","NODE_ID":"node-2"}`)
+	_, ok, err = legacy.Owner()
+	require.NoError(t, err)
+	assert.False(t, ok, "a record with no owner stays legacy")
+	assert.Equal(t, "node-2", legacy.NodeID, "and keeps the default last-key-wins decoding")
+}

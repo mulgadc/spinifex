@@ -258,9 +258,9 @@ func (r EndpointRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(endpointRecordJSON(r))
 }
 
-// UnmarshalJSON is the default decoding, except that a repeated launch_owner
-// key or one in another case marks the owner invalid; other fields keep the
-// default rules.
+// UnmarshalJSON is the default decoding, except that a repeated or differently
+// cased launch_owner key, or such a node_id key beside an owner, marks the
+// owner invalid. A record with no owner keeps the default rules.
 func (r *EndpointRecord) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*endpointRecordJSON)(r)); err != nil {
 		return err
@@ -269,19 +269,29 @@ func (r *EndpointRecord) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	owners := 0
-	for _, k := range keys {
-		if strings.EqualFold(k, "launch_owner") {
-			owners++
-			if k != "launch_owner" {
-				owners++
-			}
-		}
-	}
-	if owners > 1 {
+	owners, nodes := keyCount(keys, "launch_owner"), keyCount(keys, "node_id")
+	switch {
+	case owners > 1:
 		r.LaunchOwner = OwnerField{present: true, invalid: fmt.Errorf("%w: ambiguous launch_owner field", ErrLaunchOwnerInvalid)}
+	case r.LaunchOwner.present && nodes > 1:
+		r.LaunchOwner = OwnerField{present: true, invalid: fmt.Errorf("%w: ambiguous node_id field", ErrLaunchOwnerInvalid)}
 	}
 	return nil
+}
+
+// keyCount counts name among keys, counting a key in another case twice so
+// that it is always ambiguous.
+func keyCount(keys []string, name string) int {
+	n := 0
+	for _, k := range keys {
+		switch {
+		case k == name:
+			n++
+		case strings.EqualFold(k, name):
+			n += 2
+		}
+	}
+	return n
 }
 
 // Owner returns the record's launch owner. ok is false only for a record with

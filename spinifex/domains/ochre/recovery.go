@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -55,12 +57,10 @@ func (r *Reaper) recoverOne(ctx context.Context, listed EndpointRecord, lost <-c
 
 	probeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
-	for modelID, target := range targets {
-		if probeLiveness(probeCtx, r.svc.httpClient(), target.BaseURL+target.Path) != livenessLive {
-			slog.InfoContext(ctx, "bedrock reaper: parked endpoint member not ready; left parked",
-				"model", observed.ModelID, "member", modelID, "instanceId", observed.InstanceID)
-			return
-		}
+	if member, live := allMembersLive(probeCtx, r.svc.httpClient(), targets); !live {
+		slog.InfoContext(ctx, "bedrock reaper: parked endpoint member not ready; left parked",
+			"model", observed.ModelID, "member", member, "instanceId", observed.InstanceID)
+		return
 	}
 
 	unlock := r.svc.ensureMu.lock(key)
@@ -96,6 +96,35 @@ func (r *Reaper) recoverOne(ctx context.Context, listed EndpointRecord, lost <-c
 	}
 	slog.InfoContext(ctx, "bedrock reaper: parked endpoint recovered to READY",
 		"model", observed.ModelID, "instanceId", observed.InstanceID)
+}
+
+// allMembersLive probes every member at once within ctx, so each gets the full
+// scrape budget. It names a member that did not answer a direct 200; that
+// failure cancels the other probes.
+func allMembersLive(ctx context.Context, client *http.Client, targets map[string]readinessTarget) (string, bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failed := ""
+
+	wg.Add(len(targets))
+	for modelID, target := range targets {
+		go func(modelID string, target readinessTarget) {
+			defer wg.Done()
+			if probeLiveness(ctx, client, target.BaseURL+target.Path) == livenessLive {
+				return
+			}
+			mu.Lock()
+			if failed == "" {
+				failed = modelID
+			}
+			mu.Unlock()
+			cancel()
+		}(modelID, target)
+	}
+	wg.Wait()
+	return failed, failed == ""
 }
 
 // sameParked reports whether current is still the parked incarnation and

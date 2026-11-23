@@ -170,6 +170,60 @@ func TestRecoverParked_HealthyBundleIsPromoted(t *testing.T) {
 	}
 }
 
+// barrierProbe answers no member until every expected member has a probe in
+// flight, so a prober that waits for one member before the next never passes.
+type barrierProbe struct {
+	want int
+	mu   sync.Mutex
+	seen map[string]int
+	all  chan struct{}
+	open bool
+}
+
+func newBarrierProbe(want int) *barrierProbe {
+	return &barrierProbe{want: want, seen: map[string]int{}, all: make(chan struct{})}
+}
+
+func (b *barrierProbe) RoundTrip(r *http.Request) (*http.Response, error) {
+	b.mu.Lock()
+	b.seen[r.URL.Host]++
+	if len(b.seen) == b.want && !b.open {
+		b.open = true
+		close(b.all)
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.all:
+		return probeAnswer(http.StatusOK, ""), nil
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+}
+
+// Each member gets the full scrape budget: members that are slow but healthy
+// are probed together, and the bundle is promoted.
+func TestRecoverParked_MembersAreProbedConcurrently(t *testing.T) {
+	t.Parallel()
+	f := newRecoveryFixture(t)
+	seeded := parkedBundle(t, awsidentifiers.GlobalAccountID)
+	key := f.seed(t, seeded)
+	barrier := newBarrierProbe(len(seeded.Members))
+	f.svc.deps.HTTPClient = &http.Client{Transport: barrier}
+	reaper := testReaper(t, f.svc, testNodeID, ReaperDeps{IdleTTL: time.Hour, ScrapeTimeout: 2 * time.Second})
+
+	require.NoError(t, reaper.sweepOnce(t.Context(), nil))
+
+	got := f.current(t, key)
+	assert.Equal(t, StateReady, got.State, "every member answered while all were in flight")
+	assert.Equal(t, seeded.Generation+1, got.Generation)
+	barrier.mu.Lock()
+	defer barrier.mu.Unlock()
+	for modelID, m := range seeded.Members {
+		assert.Equal(t, 1, barrier.seen[net.JoinHostPort(recoveryIP, strconv.Itoa(m.Port))], modelID)
+	}
+	f.assertNothingDone(t)
+}
+
 // The READY sweep stays global-only: a recovered tenant endpoint is not
 // scraped or escalated by it, however its members answer.
 func TestRecoverParked_TenantRecordKeepsGlobalOnlyReadySweep(t *testing.T) {

@@ -12,9 +12,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
-// errRecoveryIncomplete marks a parked record whose persisted identity cannot
-// be safely compared with what its co-serve group must have launched.
-var errRecoveryIncomplete = errors.New("bedrock: parked endpoint identity is incomplete")
+// errBundleIdentity marks a record whose persisted identity cannot be safely
+// compared with what its co-serve group must have launched.
+var errBundleIdentity = errors.New("bedrock: endpoint identity cannot be verified against its catalog group")
 
 // recoverParked re-probes every parked launch, in every account, and promotes
 // one to READY only when each expected member answers its own route directly.
@@ -105,25 +105,46 @@ func sameParked(current, observed EndpointRecord) bool {
 		current.Generation == observed.Generation && current.ParkedReason == observed.ParkedReason
 }
 
-// parkedTargets checks rec against the co-serve group its model launches with
-// and returns each member's readiness target and the primary's base URL. Every
-// member must match the catalog's set, family and assigned port exactly.
+// parkedTargets checks a parked rec's marker and its co-serve group, and
+// returns each member's readiness target and the primary's base URL.
 func parkedTargets(rec EndpointRecord) (map[string]readinessTarget, string, error) {
 	switch rec.ParkedReason {
 	case ParkReadinessRedirected, ParkReadinessTimedOut:
 	default:
-		return nil, "", fmt.Errorf("%w: unknown park reason", errRecoveryIncomplete)
+		return nil, "", fmt.Errorf("%w: unknown park reason", errBundleIdentity)
 	}
-	if rec.ParkedAt.IsZero() || rec.CreatedAt.IsZero() || rec.NodeID == "" || rec.InstanceID == "" || rec.ENIID == "" ||
+	if rec.ParkedAt.IsZero() {
+		return nil, "", fmt.Errorf("%w: missing marker or resource identity", errBundleIdentity)
+	}
+	bundle, err := catalogBundle(rec)
+	if err != nil {
+		return nil, "", err
+	}
+	return bundle.targets, bundle.targets[bundle.primary].BaseURL, nil
+}
+
+// bundleIdentity is a record's co-serve group as verified against the catalog:
+// every member's own target, and the primary member chosen as at launch.
+type bundleIdentity struct {
+	targets       map[string]readinessTarget
+	primary       string
+	primaryFamily string
+}
+
+// catalogBundle checks rec against the co-serve group its model launches with.
+// Every member must match the catalog's set, family and assigned port exactly,
+// on the record's own address, with its own weights volume.
+func catalogBundle(rec EndpointRecord) (bundleIdentity, error) {
+	if rec.CreatedAt.IsZero() || rec.NodeID == "" || rec.InstanceID == "" || rec.ENIID == "" ||
 		rec.WeightsVolumeID == "" || net.ParseIP(rec.PrivateIP) == nil {
-		return nil, "", fmt.Errorf("%w: missing marker or resource identity", errRecoveryIncomplete)
+		return bundleIdentity{}, fmt.Errorf("%w: missing marker or resource identity", errBundleIdentity)
 	}
 	spec, found, selfHost := LookupCoServeGroup(rec.ModelID)
 	if !found || !selfHost {
-		return nil, "", fmt.Errorf("%w: model is not a self-hosted catalog entry", errRecoveryIncomplete)
+		return bundleIdentity{}, fmt.Errorf("%w: model is not a self-hosted catalog entry", errBundleIdentity)
 	}
 	if len(rec.Members) != len(spec.Members) {
-		return nil, "", fmt.Errorf("%w: member set differs from the catalog", errRecoveryIncomplete)
+		return bundleIdentity{}, fmt.Errorf("%w: member set differs from the catalog", errBundleIdentity)
 	}
 	inputs := make([]LaunchMemberInput, 0, len(spec.Members))
 	for _, m := range spec.Members {
@@ -131,34 +152,37 @@ func parkedTargets(rec EndpointRecord) (map[string]readinessTarget, string, erro
 	}
 	ports := assignMemberPorts(inputs)
 
-	primary := spec.Members[0].ModelID
-	targets := make(map[string]readinessTarget, len(spec.Members))
+	bundle := bundleIdentity{
+		targets:       make(map[string]readinessTarget, len(spec.Members)),
+		primary:       spec.Members[0].ModelID,
+		primaryFamily: spec.Members[0].Family,
+	}
 	seenPorts := make(map[int]bool, len(spec.Members))
 	seenVolumes := make(map[string]bool, len(spec.Members))
 	for _, want := range spec.Members {
 		got, ok := rec.Members[want.ModelID]
 		switch {
 		case !ok:
-			return nil, "", fmt.Errorf("%w: member set differs from the catalog", errRecoveryIncomplete)
+			return bundleIdentity{}, fmt.Errorf("%w: member set differs from the catalog", errBundleIdentity)
 		case got.Family != want.Family:
-			return nil, "", fmt.Errorf("%w: member family differs from the catalog", errRecoveryIncomplete)
+			return bundleIdentity{}, fmt.Errorf("%w: member family differs from the catalog", errBundleIdentity)
 		case got.Port != ports[want.ModelID] || seenPorts[got.Port]:
-			return nil, "", fmt.Errorf("%w: member port differs from its assignment", errRecoveryIncomplete)
+			return bundleIdentity{}, fmt.Errorf("%w: member port differs from its assignment", errBundleIdentity)
 		case got.WeightsVolumeID == "" || seenVolumes[got.WeightsVolumeID]:
-			return nil, "", fmt.Errorf("%w: member weights volume missing or shared", errRecoveryIncomplete)
+			return bundleIdentity{}, fmt.Errorf("%w: member weights volume missing or shared", errBundleIdentity)
 		}
 		seenPorts[got.Port] = true
 		seenVolumes[got.WeightsVolumeID] = true
 		if want.Family == FamilyMeta {
-			primary = want.ModelID
+			bundle.primary, bundle.primaryFamily = want.ModelID, want.Family
 		}
-		targets[want.ModelID] = readinessTarget{
+		bundle.targets[want.ModelID] = readinessTarget{
 			BaseURL: "http://" + net.JoinHostPort(rec.PrivateIP, strconv.Itoa(got.Port)),
 			Path:    readinessPath(got.Family),
 		}
 	}
-	if rec.Members[primary].WeightsVolumeID != rec.WeightsVolumeID {
-		return nil, "", fmt.Errorf("%w: primary weights volume differs", errRecoveryIncomplete)
+	if rec.Members[bundle.primary].WeightsVolumeID != rec.WeightsVolumeID {
+		return bundleIdentity{}, fmt.Errorf("%w: primary weights volume differs", errBundleIdentity)
 	}
-	return targets, targets[primary].BaseURL, nil
+	return bundle, nil
 }

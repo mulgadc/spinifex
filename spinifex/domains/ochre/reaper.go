@@ -155,23 +155,6 @@ func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
 	return errors.Join(failures...)
 }
 
-// reaperScrapesMetrics reports whether rec exposes the vLLM Prometheus series
-// idle-reclaim reads. Only a bundle with a generative (vLLM) member does; a
-// service-only bundle (embed/rerank) has no such load metrics and is
-// liveness-probed instead. A record with no members recorded takes the vLLM
-// path, where its unknown primary identity keeps it held.
-func reaperScrapesMetrics(rec EndpointRecord) bool {
-	if len(rec.Members) == 0 {
-		return true
-	}
-	for _, m := range rec.Members {
-		if m.Family == FamilyMeta {
-			return true
-		}
-	}
-	return false
-}
-
 // sweepEndpoint holds one READY endpoint, probes it once without following a
 // redirect, and releases the hold only on a direct healthy answer. A failed
 // probe leaves the hold and changes nothing else: no activity, no teardown.
@@ -185,20 +168,27 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, listed EndpointRecord, lost 
 	scrapeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
 
-	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
-	// it is kept warm and only liveness-probed rather than idle-scraped.
-	if !reaperScrapesMetrics(rec) {
-		r.sweepLiveness(scrapeCtx, key, rec, rev, lost)
-		return nil
+	// The probe target comes from the catalog group, checked against this
+	// record; an address the record cannot vouch for is never probed.
+	bundle, err := catalogBundle(rec)
+	if err == nil && rec.BaseURL != bundle.targets[bundle.primary].BaseURL {
+		err = fmt.Errorf("%w: base URL is not the primary member's address", errBundleIdentity)
 	}
-
-	model, err := vllmModelFor(rec)
 	if err != nil {
-		slog.WarnContext(ctx, "bedrock reaper: metrics identity unknown; endpoint held",
+		slog.WarnContext(ctx, "bedrock reaper: endpoint identity unverified; endpoint held",
 			"model", rec.ModelID, "instanceId", rec.InstanceID, "err", err)
 		return nil
 	}
-	sample, err := probeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL, model)
+	primary := bundle.targets[bundle.primary]
+
+	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
+	// it is kept warm and only liveness-probed rather than idle-scraped.
+	if bundle.primaryFamily != FamilyMeta {
+		r.sweepLiveness(scrapeCtx, key, rec, rev, primary, lost)
+		return nil
+	}
+
+	sample, err := probeMetrics(scrapeCtx, r.svc.httpClient(), primary.BaseURL, bundle.primary)
 	if err != nil {
 		slog.WarnContext(ctx, "bedrock reaper: metrics probe failed; endpoint held",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
@@ -230,11 +220,11 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, listed EndpointRecord, lost 
 // sweepLiveness keeps a service-only bundle (embed/rerank, no generative
 // member) warm without idle-reclaim: a direct 200 on /health refreshes the
 // warm clock and releases the hold; anything else leaves the endpoint held.
-func (r *Reaper) sweepLiveness(ctx context.Context, key string, rec EndpointRecord, rev uint64, lost <-chan struct{}) {
-	if outcome := probeLiveness(ctx, r.svc.httpClient(), rec.BaseURL+"/health"); outcome != livenessLive {
+func (r *Reaper) sweepLiveness(ctx context.Context, key string, rec EndpointRecord, rev uint64, target readinessTarget, lost <-chan struct{}) {
+	if outcome := probeLiveness(ctx, r.svc.httpClient(), target.BaseURL+target.Path); outcome != livenessLive {
 		slog.WarnContext(ctx, "bedrock reaper: liveness probe failed; endpoint held",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
-			"endpoint", endpointLogID(rec.BaseURL), "redirected", outcome == livenessRedirected)
+			"endpoint", endpointLogID(target.BaseURL), "redirected", outcome == livenessRedirected)
 		return
 	}
 	now := time.Now().UTC()

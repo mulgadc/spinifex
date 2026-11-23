@@ -182,28 +182,25 @@ func TestParseVLLMMetrics_MissingFinishReasonWithUnchangedTotal(t *testing.T) {
 	require.ErrorIs(t, err, errMetricsIncomplete)
 }
 
-func TestVLLMModelFor(t *testing.T) {
-	meta := MemberEndpoint{Port: 8000, Family: FamilyMeta}
-	other := MemberEndpoint{Port: 8001, Family: "cohere"}
-	cases := map[string]struct {
-		members map[string]MemberEndpoint
-		want    string
-	}{
-		"primary among services": {map[string]MemberEndpoint{testModelID: meta, "cohere.embed": other}, testModelID},
-		"no members":             {nil, ""},
-		"no vLLM member":         {map[string]MemberEndpoint{"cohere.embed": other}, ""},
-		"two vLLM members":       {map[string]MemberEndpoint{testModelID: meta, "other": meta}, ""},
-		"empty model id":         {map[string]MemberEndpoint{"": meta}, ""},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := vllmModelFor(EndpointRecord{ModelID: testModelID, Members: tc.members})
-			if tc.want == "" {
-				require.ErrorIs(t, err, errMetricsIdentity)
+// vLLM's counters are floats: at 2^53 one more request may not change the
+// value, so only counts below it are exact evidence of no new work.
+func TestParseVLLMMetrics_ExactCountBoundary(t *testing.T) {
+	lines := vllmMetricsLines(testModelID, 0, 0, 0)
+	for value, want := range map[string]error{
+		"9007199254740991":       nil,
+		"9.007199254740991e+15":  nil,
+		"9007199254740992":       errMetricsRange,
+		"9.007199254740992e+15":  errMetricsRange,
+	} {
+		t.Run(value, func(t *testing.T) {
+			body := editLines(lines, map[string]string{successLine("stop"): successLine("stop") + " " + value})
+			m, err := parseVLLMMetrics([]byte(body), testModelID)
+			if want != nil {
+				require.ErrorIs(t, err, want)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
+			assert.EqualValues(t, uint64(1<<53-1), m.successTotal)
 		})
 	}
 }

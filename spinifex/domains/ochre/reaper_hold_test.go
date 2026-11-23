@@ -13,6 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// catalogVictimModel is a standalone self-hosted model that is not testModelID,
+// so a capacity eviction for testModelID can select it.
+const catalogVictimModel = "meta.llama3-2-3b-instruct-v1:0"
+
 // holdWriteAt fails the nth health-hold write (1-based) as fail directs and
 // passes every other write through. It returns the count of writes seen.
 func holdWriteAt(f *reaperFixture, n int, fail func(write func() (uint64, error)) (uint64, error)) *int {
@@ -161,7 +165,7 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func(*vllmTransport){
 		"failed probe":  func(v *vllmTransport) { v.breakScrapes() },
-		"healthy probe": func(v *vllmTransport) { v.serveFor(evictionVictimModel, 0, 0, 0) },
+		"healthy probe": func(v *vllmTransport) { v.serveFor(catalogVictimModel, 0, 0, 0) },
 	}
 	for name, answer := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -171,11 +175,11 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 			transport := &vllmTransport{}
 			answer(transport)
 			s.deps.HTTPClient = &http.Client{Transport: transport}
-			seeded := seedReadyEndpoint(t, s, evictionVictimModel, time.Now().UTC().Add(-time.Hour))
-			victimKey := EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel)
-			victim, rev := readRecord(t, s, victimKey)
-			victim.Members = map[string]MemberEndpoint{evictionVictimModel: {Port: 8000, Family: FamilyMeta}}
-			_, err := s.store.CompareAndSet(t.Context(), victimKey, &victim, rev)
+			seeded := catalogBundleRecord(t, catalogVictimModel, awsidentifiers.GlobalAccountID, "10.244.1.9")
+			seeded.State, seeded.InstanceID, seeded.NodeID = StateReady, "i-other", s.deps.NodeID
+			seeded.ReadyAt, seeded.Generation = time.Now().UTC().Add(-time.Hour), 2
+			victimKey := EndpointKey(awsidentifiers.GlobalAccountID, catalogVictimModel)
+			_, err := s.store.Create(t.Context(), victimKey, &seeded)
 			require.NoError(t, err)
 			reaper := testReaper(t, s, testNodeID, ReaperDeps{IdleTTL: 24 * time.Hour})
 
@@ -190,7 +194,7 @@ func TestEvictForCapacity_ReaperHoldAfterSelectionIsNotTornDown(t *testing.T) {
 			assert.Equal(t, 1, transport.scrapeCount(), "the reaper must have probed between selection and teardown")
 			assert.Empty(t, h.launcher.terminations())
 
-			cur, _ := readRecord(t, s, EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel))
+			cur, _ := readRecord(t, s, victimKey)
 			assert.Equal(t, StateReady, cur.State)
 			assert.Equal(t, seeded.InstanceID, cur.InstanceID)
 			assert.Equal(t, name == "failed probe", cur.Held())

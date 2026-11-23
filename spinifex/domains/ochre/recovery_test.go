@@ -25,40 +25,55 @@ const (
 	recoveryTenant = "000000000001"
 )
 
-// parkedBundle is a parked record for testModelID's co-serve group, carrying
-// the exact members, families and ports a launch of that group records.
-func parkedBundle(t *testing.T, accountID string) EndpointRecord {
+// catalogBundleRecord is a record for modelID's co-serve group on ip, carrying
+// the exact members, families, ports and volumes a launch of that group records.
+func catalogBundleRecord(t *testing.T, modelID, accountID, ip string) EndpointRecord {
 	t.Helper()
-	spec, found, selfHost := LookupCoServeGroup(testModelID)
+	spec, found, selfHost := LookupCoServeGroup(modelID)
 	require.True(t, found && selfHost)
-	require.Greater(t, len(spec.Members), 1, "recovery must be shown on a real bundle")
 	inputs := make([]LaunchMemberInput, 0, len(spec.Members))
 	for _, m := range spec.Members {
 		inputs = append(inputs, LaunchMemberInput{ModelID: m.ModelID, Family: m.Family})
 	}
 	ports := assignMemberPorts(inputs)
-	now := time.Now().UTC()
 	rec := EndpointRecord{
-		AccountID:    accountID,
-		ModelID:      testModelID,
-		State:        StateStarting,
-		NodeID:       testNodeID,
-		InstanceID:   "i-parked",
-		ENIID:        "eni-parked",
-		PrivateIP:    recoveryIP,
-		Members:      map[string]MemberEndpoint{},
-		CreatedAt:    now.Add(-time.Hour),
-		ParkedReason: ParkReadinessTimedOut,
-		ParkedAt:     now.Add(-time.Minute),
-		Generation:   3,
+		AccountID:  accountID,
+		ModelID:    modelID,
+		NodeID:     testNodeID,
+		InstanceID: "i-bundle",
+		ENIID:      "eni-bundle",
+		PrivateIP:  ip,
+		Members:    map[string]MemberEndpoint{},
+		CreatedAt:  time.Now().UTC().Add(-time.Hour),
+	}
+	primary := spec.Members[0].ModelID
+	for _, m := range spec.Members {
+		if m.Family == FamilyMeta {
+			primary = m.ModelID
+		}
 	}
 	for _, m := range spec.Members {
 		vol := "vol-" + strconv.Itoa(ports[m.ModelID])
 		rec.Members[m.ModelID] = MemberEndpoint{Port: ports[m.ModelID], WeightsVolumeID: vol, Family: m.Family}
-		if m.Family == FamilyMeta {
+		if m.ModelID == primary {
 			rec.WeightsVolumeID = vol
+			rec.BaseURL = "http://" + net.JoinHostPort(ip, strconv.Itoa(ports[m.ModelID]))
 		}
 	}
+	return rec
+}
+
+// parkedBundle is a parked record for testModelID's co-serve group, carrying
+// the exact members, families and ports a launch of that group records.
+func parkedBundle(t *testing.T, accountID string) EndpointRecord {
+	t.Helper()
+	spec, _, _ := LookupCoServeGroup(testModelID)
+	require.Greater(t, len(spec.Members), 1, "recovery must be shown on a real bundle")
+	rec := catalogBundleRecord(t, testModelID, accountID, recoveryIP)
+	rec.State = StateStarting
+	rec.InstanceID, rec.ENIID, rec.BaseURL = "i-parked", "eni-parked", ""
+	rec.ParkedReason, rec.ParkedAt = ParkReadinessTimedOut, time.Now().UTC().Add(-time.Minute)
+	rec.Generation = 3
 	return rec
 }
 

@@ -40,16 +40,14 @@ func TestReadinessUnavailableRepro_ReaperRepeated503RetainsVMAndVolumes(t *testi
 	probes := []struct {
 		name    string
 		modelID string
-		family  string
-		port    int
 	}{
-		{"metrics scrape", testModelID, FamilyMeta, vllmServePort},
-		{"liveness probe", "embed-only-bundle", FamilyTEI, teiBasePort},
+		{"metrics scrape", testModelID},
+		{"liveness probe", "bge-base-en-v1.5"},
 	}
 	for _, probe := range probes {
 		t.Run(probe.name, func(t *testing.T) {
 			t.Parallel()
-			r := newRedirectReaper(t, unavailableClient(), seededReady(probe.modelID, probe.family, probe.port))
+			r := newRedirectReaper(t, unavailableClient(), seededReady(t, probe.modelID))
 
 			for range maxScrapeFailures + 1 {
 				require.NoError(t, r.reaper.sweepOnce(t.Context(), nil))

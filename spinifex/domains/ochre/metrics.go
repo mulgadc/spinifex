@@ -30,9 +30,9 @@ var vllmEngines = []string{"0"}
 // success counter for every reason on every engine from startup.
 var vllmMetricsFinishReasons = []string{"stop", "length", "abort", "error", "repetition"}
 
-// maxExactCount bounds every count and sum, so each converts to the stored
-// int and float64 fields without loss.
-const maxExactCount = 1 << 53
+// maxExactCount bounds every count and sum. vLLM's counters are floats, so at
+// 2^53 one more completed request could leave the value unchanged.
+const maxExactCount = 1<<53 - 1
 
 // metricsBodyLimit caps how much of /metrics is read. vLLM's exposition is a
 // few tens of KB; anything past this is a wedged or hostile endpoint, and the
@@ -40,7 +40,6 @@ const maxExactCount = 1 << 53
 const metricsBodyLimit = 4 << 20
 
 var (
-	errMetricsIdentity   = errors.New("primary vLLM member identity cannot be established")
 	errMetricsOversized  = errors.New("metrics response exceeds the read limit")
 	errMetricsMalformed  = errors.New("required metrics sample is malformed")
 	errMetricsUnexpected = errors.New("required metrics sample has unexpected labels")
@@ -69,25 +68,6 @@ func (m endpointMetrics) idle(prevSuccessTotal float64) bool {
 // one without scraping it itself.
 func (m endpointMetrics) inFlight() int {
 	return int(m.running + m.waiting)
-}
-
-// vllmModelFor is the served model name of rec's primary vLLM member. A record
-// without exactly one such member cannot be checked and stays held.
-func vllmModelFor(rec EndpointRecord) (string, error) {
-	var model string
-	for id, m := range rec.Members {
-		if m.Family != FamilyMeta {
-			continue
-		}
-		if model != "" || id == "" {
-			return "", errMetricsIdentity
-		}
-		model = id
-	}
-	if model == "" {
-		return "", errMetricsIdentity
-	}
-	return model, nil
 }
 
 // errMetricsRedirected is a metrics probe answered with a redirect, which is

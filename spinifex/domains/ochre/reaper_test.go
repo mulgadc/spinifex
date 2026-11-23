@@ -26,13 +26,15 @@ import (
 type vllmTransport struct {
 	mu      sync.Mutex
 	body    string
-	fail    bool
-	scrapes int
+	fail     bool
+	scrapes  int
+	requests int
 }
 
 func (v *vllmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.requests++
 	if strings.HasSuffix(req.URL.Path, "/metrics") {
 		v.scrapes++
 		if v.fail {
@@ -42,6 +44,8 @@ func (v *vllmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader(v.body)),
 			Header:     make(http.Header),
+			// The response declares no length, so only the read bounds it.
+			ContentLength: -1,
 		}, nil
 	}
 	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
@@ -72,6 +76,12 @@ func (v *vllmTransport) breakScrapes() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.fail = true
+}
+
+func (v *vllmTransport) requestCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.requests
 }
 
 func (v *vllmTransport) scrapeCount() int {

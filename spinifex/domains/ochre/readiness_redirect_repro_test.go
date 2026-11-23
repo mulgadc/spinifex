@@ -187,27 +187,17 @@ func (r *redirectReaper) current(t *testing.T) (EndpointRecord, bool) {
 	return rec, found
 }
 
-// seededReady is a READY record for modelID whose one member serves family,
-// up and quiet for an hour, with the resources a teardown would release.
-func seededReady(modelID, family string, port int) EndpointRecord {
+// seededReady is a READY record for modelID's whole catalog group, up and
+// quiet for an hour, with the resources a teardown would release.
+func seededReady(t *testing.T, modelID string) EndpointRecord {
+	t.Helper()
 	now := time.Now().UTC()
-	return EndpointRecord{
-		AccountID:       awsidentifiers.GlobalAccountID,
-		ModelID:         modelID,
-		State:           StateReady,
-		InstanceID:      "i-redirecting",
-		ENIID:           "eni-redirecting",
-		PrivateIP:       "10.0.0.9",
-		BaseURL:         fmt.Sprintf("http://10.0.0.9:%d", port),
-		WeightsVolumeID: "vol-redirecting",
-		Members: map[string]MemberEndpoint{modelID: {
-			Port: port, WeightsVolumeID: "vol-redirecting", Family: family,
-		}},
-		CreatedAt:    now.Add(-2 * time.Hour),
-		ReadyAt:      now.Add(-2 * time.Hour),
-		LastActiveAt: now.Add(-2 * time.Hour),
-		Generation:   1,
-	}
+	rec := catalogBundleRecord(t, modelID, awsidentifiers.GlobalAccountID, "10.0.0.9")
+	rec.State = StateReady
+	rec.InstanceID, rec.ENIID = "i-redirecting", "eni-redirecting"
+	rec.CreatedAt, rec.ReadyAt, rec.LastActiveAt = now.Add(-2*time.Hour), now.Add(-2*time.Hour), now.Add(-2*time.Hour)
+	rec.Generation = 1
+	return rec
 }
 
 func TestReadinessRedirectRepro_ReaperRedirectHoldsWithoutActivityOrTeardown(t *testing.T) {
@@ -215,19 +205,17 @@ func TestReadinessRedirectRepro_ReaperRedirectHoldsWithoutActivityOrTeardown(t *
 	probes := []struct {
 		name    string
 		modelID string
-		family  string
-		port    int
 		path    string
 	}{
-		{"metrics scrape", testModelID, FamilyMeta, vllmServePort, "/metrics"},
-		{"liveness probe", "embed-only-bundle", FamilyTEI, teiBasePort, "/health"},
+		{"metrics scrape", testModelID, "/metrics"},
+		{"liveness probe", "bge-base-en-v1.5", "/health"},
 	}
 	for _, probe := range probes {
 		for name := range redirectClients(newProbeRedirectPair(t)) {
 			t.Run(probe.name+"/"+name, func(t *testing.T) {
 				t.Parallel()
 				p := newProbeRedirectPair(t)
-				seeded := seededReady(probe.modelID, probe.family, probe.port)
+				seeded := seededReady(t, probe.modelID)
 				r := newRedirectReaper(t, redirectClients(p)[name], seeded)
 
 				for range maxScrapeFailures + 1 {

@@ -9,7 +9,7 @@ import {
   List,
   type LucideIcon,
   Server,
-  Shield,
+  ShieldCheck,
   Waypoints,
 } from "lucide-react"
 import { useMemo } from "react"
@@ -40,8 +40,8 @@ import { cn } from "@/lib/utils"
 import { securityGroupMapQueryOptions } from "@/queries/topology"
 
 const ICONS: Record<GroupCardKind, LucideIcon> = {
-  group: Shield,
-  peer: Shield,
+  group: ShieldCheck,
+  peer: ShieldCheck,
   cidr: Globe,
   prefix: List,
   instance: Server,

@@ -3,15 +3,15 @@ import { useQuery } from "@tanstack/react-query"
 import { Link, createFileRoute } from "@tanstack/react-router"
 import type { LinkProps } from "@tanstack/react-router"
 import {
-  Box,
+  FolderOpen,
   Globe,
   HardDrive,
   Key,
+  MapPin,
   Network,
-  FolderOpen,
   Router,
-  Shield,
-  Waypoints,
+  Server,
+  ShieldCheck,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
@@ -138,7 +138,7 @@ function Dashboard() {
         <ResourceCard
           emptyText="No security groups"
           getKey={(sg) => sg.GroupId}
-          icon={Shield}
+          icon={ShieldCheck}
           items={groups}
           primary={(sg) => sg.GroupName}
           secondary={(sg) => sg.VpcId}
@@ -148,7 +148,7 @@ function Dashboard() {
         <ResourceCard
           emptyText="No NAT gateways"
           getKey={(nat) => nat.NatGatewayId}
-          icon={Waypoints}
+          icon={Router}
           items={natGateways}
           primary={(nat) => nat.NatGatewayId}
           secondary={(nat) => nat.State}
@@ -158,7 +158,7 @@ function Dashboard() {
         <ResourceCard
           emptyText="No Elastic IPs"
           getKey={(addr) => addr.AllocationId}
-          icon={Globe}
+          icon={MapPin}
           items={addresses}
           primary={(addr) => addr.PublicIp}
           secondary={(addr) =>
@@ -170,7 +170,7 @@ function Dashboard() {
         <ResourceCard
           emptyText="No internet gateways"
           getKey={(igw) => igw.InternetGatewayId}
-          icon={Router}
+          icon={Globe}
           items={igws}
           primary={(igw) => igw.InternetGatewayId}
           secondary={(igw) =>
@@ -320,7 +320,7 @@ function InstancesCard() {
   return (
     <DashboardCard
       title="Instances"
-      icon={<HardDrive className="size-3.5" />}
+      icon={<Server className="size-3.5" />}
       count={active.length}
       to="/ec2/describe-instances"
     >
@@ -358,7 +358,7 @@ function VolumesCard() {
   return (
     <DashboardCard
       title="Volumes"
-      icon={<Box className="size-3.5" />}
+      icon={<HardDrive className="size-3.5" />}
       count={volumes.length}
       to="/ec2/describe-volumes"
     >

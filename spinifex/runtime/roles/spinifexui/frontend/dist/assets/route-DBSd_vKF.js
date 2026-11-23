@@ -1,0 +1,1 @@
+import{t as e}from"./createLucideIcon-DSWBEMIj.js";var t={name:`route`,size:24,node:[[`path`,{d:`M9 5h8.5a1 1 0 010 7h-11a1 1 0 000 7H15`,key:`1r1aam`}],[`circle`,{cx:`18`,cy:`19`,r:`3`,key:`1xt0gg`}],[`circle`,{cx:`6`,cy:`5`,r:`3`,key:`151irh`}]]};t.node;var n=e(t);export{n as t};

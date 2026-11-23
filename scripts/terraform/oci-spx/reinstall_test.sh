@@ -6,14 +6,15 @@ set -u
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TMP=$(mktemp -d)
-trap 'pkill -f "tail -f /dev/null # reinstall_test" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'pkill -f "reinstall_test_[h]ang" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 fails=0
 pass() { echo "  ok   - $1"; }
 fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
 mkdir -p "$TMP/bin" "$TMP/remote"
-# NODE_STATE is formed or fresh. HANG_PROBE makes the cloud-init probe never return.
+# NODE_STATE is formed or fresh. HANG_PROBE makes the cloud-init probe never return,
+# and NO_MARKER makes it answer at once that boot-finished is absent.
 cat > "$TMP/bin/ssh" <<'EOF'
 #!/bin/bash
 while [ $# -gt 0 ]; do case "$1" in ubuntu@*) host="${1#ubuntu@}"; shift; break ;; *) shift ;; esac; done
@@ -22,7 +23,8 @@ printf '[%s] %s\n' "$host" "$cmd" >> "$T/ssh.log"
 formed() { [ "$NODE_STATE" = formed ]; }
 case "$cmd" in
     *"bash -s"*) PATH="$T/remote:$PATH" HOST="$host" bash -s >> "$T/remote.log" 2>&1; exit $? ;;
-    *boot-finished*) [ -z "${HANG_PROBE:-}" ] || exec tail -f /dev/null # reinstall_test
+    *boot-finished*) [ -z "${HANG_PROBE:-}" ] || exec -a reinstall_test_hang tail -f /dev/null
+                     [ -z "${NO_MARKER:-}" ] || exit 1
                      exit 0 ;;
     *"^data_dir = "*) formed ;;
     *"command -v spx"*) formed ;;
@@ -58,7 +60,7 @@ run() {
     mkdir -p "$TMP/state/.validate-vm-multi-existing"
     [ "$checkpoint" = 0 ] || : > "$TMP/state/.validate-vm-multi-existing/stage-formation.done"
     T="$TMP" NODE_STATE="$state" PATH="$TMP/bin:$PATH" OCI_STATE_ROOT="$TMP/state" \
-        OCI_SSH_CALL_TIMEOUT=2 timeout 30 bash "$HERE/validate-topology.sh" \
+        OCI_CLOUD_INIT_TIMEOUT=3 timeout 30 bash "$HERE/validate-topology.sh" \
         --topology vm-multi --existing-hosts-file "$TMP/hosts" --instance-principal \
         --ebs-provider viperblockd --no-external-pool \
         --ssh-public-key "$TMP/key.pub" --ssh-private-key "$TMP/key" "$@" > "$TMP/out" 2>&1
@@ -100,6 +102,17 @@ elif grep -q 'cloud-init' "$TMP/out" && [ "$rc" != 0 ]; then
     pass "the run stopped with a cloud-init error"
 else
     fail "unexpected result $rc: $(tail -3 "$TMP/out")"
+fi
+
+echo "-- a boot-finished marker that never appears stops the gate at its elapsed limit"
+NO_MARKER=1 run fresh 0
+rc=$?
+if [ "$rc" = 124 ]; then
+    fail "the run was still waiting on cloud-init after 30 s"
+elif grep -q 'cloud-init did not finish' "$TMP/out" && ! grep -q 'installing Spinifex' "$TMP/out"; then
+    pass "the run stopped at the cloud-init gate before it installed anything"
+else
+    fail "the gate let the run continue without boot-finished: $(grep -m1 -E 'installing|ERROR' "$TMP/out")"
 fi
 
 if [ "$fails" -gt 0 ]; then

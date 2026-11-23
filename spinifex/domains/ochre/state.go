@@ -12,6 +12,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,10 +36,9 @@ const (
 // not in the table below.
 var ErrIllegalTransition = errors.New("bedrock: illegal endpoint state transition")
 
-// legalTransitions enumerates every allowed from->to move. A STARTING that
-// fails (launch error or readiness timeout) goes back to ABSENT — the record
-// is deleted rather than parked in a terminal FAILED state — so a retried
-// Ensure gets a clean claim instead of piling up dead records.
+// legalTransitions enumerates every allowed from->to move. A STARTING claim
+// whose launch fails before anything is realized goes back to ABSENT; one whose
+// readiness wait ends unready stays STARTING, parked with its realization.
 var legalTransitions = map[EndpointState][]EndpointState{
 	StateAbsent:   {StateStarting},
 	StateStarting: {StateReady, StateAbsent},
@@ -188,6 +188,10 @@ func (f *OwnerField) UnmarshalJSON(data []byte) error {
 		f.invalid = fmt.Errorf("%w: null", ErrLaunchOwnerInvalid)
 		return nil
 	}
+	if err := exactKeys(data, "worker_nonce", "token_id", "epoch"); err != nil {
+		f.invalid = err
+		return nil
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f.owner); err != nil {
@@ -196,6 +200,87 @@ func (f *OwnerField) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	f.invalid = f.owner.validate()
+	return nil
+}
+
+// exactKeys refuses an object whose keys repeat or are not among names in
+// exact case. A value that is not an object is left to the strict decode.
+func exactKeys(data []byte, names ...string) error {
+	keys, isObject, err := objectKeys(data)
+	if err != nil || !isObject {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if seen[k] || !slices.Contains(names, k) {
+			return fmt.Errorf("%w: ambiguous or unknown field %q", ErrLaunchOwnerInvalid, k)
+		}
+		seen[k] = true
+	}
+	return nil
+}
+
+// objectKeys lists the keys of a JSON object in order, repeats included.
+func objectKeys(data []byte) ([]string, bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, false, nil
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, true, err
+		}
+		key, _ := tok.(string)
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, true, err
+		}
+	}
+	return keys, true, nil
+}
+
+// endpointRecordJSON is EndpointRecord's default encoding.
+type endpointRecordJSON EndpointRecord
+
+// MarshalJSON is the default encoding, except that a record whose owner
+// Owner refuses is never encoded. A record with no owner is unchanged.
+func (r EndpointRecord) MarshalJSON() ([]byte, error) {
+	if _, ok, err := r.Owner(); ok && err != nil {
+		return nil, err
+	}
+	return json.Marshal(endpointRecordJSON(r))
+}
+
+// UnmarshalJSON is the default decoding, except that a repeated launch_owner
+// key or one in another case marks the owner invalid; other fields keep the
+// default rules.
+func (r *EndpointRecord) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, (*endpointRecordJSON)(r)); err != nil {
+		return err
+	}
+	keys, _, err := objectKeys(data)
+	if err != nil {
+		return err
+	}
+	owners := 0
+	for _, k := range keys {
+		if strings.EqualFold(k, "launch_owner") {
+			owners++
+			if k != "launch_owner" {
+				owners++
+			}
+		}
+	}
+	if owners > 1 {
+		r.LaunchOwner = OwnerField{present: true, invalid: fmt.Errorf("%w: ambiguous launch_owner field", ErrLaunchOwnerInvalid)}
+	}
 	return nil
 }
 

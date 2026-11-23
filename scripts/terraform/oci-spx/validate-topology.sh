@@ -266,6 +266,8 @@ fi
     || die "--setup-instance-principal requires --instance-principal (or vm-single-principal)"
 [ "$DESTROY_IDENTITY" = 0 ] || [ "$DESTROY_ONLY" = 1 ] \
     || die "--destroy-identity is valid only with --destroy-only"
+[ "$DRY_RUN" = 0 ] || [ "$DESTROY_ONLY" = 0 ] \
+    || die "--dry-run and --destroy-only cannot be combined: a destroy has no dry run"
 
 # Terraform's own order, as far as this script needs it: the last assignment across
 # terraform.tfvars then *.auto.tfvars alphabetically is the one that applies. Read
@@ -310,6 +312,9 @@ STATE_SUFFIX=""
 [ "$EXISTING_INFRA" = 1 ] && STATE_SUFFIX="-existing"
 STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY$STATE_SUFFIX"
 RESULTS="$STATE_DIR/results.txt"
+# The only thing that lets e2e-oci.sh destroy this directory's instances and delete
+# its clusters' volumes. Written only for a run this script will tear down.
+DISPOSABLE="$STATE_DIR/disposable"
 
 # Tab-separated siblings of the human block, for the run-page tables. Written here
 # rather than parsed out of the log later: the status of a gate is then a field
@@ -565,6 +570,8 @@ cleanup() {
     # metal host running overnight.
     if [ "$KEEP_ON_FAIL" = 1 ] && [ "$rc" != 0 ]; then
         log "--keep-on-fail: $TOPOLOGY FAILED and is being left up. IT IS STILL BILLING."
+        # The final sweep of the same e2e run would otherwise destroy it before anyone looks.
+        rm -f "$DISPOSABLE"
         log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
         verdict "$rc"
         return
@@ -592,8 +599,41 @@ if [ "$DESTROY_ONLY" = 1 ]; then
     log "destroy only: whatever $STATE_DIR/terraform.tfstate holds"
     destroy_topology
     [ "$DESTROY_RC" = 0 ] || exit 1
+    # The operator asked for this deployment to go, so its ocibsd volumes and
+    # backups may go with it the next time e2e-oci.sh sweeps.
+    : > "$DISPOSABLE"
     identity_resources destroy
     exit 0
+fi
+
+# True for Terraform instances, for state that cannot be read, and for an ocibsd
+# cluster record: each one is something a run without the marker did not create.
+holds_deployment() {
+    [ -s "$STATE_DIR/ocibsd-clusters" ] && return 0
+    [ -e "$STATE_DIR/terraform.tfstate" ] || return 1
+    python3 -c '
+import json, sys
+try:
+    resources = json.load(open(sys.argv[1]))["resources"]
+    if not isinstance(resources, list):
+        raise TypeError(resources)
+    held = any(r["instances"] for r in resources)
+except Exception:
+    held = True
+sys.exit(0 if held else 1)
+' "$STATE_DIR/terraform.tfstate"
+}
+
+if [ "$DRY_RUN" = 1 ]; then
+    :
+elif [ "$KEEP" = 1 ]; then
+    rm -f "$DISPOSABLE"
+else
+    # Without this the apply adopts a kept deployment's state and the EXIT trap
+    # destroys it.
+    [ -e "$DISPOSABLE" ] || ! holds_deployment \
+        || die "$STATE_DIR holds a deployment this run does not own. Use it with --keep, or remove it with $0 --topology $TOPOLOGY --destroy-only"
+    : > "$DISPOSABLE"
 fi
 
 : > "$RESULTS"

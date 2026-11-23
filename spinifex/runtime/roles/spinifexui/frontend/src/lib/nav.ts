@@ -2,7 +2,6 @@ import type { LinkProps } from "@tanstack/react-router"
 import {
   Activity,
   ArrowLeftRight,
-  Boxes,
   Brain,
   Camera,
   Container,
@@ -10,6 +9,7 @@ import {
   Database,
   Earth,
   FileStack,
+  FolderOpen,
   Globe,
   HardDrive,
   Home,
@@ -28,8 +28,10 @@ import {
   Route,
   Router,
   Server,
+  ServerCog,
   Shield,
   ShieldCheck,
+  ShipWheel,
   SlidersHorizontal,
   UserCog,
   Users,
@@ -69,7 +71,7 @@ export const NAV: readonly NavGroup[] = [
       { label: "Dashboard", icon: Home, to: "/", exact: true },
       {
         label: "Nodes",
-        icon: Server,
+        icon: ServerCog,
         to: "/nodes",
         exact: true,
         admin: true,
@@ -252,7 +254,7 @@ export const NAV: readonly NavGroup[] = [
       {
         label: "EKS",
         tooltip: "EKS clusters",
-        icon: Boxes,
+        icon: ShipWheel,
         to: "/eks/list-clusters",
         create: { label: "Create EKS cluster", to: "/eks/create-cluster" },
         match: ["/eks/list-clusters", "/eks/create-cluster"],
@@ -389,7 +391,7 @@ export const NAV: readonly NavGroup[] = [
     items: [
       {
         label: "Buckets",
-        icon: Server,
+        icon: FolderOpen,
         to: "/s3/ls",
         create: { label: "Create bucket", to: "/s3/create-bucket" },
       },

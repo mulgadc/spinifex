@@ -5,6 +5,8 @@ package ochre
 
 import (
 	"net/http"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,25 @@ import (
 
 func unavailableClient() *http.Client {
 	return &http.Client{Transport: &stubRoundTripper{statusCode: http.StatusServiceUnavailable}}
+}
+
+// unavailableRoutes answers every request 503 and records each URL it was sent.
+type unavailableRoutes struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (u *unavailableRoutes) RoundTrip(req *http.Request) (*http.Response, error) {
+	u.mu.Lock()
+	u.urls = append(u.urls, req.URL.String())
+	u.mu.Unlock()
+	return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody, Header: http.Header{}, Request: req}, nil
+}
+
+func (u *unavailableRoutes) sent() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.urls)
 }
 
 func TestReadinessUnavailableRepro_LaunchTimeoutRetainsVMAndVolumes(t *testing.T) {
@@ -40,14 +61,17 @@ func TestReadinessUnavailableRepro_ReaperRepeated503RetainsVMAndVolumes(t *testi
 	probes := []struct {
 		name    string
 		modelID string
+		path    string
 	}{
-		{"metrics scrape", testModelID},
-		{"liveness probe", "bge-base-en-v1.5"},
+		{"metrics scrape", testModelID, "/metrics"},
+		{"liveness probe", "bge-base-en-v1.5", "/health"},
 	}
 	for _, probe := range probes {
 		t.Run(probe.name, func(t *testing.T) {
 			t.Parallel()
-			r := newRedirectReaper(t, unavailableClient(), seededReady(t, probe.modelID))
+			routes := &unavailableRoutes{}
+			seeded := seededReady(t, probe.modelID)
+			r := newRedirectReaper(t, &http.Client{Transport: routes}, seeded)
 
 			for range maxScrapeFailures + 1 {
 				require.NoError(t, r.reaper.sweepOnce(t.Context(), nil))
@@ -55,9 +79,11 @@ func TestReadinessUnavailableRepro_ReaperRepeated503RetainsVMAndVolumes(t *testi
 			r.svc.WaitLaunches()
 
 			got, found := r.current(t)
-			t.Logf("recordFound=%v state=%s scrapeFailures=%d terminated=%v enisDeleted=%v volumesDeleted=%v relaunches=%d",
-				found, got.State, got.ScrapeFailures, r.harness.launcher.terminations(),
+			t.Logf("requests=%v recordFound=%v state=%s scrapeFailures=%d terminated=%v enisDeleted=%v volumesDeleted=%v relaunches=%d",
+				routes.sent(), found, got.State, got.ScrapeFailures, r.harness.launcher.terminations(),
 				r.harness.vpc.deleted, r.harness.volumes.deleted, r.harness.launcher.launchCount.Load())
+			assert.Equal(t, slices.Repeat([]string{seeded.BaseURL + probe.path}, maxScrapeFailures+1), routes.sent(),
+				"every sweep must probe the primary member's own route, and nothing else")
 			assert.True(t, found, "an unavailable endpoint's record must be retained")
 			assert.Equal(t, StateReady, got.State)
 			assert.Equal(t, "i-redirecting", got.InstanceID, "the record must still name the VM it holds")

@@ -4,6 +4,8 @@ package ochre
 // with only some of the vLLM series.
 
 import (
+	"slices"
+	"sync"
 	"io"
 	"net/http"
 	"strings"
@@ -14,11 +16,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type partialMetricsTransport struct{ body string }
+type partialMetricsTransport struct {
+	body string
+	mu   sync.Mutex
+	urls []string
+}
 
-func (p partialMetricsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (p *partialMetricsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	p.mu.Lock()
+	p.urls = append(p.urls, req.URL.String())
+	p.mu.Unlock()
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(p.body)),
 		Header: http.Header{}, Request: req}, nil
+}
+
+func (p *partialMetricsTransport) sent() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.urls)
 }
 
 // A 200 carrying only one of the three series is not evidence of an idle vLLM
@@ -36,12 +51,14 @@ func TestPartialMetricsRepro_OneSeriesIsNotIdle(t *testing.T) {
 			f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Minute})
 			rec := f.ready(t)
 			f.age(t, 10*time.Minute, 10*time.Minute)
-			f.svc.deps.HTTPClient = &http.Client{Transport: partialMetricsTransport{body: body}}
+			transport := &partialMetricsTransport{body: body}
+			f.svc.deps.HTTPClient = &http.Client{Transport: transport}
 
 			require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 			got, found := f.current(t)
-			t.Logf("body=%q recordFound=%v held=%v terminated=%v", body, found, got.Held(), f.harness.launcher.terminations())
+			t.Logf("body=%q requests=%v recordFound=%v held=%v terminated=%v", body, transport.sent(), found, got.Held(), f.harness.launcher.terminations())
+			assert.Equal(t, []string{rec.BaseURL + "/metrics"}, transport.sent(), "the sweep must scrape the primary member's metrics")
 			assert.True(t, found, "a partial scrape must not reclaim the endpoint")
 			assert.True(t, got.Held(), "a partial scrape must leave the hold")
 			assert.NotContains(t, f.harness.launcher.terminations(), rec.InstanceID)

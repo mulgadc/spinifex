@@ -669,7 +669,7 @@ All network configuration lives in `spinifex.toml`. Settings are split into thre
 ## Configuration Levels
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node NIC" width="740">
+  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node WAN bridge" width="740">
 </p>
 
 ## Cluster-Wide: external_mode

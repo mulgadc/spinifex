@@ -131,7 +131,7 @@ Run the printed command on the private instance. It has the form `curl -sk https
 
 The request is unsigned, so S3 answers with an `AccessDenied` error document.
 That answer shows that the private instance reaches S3 through the endpoint with no internet route.
-A signed request, for example from the AWS CLI with credentials, lists your buckets.
+A signed request from a principal with `s3:ListAllMyBuckets` permission, for example from the AWS CLI, lists your buckets.
 
 > **Note:** On AWS, S3 is at `s3.<region>.amazonaws.com` on port 443. On Spinifex, use an address from the `s3_gateway_addresses` output and the port from the `s3_gate_port` output (8443 by default). The security group egress rule uses the same port.
 > `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA. `--cacert` with the cluster CA verifies the certificate only if the certificate names the address that you dial.

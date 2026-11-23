@@ -1,5 +1,5 @@
 /// <reference types="vitest/config" />
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { fileURLToPath, URL } from "node:url"
 
 import tailwindcss from "@tailwindcss/vite"
@@ -28,11 +28,21 @@ logger.warn = (msg, options) => {
 // which Node does not trust by default.
 const clusterCaPath = process.env.SPINIFEX_CA ?? "/etc/spinifex/ca.pem"
 
+// A build or test run needs no CA. Without one the proxy still verifies, and
+// /api fails with "unable to verify" rather than trusting the console blindly.
+function readClusterCa(): string | undefined {
+  try {
+    return readFileSync(clusterCaPath, "utf-8")
+  } catch {
+    return undefined
+  }
+}
+
+const clusterCa = readClusterCa()
+
 const consoleProxy = {
   target: "https://localhost:3000",
-  ...(existsSync(clusterCaPath) && {
-    ca: readFileSync(clusterCaPath, "utf-8"),
-  }),
+  ...(clusterCa !== undefined && { ca: clusterCa }),
 }
 
 export default defineConfig(({ mode }) => ({

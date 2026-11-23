@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/readiness"
@@ -96,19 +97,17 @@ func release(t *testing.T, op *readiness.Operation) {
 	require.NoError(t, err)
 }
 
-// landThenLoseReply performs the write and then reports a lost reply.
-func landThenLoseReply(kv jetstream.KeyValue) func(context.Context, string, []byte, uint64) (uint64, error) {
-	return func(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
-		if _, err := kv.Update(ctx, key, value, last); err != nil {
-			return 0, err
-		}
-		return 0, context.DeadlineExceeded
+// landThenLoseReply sends the publish and then reports a lost reply.
+func landThenLoseReply(ctx context.Context, js jetstream.JetStream, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	if _, err := js.PublishMsg(ctx, m, opts...); err != nil {
+		return nil, err
 	}
+	return nil, context.DeadlineExceeded
 }
 
-// loseBeforeLanding reports a timeout without sending the write.
-func loseBeforeLanding(context.Context, string, []byte, uint64) (uint64, error) {
-	return 0, nats.ErrTimeout
+// loseBeforeLanding reports a timeout without sending the publish.
+func loseBeforeLanding(context.Context, jetstream.JetStream, *nats.Msg, ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return nil, nats.ErrTimeout
 }
 
 func journal(intent readiness.Intent) readiness.Journal {
@@ -139,30 +138,40 @@ func (p *pause) hook(op string) {
 	}
 }
 
-// faultKV replaces the next Update with fault, once.
-type faultKV struct {
-	readiness.KV
+type publishFault func(context.Context, jetstream.JetStream, *nats.Msg, ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+
+// faultJS replaces the next record publish with fault, once, and counts every
+// publish it is asked to send.
+type faultJS struct {
+	jetstream.JetStream
 	mu    sync.Mutex
-	fault func(ctx context.Context, key string, value []byte, last uint64) (uint64, error)
+	fault publishFault
+	sent  int
 }
 
-func (f *faultKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+func (f *faultJS) PublishMsg(ctx context.Context, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	f.mu.Lock()
 	fault := f.fault
 	f.fault = nil
+	f.sent++
 	f.mu.Unlock()
 	if fault != nil {
-		return fault(ctx, key, value, last)
+		return fault(ctx, f.JetStream, m, opts...)
 	}
-	return f.KV.Update(ctx, key, value, last)
+	return f.JetStream.PublishMsg(ctx, m, opts...)
 }
 
-
-// setFault arms fault for the next Update.
-func (f *faultKV) setFault(fault func(context.Context, string, []byte, uint64) (uint64, error)) {
+// setFault arms fault for the next publish.
+func (f *faultJS) setFault(fault publishFault) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fault = fault
+}
+
+func (f *faultJS) publishes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sent
 }
 
 func TestControl_TransitionsAdvanceEpochOnlyAfterTokensSettle(t *testing.T) {
@@ -525,10 +534,11 @@ func TestControl_UnknownAdmitOutcomeRetainsTokenAcrossRestart(t *testing.T) {
 	ctx := t.Context()
 	activate(t, f.control())
 
-	lossy := &faultKV{KV: f.kv}
-	lossy.setFault(landThenLoseReply(f.kv))
-	op, _, err := readiness.New(f.js, lossy).Admit(ctx, launch("launch-1", 1))
+	lossy := &faultJS{JetStream: f.js}
+	lossy.setFault(landThenLoseReply)
+	op, _, err := readiness.New(lossy, f.kv).Admit(ctx, launch("launch-1", 1))
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Equal(t, 1, lossy.publishes(), "an unknown add is not retried")
 	assert.Nil(t, op, "an uncertain admission gives the owner no handle to start work with")
 
 	restarted := f.reconnect(t)
@@ -543,11 +553,11 @@ func TestControl_UnknownAdmitOutcomeRetainsTokenAcrossRestart(t *testing.T) {
 
 // ownedLaunch admits launch-1 through a Control whose next write can be faulted,
 // then freezes the record for rb-1.
-func ownedLaunch(t *testing.T, f fixture) (*faultKV, *readiness.Operation) {
+func ownedLaunch(t *testing.T, f fixture) (*faultJS, *readiness.Operation) {
 	t.Helper()
 	activate(t, f.control())
-	lossy := &faultKV{KV: f.kv}
-	op := admit(t, readiness.New(f.js, lossy), "launch-1", 1)
+	lossy := &faultJS{JetStream: f.js}
+	op := admit(t, readiness.New(lossy, f.kv), "launch-1", 1)
 	freeze(t, f.control(), "rb-1")
 	return lossy, op
 }
@@ -557,9 +567,11 @@ func TestControl_ReleaseLandedWithLostReply(t *testing.T) {
 	ctx := t.Context()
 	lossy, op := ownedLaunch(t, f)
 
-	lossy.setFault(landThenLoseReply(f.kv))
+	before := lossy.publishes()
+	lossy.setFault(landThenLoseReply)
 	_, err := op.Release(ctx)
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Equal(t, before+1, lossy.publishes(), "an unknown release is not retried")
 
 	fresh := f.reconnect(t)
 	rec, rev := read(t, fresh)
@@ -576,9 +588,11 @@ func TestControl_ReleaseLostBeforeLanding(t *testing.T) {
 	ctx := t.Context()
 	lossy, op := ownedLaunch(t, f)
 
+	before := lossy.publishes()
 	lossy.setFault(loseBeforeLanding)
 	_, err := op.Release(ctx)
 	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Equal(t, before+1, lossy.publishes(), "an unknown release is not retried")
 
 	fresh := f.reconnect(t)
 	rec, rev := read(t, fresh)
@@ -641,4 +655,33 @@ func TestControl_ConcurrentAdmissionsAreAllRecorded(t *testing.T) {
 	}
 	rec, _ := read(t, f.control())
 	assert.Len(t, rec.Tokens, workers)
+}
+
+// The server itself answers "no responders" once the stream is gone between the
+// read and the write. A default publish retries that; the record write must
+// reach the wire once, counted by the writer connection's own outbound stats.
+func TestControl_NoRespondersWriteIsSentOnce(t *testing.T) {
+	f := newFixture(t)
+	activate(t, f.control())
+	nc, err := nats.Connect(f.ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	c := readiness.New(js, f.kv)
+
+	var atWrite uint64
+	readiness.SetBeforeWriteHook(c, func(string) {
+		require.NoError(t, f.js.DeleteKeyValue(t.Context(), readiness.KVBucket))
+		atWrite = nc.Stats().OutMsgs
+	})
+	_, _, err = c.Admit(t.Context(), launch("launch-1", 1))
+	require.ErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Equal(t, atWrite+1, nc.Stats().OutMsgs, "exactly one record publish on the wire")
+
+	before := nc.Stats().OutMsgs
+	_, err = js.PublishMsg(t.Context(), &nats.Msg{Subject: "$KV." + readiness.KVBucket + "." + readiness.Key, Data: []byte("x")},
+		jetstream.WithRetryWait(time.Millisecond))
+	require.ErrorIs(t, err, jetstream.ErrNoStreamResponse)
+	assert.Greater(t, nc.Stats().OutMsgs, before+1, "a default publish retries, so the count can see a retry")
 }

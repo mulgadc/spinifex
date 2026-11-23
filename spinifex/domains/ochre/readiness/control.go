@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -94,11 +95,12 @@ var (
 	// ErrDeleted is a key carrying a delete or purge marker. The record is never
 	// deleted, so this is damage, not an empty record.
 	ErrDeleted = errors.New("readiness control record was deleted")
-	// ErrChanged is a fixed-revision write that lost to a newer revision.
-	ErrChanged = errors.New("readiness control record changed")
-	// ErrOutcomeUnknown is a write that may or may not have landed. An add, journal
-	// entry or transition must be assumed to have landed; a release may have too.
-	ErrOutcomeUnknown = errors.New("readiness control write outcome unknown")
+	// ErrChanged is a fixed-revision write of any readiness record that lost to
+	// a newer revision.
+	ErrChanged = errors.New("readiness record changed")
+	// ErrOutcomeUnknown is a readiness write that may or may not have landed. A
+	// control add, journal or transition must be assumed landed; a release may be.
+	ErrOutcomeUnknown = errors.New("readiness write outcome unknown")
 	// ErrWrongState is a transition whose phase, epoch or rollback does not hold.
 	ErrWrongState = errors.New("readiness control record is in the wrong state")
 	// ErrNotAdmitted refuses new work in the current phase, epoch or rollback.
@@ -116,11 +118,10 @@ var (
 	ErrContended = errors.New("readiness control record contended")
 )
 
-// KV is the bucket handle the record is written through. The caller opens and
-// binds it; Control never creates or recreates the bucket.
+// KV names the bucket holding the record. The caller opens and binds it;
+// Control never creates or recreates the bucket, and writes through js.
 type KV interface {
 	Bucket() string
-	Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error)
 }
 
 var _ KV = jetstream.KeyValue(nil)
@@ -451,13 +452,7 @@ func (c *Control) write(ctx context.Context, op string, rec Record, rev uint64) 
 	if c.beforeWrite != nil {
 		c.beforeWrite(op)
 	}
-	newRev, err := c.kv.Update(ctx, Key, data, rev)
-	switch {
-	case err == nil:
-		return newRev, nil
-	case kvstore.IsRevisionConflict(err):
-		return 0, fmt.Errorf("%w: %s at revision %d: %w", ErrChanged, op, rev, err)
-	default:
-		return 0, fmt.Errorf("%w: %s at revision %d: %w", ErrOutcomeUnknown, op, rev, err)
-	}
+	bucket := c.kv.Bucket()
+	msg := &nats.Msg{Subject: "$KV." + bucket + "." + Key, Data: data}
+	return publishOnce(ctx, c.js, msg, bucket, rev, op)
 }

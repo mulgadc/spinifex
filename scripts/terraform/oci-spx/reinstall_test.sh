@@ -26,7 +26,8 @@ cmd="$*"
 printf '[%s] %s\n' "$host" "$cmd" >> "$T/ssh.log"
 formed() { [ "$NODE_STATE" = formed ]; }
 case "$cmd" in
-    "sudo sh -s") sed "s#/etc/spinifex/spinifex.toml#$T/toml/$host#" | sh -s; exit $? ;;
+    "sudo sh -s") [ "$host" != "${SSH_FAIL_HOST:-}" ] || exit 255
+                  sed "s#/etc/spinifex/spinifex.toml#$T/toml/$host#" | sh -s; exit $? ;;
     *"bash -s"*) export PATH="$T/remote:$PATH" HOST="$host"; eval "$cmd" >> "$T/remote.log" 2>&1; exit $? ;;
     *boot-finished*) [ -z "${HANG_PROBE:-}" ] || exec -a "$HANG_TAG" tail -f /dev/null
                      [ -z "${NO_MARKER:-}" ] || exit 1
@@ -181,6 +182,10 @@ stopped_unchanged() {
 echo "-- a host whose config cannot be read stops the run"
 FAIL_HOST=10.0.0.2 run vm-multi formed 1 --reinstall
 stopped_unchanged "formation state of 10.0.0.2"
+
+echo "-- a host whose SSH call fails during the formation probe stops the run"
+SSH_FAIL_HOST=10.0.0.3 run vm-multi formed 1 --reinstall
+stopped_unchanged "formation state of 10.0.0.3"
 
 echo "-- hosts that disagree on formation stop the run"
 FRESH_HOST=10.0.0.3 run vm-multi formed 0

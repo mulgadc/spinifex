@@ -508,8 +508,9 @@ mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
 classify_cluster() {
     local host answer formed=() fresh=() failed=()
     for host in "${HOSTS[@]}"; do
-        # As root, so a file the login user cannot read is not taken as absent.
-        answer="$(ssh_node "$host" 'sudo sh -s' 2>/dev/null <<'PROBE'
+        # As root, so a file the login user cannot read is not taken as absent, and
+        # limited, so a session that stops answering is a failed probe.
+        answer="$(SSH_LIMIT=30 ssh_node "$host" 'sudo sh -s' 2>/dev/null <<'PROBE'
 f=/etc/spinifex/spinifex.toml
 [ -e "$f" ] || { echo fresh; exit; }
 grep -q '^data_dir = ' "$f"

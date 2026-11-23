@@ -301,13 +301,70 @@ assert_bastion_private_subnet() {
     local attempt
     for attempt in $(seq 1 30); do
         if ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} true" 2>/dev/null; then
-            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid='
+            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid=' || return 1
+            assert_bastion_s3_endpoint "$bastion" "$key" "$inner_ssh"
             return $?
         fi
         sleep 5
     done
     log "  bastion→private: SSH never reachable after 150s"
     return 1
+}
+
+# The private instance has no internet route, so an S3 answer can only come
+# through the workbook's gateway endpoint. An unsigned GET / must give S3's
+# AccessDenied; any other answer, or none, fails.
+assert_bastion_s3_endpoint() {
+    local bastion="$1" key="$2" inner_ssh="$3"
+    local port addrs addr attempt out rc code body
+    port=$(tofu output -raw s3_gate_port)
+    addrs=$(tofu output -json s3_gateway_addresses | jq -r '.[]')
+    if [ -z "$addrs" ]; then
+        log "  s3-endpoint: s3_gateway_addresses is empty"
+        return 1
+    fi
+    # Sent on stdin through both SSH hops, so no quoting crosses a shell.
+    # Prints the body, then the HTTP status, then curl's exit code.
+    local probe='out=$(curl -sk --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "https://$1:$2/"); rc=$?; printf "%s\ncurl_exit=%s\n" "$out" "$rc"'
+    for addr in $addrs; do
+        local ok=0
+        for attempt in $(seq 1 6); do
+            out=$(ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
+                "${inner_ssh} bash -s -- ${addr} ${port}" <<<"$probe" 2>&1)
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: ssh exit ${rc}: $(tail -c 200 <<<"$out")"
+            elif [ "$(sed -n '$p' <<<"$out")" != "curl_exit=0" ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: curl failed, $(sed -n '$p' <<<"$out")"
+            else
+                code=$(sed '$d' <<<"$out" | sed -n '$p')
+                body=$(sed '$d' <<<"$out" | sed '$d')
+                if [ "$code" = "403" ] && grep -q '<Code>AccessDenied</Code>' <<<"$body"; then
+                    log "  s3-endpoint ${addr}:${port}: AccessDenied through the endpoint"
+                    ok=1
+                    break
+                fi
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: HTTP ${code}: $(head -c 200 <<<"$body")"
+            fi
+            sleep 5
+        done
+        [ "$ok" -eq 1 ] || { log "  s3-endpoint ${addr}:${port}: no S3 AccessDenied after 6 attempts"; return 1; }
+    done
+}
+
+# The workbook's aws_vpc_endpoint needs the S3 service, which the cluster
+# offers only once every node reaches the endpoint feature level.
+require_s3_endpoint_service() {
+    local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names
+    while :; do
+        names=$(aws ec2 describe-vpc-endpoint-services --query 'ServiceNames' --output text 2>&1) || true
+        grep -qE '(^|[[:space:]])com\.amazonaws\.[^[:space:]]+\.s3([[:space:]]|$)' <<<"$names" && return 0
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log "  the cluster does not offer the S3 gateway endpoint service (services: ${names}); check spx admin cluster status for a node below feature level 2"
+            return 1
+        fi
+        sleep 5
+    done
 }
 
 assert_nginx_alb() {
@@ -631,7 +688,7 @@ assert_eks_gitops_argocd() {
 # Opt-in rather than universal: the four original workbooks were never written
 # against this assertion, and a pre-existing diff in one of them would fail a
 # suite that is otherwise reporting on something else.
-CLEAN_PLAN_WORKBOOKS=" rds-quickstart "
+CLEAN_PLAN_WORKBOOKS=" rds-quickstart bastion-private-subnet "
 
 assert_clean_plan() {
     local example="$1"
@@ -759,6 +816,12 @@ run_workbook() {
             "-var=s3_access_key=${access_key}"
             "-var=s3_secret_key=${secret_key}"
         )
+    fi
+
+    if [ "$example" = "bastion-private-subnet" ] && ! require_s3_endpoint_service; then
+        log "  FAIL ${example}: S3 gateway endpoint service not offered"
+        cd "$SCRIPT_DIR" || return 1
+        return 1
     fi
 
     if ! tofu init -input=false -no-color; then

@@ -1,7 +1,10 @@
 import type {
   AuthorizeSecurityGroupIngressCommandInput,
+  CreateKeyPairCommandInput,
   Image,
+  ImportKeyPairCommandInput,
   InstanceTypeInfo,
+  KeyPairInfo,
   LaunchTemplate,
   PlacementGroup,
   RouteTable,
@@ -10,6 +13,7 @@ import type {
 } from "@aws-sdk/client-ec2"
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
@@ -45,6 +49,7 @@ import {
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 
+import type { KeyPairFlow } from "./key-pair-field"
 import { RunInstancesPage } from "./run-instances-page"
 
 function image(
@@ -142,6 +147,7 @@ interface SetupOptions {
   routeTables?: RouteTable[] | "denied"
   launchTemplates?: LaunchTemplate[]
   placementGroups?: PlacementGroup[]
+  keyPairs?: KeyPairInfo[]
   onClose?: (instanceId?: string) => void
 }
 
@@ -153,6 +159,7 @@ function setup({
   routeTables = DEFAULT_ROUTE_TABLES,
   launchTemplates = [],
   placementGroups = [],
+  keyPairs = [{ KeyPairId: "kp-1", KeyName: "default" }],
   onClose = vi.fn(),
 }: SetupOptions = {}) {
   sdk.reset()
@@ -163,7 +170,7 @@ function setup({
   })
   queryClient.setQueryData(ec2KeyPairsQueryOptions.queryKey, {
     $metadata: {},
-    KeyPairs: [{ KeyPairId: "kp-1", KeyName: "default" }],
+    KeyPairs: keyPairs,
   })
   queryClient.setQueryData(ec2InstanceTypesQueryOptions.queryKey, {
     $metadata: {},
@@ -208,7 +215,20 @@ function setup({
     LaunchTemplates: launchTemplates,
   })
 
-  return renderWithClient(<RunInstancesPage onClose={onClose} />, queryClient)
+  return renderWithClient(<Harness onClose={onClose} />, queryClient)
+}
+
+// Holds the key pair flow as the list route holds it in the URL.
+function Harness({ onClose }: { onClose: (instanceId?: string) => void }) {
+  const [keyPairFlow, setKeyPairFlow] = useState<KeyPairFlow>()
+
+  return (
+    <RunInstancesPage
+      keyPairFlow={keyPairFlow}
+      onClose={onClose}
+      onKeyPairFlowChange={setKeyPairFlow}
+    />
+  )
 }
 
 function osTile(name: string) {
@@ -830,5 +850,156 @@ describe("run-instances submit", () => {
     expect(
       screen.getByRole("button", { name: "Create Instance" }),
     ).toBeEnabled()
+  })
+})
+
+function launchHandlers() {
+  const runInstances = vi.fn((_input: RunInstancesCommandInput) => ({
+    Instances: [{ InstanceId: "i-1" }],
+  }))
+
+  sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+  sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+  sdk.setHandler("RunInstancesCommand", runInstances)
+
+  return runInstances
+}
+
+describe("run-instances key pair", () => {
+  it("offers create and import when the account has no key pairs", async () => {
+    setup({ keyPairs: [] })
+
+    await expect(
+      screen.findByRole("button", { name: "Create key pair" }),
+    ).resolves.toBeEnabled()
+    expect(
+      screen.getByRole("button", { name: "Import public key" }),
+    ).toBeEnabled()
+    expect(screen.getByText(/No key pairs yet/)).toBeInTheDocument()
+  })
+
+  it("selects a created key once its private key is shown, keeping the other entries", async () => {
+    const user = userEvent.setup()
+
+    const createKeyPair = vi.fn((_input: CreateKeyPairCommandInput) => ({
+      KeyPairId: "kp-new",
+      KeyMaterial: "-----BEGIN RSA PRIVATE KEY-----",
+    }))
+
+    setup({ keyPairs: [] })
+    const runInstances = launchHandlers()
+    sdk.setHandler("CreateKeyPairCommand", createKeyPair)
+    sdk.setHandler("DescribeKeyPairsCommand", () => ({
+      KeyPairs: [{ KeyPairId: "kp-new", KeyName: "laptop" }],
+    }))
+
+    await user.click(await screen.findByRole("radio", { name: "Oracle Linux" }))
+    await user.type(screen.getByLabelText("Name (optional)"), "web-1")
+    await user.click(screen.getByRole("button", { name: "Create key pair" }))
+
+    const flow = screen.getByRole("region", { name: "Create key pair" })
+    // The launch form steps aside rather than unmounting.
+    expect(
+      screen.queryByRole("button", { name: "Create Instance" }),
+    ).not.toBeInTheDocument()
+
+    await user.type(within(flow).getByLabelText("Key Pair Name"), "laptop")
+    await user.click(
+      within(flow).getByRole("button", { name: "Create Key Pair" }),
+    )
+
+    await expect(
+      screen.findByLabelText("Private key material for laptop"),
+    ).resolves.toHaveValue("-----BEGIN RSA PRIVATE KEY-----")
+    expect(runInstances).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole("button", { name: "Close and Continue" }))
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", { name: "Create key pair" }),
+      ).not.toBeInTheDocument()
+    })
+    expect(screen.getByLabelText("Key Pair")).toHaveTextContent("laptop")
+    expect(screen.getByLabelText("Name (optional)")).toHaveValue("web-1")
+    expect(osTile("Oracle Linux")).toBeChecked()
+    expect(createKeyPair).toHaveBeenCalledWith({
+      KeyName: "laptop",
+      KeyType: "rsa",
+    })
+
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await waitFor(() => {
+      expect(runInstances).toHaveBeenCalled()
+    })
+    expect(runInstances.mock.calls[0]?.[0]).toMatchObject({
+      ImageId: "ami-o101",
+      KeyName: "laptop",
+      TagSpecifications: [
+        {
+          ResourceType: "instance",
+          Tags: [{ Key: "Name", Value: "web-1" }],
+        },
+      ],
+    })
+  })
+
+  it("selects an imported key, keeping the other entries", async () => {
+    const user = userEvent.setup()
+
+    const importKeyPair = vi.fn((_input: ImportKeyPairCommandInput) => ({
+      KeyPairId: "kp-imp",
+    }))
+
+    setup()
+    const runInstances = launchHandlers()
+    sdk.setHandler("ImportKeyPairCommand", importKeyPair)
+    sdk.setHandler("DescribeKeyPairsCommand", () => ({
+      KeyPairs: [
+        { KeyPairId: "kp-1", KeyName: "default" },
+        { KeyPairId: "kp-imp", KeyName: "mine" },
+      ],
+    }))
+
+    await user.type(await screen.findByLabelText("Name (optional)"), "db-1")
+    await user.click(screen.getByRole("button", { name: "Import public key" }))
+
+    const flow = screen.getByRole("region", { name: "Import public key" })
+    await user.type(within(flow).getByLabelText("Key Pair Name"), "mine")
+    await user.type(
+      within(flow).getByLabelText("Public Key"),
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host",
+    )
+    await user.click(
+      within(flow).getByRole("button", { name: "Import Key Pair" }),
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", { name: "Import public key" }),
+      ).not.toBeInTheDocument()
+    })
+    expect(importKeyPair).toHaveBeenCalledOnce()
+    expect(runInstances).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Key Pair")).toHaveTextContent("mine")
+    expect(screen.getByLabelText("Name (optional)")).toHaveValue("db-1")
+  })
+
+  it("leaves the selected key and entries alone when the flow is cancelled", async () => {
+    const user = userEvent.setup()
+
+    setup()
+    await user.type(await screen.findByLabelText("Name (optional)"), "app-1")
+    await user.click(screen.getByRole("button", { name: "Create key pair" }))
+
+    const flow = screen.getByRole("region", { name: "Create key pair" })
+    await user.click(within(flow).getByRole("button", { name: "Cancel" }))
+
+    expect(
+      screen.queryByRole("region", { name: "Create key pair" }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Key Pair")).toHaveTextContent("default")
+    expect(screen.getByLabelText("Name (optional)")).toHaveValue("app-1")
   })
 })

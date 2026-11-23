@@ -24,6 +24,7 @@ import {
 } from "@/mutations/ec2"
 
 import { InstanceDetails } from "./instance-details"
+import type { KeyPairFlow } from "./key-pair-field"
 import { RunInstancesPage } from "./run-instances-page"
 
 export const STATE_FILTERS = ["all", "running", "stopped", "other"] as const
@@ -37,12 +38,15 @@ export interface InstancesSearch extends PanelSearch {
   // The launch template the launch form starts from, when opened from one.
   template: string
   templateVersion: string
+  // The key pair form open over the launch form, so Back returns to it.
+  keyPair: KeyPairFlow | ""
 }
 
 export const CLOSED_INSTANCES_PANEL = {
   ...CLOSED_PANEL,
   template: "",
   templateVersion: "",
+  keyPair: "",
 } satisfies Partial<InstancesSearch>
 
 export function instanceName(instance: Instance): string | undefined {
@@ -358,6 +362,10 @@ export function InstancesPage({
         <RunInstancesPage
           launchTemplateId={search.template || undefined}
           launchTemplateVersion={search.templateVersion || undefined}
+          keyPairFlow={search.keyPair || undefined}
+          onKeyPairFlowChange={(flow) => {
+            onSearchChange({ keyPair: flow ?? "" })
+          }}
           onClose={(id) => {
             if (id) {
               showInstance(id)

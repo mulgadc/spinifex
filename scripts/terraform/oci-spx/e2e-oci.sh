@@ -342,17 +342,19 @@ sweep() {
             log "sweep: $topology is not marked disposable, leaving it"
             continue
         fi
-        if [ ! -s "$dir/terraform.tfstate" ]; then
+        if [ ! -e "$dir/terraform.tfstate" ]; then
             sweep_ocibsd "$dir"
             continue
         fi
+        # 1 only for state that parses and holds no instances; empty or odd state is 2.
         python3 -c '
 import json, sys
 try:
     state = json.load(open(sys.argv[1]))
+    held = any(r["instances"] for r in state.get("resources", []))
 except Exception:
     sys.exit(2)
-sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
+sys.exit(0 if held else 1)
 ' "$dir/terraform.tfstate" 2>/dev/null
         held=$?
         if [ "$held" = 1 ]; then

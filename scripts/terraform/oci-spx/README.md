@@ -298,7 +298,7 @@ A successful `--destroy-only` writes it, which makes the destroyed deployment's 
 
 A run without `--keep` stops with an error when its directory holds Terraform instances, unreadable state or a cluster record and has no marker: that is a deployment it does not own.
 Use it with `--keep`, or remove it with `--destroy-only`.
-`--dry-run` does not sweep and does not change the marker.
+`--dry-run` does not sweep and does not change the marker, with or without `--keep`.
 A sweep from before this marker existed ignores it, so keep a deployment in its own `OCI_STATE_ROOT` while any older checkout shares the root.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.

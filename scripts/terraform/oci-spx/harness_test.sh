@@ -84,12 +84,14 @@ instances='{"resources": [{"instances": [{}]}]}'
 
 reset_vt; run_vt
 if [ -e "$marker" ]; then pass "a plain run is disposable"; else fail "plain run: $(cat "$TMP/vt/out")"; fi
-for owned in tfstate record unreadable; do
+for owned in tfstate record unreadable empty shape; do
     reset_vt
     case "$owned" in
         tfstate) printf '%s\n' "$instances" > "$vtdir/terraform.tfstate" ;;
         record) printf 'c\tocid1.compartment\tus-test-1\n' > "$vtdir/ocibsd-clusters" ;;
         unreadable) echo '{' > "$vtdir/terraform.tfstate" ;;
+        empty) : > "$vtdir/terraform.tfstate" ;;
+        shape) echo '{"resources": [{}]}' > "$vtdir/terraform.tfstate" ;;
     esac
     run_vt
     if [ "$?" != 0 ] && [ ! -e "$marker" ] && [ ! -s "$tf_calls" ] && grep -q "does not own" "$TMP/vt/out"; then
@@ -111,6 +113,10 @@ mkdir -p "${existing_marker%/*}"; touch "$existing_marker"; run_vt --existing-st
 if [ ! -e "$existing_marker" ]; then pass "existing infrastructure is never disposable"; else fail "--existing-state-file left the marker"; fi
 reset_vt; run_vt --dry-run
 if [ ! -e "$marker" ]; then pass "--dry-run does not mark a directory"; else fail "--dry-run wrote the marker"; fi
+reset_vt; touch "$marker"; run_vt --dry-run --keep
+if [ -e "$marker" ]; then pass "--dry-run --keep leaves the marker"; else fail "--dry-run --keep removed the marker"; fi
+touch "$existing_marker"; run_vt --dry-run --existing-state-file "$TMP/existing.tfstate"
+if [ -e "$existing_marker" ]; then pass "--dry-run with existing infrastructure leaves the marker"; else fail "--dry-run --existing-state-file removed the marker"; fi
 reset_vt; printf '%s\n' "$instances" > "$vtdir/terraform.tfstate"; run_vt --dry-run --destroy-only
 if [ "$?" != 0 ] && [ ! -s "$tf_calls" ] && [ ! -e "$marker" ]; then
     pass "--dry-run --destroy-only is refused"
@@ -151,6 +157,10 @@ state_dir bm kept 0 1
 state_dir bm-existing existing 0 0
 state_dir vm-single-principal unreadable 1 0
 echo '{' > "$TMP/root/.validate-vm-single-principal/terraform.tfstate"
+state_dir vm-multi-ocibsd truncated 1 0
+: > "$TMP/root/.validate-vm-multi-ocibsd/terraform.tfstate"
+state_dir vm-single-ocibsd shape 1 0
+echo '{"resources": [{}]}' > "$TMP/root/.validate-vm-single-ocibsd/terraform.tfstate"
 SPX_REF=dev OCI_STATE_ROOT="$TMP/root" OCI_ARTIFACT_DIR="$TMP/art" \
     bash "$TMP/e2e/e2e-oci.sh" --sweep-only > "$TMP/e2e/out" 2>&1
 destroys=$(cat "$TMP/e2e/validate-topology.sh.calls")
@@ -165,11 +175,13 @@ if [ "$swept" = "--cluster destroyed --cluster killed " ]; then
 else
     fail "volume sweeps: '$swept'; $(cat "$TMP/e2e/out")"
 fi
-if grep -q "vm-single-principal.*FAIL" "$TMP/art/verdict.txt" && [ -s "$TMP/root/.validate-vm-single-principal/ocibsd-clusters" ]; then
-    pass "unreadable state fails the sweep and keeps its record"
-else
-    fail "unreadable state: $(cat "$TMP/art/verdict.txt")"
-fi
+for odd in vm-single-principal vm-multi-ocibsd vm-single-ocibsd; do
+    if grep -q "sweep $odd: FAIL" "$TMP/art/verdict.txt" && [ -s "$TMP/root/.validate-$odd/ocibsd-clusters" ]; then
+        pass "$odd: state that cannot be read fails the sweep and keeps its record"
+    else
+        fail "$odd state: $(cat "$TMP/art/verdict.txt")"
+    fi
+done
 state_dir vm-single killed 1 1
 : > "$TMP/e2e/scripts/oci_env.py.calls"
 : > "$TMP/e2e/validate-topology.sh.calls"
@@ -212,9 +224,10 @@ mkdir -p "$kept"
 printf '%s\n' "$instances" > "$kept/terraform.tfstate"
 printf 'kept\tocid1.compartment\tus-test-1\n' > "$kept/ocibsd-clusters"
 cp "$kept/terraform.tfstate" "$TMP/kept.tfstate"
+cp "$kept/ocibsd-clusters" "$TMP/kept.clusters"
 run_int "$TMP/kept"
 if [ ! -s "$int_calls" ] && [ ! -e "$kept/disposable" ] && cmp -s "$kept/terraform.tfstate" "$TMP/kept.tfstate" \
-    && [ -s "$kept/ocibsd-clusters" ]; then
+    && cmp -s "$kept/ocibsd-clusters" "$TMP/kept.clusters"; then
     pass "a full run over a kept deployment applies, destroys and sweeps nothing"
 else
     fail "kept deployment: calls '$(cat "$int_calls")'; $(tail -20 "$TMP/kept.out")"

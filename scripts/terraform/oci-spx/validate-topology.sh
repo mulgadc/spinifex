@@ -610,7 +610,7 @@ fi
 # cluster record: each one is something a run without the marker did not create.
 holds_deployment() {
     [ -s "$STATE_DIR/ocibsd-clusters" ] && return 0
-    [ -s "$STATE_DIR/terraform.tfstate" ] || return 1
+    [ -e "$STATE_DIR/terraform.tfstate" ] || return 1
     python3 -c '
 import json, sys
 try:
@@ -622,9 +622,11 @@ sys.exit(0 if held else 1)
 ' "$STATE_DIR/terraform.tfstate"
 }
 
-if [ "$KEEP" = 1 ]; then
+if [ "$DRY_RUN" = 1 ]; then
+    :
+elif [ "$KEEP" = 1 ]; then
     rm -f "$DISPOSABLE"
-elif [ "$DRY_RUN" = 0 ]; then
+else
     # Without this the apply adopts a kept deployment's state and the EXIT trap
     # destroys it.
     [ -e "$DISPOSABLE" ] || ! holds_deployment \

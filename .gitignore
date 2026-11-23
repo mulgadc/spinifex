@@ -52,3 +52,6 @@ Thumbs.db
 # Test reports
 *-report.txt
 /rds-agent
+
+# Docs diagram icons, fetched by scripts/render-diagrams.sh
+.github/assets/diagrams/src/icons/

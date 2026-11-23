@@ -1,7 +1,13 @@
+/* React Flow ships its styles in @layer xyflow. Imported here, after this
+   order is declared, so xyflow ranks above the preflight reset in base and
+   below the utility classes. */
+@layer theme, base, xyflow, components, utilities;
+
 /* Scope class detection to src. The committed dist/ cannot be gitignored
    because spinifexui.go embeds it, so auto-detection would scan the previous
    build's output and carry its dead classes into the next one. */
 @import "tailwindcss" source(".");
+@import "@xyflow/react/dist/style.css";
 @import "@fontsource-variable/archivo";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/jetbrains-mono";

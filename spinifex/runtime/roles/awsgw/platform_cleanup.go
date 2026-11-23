@@ -8,12 +8,12 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/nats-io/nats.go"

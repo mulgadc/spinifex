@@ -4,11 +4,11 @@ package ochre
 // with only some of the vLLM series.
 
 import (
-	"slices"
-	"sync"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 

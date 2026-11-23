@@ -40,7 +40,7 @@ The daemon replies STARTING as soon as it has claimed the model, and the
 launch continues in the background. Pass --wait to poll until the endpoint
 reaches READY and report how long the cold start took. A launch whose
 readiness probe was redirected or timed out is parked: its VM is retained,
---wait returns at once with the parked reason, and the daemon re-probes it.
+--wait returns at once with the parked reason, and recovery can retry it.
 
 --pinned reserves the shared bundle: a pinned endpoint is never idle-reclaimed
 or evicted, and keeps its GPU until deleted. Embedding InvokeModel serves only
@@ -104,12 +104,12 @@ const (
 )
 
 // errEndpointLaunchAborted reports a STARTING endpoint that went back to
-// ABSENT, which is how a launch that failed before its VM ran reports itself.
-var errEndpointLaunchAborted = errors.New("endpoint launch aborted: the record returned to ABSENT, which is how a launch that failed before its VM ran reports itself")
+// ABSENT, which is how a launch that failed before it completed reports itself.
+var errEndpointLaunchAborted = errors.New("endpoint launch aborted: the record returned to ABSENT, which is how a launch that failed before it completed reports itself")
 
 // errEndpointLaunchParked reports a launch that stopped waiting for readiness.
-// Its VM and record are retained, so waiting longer cannot change the outcome.
-var errEndpointLaunchParked = errors.New("endpoint launch parked: readiness did not succeed, so the VM is retained and the daemon re-probes it until every member answers")
+// The wait returns rather than poll a launch that is no longer progressing.
+var errEndpointLaunchParked = errors.New("endpoint launch parked: readiness did not succeed; the VM is retained, and recovery can retry it when available")
 
 // errEndpointWaitTimeout reports that the poll window closed with the
 // endpoint still STARTING. The endpoint is deliberately left running.

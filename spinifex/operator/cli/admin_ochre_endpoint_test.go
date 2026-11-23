@@ -734,3 +734,20 @@ func TestListEndpointsOutput_MarksParkedAndHeldEndpoints(t *testing.T) {
 	require.Equal(t, 2, strings.Count(msg, "(parked:")+strings.Count(msg, "(health hold)"),
 		"the ordinary READY row must keep its bare state")
 }
+
+// The wait messages must not claim more than the record shows: ABSENT does
+// not prove no VM ran, and a parked launch may still recover to READY.
+func TestEndpointWaitMessages_ClaimOnlyWhatTheRecordShows(t *testing.T) {
+	require.Equal(t, "endpoint launch aborted: the record returned to ABSENT, "+
+		"which is how a launch that failed before it completed reports itself", errEndpointLaunchAborted.Error())
+	require.Equal(t, "endpoint launch parked: readiness did not succeed; "+
+		"the VM is retained, and recovery can retry it when available", errEndpointLaunchParked.Error())
+
+	svc := &fakeEndpointService{ensure: parkedRecord(ochre.ParkReadinessRedirected)}
+	now := time.Unix(0, 0).UTC()
+	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, time.Hour, fakeClock(&now))
+	require.Error(t, err)
+	for _, overclaim := range []string{"cannot change", "until every member", "never ran"} {
+		require.NotContains(t, err.Error(), overclaim)
+	}
+}

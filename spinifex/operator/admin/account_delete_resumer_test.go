@@ -154,10 +154,22 @@ func TestDeletionResumerOpensItsBucketAtStart(t *testing.T) {
 
 	stop := gw.StartDeletionResumer(t.Context())
 	t.Cleanup(stop)
-	require.Eventually(t, func() bool {
-		_, err := js.KeyValue(t.Context(), KVBucketAccountDeletions)
-		return err == nil
-	}, 5*time.Second, 10*time.Millisecond, "the bucket must exist well before the first scan")
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.NoError(t, err, "the bucket must exist once the resumer has started, before the gateway serves")
+}
+
+// A gateway that cannot run a teardown still creates the job bucket on its scan,
+// so a failed open at start is retried on every gateway.
+func TestDeletionScanWithoutTeardownCreatesTheBucket(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	gw.Termination = nil
+	assert.Zero(t, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+
+	js, err := jetstream.New(gw.NATS)
+	require.NoError(t, err)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.NoError(t, err)
 }
 
 // A gateway whose cleanup failed to build must leave an abandoned job for one

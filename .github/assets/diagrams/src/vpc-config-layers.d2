@@ -1,0 +1,11 @@
+...@aws
+
+toml: "spinifex.toml · three scopes" {
+  class: group
+  grid-rows: 1
+  horizontal-gap: 30
+
+  cluster: "Cluster-wide · which mode?\n\n[network]\nexternal_mode = \"pool\"" {class: box}
+  pools: "IP ranges · what IPs to use?\n\n[[network.external_pools]]\nname · range_start · range_end\ngateway · prefix_len\nregion · az (optional)" {class: box}
+  node: "Per-node · which WAN bridge?\n\n[nodes.NAME.vpcd]\nexternal_interface = \"br-wan\"" {class: box}
+}

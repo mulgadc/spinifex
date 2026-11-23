@@ -1,0 +1,58 @@
+...@aws
+direction: down
+
+laptop: "Your laptop\naws-cli · Terraform\nboto3" {class: res; icon: icons/Res_Client_48_Light.svg}
+internet: "Internet" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.0.1 · internet gateway" {
+  class: datacenter
+
+  pip: "Reserved public IP\n150.230.13.131" {class: res; icon: icons/Res_Amazon-EC2_Elastic-IP-Address_48.svg}
+
+  node: "spinifex-node-01 · BM.Standard.E2.64\nFAULT-DOMAIN-1" {
+    class: server
+
+    vnic0: "VNIC 0 (primary) · enp0s9\n10.200.0.252/23 · default route\nadvertise · ovn-encap-ip · NATS · API :9999" {class: box}
+    vnic1: "VNIC 1 (secondary) · br-wan\n10.200.1.233/32 · ip rule → table 200\nsecondary private IPs ⇄ reserved public IPs" {class: box}
+    nat: "spx-nat-host ⇄ spx-nat-ovs\ntransit 100.127.0.0/24\nnft spinifex-nat-egress → br-wan" {class: box}
+
+    cp: "Spinifex control plane · spx service <name>" {
+      class: group
+      grid-columns: 4
+      grid-gap: 12
+      awsgw: "awsgw :9999" {class: box}
+      daemon: daemon {class: box}
+      vpcd: vpcd {class: box}
+      nats: NATS {class: box}
+      predastore: predastore {class: box}
+      viperblock: viperblock {class: box}
+      northstar: northstar {class: box}
+      ui: "ui :3000" {class: box}
+    }
+
+    region: "Spinifex region" {
+      class: region
+      vpcb: "vpc-b\n172.31.0.0/16" {
+        class: vpc
+        width: 300
+        i2: "i-… 172.31.4.9\nprivate, egress only" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+      vpca: "vpc-a\n10.0.0.0/16" {
+        class: vpc
+        width: 300
+        i1: "i-… 10.0.1.4\n→ 150.230.13.131" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+    }
+
+    vol: "Block volume 256 GB+\n/dev/sdb → /var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+  }
+}
+
+
+laptop -> vcn.node.vnic0: "API :9999 · SSH" {class: flow}
+internet -> vcn.pip: {class: flow}
+vcn.pip -> vcn.node.vnic1: "secondary private IP" {class: flow}
+vcn.node.vnic1 -> vcn.node.nat: {class: flow}
+vcn.node.nat -> vcn.node.region.vpca.i1: {class: flow}
+vcn.node.vnic0 -> vcn.node.cp: {class: flow}
+vcn.node.cp -> vcn.node.vol: "iSCSI 169.254.2.2:3260" {class: quiet}

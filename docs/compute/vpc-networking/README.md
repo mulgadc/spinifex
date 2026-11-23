@@ -38,7 +38,7 @@ Spinifex maps AWS VPC concepts directly to OVN constructs:
 ## Network Path
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-network-path.svg" alt="VPC logical topology — WAN, br-wan, VPC logical router, subnets, ENIs" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-network-path.svg" alt="VPC logical topology — WAN, br-wan, veth pair, br-ext, VPC logical router, subnets, ENIs" width="700">
 </p>
 
 Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overlay NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int` (the integration bridge where all VM TAP devices connect).
@@ -174,7 +174,7 @@ A subnet's behavior depends on three things: whether the VPC has an Internet Gat
 Instances get a private IP only. They can communicate with other instances in the same VPC (even across subnets and hosts via the overlay). They cannot reach the internet or be reached from the WAN.
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="620">
 </p>
 
 Private subnet instances reach the internet only if their route table has a default route to the IGW (shared SNAT, outbound only — they share the gateway IP) or to a NAT gateway. With no default route, egress is dropped. Either way they cannot be reached from the WAN because they have no public IP.
@@ -255,7 +255,7 @@ If `spinifex-predastore` fails to start after the change, remove the two setting
 Instances get both a private IP and a public IP. The public IP is a 1:1 NAT managed by OVN — the instance OS only sees its private IP.
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-public-subnet-flow.svg" alt="Public subnet — outbound SNAT and inbound DNAT between private and public IPs" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-public-subnet-flow.svg" alt="Public subnet — outbound SNAT and inbound DNAT between private and public IPs" width="520">
 </p>
 
 **Requirements for a public subnet:**
@@ -659,7 +659,7 @@ ip -d link show wan
 ## Network Flow Diagram
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-host-flow.svg" alt="Bare-metal host — br-int overlay, br-ext OVS uplink, br-wan Linux bridge, physical NIC, OVN NAT pipeline" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-host-flow.svg" alt="Bare-metal host — br-int overlay, br-ext OVS uplink, br-wan Linux bridge, physical NIC, OVN NAT pipeline" width="280">
 </p>
 
 ## Configuration Reference
@@ -669,7 +669,7 @@ All network configuration lives in `spinifex.toml`. Settings are split into thre
 ## Configuration Levels
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node NIC" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node WAN bridge" width="740">
 </p>
 
 ## Cluster-Wide: external_mode

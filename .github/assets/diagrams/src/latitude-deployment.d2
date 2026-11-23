@@ -1,0 +1,35 @@
+...@aws
+direction: right
+
+machine: "Your machine\ndeploy-latitude.sh\nOpenTofu or Terraform" {class: res; icon: icons/Res_Client_48_Light.svg}
+api: "latitude.sh API\nproject · server\nElastic IP" {class: box}
+internet: "Internet\ncustomers" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+site: "latitude.sh site\nDAL by default · --site for another" {
+  class: datacenter
+
+  eip: "Elastic IP" {class: res; icon: icons/Res_Amazon-EC2_Elastic-IP-Address_48.svg}
+
+  node: "node1 · m4-metal-medium · --nodes 1\nbare metal · Ubuntu 26.04" {
+    class: server
+
+    cp: "Spinifex\nawsgw · daemon · vpcd · nats\npredastore · viperblock · ui" {class: box}
+
+    vpc: "Your VPC\nnginx-webserver workbook" {
+      class: vpc
+      subnet: "Public subnet" {
+        class: public-subnet
+        guest: "EC2 guest\nNginx web server" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+        ebs: "EBS volume" {class: res; icon: icons/Res_Amazon-Elastic-Block-Store_Volume_48.svg}
+      }
+    }
+  }
+}
+
+
+machine -> api: "API calls" {class: flow}
+api -> site: "creates the server\nand Elastic IP" {class: flow}
+machine -> site.node.cp: "SSH installs\nSpinifex" {class: flow}
+internet -> site.eip: {class: flow}
+site.eip -> site.node.vpc.subnet.guest: "static pool address\nrouted to the guest" {class: flow}
+site.node.vpc.subnet.guest -> site.node.vpc.subnet.ebs: "attached" {class: quiet}

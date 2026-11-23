@@ -1,0 +1,56 @@
+...@aws
+direction: right
+
+users: "kubectl\naws eks" {class: res; icon: icons/Res_Internet_48_Light.svg}
+
+region: Region {
+  class: region
+
+  cp: "EKS control plane · Spinifex-managed" {
+    class: group
+    nlb: "public\nAPI NLB" {class: res; icon: icons/Res_Elastic-Load-Balancing_Network-Load-Balancer_48.svg}
+    api: "apiserver\nVM" {class: res; icon: icons/Arch_Amazon-Elastic-Kubernetes-Service_48.svg}
+    nlb -> api: {class: flow}
+  }
+
+  vpc: VPC {
+    class: vpc
+
+    az_a: az-a {
+      class: az
+      subnet_a: subnet_a {
+        class: public-subnet
+        w: "Worker node" {
+          class: instance-contents
+          grid-columns: 3
+          grid-gap: 16
+          p1: pod {class: box; width: 56; height: 36}
+          p2: pod {class: box; width: 56; height: 36}
+          p3: pod {class: box; width: 56; height: 36}
+        }
+      }
+    }
+
+    az_b: az-b {
+      class: az
+      subnet_b: subnet_b {
+        class: public-subnet
+        w: "Worker node" {
+          class: instance-contents
+          grid-columns: 3
+          grid-gap: 16
+          p1: pod {class: box; width: 56; height: 36}
+          p2: pod {class: box; width: 56; height: 36}
+        }
+      }
+    }
+  }
+
+  ecr: ECR {class: res; icon: icons/Arch_Amazon-Elastic-Container-Registry_48.svg}
+}
+
+users -> region.cp.nlb: "API" {class: flow}
+region.cp.api -> region.vpc.az_a.subnet_a.w: "workers join" {class: quiet}
+region.cp.api -> region.vpc.az_b.subnet_b.w: "workers join" {class: quiet}
+region.vpc.az_a.subnet_a.w -> region.ecr: "image pull" {class: quiet}
+region.vpc.az_b.subnet_b.w -> region.ecr: "image pull" {class: quiet}

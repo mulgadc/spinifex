@@ -1,0 +1,27 @@
+...@aws
+direction: down
+
+host: "Bare-metal host" {
+  class: server
+
+  tap-eni1: "tap-eni1" {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+  tap-eni2: "tap-eni2" {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+  tap-eni3: "tap-eni3" {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+
+  br-int: "br-int · OVS bridge\noverlay" {class: box}
+  ovn: "OVN\nNAT pipeline" {class: box}
+  br-ext: "br-ext · OVS bridge\nOVN external uplink (localnet)" {class: box}
+  br-wan: "br-wan · Linux bridge\nhost IP · default route" {class: box}
+  nic: "WAN NIC\nenslaved to br-wan · no IP" {class: box}
+
+  tap-eni1 -> br-int: {class: flow}
+  tap-eni2 -> br-int: {class: flow}
+  tap-eni3 -> br-int: {class: flow}
+  br-int -> ovn: {class: flow}
+  ovn -> br-ext: {class: flow}
+  br-ext -> br-wan: "veth pair" {class: flow}
+  br-wan -> nic: {class: flow}
+}
+
+wan: "Physical WAN" {class: res; icon: icons/Res_Internet_48_Light.svg}
+host.nic -> wan: {class: flow}

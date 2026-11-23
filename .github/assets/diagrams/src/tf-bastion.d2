@@ -1,0 +1,36 @@
+...@aws
+direction: right
+
+operator: Operator {class: res; icon: icons/Res_User_48_Light.svg}
+
+region: "Region" {
+  class: region
+
+  vpc: "VPC 10.20.0.0/16" {
+    class: vpc
+
+    igw: "Internet\ngateway" {class: res; icon: icons/Res_Amazon-VPC_Internet-Gateway_48.svg}
+
+    az: Availability Zone {
+      class: az
+      public: "Public subnet\n10.20.1.0/24" {
+        class: public-subnet
+        bastion: "Bastion host" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+      private: "Private subnet\n10.20.2.0/24" {
+        class: private-subnet
+        app: "App server" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+      }
+    }
+
+    vpce: "S3 gateway\nendpoint" {class: res; icon: icons/Res_Amazon-VPC_Endpoints_48.svg}
+  }
+
+  s3: "S3 (Predastore)" {class: res; icon: icons/Arch_Amazon-Simple-Storage-Service_48.svg}
+}
+
+operator -> region.vpc.igw: "SSH" {class: flow}
+region.vpc.igw -> region.vpc.az.public.bastion: {class: flow}
+region.vpc.az.public.bastion -> region.vpc.az.private.app: "SSH" {class: flow}
+region.vpc.az.private.app -> region.vpc.vpce: "S3" {class: flow}
+region.vpc.vpce -> region.s3: {class: flow}

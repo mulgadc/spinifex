@@ -1,0 +1,27 @@
+...@aws
+direction: down
+
+host: "Host ↔ router DHCP\non br-ext → veth pair → br-wan" {
+  class: group
+  seq: "" {
+    shape: sequence_diagram
+    spinifex: "Spinifex" {class: box}
+    router: "WAN router" {class: box}
+    ovn: "OVN" {class: box}
+    spinifex -> router: "1. give me a public IP\nfor this VM" {class: flow}
+    router -> spinifex: "2. 192.168.1.75" {class: flow}
+    spinifex -> ovn: "3. store IP, then\ndnat_and_snat(192.168.1.75 ↔ 172.31.0.4)" {class: flow}
+  }
+}
+
+vm: "VM ↔ OVN DHCP\non tap → br-int → OVN logical switch" {
+  class: group
+  seq: "" {
+    shape: sequence_diagram
+    cloudinit: "VM (cloud-init)" {class: box}
+    ovndhcp: "OVN DHCP" {class: box}
+    cloudinit -> ovndhcp: "1. what's my IP?" {class: flow}
+    ovndhcp -> cloudinit: "2. you are 172.31.0.4" {class: flow}
+  }
+}
+

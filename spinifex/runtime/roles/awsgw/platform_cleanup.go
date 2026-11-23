@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
@@ -86,7 +87,7 @@ func retryCleanupBuild(name string, r *startupRetry, build func() error) error {
 			slog.Warn("awsgw: cleanup build failed, startup retry budget spent", "cleanup", name, "attempt", attempt, "err", err)
 			return err
 		}
-		slog.Warn("awsgw: cleanup build failed, retrying", "cleanup", name, "attempt", attempt, "attempts", attempts, "retryIn", delay, "err", err)
+		slog.Warn("awsgw: cleanup build failed, retrying", "cleanup", name, "attempt", attempt, "attempts", attempts, "retry_in_ms", otelsetup.Millis(delay), "err", err)
 		r.wait(delay)
 	}
 }

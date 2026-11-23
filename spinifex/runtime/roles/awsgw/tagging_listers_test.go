@@ -363,3 +363,31 @@ func TestELBv2Lister_PropagatesOwnerErrors(t *testing.T) {
 		})
 	}
 }
+
+// unreadableVolumes fails every volume read, so a test can show a request
+// never reaches the volume records.
+type unreadableVolumes struct{}
+
+func (unreadableVolumes) VolumeTags(context.Context, string, []string) (map[string]map[string]string, error) {
+	return nil, errors.New("volume store unavailable")
+}
+
+func TestEC2IndexLister_InstanceOnlyRequestDoesNotReadVolumes(t *testing.T) {
+	nc, svc := newEC2IndexFixture(t)
+	seedEC2Tags(t, svc, listerAccount, []string{"i-0000000000000000a"}, map[string]string{"env": "prod"})
+	svc.SetVolumeTagReader(unreadableVolumes{})
+	lister := newEC2IndexLister(nc, listerRegion)
+
+	got, err := lister.ListTagged(t.Context(), listerAccount, map[string]bool{"ec2:instance": true})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string]string{
+		"arn:aws:ec2:" + listerRegion + ":" + listerAccount + ":instance/i-0000000000000000a": {"env": "prod"},
+	}, byARN(t, got))
+
+	got, err = lister.ListTagged(t.Context(), listerAccount, map[string]bool{"elasticloadbalancing": true})
+	require.NoError(t, err)
+	assert.Empty(t, got, "a request for no EC2 type sends no DescribeTags")
+
+	_, err = lister.ListTagged(t.Context(), listerAccount, nil)
+	require.Error(t, err, "an unfiltered request does read the volume records")
+}

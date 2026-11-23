@@ -306,7 +306,8 @@ func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID s
 		return fmt.Sprintf("Endpoint for %s is %s.\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint)), nil
 	}
 
-	// A launch already parked will not become READY by waiting.
+	// A parked launch is no longer progressing on its own; only recovery can
+	// promote it, so return the retained record now rather than poll.
 	if out.Endpoint.Parked() {
 		return "", fmt.Errorf("%w\n\n%s", errEndpointLaunchParked, formatEndpointRecord(out.Endpoint))
 	}

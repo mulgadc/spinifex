@@ -44,14 +44,14 @@ func TestHealthHold_ReserveAndClearAtTheObservedRevision(t *testing.T) {
 	key := EndpointKey(awsidentifiers.GlobalAccountID, evictionVictimModel)
 
 	observed, rev := readRecord(t, s, key)
-	hold := HealthHold{Token: "sweep-1", Epoch: 7, ReservedAt: time.Now().UTC().Truncate(time.Second)}
+	hold := HealthHold{ReservedAt: time.Now().UTC().Truncate(time.Second)}
 	_, heldRev, err := s.reserveHealthHold(t.Context(), key, observed, rev, hold)
 	require.NoError(t, err)
 
 	held, storedRev := readRecord(t, s, key)
 	assert.Equal(t, heldRev, storedRev)
 	require.NotNil(t, held.HealthHold)
-	assert.Equal(t, hold, *held.HealthHold, "token and epoch must round-trip for the sweep journal")
+	assert.Equal(t, hold, *held.HealthHold, "the reservation time must round-trip")
 	want := seeded
 	want.HealthHold = &hold
 	want.Generation = seeded.Generation + 1

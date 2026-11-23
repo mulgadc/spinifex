@@ -5,14 +5,11 @@
 package ochre
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -122,196 +119,10 @@ type EndpointRecord struct {
 	SuccessTotal   float64   `json:"success_total,omitempty"`
 	ScrapeFailures int       `json:"scrape_failures,omitempty"`
 
-	// LaunchOwner names the launch worker that claimed this record; NodeID is
-	// its node. Records written before it carry none.
-	LaunchOwner OwnerField `json:"launch_owner,omitzero"`
-
 	// Generation increments on every write and is the CAS single-flight token:
 	// a concurrent Ensure that lost the local-mutex race re-reads the record and
 	// checks Generation before deciding whether a launch is still needed.
 	Generation uint64 `json:"generation"`
-}
-
-// LaunchOwner is the launch worker that claimed a record: its per-launch
-// nonce and the durable readiness token and epoch the launch ran under.
-type LaunchOwner struct {
-	WorkerNonce string `json:"worker_nonce"`
-	TokenID     string `json:"token_id"`
-	Epoch       uint64 `json:"epoch"`
-}
-
-// ErrLaunchOwnerInvalid is a launch owner that is present but null, partial or
-// malformed, or that has no NodeID. It is never read as a legacy record.
-var ErrLaunchOwnerInvalid = errors.New("bedrock: endpoint launch owner is invalid")
-
-func (o LaunchOwner) validate() error {
-	if o.WorkerNonce == "" || o.TokenID == "" || o.Epoch == 0 {
-		return fmt.Errorf("%w: worker nonce, token ID and epoch are all required", ErrLaunchOwnerInvalid)
-	}
-	return nil
-}
-
-// OwnerField is an optional LaunchOwner that remembers whether the stored
-// record carried one, so a damaged owner stays distinct from no owner. A
-// damaged owner fails to encode, so it is never rewritten.
-type OwnerField struct {
-	owner   LaunchOwner
-	present bool
-	invalid error
-}
-
-// Owned returns a field carrying o.
-func Owned(o LaunchOwner) OwnerField { return OwnerField{owner: o, present: true} }
-
-// IsZero reports a record with no owner, which omits the field.
-func (f OwnerField) IsZero() bool { return !f.present }
-
-// MarshalJSON encodes a complete owner and refuses a damaged or partial one.
-func (f OwnerField) MarshalJSON() ([]byte, error) {
-	if !f.present {
-		return []byte("null"), nil
-	}
-	if f.invalid != nil {
-		return nil, f.invalid
-	}
-	if err := f.owner.validate(); err != nil {
-		return nil, err
-	}
-	return json.Marshal(f.owner)
-}
-
-// UnmarshalJSON records any stored owner, including null; a malformed one is
-// kept as invalid rather than failing the whole record.
-func (f *OwnerField) UnmarshalJSON(data []byte) error {
-	*f = OwnerField{present: true}
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		f.invalid = fmt.Errorf("%w: null", ErrLaunchOwnerInvalid)
-		return nil
-	}
-	if err := exactKeys(data, "worker_nonce", "token_id", "epoch"); err != nil {
-		f.invalid = err
-		return nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f.owner); err != nil {
-		f.owner = LaunchOwner{}
-		f.invalid = fmt.Errorf("%w: %w", ErrLaunchOwnerInvalid, err)
-		return nil
-	}
-	f.invalid = f.owner.validate()
-	return nil
-}
-
-// exactKeys refuses an object whose keys repeat or are not among names in
-// exact case. A value that is not an object is left to the strict decode.
-func exactKeys(data []byte, names ...string) error {
-	keys, isObject, err := objectKeys(data)
-	if err != nil || !isObject {
-		return nil
-	}
-	seen := map[string]bool{}
-	for _, k := range keys {
-		if seen[k] || !slices.Contains(names, k) {
-			return fmt.Errorf("%w: ambiguous or unknown field %q", ErrLaunchOwnerInvalid, k)
-		}
-		seen[k] = true
-	}
-	return nil
-}
-
-// objectKeys lists the keys of a JSON object in order, repeats included.
-func objectKeys(data []byte) ([]string, bool, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, false, err
-	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return nil, false, nil
-	}
-	var keys []string
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, true, err
-		}
-		key, _ := tok.(string)
-		keys = append(keys, key)
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return nil, true, err
-		}
-	}
-	return keys, true, nil
-}
-
-// endpointRecordJSON is EndpointRecord's default encoding.
-type endpointRecordJSON EndpointRecord
-
-// MarshalJSON is the default encoding, except that a record whose owner
-// Owner refuses is never encoded. A record with no owner is unchanged.
-func (r EndpointRecord) MarshalJSON() ([]byte, error) {
-	if _, ok, err := r.Owner(); ok && err != nil {
-		return nil, err
-	}
-	return json.Marshal(endpointRecordJSON(r))
-}
-
-// UnmarshalJSON is the default decoding, except that a repeated or differently
-// cased launch_owner key, or such a node_id key beside an owner, marks the
-// owner invalid. A record with no owner keeps the default rules.
-func (r *EndpointRecord) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, (*endpointRecordJSON)(r)); err != nil {
-		return err
-	}
-	keys, _, err := objectKeys(data)
-	if err != nil {
-		return err
-	}
-	owners, nodes := keyCount(keys, "launch_owner"), keyCount(keys, "node_id")
-	switch {
-	case owners > 1:
-		r.LaunchOwner = OwnerField{present: true, invalid: fmt.Errorf("%w: ambiguous launch_owner field", ErrLaunchOwnerInvalid)}
-	case r.LaunchOwner.present && nodes > 1:
-		r.LaunchOwner = OwnerField{present: true, invalid: fmt.Errorf("%w: ambiguous node_id field", ErrLaunchOwnerInvalid)}
-	}
-	return nil
-}
-
-// keyCount counts name among keys, counting a key in another case twice so
-// that it is always ambiguous.
-func keyCount(keys []string, name string) int {
-	n := 0
-	for _, k := range keys {
-		switch {
-		case k == name:
-			n++
-		case strings.EqualFold(k, name):
-			n += 2
-		}
-	}
-	return n
-}
-
-// Owner returns the record's launch owner. ok is false only for a record with
-// no owner; a present owner that is invalid, or one on a record with no
-// NodeID, returns ok true and ErrLaunchOwnerInvalid.
-func (r EndpointRecord) Owner() (LaunchOwner, bool, error) {
-	f := r.LaunchOwner
-	switch {
-	case !f.present:
-		return LaunchOwner{}, false, nil
-	case f.invalid != nil:
-		return LaunchOwner{}, true, f.invalid
-	}
-	if err := f.owner.validate(); err != nil {
-		return LaunchOwner{}, true, err
-	}
-	if r.NodeID == "" {
-		return LaunchOwner{}, true, fmt.Errorf("%w: no node", ErrLaunchOwnerInvalid)
-	}
-	return f.owner, true, nil
 }
 
 // ParkReason is the fixed reason a launch's readiness wait ended unready.

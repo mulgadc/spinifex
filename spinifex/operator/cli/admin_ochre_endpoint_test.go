@@ -640,7 +640,7 @@ func parkedRecord(reason ochre.ParkReason) ochre.EndpointRecord {
 func heldRecord() ochre.EndpointRecord {
 	return ochre.EndpointRecord{
 		ModelID: testModelID, State: ochre.StateReady, InstanceID: "i-held", BaseURL: "http://10.0.0.5:8000",
-		HealthHold: &ochre.HealthHold{Token: "sweep-token-x", Epoch: 4242, ReservedAt: testParkedAt},
+		HealthHold: &ochre.HealthHold{ReservedAt: testParkedAt},
 	}
 }
 
@@ -708,11 +708,9 @@ func TestFormatEndpointRecord_ShowsParkedReasonAndTime(t *testing.T) {
 	require.NotContains(t, plain, "Parked")
 }
 
-func TestFormatEndpointRecord_ShowsAHealthHoldWithoutItsInternals(t *testing.T) {
+func TestFormatEndpointRecord_ShowsAHealthHoldAndItsTime(t *testing.T) {
 	out := formatEndpointRecord(heldRecord())
 	require.Contains(t, out, "Health hold:    held since 2026-11-22T23:00:00Z\n")
-	require.NotContains(t, out, "sweep-token-x")
-	require.NotContains(t, out, "4242")
 
 	unheld := heldRecord()
 	unheld.HealthHold = nil
@@ -730,7 +728,6 @@ func TestListEndpointsOutput_MarksParkedAndHeldEndpoints(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, msg, "STARTING (parked: readiness-redirected)")
 	require.Contains(t, msg, "READY (health hold)")
-	require.NotContains(t, msg, "sweep-token-x")
 	require.Equal(t, 2, strings.Count(msg, "(parked:")+strings.Count(msg, "(health hold)"),
 		"the ordinary READY row must keep its bare state")
 }

@@ -7,11 +7,8 @@ import (
 )
 
 // HealthHold protects a READY endpoint from automatic reclaim and capacity
-// eviction while its health is in question. Token and Epoch name the sweep
-// operation that reserved it, once sweeps carry durable tokens.
+// eviction while its health is in question.
 type HealthHold struct {
-	Token      string    `json:"token,omitempty"`
-	Epoch      uint64    `json:"epoch,omitempty"`
 	ReservedAt time.Time `json:"reserved_at"`
 }
 

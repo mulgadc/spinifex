@@ -111,12 +111,12 @@ func TestParseVLLMMetrics_RejectsIncompleteOrInvalidSamples(t *testing.T) {
 		body string
 		want error
 	}{
-		"running missing":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): ""}), errMetricsIncomplete},
-		"waiting missing":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): ""}), errMetricsIncomplete},
-		"success missing":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{metricSuccessTotal + "{": ""}), errMetricsIncomplete},
-		"no vLLM series":   {"go_goroutines 12\n", errMetricsIncomplete},
-		"empty body":       {"", errMetricsIncomplete},
-		"wrong model":      {vllmMetricsBody("other.model-v1:0", 0, 0, 0), errMetricsUnexpected},
+		"running missing": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): ""}), errMetricsIncomplete},
+		"waiting missing": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): ""}), errMetricsIncomplete},
+		"success missing": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{metricSuccessTotal + "{": ""}), errMetricsIncomplete},
+		"no vLLM series":  {"go_goroutines 12\n", errMetricsIncomplete},
+		"empty body":      {"", errMetricsIncomplete},
+		"wrong model":     {vllmMetricsBody("other.model-v1:0", 0, 0, 0), errMetricsUnexpected},
 		"unexpected engine": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{
 			gaugeLine(metricRunning): vllmSample(metricRunning, testModelID, "1", "", "0.0"),
 		}), errMetricsUnexpected},
@@ -132,24 +132,24 @@ func TestParseVLLMMetrics_RejectsIncompleteOrInvalidSamples(t *testing.T) {
 		"unknown finish reason": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{
 			successLine("abort"): vllmSample(metricSuccessTotal, testModelID, "0", "cancelled", "0.0"),
 		}), errMetricsUnexpected},
-		"duplicate gauge": {vllmMetricsBody(testModelID, 0, 0, 0) + gaugeLine(metricRunning) + " 0.0\n", errMetricsDuplicate},
+		"duplicate gauge":  {vllmMetricsBody(testModelID, 0, 0, 0) + gaugeLine(metricRunning) + " 0.0\n", errMetricsDuplicate},
 		"duplicate reason": {vllmMetricsBody(testModelID, 0, 0, 0) + successLine("error") + " 0.0\n", errMetricsDuplicate},
 		"duplicate label key": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{
 			gaugeLine(metricRunning): metricRunning + `{model_name="` + testModelID + `",engine="0",engine="0"} 0.0`,
 		}), errMetricsMalformed},
-		"timestamp":            {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.0 1700000000000"}), errMetricsMalformed},
-		"no value":             {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning)}), errMetricsMalformed},
-		"unterminated labels":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): metricRunning + `{model_name="` + testModelID + `",engine="0" 0.0`}), errMetricsMalformed},
-		"unknown escape":       {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): metricRunning + `{model_name="a\q",engine="0"} 0.0`}), errMetricsMalformed},
-		"negative":             {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " -1.0"}), errMetricsMalformed},
-		"NaN":                  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " NaN"}), errMetricsMalformed},
-		"infinite":             {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " +Inf"}), errMetricsMalformed},
-		"hex":                  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0x1"}), errMetricsMalformed},
-		"fractional running":   {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.5"}), errMetricsRange},
-		"tiny running":         {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 1e-300"}), errMetricsRange},
-		"fractional exponent":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " 1.2345678e+06"}), errMetricsRange},
-		"count past exact":     {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " 9007199254740993"}), errMetricsRange},
-		"huge exponent":        {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " 1e+308"}), errMetricsRange},
+		"timestamp":           {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.0 1700000000000"}), errMetricsMalformed},
+		"no value":            {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning)}), errMetricsMalformed},
+		"unterminated labels": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): metricRunning + `{model_name="` + testModelID + `",engine="0" 0.0`}), errMetricsMalformed},
+		"unknown escape":      {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): metricRunning + `{model_name="a\q",engine="0"} 0.0`}), errMetricsMalformed},
+		"negative":            {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " -1.0"}), errMetricsMalformed},
+		"NaN":                 {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " NaN"}), errMetricsMalformed},
+		"infinite":            {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " +Inf"}), errMetricsMalformed},
+		"hex":                 {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0x1"}), errMetricsMalformed},
+		"fractional running":  {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.5"}), errMetricsRange},
+		"tiny running":        {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 1e-300"}), errMetricsRange},
+		"fractional exponent": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " 1.2345678e+06"}), errMetricsRange},
+		"count past exact":    {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{successLine("stop"): successLine("stop") + " 9007199254740993"}), errMetricsRange},
+		"huge exponent":       {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " 1e+308"}), errMetricsRange},
 		"success sum past exact": {editLines(vllmMetricsLines(testModelID, 0, 0, 0), map[string]string{
 			successLine("stop"):   successLine("stop") + " " + maxCount,
 			successLine("length"): successLine("length") + " 1",
@@ -187,10 +187,10 @@ func TestParseVLLMMetrics_MissingFinishReasonWithUnchangedTotal(t *testing.T) {
 func TestParseVLLMMetrics_ExactCountBoundary(t *testing.T) {
 	lines := vllmMetricsLines(testModelID, 0, 0, 0)
 	for value, want := range map[string]error{
-		"9007199254740991":       nil,
-		"9.007199254740991e+15":  nil,
-		"9007199254740992":       errMetricsRange,
-		"9.007199254740992e+15":  errMetricsRange,
+		"9007199254740991":      nil,
+		"9.007199254740991e+15": nil,
+		"9007199254740992":      errMetricsRange,
+		"9.007199254740992e+15": errMetricsRange,
 	} {
 		t.Run(value, func(t *testing.T) {
 			body := editLines(lines, map[string]string{successLine("stop"): successLine("stop") + " " + value})
@@ -200,7 +200,7 @@ func TestParseVLLMMetrics_ExactCountBoundary(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.EqualValues(t, uint64(1<<53-1), m.successTotal)
+			assert.Equal(t, uint64(1<<53-1), m.successTotal)
 		})
 	}
 }

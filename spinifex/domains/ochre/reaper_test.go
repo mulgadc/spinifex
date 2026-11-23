@@ -24,8 +24,8 @@ import (
 // readiness probe on /v1/models and the reaper's scrape on /metrics. One
 // transport serves both because the Service uses one HTTP client for both.
 type vllmTransport struct {
-	mu      sync.Mutex
-	body    string
+	mu       sync.Mutex
+	body     string
 	fail     bool
 	scrapes  int
 	requests int

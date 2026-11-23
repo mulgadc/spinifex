@@ -19,20 +19,20 @@ func TestReaper_IncompleteOrInvalidMetricsKeepTheHold(t *testing.T) {
 	t.Parallel()
 	lines := vllmMetricsLines(testModelID, 0, 0, 0)
 	bodies := map[string]string{
-		"running missing":           editLines(lines, map[string]string{gaugeLine(metricRunning): ""}),
-		"waiting missing":           editLines(lines, map[string]string{gaugeLine(metricWaiting): ""}),
-		"success missing":           editLines(lines, map[string]string{metricSuccessTotal + "{": ""}),
-		"finish reason missing":     editLines(lines, map[string]string{successLine("repetition"): ""}),
-		"malformed":                 editLines(lines, map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " not-a-number"}),
-		"non-finite":                editLines(lines, map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " +Inf"}),
-		"fractional":                editLines(lines, map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.5"}),
-		"out of range":              editLines(lines, map[string]string{successLine("stop"): successLine("stop") + " 1e+17"}),
-		"duplicate":                 vllmMetricsBody(testModelID, 0, 0, 0) + successLine("stop") + " 0.0\n",
+		"running missing":             editLines(lines, map[string]string{gaugeLine(metricRunning): ""}),
+		"waiting missing":             editLines(lines, map[string]string{gaugeLine(metricWaiting): ""}),
+		"success missing":             editLines(lines, map[string]string{metricSuccessTotal + "{": ""}),
+		"finish reason missing":       editLines(lines, map[string]string{successLine("repetition"): ""}),
+		"malformed":                   editLines(lines, map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " not-a-number"}),
+		"non-finite":                  editLines(lines, map[string]string{gaugeLine(metricWaiting): gaugeLine(metricWaiting) + " +Inf"}),
+		"fractional":                  editLines(lines, map[string]string{gaugeLine(metricRunning): gaugeLine(metricRunning) + " 0.5"}),
+		"out of range":                editLines(lines, map[string]string{successLine("stop"): successLine("stop") + " 1e+17"}),
+		"duplicate":                   vllmMetricsBody(testModelID, 0, 0, 0) + successLine("stop") + " 0.0\n",
 		"families agree, wrong model": vllmMetricsBody("other.model-v1:0", 0, 0, 0),
 		"engine omitted everywhere": editLines(lines, map[string]string{
 			gaugeLine(metricRunning): metricRunning + `{model_name="` + testModelID + `"} 0.0`,
 			gaugeLine(metricWaiting): metricWaiting + `{model_name="` + testModelID + `"} 0.0`,
-			metricSuccessTotal + "{":  "",
+			metricSuccessTotal + "{": "",
 		}),
 	}
 	for name, body := range bodies {
@@ -202,8 +202,8 @@ func TestReaper_OversizedMetricsKeepTheHold(t *testing.T) {
 		size     int
 		wantHeld bool
 	}{
-		"at the limit":       {metricsBodyLimit, false},
-		"one byte past it":   {metricsBodyLimit + 1, true},
+		"at the limit":     {metricsBodyLimit, false},
+		"one byte past it": {metricsBodyLimit + 1, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

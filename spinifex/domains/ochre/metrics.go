@@ -67,7 +67,7 @@ func (m endpointMetrics) idle(prevSuccessTotal float64) bool {
 // eviction decision on another replica can tell a quiet endpoint from a busy
 // one without scraping it itself.
 func (m endpointMetrics) inFlight() int {
-	return int(m.running + m.waiting)
+	return int(m.running + m.waiting) //#nosec G115 -- parse bounds the sum to maxExactCount
 }
 
 // errMetricsRedirected is a metrics probe answered with a redirect, which is

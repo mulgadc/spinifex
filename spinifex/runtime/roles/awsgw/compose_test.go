@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
@@ -103,10 +104,10 @@ func (fixedCleaner) CleanupPlatform(context.Context, *accountcleanup.Request) (*
 // binds. A cleanup that cannot be built must leave the field nil, which refuses
 // the request, rather than bind something half-working.
 func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
-	bound := withPlatformCleaner(operatoradmin.Deps{}, func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
+	bound := withPlatformCleaner(operatoradmin.Deps{}, func(time.Duration) {}, func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
 	assert.NotNil(t, bound.PlatformCleaner)
 
-	unbound := withPlatformCleaner(operatoradmin.Deps{}, func() (accountlifecycle.PlatformCleaner, error) {
+	unbound := withPlatformCleaner(operatoradmin.Deps{}, func(time.Duration) {}, func() (accountlifecycle.PlatformCleaner, error) {
 		return nil, errors.New("owner store unavailable")
 	})
 	assert.Nil(t, unbound.PlatformCleaner)

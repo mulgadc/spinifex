@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
@@ -55,7 +56,7 @@ func platformCleaner(ctx context.Context, node *config.Config, nc *nats.Conn, js
 
 // withPlatformCleaner binds the cleanup every DeleteAccount runs. When it cannot
 // be built the field stays nil, which refuses the request instead of half-running it.
-func withPlatformCleaner(d operatoradmin.Deps, build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
+func withPlatformCleaner(d operatoradmin.Deps, _ func(time.Duration), build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
 	cleaner, err := build()
 	if err != nil {
 		slog.Error("awsgw: EC2 platform cleanup unavailable", "err", err)

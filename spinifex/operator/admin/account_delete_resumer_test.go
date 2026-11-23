@@ -140,3 +140,51 @@ func TestDeletionResumerStopsWithItsContext(t *testing.T) {
 		t.Fatal("resumer did not stop")
 	}
 }
+
+// A gateway whose cleanup failed to build must leave an abandoned job for one
+// that has it: a takeover would fail the teardown at once, and the resumer
+// never resumes a failed job.
+func TestResumerWithoutACleanupLeavesTheJobForAGatewayWithOne(t *testing.T) {
+	t.Parallel()
+	missing := map[string]func(*Deps){
+		"platform": func(d *Deps) { d.PlatformCleaner = nil },
+		"compute":  func(d *Deps) { d.ComputeCleaner = nil },
+		"storage":  func(d *Deps) { d.StorageCleaner = nil },
+	}
+	for name, unset := range missing {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			gw := newDeleteAccountGateway(t)
+			account := newTenantAccount(t, gw, "tenant@example.com")
+			now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+			job := abandonedJob(account.AccountID, "tenant@example.com")
+			expired := now.Add(-2 * accountDeletionStale).Format(time.RFC3339)
+			job.UpdatedAt, job.LeaseUntil = expired, expired
+			jobs := storeDeletionJob(t, gw, job)
+			before, err := jobs.Get(t.Context(), account.AccountID)
+			require.NoError(t, err)
+
+			lost := gw
+			lost.NodeID = "node-lost"
+			unset(&lost)
+			assert.Zero(t, lost.resumeDeletions(t.Context(), now))
+
+			after, revision, err := readDeletionEntry(t.Context(), jobs, account.AccountID)
+			require.NoError(t, err)
+			assert.Equal(t, before.Revision(), revision, "the record must be left unwritten")
+			assert.Equal(t, operatorv1.DeletionStateRunning, after.State)
+			assert.Equal(t, uint64(1), after.Fence)
+			assert.Equal(t, "node-dead", after.Holder)
+			assert.True(t, resumable(after, now), "another gateway must still be able to take it over")
+
+			gw.NodeID = "node-whole"
+			require.Equal(t, 1, gw.resumeDeletions(t.Context(), now))
+			require.Eventually(t, func() bool {
+				return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
+			}, 30*time.Second, 10*time.Millisecond)
+			stored := describeDeletion(t, gw, account.AccountID)
+			assert.Equal(t, uint64(2), stored.Fence)
+			assert.Equal(t, "node-whole", stored.Holder)
+		})
+	}
+}

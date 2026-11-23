@@ -739,10 +739,10 @@ func launchService(config *config.ClusterConfig) error {
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
 	})
-	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, func() (accountlifecycle.PlatformCleaner, error) {
+	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, time.Sleep, func() (accountlifecycle.PlatformCleaner, error) {
 		return platformCleaner(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs)
 	})
-	operatorAdminDeps = withComputeCleaners(operatorAdminDeps, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
+	operatorAdminDeps = withComputeCleaners(operatorAdminDeps, time.Sleep, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
 		return computeCleaners(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs, objStore)
 	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)

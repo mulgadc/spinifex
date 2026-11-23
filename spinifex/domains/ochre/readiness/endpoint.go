@@ -56,17 +56,67 @@ type Settlement struct {
 // guarded Control without one refuses every settle.
 type SettleCheck func(Settlement) error
 
-// WriteEndpoint journals a claim or hold on key at expected, then publishes
-// value once at that exact revision while holding off Release. An unconfirmed
-// publish or check fences the Operation.
+// EndpointWrite is one proposed claim or hold: the admitted token, the key,
+// the leader-read revision at the expected sequence, including a delete or
+// purge marker, and the value to publish.
+type EndpointWrite struct {
+	TokenID string
+	Kind    TokenKind
+	Epoch   uint64
+	Node    string
+	Target  string
+	Nonce   string
+	Key     string
+	Intent  Intent
+	Prior   SubjectRevision
+	Next    []byte
+}
+
+// WriteCheck is the endpoint domain's rule that a claim or hold belongs to
+// its operation and changes only what it must. It gets copies of the values.
+// A guarded Control without one refuses every claim and hold.
+type WriteCheck func(EndpointWrite) error
+
+// WriteEndpoint checks a claim or hold on key at expected against the leader
+// read and the WriteCheck, journals it, then publishes value once at that
+// exact revision while holding off Release. An unconfirmed result fences.
 func (o *Operation) WriteEndpoint(ctx context.Context, key string, intent Intent, value []byte, expected uint64) (uint64, error) {
 	if intent != IntentClaim && intent != IntentHold {
 		return 0, fmt.Errorf("%w: endpoint write intent %q; settle through SettleEndpoint or DeleteEndpoint", ErrInvalid, intent)
 	}
+	if value == nil {
+		return 0, fmt.Errorf("%w: %s of %s needs a value", ErrInvalid, intent, key)
+	}
 	value = bytes.Clone(value)
-	return o.endpointWrite(ctx, key, intent, expected, false, nil, func(bucket string) (uint64, error) {
+	return o.endpointWrite(ctx, key, intent, expected, false, func(ctx context.Context) error {
+		return o.checkWrite(ctx, key, intent, expected, value)
+	}, func(bucket string) (uint64, error) {
 		return WriteAt(ctx, o.c.js, bucket, key, value, expected)
 	})
+}
+
+// checkWrite reads key from the leader, requires its revision to be exactly
+// expected, and asks the domain rule whether value may be written there.
+func (o *Operation) checkWrite(ctx context.Context, key string, intent Intent, expected uint64, value []byte) error {
+	if o.c.writes == nil {
+		return fmt.Errorf("%w: no endpoint write rule is configured", ErrNotWrite)
+	}
+	cur, err := o.readEndpointLocked(ctx, key)
+	if err != nil {
+		return err
+	}
+	if cur.Seq != expected {
+		return fmt.Errorf("%w: %s is at revision %d, not %d", ErrChanged, key, cur.Seq, expected)
+	}
+	w := EndpointWrite{
+		TokenID: o.id, Kind: o.tok.Kind, Epoch: o.tok.Epoch, Node: o.tok.Node, Target: o.tok.Target, Nonce: o.tok.Nonce,
+		Key: key, Intent: intent, Prior: SubjectRevision{Seq: cur.Seq, Op: cur.Op, Value: bytes.Clone(cur.Value)},
+		Next: bytes.Clone(value),
+	}
+	if err := o.c.writes(w); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrNotWrite, key, err)
+	}
+	return nil
 }
 
 // SettleEndpoint rewrites the live value at exactly expected as the SettleCheck

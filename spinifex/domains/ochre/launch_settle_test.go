@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/readiness"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -341,6 +342,13 @@ func newLaunchEnv(t *testing.T) (drainEnv, *readiness.Operation) {
 	return drainEnv{c: c, kv: kv}, admitLaunch(t, c, "launch-1")
 }
 
+// claimFor is a bare claim owned by op's token, epoch and nonce.
+func claimFor(op *readiness.Operation) EndpointRecord {
+	rec := bareClaimRecord()
+	rec.LaunchOwner = Owned(LaunchOwner{WorkerNonce: op.Nonce(), TokenID: op.ID(), Epoch: 1})
+	return rec
+}
+
 func admitLaunch(t *testing.T, c *readiness.Control, id string) *readiness.Operation {
 	t.Helper()
 	op, _, err := c.Admit(t.Context(), readiness.Token{ID: id, Kind: readiness.TokenLaunch, Epoch: 1, Node: testNodeID, Target: drainKey()})
@@ -356,7 +364,7 @@ func TestLaunchSettlement_GuardedOperationRunsTheWorkersSteps(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			e, op := newLaunchEnv(t)
-			claim := bareClaimRecord()
+			claim := claimFor(op)
 			rev, err := op.WriteEndpoint(ctx, drainKey(), readiness.IntentClaim, encode(t, claim), 0)
 			require.NoError(t, err)
 
@@ -384,7 +392,7 @@ func TestLaunchSettlement_GuardedOperationRunsTheWorkersSteps(t *testing.T) {
 func TestLaunchSettlement_GuardedOperationYieldsToAChangedRevision(t *testing.T) {
 	ctx := t.Context()
 	e, op := newLaunchEnv(t)
-	claim := bareClaimRecord()
+	claim := claimFor(op)
 	rev, err := op.WriteEndpoint(ctx, drainKey(), readiness.IntentClaim, encode(t, claim), 0)
 	require.NoError(t, err)
 
@@ -403,15 +411,13 @@ func TestLaunchSettlement_GuardedOperationYieldsToAChangedRevision(t *testing.T)
 
 func TestLaunchSettlement_GuardedOperationRefusesAnotherWorkersClaim(t *testing.T) {
 	ctx := t.Context()
-	e, _ := newLaunchEnv(t)
+	e, first := newLaunchEnv(t)
 	op := admitLaunch(t, e.c, "launch-2")
-	claim := bareClaimRecord()
-	rev, err := op.WriteEndpoint(ctx, drainKey(), readiness.IntentClaim, encode(t, claim), 0)
+	_, err := op.WriteEndpoint(ctx, drainKey(), readiness.IntentClaim, encode(t, claimFor(first)), 0)
+	require.ErrorIs(t, err, readiness.ErrNotWrite, "launch-2 cannot write a claim that names launch-1")
+	_, err = e.kv.Get(ctx, drainKey())
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "nothing was written")
+	rec, _, err := e.c.Read(ctx)
 	require.NoError(t, err)
-
-	_, err = op.SettleEndpoint(ctx, drainKey(), encode(t, realizedOf(t, claim)), rev)
-	require.ErrorIs(t, err, readiness.ErrNotSettlement, "launch-2 wrote a claim that names launch-1")
-	got, gotRev := e.stored(t)
-	assert.Equal(t, rev, gotRev)
-	assert.Equal(t, string(encode(t, claim)), got)
+	assert.Empty(t, rec.Tokens["launch-2"].Journal, "nothing was journaled")
 }

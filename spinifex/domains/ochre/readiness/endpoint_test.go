@@ -43,6 +43,15 @@ func decodeRecord(data []byte) (testRecord, error) {
 	return r, err
 }
 
+// testWrites stands in for the endpoint domain's claim and hold rule: a claim
+// needs a key with no value, a hold needs a live one.
+func testWrites(w readiness.EndpointWrite) error {
+	if (w.Intent == readiness.IntentClaim) == w.Prior.Live() {
+		return errors.New("claim over a value or hold of none")
+	}
+	return nil
+}
+
 // testSettles stands in for the endpoint domain rule. An owner may remove its
 // own record or move it from STARTING to READY. A drain may only clear a READY
 // record's hold or move a marked STARTING record to READY, changing nothing else.
@@ -141,7 +150,7 @@ func newEndpointEnvWith(t *testing.T, settles readiness.SettleCheck) endpointEnv
 	b, err := newInit(js).Load(t.Context())
 	require.NoError(t, err)
 	pub := &endpointJS{JetStream: js}
-	c, err := readiness.NewGuarded(pub, b, settles)
+	c, err := readiness.NewGuarded(pub, b, readiness.Rules{Settle: settles, Write: testWrites})
 	require.NoError(t, err)
 	activate(t, c)
 	op := admit(t, c, "launch-1", 1)
@@ -233,15 +242,14 @@ func TestEndpoint_TombstoneRevisionMustBeNamed(t *testing.T) {
 			_, err = e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentClaim, []byte("new"), 0)
 			require.ErrorIs(t, err, readiness.ErrChanged, "zero is not a create over a tombstone")
 			require.NotErrorIs(t, err, readiness.ErrOutcomeUnknown)
-			assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent(), "one attempt, no hidden retry")
+			assert.Empty(t, e.pub.sent(), "the leader read refuses it before any journal or send")
 			assert.Equal(t, tomb, e.stored(t))
 
 			rev, err := e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentClaim, []byte("new"), tomb.Seq)
 			require.NoError(t, err, "a definite conflict does not fence the owner")
 			assert.Equal(t, readiness.SubjectRevision{Seq: rev, Op: readiness.OpPut, Value: []byte("new")}, e.stored(t))
 			rec, _ := read(t, e.raw())
-			assert.Equal(t, []readiness.Journal{e.journal(t, readiness.IntentClaim, 0), e.journal(t, readiness.IntentClaim, tomb.Seq)},
-				rec.Tokens["launch-1"].Journal)
+			assert.Equal(t, []readiness.Journal{e.journal(t, readiness.IntentClaim, tomb.Seq)}, rec.Tokens["launch-1"].Journal)
 			release(t, e.op)
 		})
 	}
@@ -439,10 +447,10 @@ func TestEndpoint_ClaimJournaledBeforeFreezeMayFinish(t *testing.T) {
 
 	_, err := e.raw().Finalize(ctx, "rb-1", frozenAt)
 	require.ErrorIs(t, err, readiness.ErrTokensOutstanding, "the admitted claim has not settled")
-	for _, intent := range []readiness.Intent{readiness.IntentClaim, readiness.IntentHold} {
-		_, err = e.op.WriteEndpoint(ctx, "000000000000/other-model", intent, []byte("x"), 0)
-		require.ErrorIs(t, err, readiness.ErrNotAdmitted, "no new %s after the freeze", intent)
-	}
+	_, err = e.op.WriteEndpoint(ctx, "000000000000/other-model", readiness.IntentClaim, []byte("x"), 0)
+	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "no new claim after the freeze")
+	_, err = e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentHold, []byte("x"), rev.Seq)
+	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "no new hold after the freeze")
 	assert.Empty(t, e.pub.sent(), "a refused journal sends no endpoint write")
 
 	_, err = e.op.SettleEndpoint(ctx, endpointKey, recReady, rev.Seq)
@@ -910,4 +918,62 @@ func TestEndpoint_SweepReachesTheRuleForAnUnownedRevision(t *testing.T) {
 		{Incarnation: e.journal(t, readiness.IntentSettle, 0).Incarnation, Key: keys[0], ExpectedRevision: revs[keys[0]], Intent: readiness.IntentSettle},
 		{Incarnation: e.journal(t, readiness.IntentSettle, 0).Incarnation, Key: keys[1], ExpectedRevision: revs[keys[1]], Intent: readiness.IntentSettle},
 	}, rec.Tokens["sweep-2"].Journal, "one token covers the sweep and journals each key")
+}
+
+func TestEndpoint_ClaimAndHoldNeedTheDomainRule(t *testing.T) {
+	ctx := t.Context()
+	e := newEndpointEnv(t)
+	readiness.SetWriteCheck(e.c, nil)
+	_, err := e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentClaim, recStarting, 0)
+	require.ErrorIs(t, err, readiness.ErrNotWrite, "a control with no write rule refuses every claim")
+	assert.Empty(t, e.pub.sent(), "nothing is journaled or sent")
+	assert.Equal(t, readiness.SubjectRevision{}, e.stored(t))
+}
+
+func TestEndpoint_WriteRuleSeesCopiesOfTheLeaderReadAndValue(t *testing.T) {
+	ctx := t.Context()
+	e := newEndpointEnv(t)
+	old, err := e.bound.EndpointsKV.Put(ctx, endpointKey, []byte("old"))
+	require.NoError(t, err)
+	require.NoError(t, e.bound.EndpointsKV.Delete(ctx, endpointKey))
+	tomb, err := e.op.ReadEndpoint(ctx, endpointKey)
+	require.NoError(t, err)
+	require.Greater(t, tomb.Seq, old)
+
+	var seen readiness.EndpointWrite
+	readiness.SetWriteCheck(e.c, func(w readiness.EndpointWrite) error {
+		seen = w
+		for i := range w.Next {
+			w.Next[i] = 'X'
+		}
+		return nil
+	})
+	value := []byte("claim")
+	rev, err := e.op.WriteEndpoint(ctx, endpointKey, readiness.IntentClaim, value, tomb.Seq)
+	require.NoError(t, err)
+	assert.Equal(t, readiness.SubjectRevision{Seq: tomb.Seq, Op: readiness.OpDel}, seen.Prior, "the rule sees the tombstone at the expected revision")
+	assert.Equal(t, readiness.IntentClaim, seen.Intent)
+	assert.Equal(t, e.op.Nonce(), seen.Nonce)
+	assert.Equal(t, "acct/model", seen.Target)
+	assert.Equal(t, readiness.SubjectRevision{Seq: rev, Op: readiness.OpPut, Value: []byte("claim")}, e.stored(t),
+		"the rule's copy cannot change the published bytes")
+	assert.Equal(t, []byte("claim"), value)
+}
+
+func TestEndpoint_LaunchAdmissionSetsADurableNonce(t *testing.T) {
+	ctx := t.Context()
+	e := newEndpointEnv(t)
+	require.NotEmpty(t, e.op.Nonce())
+	other := admit(t, e.c, "launch-2", 1)
+	assert.NotEqual(t, e.op.Nonce(), other.Nonce(), "each launch has its own nonce")
+	rec, _ := read(t, e.raw())
+	assert.Equal(t, e.op.Nonce(), rec.Tokens["launch-1"].Nonce, "the nonce is on the durable token")
+
+	tok := launch("launch-3", 1)
+	tok.Nonce = "chosen"
+	_, _, err := e.c.Admit(ctx, tok)
+	require.ErrorIs(t, err, readiness.ErrInvalid, "a caller cannot choose the nonce")
+	sweep, _, err := e.c.Admit(ctx, readiness.Token{ID: "sweep-1", Kind: readiness.TokenSweep, Epoch: 1, Node: "node-1", Target: "sweep"})
+	require.NoError(t, err)
+	assert.Empty(t, sweep.Nonce())
 }

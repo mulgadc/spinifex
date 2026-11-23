@@ -13,6 +13,9 @@ func SetAfterReadHook(c *Control, f func()) { c.afterRead = f }
 // SetSettleCheck replaces c's settlement rule.
 func SetSettleCheck(c *Control, f SettleCheck) { c.settles = f }
 
+// SetWriteCheck replaces c's claim and hold rule.
+func SetWriteCheck(c *Control, f WriteCheck) { c.writes = f }
+
 // SetInitStepHook runs f at each named point between initialization steps, so
 // a test can pause or disturb an initializer there.
 func SetInitStepHook(in *Initializer, f func(step string)) { in.hook = f }

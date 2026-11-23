@@ -29,7 +29,7 @@ func newGuardEnv(t *testing.T) guardEnv {
 	b, err := newInit(js).Load(t.Context())
 	require.NoError(t, err)
 	lossy := &faultJS{JetStream: js}
-	c, err := readiness.NewGuarded(lossy, b, nil)
+	c, err := readiness.NewGuarded(lossy, b, readiness.Rules{})
 	require.NoError(t, err)
 	activate(t, c)
 	return guardEnv{js: js, bound: b, lossy: lossy, c: c}
@@ -296,7 +296,7 @@ func TestGuarded_ConstructorRefusesAMismatchedContext(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c, err := readiness.NewGuarded(tc.js, tc.b, nil)
+			c, err := readiness.NewGuarded(tc.js, tc.b, readiness.Rules{})
 			require.ErrorIs(t, err, readiness.ErrInvalid)
 			assert.Nil(t, c)
 		})
@@ -304,7 +304,7 @@ func TestGuarded_ConstructorRefusesAMismatchedContext(t *testing.T) {
 	assert.Equal(t, seqA, controlSeq(t, jsA), "nothing is written on either broker")
 	assert.Equal(t, seqB, controlSeq(t, jsB))
 
-	c, err := readiness.NewGuarded(&faultJS{JetStream: jsA}, bA, nil)
+	c, err := readiness.NewGuarded(&faultJS{JetStream: jsA}, bA, readiness.Rules{})
 	require.NoError(t, err, "a wrapper over the binding's own context is accepted")
 	_, err = c.Initialize(ctx)
 	require.NoError(t, err)

@@ -367,6 +367,13 @@ type drainEnv struct {
 // guarded control uses settles and activates epoch 1.
 func newGuardedControl(t *testing.T, settles readiness.SettleCheck, key string, value []byte) (*readiness.Control, jetstream.KeyValue, uint64) {
 	t.Helper()
+	return newGuardedControlOver(t, settles, key, value, func(js jetstream.JetStream) jetstream.JetStream { return js })
+}
+
+// newGuardedControlOver is newGuardedControl with the control publishing
+// through wrap(js).
+func newGuardedControlOver(t *testing.T, settles readiness.SettleCheck, key string, value []byte, wrap func(jetstream.JetStream) jetstream.JetStream) (*readiness.Control, jetstream.KeyValue, uint64) {
+	t.Helper()
 	ctx := t.Context()
 	_, _, js := testutil.StartTestJetStream(t)
 	for _, b := range []string{"spinifex-cluster-config", KVBucketEndpoints} {
@@ -383,7 +390,7 @@ func newGuardedControl(t *testing.T, settles readiness.SettleCheck, key string, 
 	require.NoError(t, err)
 	b, err := in.Load(ctx)
 	require.NoError(t, err)
-	c, err := readiness.NewGuarded(js, b, settles)
+	c, err := readiness.NewGuarded(wrap(js), b, readiness.Rules{Settle: settles, Write: CheckEndpointWrite})
 	require.NoError(t, err)
 	initRev, err := c.Initialize(ctx)
 	require.NoError(t, err)

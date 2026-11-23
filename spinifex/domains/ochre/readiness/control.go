@@ -5,6 +5,7 @@ package readiness
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,7 +77,9 @@ type Token struct {
 	Node     string    `json:"node,omitempty"`
 	Target   string    `json:"target,omitempty"`
 	Rollback string    `json:"rollback,omitempty"`
-	Journal  []Journal `json:"journal,omitempty"`
+	// Nonce is a launch token's per-launch worker nonce, set at admission.
+	Nonce   string    `json:"nonce,omitempty"`
+	Journal []Journal `json:"journal,omitempty"`
 }
 
 // Record is the control record. Rollback is the identity of the rollback that
@@ -115,6 +118,9 @@ var (
 	// ErrTokenFenced refuses journal and release on an Operation whose journal
 	// write has an unknown outcome; only orphan-token recovery may clear it.
 	ErrTokenFenced = errors.New("readiness control token is fenced")
+	// ErrNotWrite refuses a claim or hold the endpoint domain rule does not
+	// allow for this operation.
+	ErrNotWrite = errors.New("readiness endpoint write is not allowed")
 	// ErrNotSettlement refuses a settle that would not finish or remove an
 	// existing obligation.
 	ErrNotSettlement = errors.New("readiness endpoint write is not a settlement")
@@ -145,14 +151,22 @@ type Control struct {
 	guard       []*Stream
 	endpoints   *Stream
 	settles     SettleCheck
+	writes      WriteCheck
 	beforeWrite func(op string)
 	afterRead   func()
+}
+
+// Rules are the endpoint domain's checks for a guarded Control. A missing rule
+// refuses every write of its kind.
+type Rules struct {
+	Settle SettleCheck
+	Write  WriteCheck
 }
 
 // NewGuarded returns a Control that checks both bound streams before and after
 // each read and write. The checks hold for these handles only: they are not a
 // durable quarantine, and recovery after a restart is separate.
-func NewGuarded(js jetstream.JetStream, b *Bound, settles SettleCheck) (*Control, error) {
+func NewGuarded(js jetstream.JetStream, b *Bound, rules Rules) (*Control, error) {
 	if js == nil || b == nil || b.Endpoints == nil || b.Control == nil {
 		return nil, fmt.Errorf("%w: guarded control needs both bound streams", ErrInvalid)
 	}
@@ -163,7 +177,8 @@ func NewGuarded(js jetstream.JetStream, b *Bound, settles SettleCheck) (*Control
 	if !sameJetStream(js, b.Endpoints.js) || !sameJetStream(js, b.Control.js) {
 		return nil, fmt.Errorf("%w: guarded control must use the connection and API that bound its streams", ErrInvalid)
 	}
-	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}, endpoints: b.Endpoints, settles: settles}, nil
+	return &Control{js: js, kv: bucketName(ctl), guard: []*Stream{b.Endpoints, b.Control}, endpoints: b.Endpoints,
+		settles: rules.Settle, writes: rules.Write}, nil
 }
 
 // bucketName names the bound control bucket; the guarded Control never uses
@@ -355,12 +370,22 @@ type Operation struct {
 // ID is the token's unique ID, which the owner must never reuse.
 func (o *Operation) ID() string { return o.id }
 
+// Nonce is a launch token's worker nonce, recorded on the durable token; a
+// claim names it as its launch owner. Other kinds have none.
+func (o *Operation) Nonce() string { return o.tok.Nonce }
+
 // Admit adds a launch or sweep token while tok.Epoch is active. Every retry
 // re-reads phase and epoch, so an add delayed past a freeze or into a later
 // epoch never lands. An unknown outcome returns no Operation.
 func (c *Control) Admit(ctx context.Context, tok Token) (*Operation, uint64, error) {
 	if tok.Kind != TokenLaunch && tok.Kind != TokenSweep {
 		return nil, 0, fmt.Errorf("%w: admit kind %q", ErrInvalid, tok.Kind)
+	}
+	if tok.Nonce != "" {
+		return nil, 0, fmt.Errorf("%w: admission sets the worker nonce", ErrInvalid)
+	}
+	if tok.Kind == TokenLaunch {
+		tok.Nonce = crand.Text()
 	}
 	return c.add(ctx, "admit", tok, func(r *Record) error {
 		if r.Phase != PhaseActive || r.Epoch != tok.Epoch {
@@ -373,7 +398,7 @@ func (c *Control) Admit(ctx context.Context, tok Token) (*Operation, uint64, err
 // AdmitDrain adds a drain token while tok.Epoch is frozen for rollback. Drain
 // tokens may only journal settle writes.
 func (c *Control) AdmitDrain(ctx context.Context, rollback string, tok Token) (*Operation, uint64, error) {
-	if tok.Kind != TokenDrain || rollback == "" {
+	if tok.Kind != TokenDrain || rollback == "" || tok.Nonce != "" {
 		return nil, 0, fmt.Errorf("%w: drain kind %q rollback %q", ErrInvalid, tok.Kind, rollback)
 	}
 	tok.Rollback = rollback

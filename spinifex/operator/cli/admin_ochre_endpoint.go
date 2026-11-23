@@ -38,7 +38,9 @@ current record rather than launching a second VM.
 
 The daemon replies STARTING as soon as it has claimed the model, and the
 launch continues in the background. Pass --wait to poll until the endpoint
-reaches READY and report how long the cold start took.
+reaches READY and report how long the cold start took. A launch whose
+readiness probe was redirected or timed out is parked: its VM is retained,
+--wait returns at once with the parked reason, and the daemon re-probes it.
 
 --pinned reserves the shared bundle: a pinned endpoint is never idle-reclaimed
 or evicted, and keeps its GPU until deleted. Embedding InvokeModel serves only
@@ -102,9 +104,12 @@ const (
 )
 
 // errEndpointLaunchAborted reports a STARTING endpoint that went back to
-// ABSENT. A failed launch deletes the record rather than parking it in a
-// terminal state, so its disappearance IS the failure signal.
-var errEndpointLaunchAborted = errors.New("endpoint launch aborted: the record returned to ABSENT, which is how a failed launch or readiness timeout reports itself")
+// ABSENT, which is how a launch that failed before its VM ran reports itself.
+var errEndpointLaunchAborted = errors.New("endpoint launch aborted: the record returned to ABSENT, which is how a launch that failed before its VM ran reports itself")
+
+// errEndpointLaunchParked reports a launch that stopped waiting for readiness.
+// Its VM and record are retained, so waiting longer cannot change the outcome.
+var errEndpointLaunchParked = errors.New("endpoint launch parked: readiness did not succeed, so the VM is retained and the daemon re-probes it until every member answers")
 
 // errEndpointWaitTimeout reports that the poll window closed with the
 // endpoint still STARTING. The endpoint is deliberately left running.
@@ -121,7 +126,7 @@ func realEndpointWaitClock() endpointWaitClock {
 	return endpointWaitClock{now: time.Now, sleep: time.Sleep}
 }
 
-// waitForEndpointReady polls Describe until the endpoint is READY, has gone
+// waitForEndpointReady polls Describe until the endpoint is READY, parked,
 // back to ABSENT, or the timeout expires, and returns the record it settled
 // on plus how long that took.
 func waitForEndpointReady(ctx context.Context, svc ochre.EndpointService, modelID string,
@@ -131,6 +136,9 @@ func waitForEndpointReady(ctx context.Context, svc ochre.EndpointService, modelI
 		out, err := svc.Describe(ctx, &ochre.DescribeEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
 		if err != nil {
 			return ochre.EndpointRecord{}, clock.now().Sub(start), err
+		}
+		if out.Endpoint.Parked() {
+			return out.Endpoint, clock.now().Sub(start), errEndpointLaunchParked
 		}
 		switch out.Endpoint.State {
 		case ochre.StateReady:
@@ -160,8 +168,17 @@ func formatEndpointRecord(rec ochre.EndpointRecord) string {
 		rows = append(rows, [2]string{"Account", rec.AccountID})
 	}
 	rows = append(rows, [2]string{"State", string(rec.State)})
+	if rec.Parked() {
+		rows = append(rows, [2]string{"Parked", string(rec.ParkedReason)})
+		if !rec.ParkedAt.IsZero() {
+			rows = append(rows, [2]string{"Parked at", rec.ParkedAt.Format(time.RFC3339)})
+		}
+	}
 	if rec.Pinned {
 		rows = append(rows, [2]string{"Pinned", "yes"})
+	}
+	if rec.Held() {
+		rows = append(rows, [2]string{"Health hold", healthHoldLabel(rec.HealthHold)})
 	}
 	if rec.InstanceID != "" {
 		rows = append(rows, [2]string{"Instance ID", rec.InstanceID})
@@ -191,6 +208,27 @@ func formatEndpointRecord(rec ochre.EndpointRecord) string {
 		out += fmt.Sprintf("%-15s %s\n", row[0]+":", row[1])
 	}
 	return out
+}
+
+// healthHoldLabel says when a hold was reserved and nothing of the sweep that
+// owns it.
+func healthHoldLabel(hold *ochre.HealthHold) string {
+	if hold.ReservedAt.IsZero() {
+		return "held"
+	}
+	return "held since " + hold.ReservedAt.Format(time.RFC3339)
+}
+
+// stateLabel is a list row's STATE cell: the state, with any parked reason or
+// health hold that changes what the state means.
+func stateLabel(rec ochre.EndpointRecord) string {
+	switch {
+	case rec.Parked():
+		return fmt.Sprintf("%s (parked: %s)", rec.State, rec.ParkedReason)
+	case rec.Held():
+		return fmt.Sprintf("%s (health hold)", rec.State)
+	}
+	return string(rec.State)
 }
 
 // reclaimRows renders what the daemon's idle sweep last observed, so an
@@ -238,7 +276,7 @@ func listEndpointsOutput(ctx context.Context, svc ochre.EndpointService) (string
 		if e.Pinned {
 			pinned = "yes"
 		}
-		tableData = append(tableData, []string{e.ModelID, string(e.State), e.AccountID, pinned, e.InstanceID, e.BaseURL})
+		tableData = append(tableData, []string{e.ModelID, stateLabel(e), e.AccountID, pinned, e.InstanceID, e.BaseURL})
 	}
 	return pterm.DefaultTable.WithHasHeader().WithData(tableData).Srender()
 }
@@ -268,6 +306,10 @@ func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID s
 		return fmt.Sprintf("Endpoint for %s is %s.\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint)), nil
 	}
 
+	// A launch already parked will not become READY by waiting.
+	if out.Endpoint.Parked() {
+		return "", fmt.Errorf("%w\n\n%s", errEndpointLaunchParked, formatEndpointRecord(out.Endpoint))
+	}
 	// Already READY before any polling means this was a warm request, not a
 	// cold start, so reporting an elapsed time would be misleading.
 	if out.Endpoint.State == ochre.StateReady {

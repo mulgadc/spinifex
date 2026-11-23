@@ -627,3 +627,110 @@ func TestFormatEndpointRecord_NoReclaimRowsWhenNotReady(t *testing.T) {
 	require.NotContains(t, out, "In flight")
 	require.NotContains(t, out, "Idle for")
 }
+
+var testParkedAt = time.Date(2026, 11, 22, 23, 0, 0, 0, time.UTC)
+
+func parkedRecord(reason ochre.ParkReason) ochre.EndpointRecord {
+	return ochre.EndpointRecord{
+		ModelID: testModelID, State: ochre.StateStarting, InstanceID: "i-parked",
+		ParkedReason: reason, ParkedAt: testParkedAt,
+	}
+}
+
+func heldRecord() ochre.EndpointRecord {
+	return ochre.EndpointRecord{
+		ModelID: testModelID, State: ochre.StateReady, InstanceID: "i-held", BaseURL: "http://10.0.0.5:8000",
+		HealthHold: &ochre.HealthHold{Token: "sweep-token-x", Epoch: 4242, ReservedAt: testParkedAt},
+	}
+}
+
+// A launch that parks while the command waits ends the wait at that describe,
+// long before the timeout, and returns the retained record.
+func TestWaitForEndpointReady_ParkedLaunchEndsTheWait(t *testing.T) {
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateStarting},
+		parkedRecord(ochre.ParkReadinessRedirected),
+	}}
+	now := time.Unix(0, 0).UTC()
+
+	rec, elapsed, err := waitForEndpointReady(context.Background(), svc, testModelID, time.Hour, fakeClock(&now))
+	require.ErrorIs(t, err, errEndpointLaunchParked)
+	require.Equal(t, 2, svc.describeCalls)
+	require.Equal(t, endpointPollInterval, elapsed)
+	require.Equal(t, ochre.ParkReadinessRedirected, rec.ParkedReason)
+	require.Equal(t, "i-parked", rec.InstanceID)
+}
+
+func TestRunEnsureEndpoint_WaitReportsALaunchThatParksWhileWaiting(t *testing.T) {
+	svc := &fakeEndpointService{
+		ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting},
+		describes: []ochre.EndpointRecord{
+			{ModelID: testModelID, State: ochre.StateStarting},
+			parkedRecord(ochre.ParkReadinessTimedOut),
+		},
+	}
+	now := time.Unix(0, 0).UTC()
+
+	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, time.Hour, fakeClock(&now))
+	require.ErrorIs(t, err, errEndpointLaunchParked)
+	require.ErrorContains(t, err, "Parked:         readiness-timed-out")
+	require.ErrorContains(t, err, "i-parked")
+	require.Equal(t, 2, svc.describeCalls)
+}
+
+func TestRunEnsureEndpoint_WaitOnAnAlreadyParkedLaunchReturnsAtOnce(t *testing.T) {
+	svc := &fakeEndpointService{ensure: parkedRecord(ochre.ParkReadinessRedirected)}
+	now := time.Unix(0, 0).UTC()
+
+	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, time.Hour, fakeClock(&now))
+	require.ErrorIs(t, err, errEndpointLaunchParked)
+	require.ErrorContains(t, err, "readiness-redirected")
+	require.Equal(t, 0, svc.describeCalls)
+}
+
+func TestRunEnsureEndpoint_NoWaitShowsTheParkedReason(t *testing.T) {
+	svc := &fakeEndpointService{ensure: parkedRecord(ochre.ParkReadinessRedirected)}
+	now := time.Unix(0, 0).UTC()
+
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, false, time.Hour, fakeClock(&now))
+	require.NoError(t, err)
+	require.Contains(t, msg, "is STARTING")
+	require.Contains(t, msg, "Parked:         readiness-redirected")
+}
+
+func TestFormatEndpointRecord_ShowsParkedReasonAndTime(t *testing.T) {
+	out := formatEndpointRecord(parkedRecord(ochre.ParkReadinessTimedOut))
+	require.Contains(t, out, "State:          STARTING\n")
+	require.Contains(t, out, "Parked:         readiness-timed-out\n")
+	require.Contains(t, out, "Parked at:      2026-11-22T23:00:00Z\n")
+
+	plain := formatEndpointRecord(ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting, InstanceID: "i-1"})
+	require.NotContains(t, plain, "Parked")
+}
+
+func TestFormatEndpointRecord_ShowsAHealthHoldWithoutItsInternals(t *testing.T) {
+	out := formatEndpointRecord(heldRecord())
+	require.Contains(t, out, "Health hold:    held since 2026-11-22T23:00:00Z\n")
+	require.NotContains(t, out, "sweep-token-x")
+	require.NotContains(t, out, "4242")
+
+	unheld := heldRecord()
+	unheld.HealthHold = nil
+	require.NotContains(t, formatEndpointRecord(unheld), "Health hold")
+}
+
+func TestListEndpointsOutput_MarksParkedAndHeldEndpoints(t *testing.T) {
+	svc := &fakeEndpointService{list: []ochre.EndpointRecord{
+		parkedRecord(ochre.ParkReadinessRedirected),
+		heldRecord(),
+		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: ochre.StateReady, InstanceID: "i-plain"},
+	}}
+
+	msg, err := listEndpointsOutput(context.Background(), svc)
+	require.NoError(t, err)
+	require.Contains(t, msg, "STARTING (parked: readiness-redirected)")
+	require.Contains(t, msg, "READY (health hold)")
+	require.NotContains(t, msg, "sweep-token-x")
+	require.Equal(t, 2, strings.Count(msg, "(parked:")+strings.Count(msg, "(health hold)"),
+		"the ordinary READY row must keep its bare state")
+}

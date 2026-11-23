@@ -2167,6 +2167,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
 	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
+	d.tagsService.SetVolumeTagReader(d.volumeService)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
 		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)

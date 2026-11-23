@@ -121,6 +121,10 @@ func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
 }
 
+func TestRootVolumeTagsInDescribeTags(t *testing.T) {
+	runRootVolumeTagsInDescribeTags(t, requireSingleNodeFixture(t))
+}
+
 // TestEarlyRebootLiveness owns a fresh guest so the reset lands as soon as
 // cloud-init.target is observable rather than against the old singleton.
 func TestEarlyRebootLiveness(t *testing.T) {

@@ -2,6 +2,7 @@ package awsgw
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,11 +38,35 @@ func newEC2IndexLister(nc *nats.Conn, region string) *ec2IndexLister {
 }
 
 func (l *ec2IndexLister) ListTagged(ctx context.Context, accountID string, typeFilters map[string]bool) ([]tagging.TaggedResource, error) {
-	out, err := l.svc.DescribeTags(ctx, &ec2.DescribeTagsInput{}, accountID)
+	filters, admits := ec2ResourceTypeFilters(typeFilters)
+	if !admits {
+		return nil, nil
+	}
+	out, err := l.svc.DescribeTags(ctx, &ec2.DescribeTagsInput{Filters: filters}, accountID)
 	if err != nil {
 		return nil, err
 	}
 	return ec2TaggedResources(out.Tags, l.region, accountID, typeFilters), nil
+}
+
+// ec2ResourceTypeFilters turns GetResources type filters into a DescribeTags
+// resource-type filter, so DescribeTags reads only the stores those types need.
+// It reports false when the filters admit no EC2 type at all.
+func ec2ResourceTypeFilters(typeFilters map[string]bool) ([]*ec2.Filter, bool) {
+	if len(typeFilters) == 0 || typeFilters["ec2"] {
+		return nil, true
+	}
+	var types []string
+	for f := range typeFilters {
+		if t, ok := strings.CutPrefix(f, "ec2:"); ok {
+			types = append(types, t)
+		}
+	}
+	if len(types) == 0 {
+		return nil, false
+	}
+	slices.Sort(types)
+	return []*ec2.Filter{{Name: aws.String("resource-type"), Values: aws.StringSlice(types)}}, true
 }
 
 // ec2TaggedResources groups tag descriptions by resource ID and keeps those

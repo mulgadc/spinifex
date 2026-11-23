@@ -53,9 +53,23 @@ var _ ec2vpcpeering.CentralTagStore = (*TagsServiceImpl)(nil)
 // keys. The object store is still held to read resources written before the
 // move; nothing writes to it.
 type TagsServiceImpl struct {
-	config *config.Config
-	store  objectstore.ObjectStore
-	kv     jetstream.KeyValue
+	config  *config.Config
+	store   objectstore.ObjectStore
+	kv      jetstream.KeyValue
+	volumes VolumeTagReader
+}
+
+// VolumeTagReader reads volume tags from the volume record, the record
+// DescribeVolumes reads. A nil volumeIDs lists every volume of the account;
+// an ID with no record is left out of the result.
+type VolumeTagReader interface {
+	VolumeTags(ctx context.Context, accountID string, volumeIDs []string) (map[string]map[string]string, error)
+}
+
+// SetVolumeTagReader makes DescribeTags take its volume rows from r instead of
+// from the tag store, so DescribeTags and DescribeVolumes cannot disagree.
+func (s *TagsServiceImpl) SetVolumeTagReader(r VolumeTagReader) {
+	s.volumes = r
 }
 
 // NewTagsServiceImpl creates a new tags service implementation.
@@ -342,10 +356,29 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 
 	var tags []*ec2.TagDescription
 
-	resourceIDs, err := s.taggedResourceIDs(ctx, accountID)
+	// A request for exact volume IDs only, as Terraform sends, needs no scan
+	// of the tag store: its rows come from the volume records.
+	var resourceIDs []string
+	if s.volumes == nil || !exactVolumeIDsOnly(filters["resource-id"]) {
+		var err error
+		resourceIDs, err = s.taggedResourceIDs(ctx, accountID)
+		if err != nil {
+			slog.ErrorContext(ctx, "DescribeTags failed to list tagged resources", "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
+	volumeTags, err := s.describeVolumeTags(ctx, accountID, filters)
 	if err != nil {
-		slog.ErrorContext(ctx, "DescribeTags failed to list tagged resources", "err", err)
+		slog.ErrorContext(ctx, "DescribeTags failed to read volume tags", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if s.volumes != nil {
+		resourceIDs = slices.DeleteFunc(resourceIDs, isVolumeID)
+		for id := range volumeTags {
+			resourceIDs = append(resourceIDs, id)
+		}
+		slices.Sort(resourceIDs)
 	}
 
 	for _, resourceID := range resourceIDs {
@@ -358,11 +391,13 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 			continue
 		}
 
-		// Get tags for this resource
-		resourceTags, err := s.getResourceTags(ctx, accountID, resourceID)
-		if err != nil {
-			slog.WarnContext(ctx, "DescribeTags failed to get tags", "resourceId", resourceID, "err", err)
-			continue
+		resourceTags, ok := volumeTags[resourceID]
+		if !ok {
+			resourceTags, err = s.getResourceTags(ctx, accountID, resourceID)
+			if err != nil {
+				slog.WarnContext(ctx, "DescribeTags failed to get tags", "resourceId", resourceID, "err", err)
+				continue
+			}
 		}
 
 		for key, value := range resourceTags {
@@ -395,6 +430,56 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	return &ec2.DescribeTagsOutput{
 		Tags: tags,
 	}, nil
+}
+
+func isVolumeID(resourceID string) bool {
+	return strings.HasPrefix(resourceID, "vol-")
+}
+
+const filterWildcards = `*?\`
+
+func exactVolumeIDsOnly(ids []string) bool {
+	return len(ids) > 0 && !slices.ContainsFunc(ids, func(id string) bool {
+		return strings.ContainsAny(id, filterWildcards) || !isVolumeID(id)
+	})
+}
+
+// mayMatchVolumeID reports whether a wildcard resource-id pattern can match a
+// volume ID, judged from its literal text before the first wildcard.
+func mayMatchVolumeID(pattern string) bool {
+	lit := pattern
+	if i := strings.IndexAny(pattern, filterWildcards); i >= 0 {
+		lit = pattern[:i]
+	}
+	return strings.HasPrefix(lit, "vol-") || strings.HasPrefix("vol-", lit)
+}
+
+// describeVolumeTags reads the volume rows DescribeTags can return. Exact
+// resource-id filters are point reads; any other filter lists the account.
+func (s *TagsServiceImpl) describeVolumeTags(ctx context.Context, accountID string, filters map[string][]string) (map[string]map[string]string, error) {
+	if s.volumes == nil || !awsfilters.MatchesAny(filters["resource-type"], "volume") {
+		return nil, nil
+	}
+	ids, exact := filters["resource-id"]
+	if !exact {
+		return s.volumes.VolumeTags(ctx, accountID, nil)
+	}
+	var volumeIDs []string
+	for _, id := range ids {
+		if strings.ContainsAny(id, filterWildcards) {
+			if mayMatchVolumeID(id) {
+				return s.volumes.VolumeTags(ctx, accountID, nil)
+			}
+			continue
+		}
+		if isVolumeID(id) && taggableIDShape.MatchString(id) {
+			volumeIDs = append(volumeIDs, id)
+		}
+	}
+	if len(volumeIDs) == 0 {
+		return nil, nil
+	}
+	return s.volumes.VolumeTags(ctx, accountID, volumeIDs)
 }
 
 // rowMatchesTagFilters applies each tag:<key> filter to one tag row, as

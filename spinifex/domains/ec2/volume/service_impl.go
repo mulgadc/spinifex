@@ -23,6 +23,7 @@ import (
 	ebsobligation "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/obligation"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -50,6 +51,9 @@ var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
 // InstanceServiceImpl can call DeleteVolume/DeleteVolumeOnTerminate through
 // the dependency wired via SetTerminationDeps.
 var _ ec2instance.VolumeDeleter = (*VolumeServiceImpl)(nil)
+
+// DescribeTags reads volume tags from the volume record.
+var _ ec2tags.VolumeTagReader = (*VolumeServiceImpl)(nil)
 
 // VolumeServiceImpl handles EBS volume operations with S3 storage.
 type VolumeServiceImpl struct {
@@ -953,6 +957,38 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 		volume.Attachments = []*ec2.VolumeAttachment{{VolumeId: aws.String(meta.VolumeID), InstanceId: aws.String(meta.AttachedInstance), Device: aws.String(meta.DeviceName), State: aws.String(attachState), DeleteOnTermination: aws.Bool(meta.DeleteOnTermination), AttachTime: aws.Time(meta.AttachedAt)}}
 	}
 	return volume
+}
+
+// VolumeTags returns the tags on the account's volume records, keyed by volume
+// ID. A nil volumeIDs lists every volume, as DescribeVolumes does; an ID with
+// no record is left out.
+func (s *VolumeServiceImpl) VolumeTags(ctx context.Context, accountID string, volumeIDs []string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string)
+	if volumeIDs == nil {
+		metas, err := s.metadata.ListVolumes(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("list volumes: %w", err)
+		}
+		for _, meta := range metas {
+			if len(meta.Tags) > 0 {
+				out[meta.VolumeID] = meta.Tags
+			}
+		}
+		return out, nil
+	}
+	for _, id := range volumeIDs {
+		meta, err := s.metadata.GetVolume(ctx, accountID, id)
+		if objectstore.IsNoSuchKeyError(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get volume %s: %w", id, err)
+		}
+		if len(meta.Tags) > 0 {
+			out[meta.VolumeID] = meta.Tags
+		}
+	}
+	return out, nil
 }
 
 // GetVolumeMetadata reads the control-plane document for a volume. It is the

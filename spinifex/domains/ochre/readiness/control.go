@@ -340,8 +340,9 @@ func (c *Control) Reopen(ctx context.Context, epoch, rev uint64) (uint64, error)
 // owner's journal entries with release and refuses both after a release
 // attempt; it is an in-process aid, not a durable fence.
 type Operation struct {
-	c  *Control
-	id string
+	c   *Control
+	id  string
+	tok Token
 
 	mu       sync.Mutex
 	released bool
@@ -470,7 +471,7 @@ func (c *Control) add(ctx context.Context, op string, tok Token, admit func(*Rec
 	if err != nil {
 		return nil, 0, err
 	}
-	return &Operation{c: c, id: tok.ID}, rev, nil
+	return &Operation{c: c, id: tok.ID, tok: tok}, rev, nil
 }
 
 // transition applies f to the record read at rev and writes it once at rev.

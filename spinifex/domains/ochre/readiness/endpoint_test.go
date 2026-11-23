@@ -22,10 +22,12 @@ const endpointKey = "000000000000/new-model"
 
 // testRecord stands in for an endpoint record under testSettles.
 type testRecord struct {
-	Worker string `json:"worker"`
-	Token  string `json:"token"`
-	State  string `json:"state"`
-	Hold   bool   `json:"hold,omitempty"`
+	Worker   string `json:"worker"`
+	Token    string `json:"token"`
+	Instance string `json:"instance,omitempty"`
+	State    string `json:"state"`
+	Hold     bool   `json:"hold,omitempty"`
+	Marked   bool   `json:"marked,omitempty"`
 }
 
 var (
@@ -33,23 +35,45 @@ var (
 	recReady    = []byte(`{"worker":"w1","token":"launch-1","state":"READY"}`)
 )
 
-// testSettles allows only removal or STARTING to READY with the same worker,
-// token and hold, as a domain rule would.
-func testSettles(_ string, old, next []byte) error {
-	var o, n testRecord
-	if err := json.Unmarshal(old, &o); err != nil {
+func decodeRecord(data []byte) (testRecord, error) {
+	var r testRecord
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&r)
+	return r, err
+}
+
+// testSettles stands in for the endpoint domain rule. An owner may remove its
+// own record or move it from STARTING to READY. A drain may only clear a READY
+// record's hold or move a marked STARTING record to READY, changing nothing else.
+func testSettles(s readiness.Settlement) error {
+	o, err := decodeRecord(s.Old)
+	if err != nil {
 		return err
 	}
-	if next == nil {
+	if s.Next == nil {
+		if s.Kind == readiness.TokenDrain || !s.Owned {
+			return errors.New("not the owner's removal")
+		}
 		return nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(next))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&n); err != nil {
+	n, err := decodeRecord(s.Next)
+	if err != nil {
 		return err
 	}
-	if n.Worker != o.Worker || n.Token != o.Token || n.Hold != o.Hold || o.State != "STARTING" || n.State != "READY" {
-		return errors.New("not a finishing transition")
+	want := o
+	switch {
+	case s.Kind != readiness.TokenDrain && s.Owned && o.State == "STARTING":
+		want.State = "READY"
+	case s.Kind == readiness.TokenDrain && o.State == "READY" && o.Hold:
+		want.Hold = false
+	case s.Kind == readiness.TokenDrain && o.State == "STARTING" && o.Marked:
+		want.State = "READY"
+	default:
+		return errors.New("no settlement applies")
+	}
+	if n != want {
+		return errors.New("not the settling transition")
 	}
 	return nil
 }
@@ -533,32 +557,175 @@ func keyRevisions(t *testing.T, e endpointEnv) map[string]readiness.SubjectRevis
 	return got
 }
 
-func TestEndpoint_DrainRemovesALiveRecordWhileFrozen(t *testing.T) {
-	e := newEndpointEnv(t)
+var (
+	recHeld        = []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"READY","hold":true}`)
+	recCleared     = []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"READY"}`)
+	recMarked      = []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"STARTING","marked":true}`)
+	recMarkedReady = []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"READY","marked":true}`)
+)
+
+// drainEnv stores value at endpointKey as a launch left it, releases the
+// launch, freezes for rb-1 and admits drain-1. It records each Settlement the
+// rule sees.
+func drainEnv(t *testing.T, value []byte) (endpointEnv, *readiness.Operation, uint64, *[]readiness.Settlement) {
+	t.Helper()
 	ctx := t.Context()
-	rev, err := e.bound.EndpointsKV.Put(ctx, endpointKey, recStarting)
+	seen := &[]readiness.Settlement{}
+	e := newEndpointEnvWith(t, func(s readiness.Settlement) error {
+		*seen = append(*seen, s)
+		return testSettles(s)
+	})
+	rev, err := e.bound.EndpointsKV.Put(ctx, endpointKey, value)
 	require.NoError(t, err)
 	release(t, e.op)
 	freeze(t, e.raw(), "rb-1")
 	drainOp, _, err := e.c.AdmitDrain(ctx, "rb-1", drain("drain-1", 1))
 	require.NoError(t, err)
 	e.pub.sent()
+	return e, drainOp, rev, seen
+}
 
-	_, err = drainOp.WriteEndpoint(ctx, "000000000000/other-model", readiness.IntentHold, []byte("x"), 0)
-	require.ErrorIs(t, err, readiness.ErrNotAdmitted, "a drain token may not add a hold")
-	tomb, err := drainOp.DeleteEndpoint(ctx, endpointKey, rev)
-	require.NoError(t, err)
-	assert.Equal(t, readiness.SubjectRevision{Seq: tomb, Op: readiness.OpDel}, e.stored(t))
-	assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent())
-	_, err = drainOp.SettleEndpoint(ctx, endpointKey, []byte("x"), tomb)
-	require.ErrorIs(t, err, readiness.ErrNotSettlement, "a removal is not ownership")
+func TestEndpoint_DrainRewritesHeldOrMarkedRecords(t *testing.T) {
+	cases := map[string]struct{ old, next []byte }{
+		"clear a hold":           {old: recHeld, next: recCleared},
+		"finish a marked launch": {old: recMarked, next: recMarkedReady},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, drainOp, rev, seen := drainEnv(t, tc.old)
+			ctx := t.Context()
+			got, err := drainOp.ReadEndpoint(ctx, endpointKey)
+			require.NoError(t, err)
+			require.Equal(t, rev, got.Seq)
 
-	rec, _ := read(t, e.raw())
-	assert.Equal(t, readiness.IntentSettle, rec.Tokens["drain-1"].Journal[0].Intent)
+			next, err := drainOp.SettleEndpoint(ctx, endpointKey, tc.next, got.Seq)
+			require.NoError(t, err)
+			assert.Equal(t, readiness.SubjectRevision{Seq: next, Op: readiness.OpPut, Value: tc.next}, e.stored(t))
+			assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent())
+			require.Len(t, *seen, 1)
+			assert.Equal(t, readiness.Settlement{
+				TokenID: "drain-1", Kind: readiness.TokenDrain, Epoch: 1, Rollback: "rb-1",
+				Key: endpointKey, Revision: rev, Owned: false, Old: tc.old, Next: tc.next,
+			}, (*seen)[0], "the rule sees the token, its kind and the observed identity")
+
+			rec, _ := read(t, e.raw())
+			assert.Equal(t, readiness.IntentSettle, rec.Tokens["drain-1"].Journal[0].Intent)
+			_, frozenAt := read(t, e.raw())
+			_, err = e.raw().Finalize(ctx, "rb-1", frozenAt)
+			require.ErrorIs(t, err, readiness.ErrTokensOutstanding)
+			release(t, drainOp)
+			_, frozenAt = read(t, e.raw())
+			_, err = e.raw().Finalize(ctx, "rb-1", frozenAt)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestEndpoint_DrainRefusesAnUnsafeOrChangedTransition(t *testing.T) {
+	cases := map[string]struct {
+		old  []byte
+		call func(op *readiness.Operation, rev uint64) error
+	}{
+		"clear a hold and change the instance": {old: recHeld, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, []byte(`{"worker":"w1","token":"launch-1","instance":"i-2","state":"READY"}`), rev)
+			return err
+		}},
+		"clear a hold and strip the token": {old: recHeld, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, []byte(`{"worker":"w1","instance":"i-1","state":"READY"}`), rev)
+			return err
+		}},
+		"add a hold": {old: recCleared, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, recHeld, rev)
+			return err
+		}},
+		"finish an unmarked launch": {old: recStarting, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, recReady, rev)
+			return err
+		}},
+		"move READY back to STARTING": {old: recMarkedReady, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, recMarked, rev)
+			return err
+		}},
+		"remove a realized record": {old: recHeld, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.DeleteEndpoint(t.Context(), endpointKey, rev)
+			return err
+		}},
+		"rewrite at a revision no longer current": {old: recHeld, call: func(op *readiness.Operation, rev uint64) error {
+			_, err := op.SettleEndpoint(t.Context(), endpointKey, recCleared, rev-1)
+			return err
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, drainOp, rev, _ := drainEnv(t, tc.old)
+			require.ErrorIs(t, tc.call(drainOp, rev), readiness.ErrNotSettlement)
+			assert.Empty(t, e.pub.sent(), "a refused settle sends neither a journal nor an endpoint write")
+			assert.Equal(t, readiness.SubjectRevision{Seq: rev, Op: readiness.OpPut, Value: tc.old}, e.stored(t))
+			release(t, drainOp)
+		})
+	}
+}
+
+// A competing write between the drain's check and its publish wins: the
+// drain gets a definite conflict, is not fenced and may settle the new value.
+func TestEndpoint_DrainLosesACompetingCompareAndSet(t *testing.T) {
+	e, drainOp, rev, _ := drainEnv(t, recHeld)
+	ctx := t.Context()
+	competitor := []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"READY","hold":true,"marked":true}`)
+	e.pub.setFault(func(ctx context.Context, js jetstream.JetStream, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+		_, err := e.bound.EndpointsKV.Put(ctx, endpointKey, competitor)
+		require.NoError(t, err)
+		return js.PublishMsg(ctx, m, opts...)
+	})
+
+	_, err := drainOp.SettleEndpoint(ctx, endpointKey, recCleared, rev)
+	require.ErrorIs(t, err, readiness.ErrChanged)
+	require.NotErrorIs(t, err, readiness.ErrOutcomeUnknown)
+	assert.Equal(t, []string{"control", "endpoint"}, e.pub.sent(), "one attempt, no retry")
+	got := e.stored(t)
+	assert.Equal(t, competitor, got.Value, "the competing write survives")
+
+	_, err = drainOp.SettleEndpoint(ctx, endpointKey, recCleared, got.Seq)
+	require.ErrorIs(t, err, readiness.ErrNotSettlement, "the old replacement does not settle the changed record")
+	cleared := []byte(`{"worker":"w1","token":"launch-1","instance":"i-1","state":"READY","marked":true}`)
+	_, err = drainOp.SettleEndpoint(ctx, endpointKey, cleared, got.Seq)
+	require.NoError(t, err, "a conflict does not fence the drain")
+	assert.Equal(t, cleared, e.stored(t).Value)
 	release(t, drainOp)
-	_, frozenAt := read(t, e.raw())
-	_, err = e.raw().Finalize(ctx, "rb-1", frozenAt)
-	require.NoError(t, err)
+}
+
+// The bytes sent are the bytes the rule approved: a caller that changes its
+// buffer while the journal is in flight, or a rule that writes into the
+// values it was given, cannot change what lands.
+func TestEndpoint_OnlyTheValidatedBytesLand(t *testing.T) {
+	t.Run("caller changes its buffer after validation", func(t *testing.T) {
+		e, drainOp, rev, _ := drainEnv(t, recHeld)
+		p := newPause("journal")
+		readiness.SetBeforeWriteHook(e.c, p.hook)
+		buf := bytes.Clone(recCleared)
+		wrote := make(chan error, 1)
+		go func() {
+			_, err := drainOp.SettleEndpoint(t.Context(), endpointKey, buf, rev)
+			wrote <- err
+		}()
+		<-p.reached
+		copy(buf, recHeld)
+		close(p.release)
+		require.NoError(t, <-wrote)
+		assert.Equal(t, recCleared, e.stored(t).Value)
+	})
+	t.Run("rule writes into its values", func(t *testing.T) {
+		e, drainOp, rev, _ := drainEnv(t, recHeld)
+		readiness.SetSettleCheck(e.c, func(s readiness.Settlement) error {
+			err := testSettles(s)
+			copy(s.Next, recHeld)
+			copy(s.Old, "XXXX")
+			return err
+		})
+		_, err := drainOp.SettleEndpoint(t.Context(), endpointKey, bytes.Clone(recCleared), rev)
+		require.NoError(t, err)
+		assert.Equal(t, recCleared, e.stored(t).Value)
+	})
 }
 
 // A settle authorized and journaled while active may publish after a freeze:

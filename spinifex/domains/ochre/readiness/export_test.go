@@ -10,6 +10,9 @@ func SetBeforeWriteHook(c *Control, f func(op string)) { c.beforeWrite = f }
 // checked or interpreted, so a test can disturb a binding during a read.
 func SetAfterReadHook(c *Control, f func()) { c.afterRead = f }
 
+// SetSettleCheck replaces c's settlement rule.
+func SetSettleCheck(c *Control, f SettleCheck) { c.settles = f }
+
 // SetInitStepHook runs f at each named point between initialization steps, so
 // a test can pause or disturb an initializer there.
 func SetInitStepHook(in *Initializer, f func(step string)) { in.hook = f }

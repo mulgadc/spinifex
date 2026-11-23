@@ -1,6 +1,7 @@
 package readiness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,10 +34,25 @@ func (o *Operation) readEndpointLocked(ctx context.Context, key string) (Subject
 	return rev, err
 }
 
-// SettleCheck is the endpoint domain's rule that replacing old with next, or
-// removing old when next is nil, only finishes or removes obligations old
-// holds. A guarded Control without one refuses every settle.
-type SettleCheck func(key string, old, next []byte) error
+// Settlement is one proposed settle: the token making it, the key, the
+// observed revision and value, and the replacement, nil for a removal. Owned
+// reports that Revision is this Operation's own confirmed write.
+type Settlement struct {
+	TokenID  string
+	Kind     TokenKind
+	Epoch    uint64
+	Rollback string
+	Key      string
+	Revision uint64
+	Owned    bool
+	Old      []byte
+	Next     []byte
+}
+
+// SettleCheck is the endpoint domain's rule that a Settlement only finishes or
+// removes obligations the old value holds. It gets copies of both values. A
+// guarded Control without one refuses every settle.
+type SettleCheck func(Settlement) error
 
 // WriteEndpoint journals a claim or hold on key at expected, then publishes
 // value once at that exact revision while holding off Release. An unconfirmed
@@ -45,33 +61,41 @@ func (o *Operation) WriteEndpoint(ctx context.Context, key string, intent Intent
 	if intent != IntentClaim && intent != IntentHold {
 		return 0, fmt.Errorf("%w: endpoint write intent %q; settle through SettleEndpoint or DeleteEndpoint", ErrInvalid, intent)
 	}
+	value = bytes.Clone(value)
 	return o.endpointWrite(ctx, key, intent, expected, false, nil, func(bucket string) (uint64, error) {
 		return WriteAt(ctx, o.c.js, bucket, key, value, expected)
 	})
 }
 
-// SettleEndpoint rewrites a record this Operation wrote itself, only at the
-// revision it last saw confirmed and only as the SettleCheck allows. Admitted
-// work may settle while frozen.
+// SettleEndpoint rewrites the live value at exactly expected, the revision
+// observed, as the SettleCheck allows. A launch or sweep token may only rewrite
+// its own confirmed write; a drain token may rewrite an observed record.
 func (o *Operation) SettleEndpoint(ctx context.Context, key string, value []byte, expected uint64) (uint64, error) {
 	if value == nil {
 		return 0, fmt.Errorf("%w: settle of %s needs a value; remove through DeleteEndpoint", ErrInvalid, key)
 	}
+	value = bytes.Clone(value)
 	return o.endpointWrite(ctx, key, IntentSettle, expected, false, func(ctx context.Context) error {
-		if own, ok := o.owned[key]; !ok || own != expected || expected == 0 {
+		own, ok := o.owned[key]
+		owned := ok && own == expected && expected != 0
+		if !owned && o.tok.Kind != TokenDrain {
 			return fmt.Errorf("%w: %s at revision %d is not this operation's confirmed write", ErrNotSettlement, key, expected)
 		}
-		return o.checkSettle(ctx, key, expected, value)
+		return o.checkSettle(ctx, key, expected, owned, value)
 	}, func(bucket string) (uint64, error) {
 		return WriteAt(ctx, o.c.js, bucket, key, value, expected)
 	})
 }
 
-// DeleteEndpoint removes the live value at exactly expected, only as the
-// SettleCheck allows. An absent or deleted key is refused.
+// DeleteEndpoint removes the live value at exactly expected as the
+// SettleCheck allows. A drain token never removes a record.
 func (o *Operation) DeleteEndpoint(ctx context.Context, key string, expected uint64) (uint64, error) {
 	return o.endpointWrite(ctx, key, IntentSettle, expected, true, func(ctx context.Context) error {
-		return o.checkSettle(ctx, key, expected, nil)
+		if o.tok.Kind == TokenDrain {
+			return fmt.Errorf("%w: a drain token does not remove %s", ErrNotSettlement, key)
+		}
+		own, ok := o.owned[key]
+		return o.checkSettle(ctx, key, expected, ok && own == expected && expected != 0, nil)
 	}, func(bucket string) (uint64, error) {
 		return deleteAt(ctx, o.c.js, bucket, key, expected)
 	})
@@ -79,7 +103,7 @@ func (o *Operation) DeleteEndpoint(ctx context.Context, key string, expected uin
 
 // checkSettle reads the live value at exactly expected and asks the domain
 // rule whether next settles it. The fixed-revision send keeps that value.
-func (o *Operation) checkSettle(ctx context.Context, key string, expected uint64, next []byte) error {
+func (o *Operation) checkSettle(ctx context.Context, key string, expected uint64, owned bool, next []byte) error {
 	if o.c.settles == nil {
 		return fmt.Errorf("%w: no endpoint settlement rule is configured", ErrNotSettlement)
 	}
@@ -90,7 +114,11 @@ func (o *Operation) checkSettle(ctx context.Context, key string, expected uint64
 	if !cur.Live() || cur.Seq != expected {
 		return fmt.Errorf("%w: %s holds %s at revision %d, not a value at %d", ErrNotSettlement, key, cur.Op, cur.Seq, expected)
 	}
-	if err := o.c.settles(key, cur.Value, next); err != nil {
+	s := Settlement{
+		TokenID: o.id, Kind: o.tok.Kind, Epoch: o.tok.Epoch, Rollback: o.tok.Rollback,
+		Key: key, Revision: expected, Owned: owned, Old: bytes.Clone(cur.Value), Next: bytes.Clone(next),
+	}
+	if err := o.c.settles(s); err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrNotSettlement, key, err)
 	}
 	return nil

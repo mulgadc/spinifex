@@ -23,7 +23,9 @@ import { CreateKeyPairPage } from "../../(key)/-components/create-key-pair-page"
 import { ImportKeyPairPage } from "../../(key)/-components/import-key-pair-page"
 import type { RunInstancesFormInput } from "./run-instances-helpers"
 
-export type KeyPairFlow = "create" | "import"
+export const KEY_PAIR_FLOWS = ["create", "import"] as const
+
+export type KeyPairFlow = (typeof KEY_PAIR_FLOWS)[number]
 
 const FLOW_TITLES = {
   create: "Create key pair",

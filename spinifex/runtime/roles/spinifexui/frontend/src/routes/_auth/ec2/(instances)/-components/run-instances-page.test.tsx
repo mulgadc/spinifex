@@ -13,6 +13,7 @@ import type {
 } from "@aws-sdk/client-ec2"
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
@@ -48,6 +49,7 @@ import {
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 
+import type { KeyPairFlow } from "./key-pair-field"
 import { RunInstancesPage } from "./run-instances-page"
 
 function image(
@@ -213,7 +215,20 @@ function setup({
     LaunchTemplates: launchTemplates,
   })
 
-  return renderWithClient(<RunInstancesPage onClose={onClose} />, queryClient)
+  return renderWithClient(<Harness onClose={onClose} />, queryClient)
+}
+
+// Holds the key pair flow as the list route holds it in the URL.
+function Harness({ onClose }: { onClose: (instanceId?: string) => void }) {
+  const [keyPairFlow, setKeyPairFlow] = useState<KeyPairFlow>()
+
+  return (
+    <RunInstancesPage
+      keyPairFlow={keyPairFlow}
+      onClose={onClose}
+      onKeyPairFlowChange={setKeyPairFlow}
+    />
+  )
 }
 
 function osTile(name: string) {

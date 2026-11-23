@@ -58,6 +58,9 @@ export { describeTypeSize } from "./run-instances-helpers"
 interface RunInstancesPageProps {
   launchTemplateId?: string
   launchTemplateVersion?: string
+  // The key pair form shown in place of the launch form, kept in the URL.
+  keyPairFlow?: KeyPairFlow
+  onKeyPairFlowChange: (flow?: KeyPairFlow) => void
   // Called with the new instance's ID when one was launched, or with nothing
   // on cancel or for several.
   onClose: (instanceId?: string) => void
@@ -114,6 +117,8 @@ function useRunInstancesData() {
 export function RunInstancesPage({
   launchTemplateId,
   launchTemplateVersion,
+  keyPairFlow,
+  onKeyPairFlowChange,
   onClose,
 }: RunInstancesPageProps) {
   const {
@@ -223,11 +228,9 @@ export function RunInstancesPage({
     }
   }
 
-  const [keyPairFlow, setKeyPairFlow] = useState<KeyPairFlow | null>(null)
-
   // Only the key field changes, so the rest of the launch form keeps its values.
   function closeKeyPairFlow(_keyPairId?: string, keyName?: string) {
-    setKeyPairFlow(null)
+    onKeyPairFlowChange()
 
     if (keyName) {
       setValue("keyName", keyName, { shouldDirty: true, shouldValidate: true })
@@ -286,7 +289,7 @@ export function RunInstancesPage({
       {/* Hidden, not unmounted, so the launch entries survive the key flow. */}
       <div
         className={keyPairFlow ? undefined : "contents"}
-        hidden={keyPairFlow !== null}
+        hidden={keyPairFlow !== undefined}
       >
         {!hasCompute && !selectedTemplateId && (
           <ErrorBanner msg="No compute available. No new instances can be created until compute is available." />
@@ -330,7 +333,7 @@ export function RunInstancesPage({
                   instanceTypeCapacity={instanceTypeCapacity}
                   keyPairs={keyPairs}
                   placementGroups={placementGroups}
-                  onStartKeyPairFlow={setKeyPairFlow}
+                  onStartKeyPairFlow={onKeyPairFlowChange}
                   register={register}
                 />
 

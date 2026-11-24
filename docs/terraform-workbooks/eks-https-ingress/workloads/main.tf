@@ -170,7 +170,7 @@ resource "kubernetes_deployment_v1" "demo" {
 
           env {
             name  = "APP_TITLE"
-            value = "Spinifex EKS — HTTPS Ingress"
+            value = "Spinifex for EKS: HTTPS Ingress"
           }
 
           readiness_probe {

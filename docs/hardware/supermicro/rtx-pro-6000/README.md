@@ -1,5 +1,5 @@
 ---
-title: "Spinifex EKS AI Platform on Dual RTX Pro 6000 Baremetal"
+title: "AI Platform on Spinifex for EKS: Dual RTX Pro 6000 Baremetal"
 seoTitle: "EKS AI Platform on Dual RTX Pro 6000 — Spinifex Docs"
 description: "Deploy a GPU-accelerated AI inference platform — an OpenAI-compatible LLM API and a real-time CV stream — on Kubernetes on bare metal with standard AWS tooling."
 category: "Reference Architectures"
@@ -50,7 +50,7 @@ Specifically, we create an EKS cluster with two worker nodes, each consisting of
 | **GPUs** | 2× NVIDIA RTX Pro 6000 Blackwell Server Edition (96 GiB GDDR7 each, 192 GiB total) |
 | **Storage** | 4× NVMe SSD: 2× 1.5 TB, 2× 880 GB — one 1.5 TB drive carries the OS; the remaining three back Predastore |
 | **Spinifex instance family** | `g7e` — one RTX Pro 6000 per instance via VFIO PCIe passthrough |
-| **Kubernetes** | k3s, managed via Spinifex EKS API |
+| **Kubernetes** | k3s, managed via the Spinifex endpoint for EKS |
 | **API endpoint** | `https://<host>:9999` (AWS-compatible) |
 
 ### Workloads
@@ -278,7 +278,7 @@ This authenticates to ECR, then builds and pushes all three images:
 
 The ECR registry URI always includes `:9999` — for example, `<account>.dkr.ecr.ap-southeast-2.<suffix>:9999`. Use the `ecr_registry` Tofu output directly in `docker login` and image references; do not construct the hostname manually.
 
-Image URIs come from `tofu -chdir=workbook output -raw ecr_registry`. ECR authentication uses the same API as AWS: `aws ecr get-login-password` calls `GetAuthorizationToken` against the Spinifex ECR endpoint and returns a short-lived JWT that Docker accepts as a registry password. The `make images` target is equivalent to running those `docker build` and `docker push` commands directly against `$REGISTRY` from that Tofu output.
+Image URIs come from `tofu -chdir=workbook output -raw ecr_registry`. ECR authentication uses the same API as AWS: `aws ecr get-login-password` calls `GetAuthorizationToken` against the Spinifex endpoint for ECR and returns a short-lived JWT that Docker accepts as a registry password. The `make images` target is equivalent to running those `docker build` and `docker push` commands directly against `$REGISTRY` from that Tofu output.
 
 The three ECR repositories are provisioned by the infra workbook:
 
@@ -300,7 +300,7 @@ resource "aws_ecr_repository" "app" {
 make sideload
 ```
 
-ECR is the source of truth for all three images — authentication, push, and registry management all work identically to AWS. In a standard EKS deployment, nodes would pull images directly from ECR at scheduling time. In this demo, live pulls of these image sizes (~2 GiB for `llm-server`, ~4.5 GiB for `yolo-stream`) through the Spinifex ECR gateway proved unreliable — large transfers stalled or failed mid-stream, a combination of network conditions on this single-host setup and a rough edge in early Spinifex ECR support. This step works around that by staging the images directly into each node's containerd store before the pods are scheduled.
+ECR is the source of truth for all three images — authentication, push, and registry management all work identically to AWS. In a standard EKS deployment, nodes would pull images directly from ECR at scheduling time. In this demo, live pulls of these image sizes (~2 GiB for `llm-server`, ~4.5 GiB for `yolo-stream`) through the Spinifex gateway for ECR proved unreliable — large transfers stalled or failed mid-stream, a combination of network conditions on this single-host setup and a rough edge in early Spinifex support for ECR. This step works around that by staging the images directly into each node's containerd store before the pods are scheduled.
 
 It exports each image from the local Docker daemon, serves the tarballs over HTTP from the Spinifex host, and imports them directly into each worker node's containerd store via short-lived privileged pods. All three Deployments use `imagePullPolicy: IfNotPresent` and depend on the images already being present in containerd.
 

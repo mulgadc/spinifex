@@ -240,7 +240,7 @@ Variance across three runs is notable for two metrics:
 
 `randread` and `seqwrite` are bimodal rather than noisy — one run in three falls to roughly a third of its neighbours, likely a Viperblock WAL flush or Predastore compaction cycle intersecting some runs but not others. Treat those two as directionally correct rather than stable point values at this sample size. The `seqwrite` p99 reaching 7–16 seconds is worth noting for write-heavy workloads.
 
-**Predastore S3 validation** (256 MiB objects, three runs, write + read + checksum verify):
+**Predastore validation (S3 API)** (256 MiB objects, three runs, write + read + checksum verify):
 
 ```bash
 ./s3-bench.sh 256

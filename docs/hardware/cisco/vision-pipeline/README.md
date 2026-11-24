@@ -241,6 +241,6 @@ headroom at this workload's current scale; and streaming from a central bucket r
 than a private local volume costs 59–62% throughput, because each frame is a
 small, latency- rather than bandwidth-bound request. Teams already operating
 AWS infrastructure can point their existing tooling at a Spinifex node with a
-single profile swap — EC2 instances, Viperblock EBS volumes, Predastore S3
-buckets, and OVN VPC networking all provisioned from the same Terraform
+single profile swap — EC2 instances, EBS volumes on Viperblock, S3
+buckets on Predastore, and OVN VPC networking all provisioned from the same Terraform
 resources that work on AWS.

@@ -250,7 +250,7 @@ baseline (125 MiB/s) and its provisioned maximum (1,000 MiB/s). The 16K numbers 
 0.45–0.80 s); size queues and write patterns accordingly for latency-sensitive
 applications.
 
-Predastore S3 validation used 1 GiB objects. The AWS CLI splits any download above 8 MiB into concurrent ranged GETs while a plain client issues a single streaming GET, so the sweep measures both patterns with the same client (presigned `curl`) on the host and on each guest — a single-stream PUT/GET, and a chunked/concurrent Range GET (8 MiB parts, 10 in flight) that mirrors the AWS CLI's default download path — with three repetitions each:
+Predastore validation (S3 API) used 1 GiB objects. The AWS CLI splits any download above 8 MiB into concurrent ranged GETs while a plain client issues a single streaming GET, so the sweep measures both patterns with the same client (presigned `curl`) on the host and on each guest — a single-stream PUT/GET, and a chunked/concurrent Range GET (8 MiB parts, 10 in flight) that mirrors the AWS CLI's default download path — with three repetitions each:
 
 | Client | Single-stream read | Chunked/concurrent read |
 |---|---:|---:|
@@ -259,7 +259,7 @@ Predastore S3 validation used 1 GiB objects. The AWS CLI splits any download abo
 | CPU1 guest | 525 MiB/s | 350 MiB/s |
 | CPU2 guest | 517 MiB/s | 351 MiB/s |
 
-<img src="../../../../.github/assets/images/cisco-ucs-platform-benchmark/predastore-s3-read-by-client.svg" alt="Predastore S3 read throughput by client, single-stream versus chunked/concurrent GET">
+<img src="../../../../.github/assets/images/cisco-ucs-platform-benchmark/predastore-s3-read-by-client.svg" alt="Predastore read throughput by client (S3 API), single-stream versus chunked/concurrent GET">
 
 Single-stream writes land at 282–304 MiB/s across the host and all three guests. Under three simultaneous clients — one per physical node — the cluster sustains 640 MiB/s aggregate read and 538 MiB/s aggregate write from the host, and 665 / 515 MiB/s from the guests.
 

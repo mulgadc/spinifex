@@ -25,11 +25,11 @@ resources:
 
 # ECS (Elastic Container Service)
 
-> Spinifex's ECS service gives you an AWS-compatible container orchestrator: you register task definitions and run them — one-off as tasks, or kept-running as a service behind a load balancer — on container instances you launch from the Spinifex ECS node image. Standard tools — `aws ecs`, the Terraform AWS provider — work unchanged.
+> Spinifex's ECS service gives you an AWS-compatible container orchestrator: you register task definitions and run them — one-off as tasks, or kept-running as a service behind a load balancer — on container instances you launch from the Spinifex node image for ECS. Standard tools — `aws ecs`, the Terraform AWS provider — work unchanged.
 
 ## Overview
 
-ECS on Spinifex follows the AWS **EC2 launch type**: you supply the compute. A cluster is a logical grouping; the capacity behind it is **container instances** — ordinary EC2 instances booted from Spinifex's `spinifex-ecs-node` image, each running the Spinifex ECS agent. The agent registers the instance with the cluster, reports its CPU/memory, and runs the containers the scheduler places on it.
+ECS on Spinifex follows the AWS **EC2 launch type**: you supply the compute. A cluster is a logical grouping; the capacity behind it is **container instances** — ordinary EC2 instances booted from Spinifex's `spinifex-ecs-node` image, each running the Spinifex agent for ECS. The agent registers the instance with the cluster, reports its CPU/memory, and runs the containers the scheduler places on it.
 
 There is **no ECS-specific launch API** — this is AWS-faithful. You add capacity by launching EC2 instances from the ECS node image (with the `ecsInstanceRole` instance profile), exactly as on AWS. The Spinifex console wraps this in a one-click **Provision capacity** action, but underneath it is just `RunInstances`.
 

@@ -395,12 +395,8 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	// The create accepts the request as CREATING; worker launch runs async.
 	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
 	assert.Equal(t, int64(2), aws.Int64Value(out.Nodegroup.ScalingConfig.DesiredSize))
-	// Full equality, not a prefix: the policy gate rebuilds this ARN from the
-	// identifiers alone, and a Deny naming it only fires if it matches exactly.
-	assert.Equal(t,
-		arn.FormatEKSNodegroup(f.svc.deps.Region, testAccountID, "c1", "ng1",
-			arn.EKSNodegroupDiscriminator(testAccountID, "c1", "ng1")),
-		aws.StringValue(out.Nodegroup.NodegroupArn))
+	assert.True(t, strings.HasPrefix(aws.StringValue(out.Nodegroup.NodegroupArn),
+		arn.FormatEKSNodegroup(f.svc.deps.Region, testAccountID, "c1", "ng1", "")))
 
 	f.svc.WaitLaunches()
 

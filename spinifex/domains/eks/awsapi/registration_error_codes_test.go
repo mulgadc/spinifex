@@ -38,7 +38,8 @@ func routePath(pattern string) string {
 // A parameter refusal must reach the wire under a code the operation declares
 // in the EKS model, or SDK clients cannot match it to a typed error.
 func TestRegistration_ParameterRefusalCodeIsDeclaredByOperation(t *testing.T) {
-	_, nc := testutil.StartTestNATS(t)
+	// JetStream, because the policy gate reads nodegroup records before dispatch.
+	_, nc, _ := testutil.StartTestJetStream(t)
 	sub, err := nc.Subscribe("eks.>", func(m *nats.Msg) {
 		if m.Reply != "" {
 			_ = m.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidParameterValue))

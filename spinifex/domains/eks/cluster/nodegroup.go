@@ -349,9 +349,9 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	rec := &NodegroupRecord{
 		ClusterName: cluster,
 		Name:        ng,
-		// Derived, not random: the policy gate builds the same ARN from the same
-		// identifiers, so a Deny naming this exact ARN fires without a lookup.
-		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, arn.EKSNodegroupDiscriminator(accountID, cluster, ng)),
+		// A fresh UUID per incarnation, as AWS does, so a re-created group of the
+		// same name never inherits a policy, tag or audit trail naming the old one.
+		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,

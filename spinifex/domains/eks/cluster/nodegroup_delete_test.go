@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	iammock "github.com/mulgadc/spinifex/spinifex/domains/iam/mock"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -502,7 +502,7 @@ func TestInvariant_NodegroupDeleteNeverRemovesAProfileItDoesNotOwn(t *testing.T)
 		f := newEKSServiceFixture(t)
 		seedActiveClusterWithToken(t, f, "c1")
 		guesses := []string{
-			"eks-" + arn.EKSNodegroupDiscriminator(testAccountID, "c1", "ng1"),
+			"eks-c1-ng1-profile",
 			"eks-c1-ng1",
 			"c1-ng1",
 			fixtureNodeRoleName,
@@ -690,4 +690,35 @@ func TestNodegroupDelete_RetiresItsTeardownLease(t *testing.T) {
 	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.ErrorIs(t, err, ErrNodegroupNotFound, "the delete must have completed")
 	assert.NotSame(t, before, f.svc.leases.Get(name), "the finished delete's teardown lease must leave the group")
+}
+
+// A policy, tag or audit record naming a deleted group's ARN must not match the
+// group that replaces it under the same name.
+func TestNodegroupRecreateGetsANewARN(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 1)
+	first, err := describeNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+
+	_, err = deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	sweepNodegroups(t, f)
+	_, err = describeNodegroupCall(f, "c1", "ng1")
+	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
+
+	createReadyNodegroup(t, f, "c1", "ng1", 1)
+	second, err := describeNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+
+	firstARN := aws.StringValue(first.Nodegroup.NodegroupArn)
+	secondARN := aws.StringValue(second.Nodegroup.NodegroupArn)
+	assert.NotEqual(t, firstARN, secondARN)
+	for _, got := range []string{firstARN, secondARN} {
+		segments := strings.Split(got, "/")
+		require.Len(t, segments, 4, got)
+		_, err := uuid.Parse(segments[3])
+		assert.NoError(t, err, got)
+	}
 }

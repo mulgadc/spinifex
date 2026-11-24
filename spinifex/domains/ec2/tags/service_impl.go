@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
@@ -43,6 +44,10 @@ var _ ec2key.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // Ensure TagsServiceImpl can project, scan and clear peering connection tags.
 var _ ec2vpcpeering.CentralTagStore = (*TagsServiceImpl)(nil)
+
+// Implements ec2tgw.CentralTagStore so the Transit Gateway service can write
+// and sweep the central index.
+var _ ec2tgw.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.

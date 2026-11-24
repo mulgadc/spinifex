@@ -41,7 +41,8 @@ const driftBackoffFactor = 3
 
 // intentBuckets names every KV bucket LoadIntentFromKV reads. No writer is
 // periodic; a pass writes only on a one-way transition (an IGW attachment, a
-// peering activation or cleanup), so each costs one extra pass, not a cycle.
+// peering or Transit Gateway activation, preparation or cleanup), so each
+// costs one extra pass, not a cycle.
 var intentBuckets = []string{
 	ec2vpc.KVBucketVPCs,
 	ec2vpc.KVBucketSubnets,
@@ -52,6 +53,8 @@ var intentBuckets = []string{
 	ec2routetable.KVBucketRouteTables,
 	ec2natgw.KVBucketNatGateways,
 	ec2projection.PeeringBucket,
+	ec2projection.TransitGatewayBucket,
+	ec2projection.TransitGatewayAttachmentBucket,
 }
 
 // intentSource watches the intent buckets. Enumerated rather than fixed so a

@@ -308,7 +308,7 @@ func TestEveryDeclaredLevelHasExactlyOneDrainCheck(t *testing.T) {
 	t.Parallel()
 	// A feature's check reads its own domain, so its composition root registers
 	// it; the operator CLI's test asserts every level is then covered.
-	assert.Equal(t, []int{GatewayEndpoints}, UncoveredLevels(), "only the levels a composition root covers may be uncovered here")
+	assert.Equal(t, []int{GatewayEndpoints, TransitGateways}, UncoveredLevels(), "only the levels a composition root covers may be uncovered here")
 	require.NotEmpty(t, Levels())
 	assert.Equal(t, Build, Levels()[len(Levels())-1].N, "Build is the highest declared level")
 
@@ -371,4 +371,32 @@ func TestGateActive_AnswersAsAdmitWithoutCounting(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "a rollback below the level closes it")
 	assert.Empty(t, g.InFlight())
+}
+
+// A rollback below the level that waits on its drain keeps the level recorded,
+// so its resources stay readable; a finished rollback removes it.
+func TestGateRecorded_HoldsThroughBlockedRollback(t *testing.T) {
+	t.Parallel()
+	s, _ := newStore(t)
+	g := NewGate(s)
+	ok, err := g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok, "below the level")
+
+	_, _, err = s.Advance(t.Context(), members(GatewayEndpoints, true, true))
+	require.NoError(t, err)
+	_, rev, err := s.StartRollback(t.Context(), Baseline, Build)
+	require.NoError(t, err)
+	ok, err = g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.True(t, ok, "a recorded rollback has not given the level up")
+	active, err := g.Active(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, active, "writes stay closed")
+
+	_, err = s.FinishRollback(t.Context(), rev, Baseline)
+	require.NoError(t, err)
+	ok, err = g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok)
 }

@@ -74,14 +74,14 @@ func upsertOwned[T any](rows map[string]*T, attached *[]string, want T, at func(
 	rows[*wantUUID] = &want
 }
 
-// deleteOwned removes the rows stamped pcxID from rows and from *attached.
-func deleteOwned[T any](rows map[string]*T, attached *[]string, at func(*T) (*string, map[string]string), pcxID string) {
+// deleteOwned removes the rows whose external ID key is id from rows and from *attached.
+func deleteOwned[T any](rows map[string]*T, attached *[]string, at func(*T) (*string, map[string]string), key, id string) {
 	*attached = slices.DeleteFunc(*attached, func(uuid string) bool {
 		r, ok := rows[uuid]
 		if !ok {
 			return false
 		}
-		if _, ext := at(r); ext[ovn.ExternalIDPcxID] != pcxID {
+		if _, ext := at(r); ext[key] != id {
 			return false
 		}
 		delete(rows, uuid)
@@ -95,6 +95,13 @@ func (m *Client) DeletePeeringLink(_ context.Context, pcxID string, routers []st
 	if m.DeletePeeringLinkErr != nil {
 		return m.DeletePeeringLinkErr
 	}
+	m.deleteOwnedLink(ovn.ExternalIDPcxID, pcxID, routers)
+	return nil
+}
+
+// deleteOwnedLink removes every row whose external ID key is id on the named
+// routers. The caller holds m.Mu.
+func (m *Client) deleteOwnedLink(key, id string, routers []string) {
 	for _, name := range routers {
 		lr, ok := m.Routers[name]
 		if !ok {
@@ -102,15 +109,14 @@ func (m *Client) DeletePeeringLink(_ context.Context, pcxID string, routers []st
 		}
 		lr.Ports = slices.DeleteFunc(lr.Ports, func(uuid string) bool {
 			for portName, p := range m.RouterPorts {
-				if p.UUID == uuid && p.ExternalIDs[ovn.ExternalIDPcxID] == pcxID {
+				if p.UUID == uuid && p.ExternalIDs[key] == id {
 					delete(m.RouterPorts, portName)
 					return true
 				}
 			}
 			return false
 		})
-		deleteOwned(m.StaticRoutes, &lr.StaticRoutes, routeStamp, pcxID)
-		deleteOwned(m.LRPolicies, &lr.Policies, policyStamp, pcxID)
+		deleteOwned(m.StaticRoutes, &lr.StaticRoutes, routeStamp, key, id)
+		deleteOwned(m.LRPolicies, &lr.Policies, policyStamp, key, id)
 	}
-	return nil
 }

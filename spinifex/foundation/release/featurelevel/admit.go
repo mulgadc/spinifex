@@ -82,6 +82,17 @@ func (g *Gate) Active(ctx context.Context, n int) (bool, error) {
 	return rec.Active(n), nil
 }
 
+// Recorded reports whether level n is recorded, even while a rollback below n
+// waits on its drain. A read of resources the level created uses it, so those
+// resources stay visible until the drain lets the rollback finish.
+func (g *Gate) Recorded(ctx context.Context, n int) (bool, error) {
+	rec, _, err := g.store.Read(ctx)
+	if err != nil {
+		return false, err
+	}
+	return rec.Level >= n, nil
+}
+
 // Active reports whether level n is active in the record: recorded at least n,
 // with no rollback below n in progress.
 func (rec Record) Active(n int) bool {

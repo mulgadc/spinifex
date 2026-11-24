@@ -88,6 +88,12 @@ func TestVPCPeeringCrossAccount(t *testing.T) {
 	runVPCPeeringCrossAccount(t, requireSingleNodeFixture(t))
 }
 
+// TestTransitGateway covers two VPCs routed through one Transit Gateway on
+// the datapath (see runTransitGateway for the stages).
+func TestTransitGateway(t *testing.T) {
+	runTransitGateway(t, requireSingleNodeFixture(t))
+}
+
 // TestVPCGatewayEndpoint covers an S3 gateway endpoint on a private subnet's
 // datapath: create, modify, delete, security groups and the DeleteVpc fence.
 func TestVPCGatewayEndpoint(t *testing.T) {

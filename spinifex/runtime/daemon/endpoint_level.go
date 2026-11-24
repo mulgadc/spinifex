@@ -104,3 +104,25 @@ func endpointAdmission(gate *featurelevel.Gate) func(context.Context) (func(), b
 		return gate.Admit(ctx, featurelevel.GatewayEndpoints)
 	}
 }
+
+// tgwAdmission admits Transit Gateway writes, and routes naming one, at the
+// feature level.
+func tgwAdmission(gate *featurelevel.Gate) func(context.Context) (func(), bool, error) {
+	return func(ctx context.Context) (func(), bool, error) {
+		if gate == nil {
+			return func() {}, false, errors.New("feature level gate not ready")
+		}
+		return gate.Admit(ctx, featurelevel.TransitGateways)
+	}
+}
+
+// tgwOffered answers whether Transit Gateway reads are served: while the level
+// is recorded, so a rollback blocked on a live gateway still lists it.
+func tgwOffered(gate *featurelevel.Gate) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		if gate == nil {
+			return false, errors.New("feature level gate not ready")
+		}
+		return gate.Recorded(ctx, featurelevel.TransitGateways)
+	}
+}

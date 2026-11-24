@@ -65,6 +65,26 @@ type PeeringLinkEnd struct {
 	NoRoute nbdb.LogicalRouterPolicy
 }
 
+// ExternalIDTGWID stamps a Transit Gateway's router.
+const ExternalIDTGWID = "spinifex:tgw_id"
+
+// ExternalIDTGWAttachmentID stamps every row a Transit Gateway attachment
+// owns: its link ports, guards, entry and propagated routes, and reroutes.
+const ExternalIDTGWAttachmentID = "spinifex:tgw_attachment_id"
+
+// TransitGatewayRerouteRole is the role of an attachment's reroutes. Route
+// sync owns them, so a link write leaves them alone.
+const TransitGatewayRerouteRole = "tgw-reroute"
+
+// TransitGatewayLinkEnd is one router's end of an attachment's link: the port
+// and every policy and static route the attachment owns on that router.
+type TransitGatewayLinkEnd struct {
+	Router   string
+	Port     nbdb.LogicalRouterPort
+	Policies []nbdb.LogicalRouterPolicy
+	Routes   []nbdb.LogicalRouterStaticRoute
+}
+
 // Client is the OVN Northbound DB abstraction. The vpcd in-tree
 // implementation is LiveClient (live.go); tests use network/ovn/mock.
 type Client interface {
@@ -177,6 +197,15 @@ type Client interface {
 	// DeletePeeringLink removes every port, policy and static route stamped pcxID on the
 	// named routers in one transaction. A router absent from NB is skipped.
 	DeletePeeringLink(ctx context.Context, pcxID string, routers []string) error
+
+	// EnsureTransitGatewayLink makes the rows attachmentID owns on both ends'
+	// routers exactly ends, in one transaction: a missing or drifted row is
+	// written and any other row it owns there, reroutes aside, is removed. A
+	// converged link writes nothing.
+	EnsureTransitGatewayLink(ctx context.Context, attachmentID string, ends [2]TransitGatewayLinkEnd) error
+	// DeleteTransitGatewayLink removes every row stamped attachmentID on the
+	// named routers in one transaction. A router absent from NB is skipped.
+	DeleteTransitGatewayLink(ctx context.Context, attachmentID string, routers []string) error
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error

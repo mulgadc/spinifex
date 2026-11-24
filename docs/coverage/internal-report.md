@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 155 of 811 modelled operations implemented (19.1%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 161 of 811 modelled operations implemented (19.9%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -130,7 +130,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateTrafficMirrorFilterRule`
 - `CreateTrafficMirrorSession`
 - `CreateTrafficMirrorTarget`
-- `CreateTransitGateway`
 - `CreateTransitGatewayConnect`
 - `CreateTransitGatewayConnectPeer`
 - `CreateTransitGatewayMulticastDomain`
@@ -140,7 +139,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateTransitGatewayRoute`
 - `CreateTransitGatewayRouteTable`
 - `CreateTransitGatewayRouteTableAnnouncement`
-- `CreateTransitGatewayVpcAttachment`
 - `CreateVerifiedAccessEndpoint`
 - `CreateVerifiedAccessGroup`
 - `CreateVerifiedAccessInstance`
@@ -185,7 +183,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteTrafficMirrorFilterRule`
 - `DeleteTrafficMirrorSession`
 - `DeleteTrafficMirrorTarget`
-- `DeleteTransitGateway`
 - `DeleteTransitGatewayConnect`
 - `DeleteTransitGatewayConnectPeer`
 - `DeleteTransitGatewayMulticastDomain`
@@ -195,7 +192,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteTransitGatewayRoute`
 - `DeleteTransitGatewayRouteTable`
 - `DeleteTransitGatewayRouteTableAnnouncement`
-- `DeleteTransitGatewayVpcAttachment`
 - `DeleteVerifiedAccessEndpoint`
 - `DeleteVerifiedAccessGroup`
 - `DeleteVerifiedAccessInstance`
@@ -292,8 +288,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeTransitGatewayPolicyTables`
 - `DescribeTransitGatewayRouteTableAnnouncements`
 - `DescribeTransitGatewayRouteTables`
-- `DescribeTransitGatewayVpcAttachments`
-- `DescribeTransitGateways`
 - `DescribeTrunkInterfaceAssociations`
 - `DescribeVerifiedAccessEndpoints`
 - `DescribeVerifiedAccessGroups`

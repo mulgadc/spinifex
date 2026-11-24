@@ -27,6 +27,7 @@ import (
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
 	ec2spotinstanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/spotinstance"
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
+	ec2tgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tgw"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2vpcendpointapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcendpoint"
@@ -128,6 +129,9 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
 	reflect.TypeFor[ec2.VpcPeeringConnectionVpcInfo]():             {"CidrBlockSet", "Ipv6CidrBlockSet"},
 	reflect.TypeFor[ec2.VpcEndpoint]():                             {"Tags"},
+	reflect.TypeFor[ec2.TransitGateway]():                          {"Tags"},
+	reflect.TypeFor[ec2.TransitGatewayOptions]():                   {"TransitGatewayCidrBlocks"},
+	reflect.TypeFor[ec2.TransitGatewayVpcAttachment]():             {"SubnetIds", "Tags"},
 	reflect.TypeFor[ec2.ServiceDetail]():                           {"PrivateDnsNames"},
 }
 
@@ -666,6 +670,24 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"ModifyVpcPeeringConnectionOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcPeeringConnectionOptionsInput, c *call, accountID string) (any, error) {
 		return ec2vpcpeeringapi.ModifyVpcPeeringConnectionOptions(ctx, input, c.NATS, accountID)
+	}),
+	"CreateTransitGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateTransitGatewayInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.CreateTransitGateway(ctx, input, c.NATS, accountID)
+	}),
+	"DeleteTransitGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteTransitGatewayInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.DeleteTransitGateway(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeTransitGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeTransitGatewaysInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.DescribeTransitGateways(ctx, input, c.NATS, accountID)
+	}),
+	"CreateTransitGatewayVpcAttachment": ec2Handler(func(ctx context.Context, input *ec2.CreateTransitGatewayVpcAttachmentInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.CreateTransitGatewayVpcAttachment(ctx, input, c.NATS, accountID)
+	}),
+	"DeleteTransitGatewayVpcAttachment": ec2Handler(func(ctx context.Context, input *ec2.DeleteTransitGatewayVpcAttachmentInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.DeleteTransitGatewayVpcAttachment(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeTransitGatewayVpcAttachments": ec2Handler(func(ctx context.Context, input *ec2.DescribeTransitGatewayVpcAttachmentsInput, c *call, accountID string) (any, error) {
+		return ec2tgwapi.DescribeTransitGatewayVpcAttachments(ctx, input, c.NATS, accountID)
 	}),
 	"CreateVpcEndpoint": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateVpcEndpointInput, c *call, accountID string) (ec2.CreateVpcEndpointOutput, error) {
 		return ec2vpcendpointapi.CreateVpcEndpoint(ctx, input, c.NATS, accountID)

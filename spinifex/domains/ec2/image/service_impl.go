@@ -980,13 +980,14 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	return &ec2.CopyImageOutput{ImageId: aws.String(newImageID)}, nil
 }
 
-// mergeCopyImageTags seeds with source tags when copyImageTags is true, then
-// lets image-resource TagSpecifications override colliding keys. Non-image tag
-// specs are ignored.
+// mergeCopyImageTags seeds with source tags but the platform key when
+// copyImageTags is true, then lets image-resource TagSpecifications override
+// colliding keys. Non-image tag specs are ignored.
 func mergeCopyImageTags(srcTags map[string]string, specs []*ec2.TagSpecification, copyImageTags bool) map[string]string {
 	merged := make(map[string]string)
 	if copyImageTags {
 		maps.Copy(merged, srcTags)
+		delete(merged, awstags.ManagedByKey)
 	}
 	maps.Copy(merged, awstags.Extract(specs, "image"))
 	if len(merged) == 0 {

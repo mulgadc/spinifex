@@ -20,6 +20,15 @@ func ValidateDeleteTagsInput(input *ec2.DeleteTagsInput) error {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	for _, tag := range input.Tags {
+		if tag == nil || tag.Key == nil {
+			continue
+		}
+		if err := platformKeyError(*tag.Key); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

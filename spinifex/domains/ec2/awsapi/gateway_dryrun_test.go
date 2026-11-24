@@ -71,3 +71,18 @@ func TestEC2Request_ImageDeprecationAuthzAndDryRun(t *testing.T) {
 	assertDryRun(t, dispatchEC2(t, h, "Action=EnableImageDeprecation&ImageId=ami-0f3a9c2b7d1e4a5b6&DeprecateAt=2030-01-01T00:00:00Z&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, h, "Action=DisableImageDeprecation&ImageId=ami-0f3a9c2b7d1e4a5b6&DryRun=true"))
 }
+
+// A customer create call cannot stamp the platform's ownership tag, and the
+// refusal comes before the DryRun answer as AWS does for an aws: key.
+func TestEC2Request_TagSpecificationsRefusePlatformKey(t *testing.T) {
+	h := gwtest.AllowAll()
+	err := dispatchEC2(t, h, "Action=AllocateAddress&TagSpecification.1.ResourceType=elastic-ip"+
+		"&TagSpecification.1.Tag.1.Key=spinifex:managed-by&TagSpecification.1.Tag.1.Value=eks&DryRun=true")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value ( spinifex:managed-by ) for parameter key is invalid. Tag key 'spinifex:managed-by' is reserved for internal use", msg)
+
+	assertDryRun(t, dispatchEC2(t, h, "Action=AllocateAddress&TagSpecification.1.ResourceType=elastic-ip"+
+		"&TagSpecification.1.Tag.1.Key=team&TagSpecification.1.Tag.1.Value=eks&DryRun=true"))
+}

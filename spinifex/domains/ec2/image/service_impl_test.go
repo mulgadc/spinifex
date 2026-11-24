@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2046,7 +2047,7 @@ func TestCopyImage_CopyImageTagsInheritsSourceTags(t *testing.T) {
 	// Overlay source tags on the seeded AMI.
 	srcMeta, err := svc.GetAMIConfig(context.Background(), "ami-tagged-src")
 	require.NoError(t, err)
-	srcMeta.Tags = map[string]string{"Env": "prod", "Owner": "team-a"}
+	srcMeta.Tags = map[string]string{"Env": "prod", "Owner": "team-a", awstags.ManagedByKey: "eks"}
 	require.NoError(t, svc.putAMIConfig(context.Background(), "ami-tagged-src", srcMeta))
 
 	input := validCopyImageServiceInput("ami-tagged-src", "copy-inherit-tags")
@@ -2059,6 +2060,7 @@ func TestCopyImage_CopyImageTagsInheritsSourceTags(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "prod", newMeta.Tags["Env"])
 	assert.Equal(t, "team-a", newMeta.Tags["Owner"])
+	assert.NotContains(t, newMeta.Tags, awstags.ManagedByKey)
 }
 
 func TestCopyImage_ExplicitTagsOverrideSourceTags(t *testing.T) {

@@ -354,3 +354,73 @@ func TestDeletionMark_OlderWriterDropsIt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, n)
 }
+
+// markGate is a feature-level admission whose answer a test sets.
+type markGate struct {
+	ok      bool
+	err     error
+	holding atomic.Int32
+}
+
+func (g *markGate) admit(context.Context) (func(), bool, error) {
+	g.holding.Add(1)
+	var once sync.Once
+	return func() { once.Do(func() { g.holding.Add(-1) }) }, g.ok, g.err
+}
+
+// Below the level a failed delete leaves no mark, so a rollback that counted
+// zero marks stays true; the delete held the admission until it ended.
+func TestDeleteVpc_BelowLevelWritesNoMark(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	g := &markGate{}
+	svc.SetDeletionMarkAdmission(g.admit)
+	vpcID := createTestVPC(t, svc, "10.76.0.0/16")
+	vpcs := &failDeleteKV{KeyValue: svc.vpcKV}
+	vpcs.fail.Store(true)
+	svc.vpcKV = vpcs
+
+	testutil.RequireAWSCode(t, deleteVpc(svc, vpcID), awserrors.ErrorServerInternal)
+	assert.False(t, marked(t, svc.vpcKV, vpcID))
+	assert.Zero(t, g.holding.Load())
+
+	g.ok = true
+	testutil.RequireAWSCode(t, deleteVpc(svc, vpcID), awserrors.ErrorServerInternal)
+	assert.True(t, marked(t, svc.vpcKV, vpcID), "at the level the mark is written")
+	assert.Zero(t, g.holding.Load())
+}
+
+func TestDeleteSubnet_BelowLevelWritesNoMark(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	g := &markGate{}
+	svc.SetDeletionMarkAdmission(g.admit)
+	vpcID := createTestVPC(t, svc, "10.77.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.77.1.0/24")
+	subnets := &failDeleteKV{KeyValue: svc.subnetKV}
+	subnets.fail.Store(true)
+	svc.subnetKV = subnets
+
+	testutil.RequireAWSCode(t, deleteSubnet(svc, subnetID), awserrors.ErrorServerInternal)
+	assert.False(t, marked(t, svc.subnetKV, subnetID))
+	assert.Zero(t, g.holding.Load())
+
+	subnets.fail.Store(false)
+	require.NoError(t, deleteSubnet(svc, subnetID))
+	requireGone(t, svc.subnetKV, subnetID)
+}
+
+// An unreadable level fails the delete before it changes anything.
+func TestDeleteVpc_UnreadableLevelRefuses(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	g := &markGate{err: errors.New("level store unreachable")}
+	svc.SetDeletionMarkAdmission(g.admit)
+	vpcID := createTestVPC(t, svc, "10.78.0.0/16")
+
+	testutil.RequireAWSCode(t, deleteVpc(svc, vpcID), awserrors.ErrorServerInternal)
+	assert.False(t, marked(t, svc.vpcKV, vpcID))
+	assert.Zero(t, g.holding.Load())
+	_, err := svc.vpcKV.Get(t.Context(), kvstore.AccountKey(testAccountID, vpcID))
+	require.NoError(t, err, "the VPC stays")
+}

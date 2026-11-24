@@ -128,6 +128,9 @@ type VPCServiceImpl struct {
 
 	// The same, for DeleteSubnet; the check receives the subnet ID.
 	subnetDependencyChecks map[string]DependencyCheck
+
+	// Admits the deletion mark at the Transit Gateway level; nil marks always.
+	markAdmit func(ctx context.Context) (done func(), ok bool, err error)
 }
 
 // DependencyCheck reports whether a resource of one kind blocks deleting
@@ -150,6 +153,28 @@ func (s *VPCServiceImpl) SetSubnetDependencyCheck(kind string, check DependencyC
 		s.subnetDependencyChecks = map[string]DependencyCheck{}
 	}
 	s.subnetDependencyChecks[kind] = check
+}
+
+// SetDeletionMarkAdmission installs the feature-level admission a VPC or
+// subnet delete holds while it runs. Below the level it writes no mark, so a
+// rollback that counted the marks cannot be overtaken by a new one.
+func (s *VPCServiceImpl) SetDeletionMarkAdmission(admit func(ctx context.Context) (done func(), ok bool, err error)) {
+	s.markAdmit = admit
+}
+
+// admitMark reports whether a parent delete writes the deletion mark. The
+// caller holds done until the delete ends.
+func (s *VPCServiceImpl) admitMark(ctx context.Context, op, id string) (func(), bool, error) {
+	if s.markAdmit == nil {
+		return func() {}, true, nil
+	}
+	done, ok, err := s.markAdmit(ctx)
+	if err != nil {
+		done()
+		slog.ErrorContext(ctx, op+": feature level unreadable", "id", id, "err", err)
+		return nil, false, errors.New(awserrors.ErrorServerInternal)
+	}
+	return done, ok, nil
 }
 
 // SetPrefixListAdmission installs the feature-level admission a write adding a
@@ -446,6 +471,11 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 
 	// The marked write at the checked revision is the commit point: the
 	// cascade below cannot be undone, so admission must lose to the mark.
+	done, mark, err := s.admitMark(ctx, "DeleteVpc", vpcID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	var markedRev uint64
 	var defaultSGId string
 	for attempt := 1; ; attempt++ {
@@ -460,6 +490,10 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		}
 		if defaultSGId, err = s.checkVpcDependencies(ctx, accountID, vpcID); err != nil {
 			return nil, err
+		}
+		if !mark {
+			markedRev = entry.Revision()
+			break
 		}
 		markedRev, err = markDeleting(ctx, s.vpcKV, key, entry)
 		if err == nil {
@@ -960,6 +994,11 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 
 	// The marked write at the checked revision is the commit point, before
 	// the association clear that cannot be undone.
+	done, mark, err := s.admitMark(ctx, "DeleteSubnet", subnetID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	var subnetRecord SubnetRecord
 	var markedRev uint64
 	for attempt := 1; ; attempt++ {
@@ -983,6 +1022,10 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 		}
 		if err := rejectOwnedDependency(ctx, s.subnetDependencyChecks, "subnet", accountID, subnetID); err != nil {
 			return nil, err
+		}
+		if !mark {
+			markedRev = subnetEntry.Revision()
+			break
 		}
 		markedRev, err = markDeleting(ctx, s.subnetKV, key, subnetEntry)
 		if err == nil {

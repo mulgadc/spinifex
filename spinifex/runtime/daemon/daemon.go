@@ -2293,6 +2293,7 @@ func (d *Daemon) startCluster() error {
 	d.routeTableService.SetTransitGatewayLookup(d.tgwService.Store, ec2routetable.Admission(tgwAdmission(d.featureGate)))
 	d.vpcService.SetDependencyCheck("transit-gateway-attachment", d.tgwService.VpcBlocksDeletion)
 	d.vpcService.SetSubnetDependencyCheck("transit-gateway-attachment", d.tgwService.SubnetBlocksDeletion)
+	d.vpcService.SetDeletionMarkAdmission(tgwAdmission(d.featureGate))
 	tgwAccountsJS, err := jetstream.New(d.natsConn)
 	if err != nil {
 		return fmt.Errorf("jetstream handle for Transit Gateway account status: %w", err)

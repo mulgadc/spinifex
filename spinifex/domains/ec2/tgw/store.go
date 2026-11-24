@@ -35,6 +35,7 @@ type Store struct {
 	slots   int
 
 	centralTags CentralTagStore
+	accounts    AccountStatus
 }
 
 // NewStore wraps already-open buckets.
@@ -100,13 +101,27 @@ func getJSON[T any](ctx context.Context, kv jetstream.KeyValue, key string) (*T,
 	return &v, entry.Revision(), nil
 }
 
-func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
+// putJSON writes key and returns the revision it wrote.
+func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) (uint64, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("encode %s: %w", key, err)
+		return 0, fmt.Errorf("encode %s: %w", key, err)
 	}
-	if _, err := kv.Put(ctx, key, data); err != nil {
-		return fmt.Errorf("write %s: %w", key, err)
+	rev, err := kv.Put(ctx, key, data)
+	if err != nil {
+		return 0, fmt.Errorf("write %s: %w", key, err)
+	}
+	return rev, nil
+}
+
+// touchIndexes rewrites each index key at the revision its owner wrote, after
+// the owner's record write. A sweep that judged the key ownerless meanwhile
+// either removed it, and the rewrite fails, or loses its delete at that revision.
+func touchIndexes(ctx context.Context, kv jetstream.KeyValue, revs map[string]uint64) error {
+	for key, rev := range revs {
+		if err := touchAt(ctx, kv, key, rev); err != nil {
+			return fmt.Errorf("index %s: %w", key, err)
+		}
 	}
 	return nil
 }
@@ -384,14 +399,18 @@ func attachmentIndexKeys(rec *AttachmentRecord) []string {
 	return keys
 }
 
-func (s *Store) writeAttachmentIndexes(ctx context.Context, rec *AttachmentRecord) error {
+// writeAttachmentIndexes writes rec's index keys and returns their revisions.
+func (s *Store) writeAttachmentIndexes(ctx context.Context, rec *AttachmentRecord) (map[string]uint64, error) {
 	entry := indexEntry{AccountID: rec.AccountID, CreatedAt: rec.CreatedAt}
+	revs := map[string]uint64{}
 	for _, k := range attachmentIndexKeys(rec) {
-		if err := putJSON(ctx, s.atts, k, entry); err != nil {
-			return err
+		rev, err := putJSON(ctx, s.atts, k, entry)
+		if err != nil {
+			return nil, err
 		}
+		revs[k] = rev
 	}
-	return nil
+	return revs, nil
 }
 
 func (s *Store) deleteAttachmentIndexes(ctx context.Context, rec *AttachmentRecord) error {
@@ -416,10 +435,11 @@ func (s *Store) releaseAttachment(ctx context.Context, rec *AttachmentRecord) er
 
 // writeTerminal stores rec and its account key in the terminal bucket.
 func (s *Store) writeTerminal(ctx context.Context, accountID, id string, rec any, createdAt time.Time) error {
-	if err := putJSON(ctx, s.term, recordKey(accountID, id), rec); err != nil {
+	if _, err := putJSON(ctx, s.term, recordKey(accountID, id), rec); err != nil {
 		return err
 	}
-	return putJSON(ctx, s.term, acctKey(accountID, id), indexEntry{AccountID: accountID, CreatedAt: createdAt})
+	_, err := putJSON(ctx, s.term, acctKey(accountID, id), indexEntry{AccountID: accountID, CreatedAt: createdAt})
+	return err
 }
 
 // moveAttachmentTerminal writes the live record in its terminal state at rev,

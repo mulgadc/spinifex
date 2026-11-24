@@ -122,8 +122,9 @@ func TestCreateTransitGateway_StaleSlotReclaimedAfterGrace(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	for n := range accountLimit {
-		require.NoError(t, putJSON(t.Context(), f.svc.tgws, slotKey(testAccount, n),
-			claim{Owner: fmt.Sprintf("tgw-%017x", n), AccountID: testAccount, ClaimedAt: f.clock.Now()}))
+		_, err := putJSON(t.Context(), f.svc.tgws, slotKey(testAccount, n),
+			claim{Owner: fmt.Sprintf("tgw-%017x", n), AccountID: testAccount, ClaimedAt: f.clock.Now()})
+		require.NoError(t, err)
 	}
 	_, err := f.svc.CreateTransitGateway(t.Context(), &ec2.CreateTransitGatewayInput{}, testAccount)
 	requireCode(t, err, awserrors.ErrorResourceLimitExceeded)
@@ -172,6 +173,35 @@ func TestDeleteTransitGateway_IDsAndStates(t *testing.T) {
 	gone, err := f.svc.DeleteTransitGateway(t.Context(), &ec2.DeleteTransitGatewayInput{TransitGatewayId: aws.String(id)}, testAccount)
 	require.NoError(t, err, "a delete of a deleted gateway succeeds")
 	assert.Equal(t, StateDeleted, aws.StringValue(gone.TransitGateway.State))
+}
+
+// A retry after the deleted state is written but before the move answers
+// deleted, and leaves the move for the sweep to finish.
+func TestDeleteTransitGateway_RetryDuringInterruptedMove(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := f.availableTGW()
+	_, err := f.svc.DeleteTransitGateway(t.Context(), &ec2.DeleteTransitGatewayInput{TransitGatewayId: aws.String(id)}, testAccount)
+	require.NoError(t, err)
+	rec, rev, err := f.svc.transitGateway(t.Context(), testAccount, id)
+	require.NoError(t, err)
+	rec.State, rec.TerminalAt = StateDeleted, f.clock.Now()
+	_, err = writeJSON(t.Context(), f.svc.tgws, recordKey(testAccount, id), rec, rev)
+	require.NoError(t, err)
+
+	again, err := f.svc.DeleteTransitGateway(t.Context(), &ec2.DeleteTransitGatewayInput{TransitGatewayId: aws.String(id)}, testAccount)
+	require.NoError(t, err)
+	assert.Equal(t, StateDeleted, aws.StringValue(again.TransitGateway.State))
+	live, _, err := f.svc.transitGateway(t.Context(), testAccount, id)
+	require.NoError(t, err)
+	require.Equal(t, StateDeleted, live.State, "the retry must not rewrite the record")
+
+	res, err := f.svc.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Moved)
+	live, _, err = f.svc.transitGateway(t.Context(), testAccount, id)
+	require.NoError(t, err)
+	assert.Nil(t, live)
 }
 
 func TestDeleteTransitGateway_RefusedWhileAttached(t *testing.T) {

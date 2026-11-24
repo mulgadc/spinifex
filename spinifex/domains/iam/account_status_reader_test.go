@@ -131,6 +131,12 @@ func TestAccountStatusReader_OnlyActiveIsActive(t *testing.T) {
 	ok, err = reader.AccountActive(t.Context(), quiesced.AccountID)
 	require.NoError(t, err)
 	assert.False(t, ok)
+
+	for _, id := range []string{active.AccountID, suspended.AccountID, quiesced.AccountID} {
+		found, err := reader.AccountExists(t.Context(), id)
+		require.NoError(t, err)
+		assert.True(t, found, "a record in any status exists")
+	}
 }
 
 // A deleted account has no record; a create that reads it must be refused.
@@ -140,4 +146,7 @@ func TestAccountStatusReader_MissingRecordIsNotActive(t *testing.T) {
 	ok, err := reader.AccountActive(t.Context(), "999999999999")
 	require.NoError(t, err)
 	assert.False(t, ok)
+	found, err := reader.AccountExists(t.Context(), "999999999999")
+	require.NoError(t, err)
+	assert.False(t, found)
 }

@@ -16,8 +16,9 @@ func TestSweep_OrphanKeysWaitForTheGrace(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	orphan := &AttachmentRecord{ID: "tgw-attach-0123456789abcdef0", AccountID: testAccount, TransitGatewayID: "tgw-0123456789abcdef0", VpcID: "vpc-00000001", SubnetIDs: []string{"subnet-00000001"}, CreatedAt: f.clock.Now()}
-	require.NoError(t, f.svc.writeAttachmentIndexes(ctx, orphan))
-	_, err := f.svc.takeClaim(ctx, f.svc.atts, pairKey(orphan.TransitGatewayID, orphan.VpcID), f.svc.attachmentClaim(orphan), f.svc.attachmentHolderStale)
+	_, err := f.svc.writeAttachmentIndexes(ctx, orphan)
+	require.NoError(t, err)
+	_, err = f.svc.takeClaim(ctx, f.svc.atts, pairKey(orphan.TransitGatewayID, orphan.VpcID), f.svc.attachmentClaim(orphan), f.svc.attachmentHolderStale)
 	require.NoError(t, err)
 	written := len(keys(t, f.svc.atts))
 
@@ -121,7 +122,8 @@ func TestSweepReaper_RunsAtMostOncePerInterval(t *testing.T) {
 	f.clock.Advance(claimGrace)
 	_, err := r.Sweep(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, f.svc.writeAttachmentIndexes(t.Context(), orphan))
+	_, err = f.svc.writeAttachmentIndexes(t.Context(), orphan)
+	require.NoError(t, err)
 	f.clock.Advance(claimGrace)
 	n, err := r.Sweep(t.Context())
 	require.NoError(t, err)

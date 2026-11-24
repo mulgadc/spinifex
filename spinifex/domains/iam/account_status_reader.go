@@ -37,6 +37,13 @@ func (r *AccountStatusReader) AccountActive(ctx context.Context, accountID strin
 	return found && status == AccountStatusActive, err
 }
 
+// AccountExists reports whether the account record exists, in any status.
+// Only a failed read or decode is an error.
+func (r *AccountStatusReader) AccountExists(ctx context.Context, accountID string) (bool, error) {
+	_, found, err := r.status(ctx, accountID)
+	return found, err
+}
+
 // AccountTerminating is a direct read, which suffices because TERMINATING is
 // one-way until the record is deleted. A missing record is (false, nil); only
 // a failed read or decode is an error.

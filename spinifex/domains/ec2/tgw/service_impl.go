@@ -31,9 +31,8 @@ type ServiceImpl struct {
 
 	region string
 	// active admits writes and offered answers reads; nil admits nothing.
-	active   Admission
-	offered  func(context.Context) (bool, error)
-	accounts AccountStatus
+	active  Admission
+	offered func(context.Context) (bool, error)
 }
 
 // NewServiceImpl wraps an open store; region is the formation's Region.
@@ -55,10 +54,11 @@ func NewServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn, region str
 	return NewServiceImpl(store, region), nil
 }
 
-// AccountStatus reads whether an account record exists with status ACTIVE.
-// Implemented by domains/iam.AccountStatusReader.
+// AccountStatus reads an account record's status. Implemented by
+// domains/iam.AccountStatusReader.
 type AccountStatus interface {
 	AccountActive(ctx context.Context, accountID string) (bool, error)
+	AccountExists(ctx context.Context, accountID string) (bool, error)
 }
 
 // SetAccountStatus installs the read a create makes after its record write.
@@ -224,10 +224,15 @@ func (s *ServiceImpl) CreateTransitGateway(ctx context.Context, input *ec2.Creat
 	if err != nil {
 		return nil, internalError(ctx, op, err)
 	}
-	if err := putJSON(ctx, s.tgws, acctKey(accountID, rec.ID), indexEntry{AccountID: accountID, CreatedAt: now}); err != nil {
+	acct := acctKey(accountID, rec.ID)
+	acctRev, err := putJSON(ctx, s.tgws, acct, indexEntry{AccountID: accountID, CreatedAt: now})
+	if err != nil {
 		return nil, s.undoTransitGateway(ctx, rec, internalError(ctx, op, err))
 	}
 	if _, err := writeJSON(ctx, s.tgws, recordKey(accountID, rec.ID), rec, 0); err != nil {
+		return nil, s.undoTransitGateway(ctx, rec, internalError(ctx, op, err))
+	}
+	if err := touchIndexes(ctx, s.tgws, map[string]uint64{acct: acctRev}); err != nil {
 		return nil, s.undoTransitGateway(ctx, rec, internalError(ctx, op, err))
 	}
 	// A create judged stale during a pause before its record write has lost
@@ -270,7 +275,8 @@ func (s *ServiceImpl) DeleteTransitGateway(ctx context.Context, input *ec2.Delet
 			}
 			return &ec2.DeleteTransitGatewayOutput{TransitGateway: s.transitGatewayToEC2(term, false)}, nil
 		}
-		if rec.State == StateDeleting {
+		// A deleted record still in the live bucket is a move the sweep finishes.
+		if rec.State == StateDeleting || rec.State == StateDeleted {
 			return &ec2.DeleteTransitGatewayOutput{TransitGateway: s.transitGatewayToEC2(rec, false)}, nil
 		}
 		blocking, err := s.liveAttachmentsUnder(ctx, "tgw."+id+".")
@@ -379,10 +385,14 @@ func (s *ServiceImpl) CreateTransitGatewayVpcAttachment(ctx context.Context, inp
 	if err != nil {
 		return nil, internalError(ctx, op, err)
 	}
-	if err := s.writeAttachmentIndexes(ctx, rec); err != nil {
+	indexRevs, err := s.writeAttachmentIndexes(ctx, rec)
+	if err != nil {
 		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
 	}
 	if _, err := writeJSON(ctx, s.atts, recordKey(accountID, rec.ID), rec, 0); err != nil {
+		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
+	}
+	if err := touchIndexes(ctx, s.atts, indexRevs); err != nil {
 		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
 	}
 	// A newer admission took the pair over while this one paused before its

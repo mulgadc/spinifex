@@ -18,6 +18,7 @@ type SweepResult struct {
 	Expired     int // terminal records past their visibility window
 	KeysRemoved int // index keys and claims with no live owner
 	TagsRemoved int // central tag entries of resources in neither bucket
+	Orphaned    int // live records of a removed account, moved to deleting
 }
 
 // Sweep is the one pass that scans the buckets. It finishes interrupted
@@ -25,6 +26,9 @@ type SweepResult struct {
 // older than the claim grace. It never removes a record that is not ended.
 func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
+	if err := s.sweepOrphaned(ctx, &res); err != nil {
+		return res, fmt.Errorf("sweep removed accounts: %w", err)
+	}
 	if err := s.sweepLive(ctx, &res); err != nil {
 		return res, err
 	}
@@ -63,6 +67,83 @@ func (s *Store) sweepLive(ctx context.Context, res *SweepResult) error {
 			}
 		}
 	}
+	return nil
+}
+
+// sweepOrphaned moves to deleting each live record past the grace whose
+// account record is gone. A create can publish its record and stop before
+// its account check, after account deletion's final reread.
+func (s *Store) sweepOrphaned(ctx context.Context, res *SweepResult) error {
+	if s.accounts == nil {
+		return nil
+	}
+	gone := map[string]bool{}
+	for _, kv := range []jetstream.KeyValue{s.atts, s.tgws} {
+		keys, err := allKeys(ctx, kv)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			acct, id, ok := recordID(key)
+			if !ok {
+				continue
+			}
+			if err := s.orphanToDeleting(ctx, kv, acct, id, gone, res); err != nil {
+				return fmt.Errorf("sweep %s: %w", key, err)
+			}
+		}
+	}
+	return nil
+}
+
+// orphanToDeleting writes a pending or available record as deleting, at the
+// revision it judged, when its account is removed. A lost race waits for the
+// next pass. gone caches each account's answer for one pass.
+func (s *Store) orphanToDeleting(ctx context.Context, kv jetstream.KeyValue, accountID, id string, gone map[string]bool, res *SweepResult) error {
+	var rec any
+	var rev uint64
+	var created time.Time
+	var state string
+	if kv == s.atts {
+		r, v, err := s.attachment(ctx, accountID, id)
+		if err != nil || r == nil {
+			return err
+		}
+		state, created, rev = r.State, r.CreatedAt, v
+		r.State, r.Generation = StateDeleting, r.Generation+1
+		rec = r
+	} else {
+		r, v, err := s.transitGateway(ctx, accountID, id)
+		if err != nil || r == nil {
+			return err
+		}
+		state, created, rev = r.State, r.CreatedAt, v
+		r.State, r.Generation = StateDeleting, r.Generation+1
+		rec = r
+	}
+	if (state != StatePending && state != StateAvailable) || s.now().Sub(created) < claimGrace {
+		return nil
+	}
+	removed, cached := gone[accountID]
+	if !cached {
+		found, err := s.accounts.AccountExists(ctx, accountID)
+		if err != nil {
+			return err
+		}
+		removed = !found
+		gone[accountID] = removed
+	}
+	if !removed {
+		return nil
+	}
+	if _, err := writeJSON(ctx, kv, recordKey(accountID, id), rec, rev); err != nil {
+		if errors.Is(err, errConflict) {
+			return nil
+		}
+		return err
+	}
+	res.Orphaned++
+	slog.WarnContext(ctx, "Transit Gateway sweep is deleting a resource of a removed account", "id", id, "account", accountID)
 	return nil
 }
 
@@ -236,13 +317,13 @@ func (r *SweepReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	res, err := r.store.Sweep(ctx)
-	n := res.Moved + res.Expired + res.KeysRemoved + res.TagsRemoved
+	n := res.Moved + res.Expired + res.KeysRemoved + res.TagsRemoved + res.Orphaned
 	if err != nil {
 		return n, err
 	}
 	r.last = now
 	if n > 0 {
-		slog.InfoContext(ctx, "Transit Gateway sweep", "moved", res.Moved, "expired", res.Expired, "keys_removed", res.KeysRemoved, "tags_removed", res.TagsRemoved)
+		slog.InfoContext(ctx, "Transit Gateway sweep", "moved", res.Moved, "expired", res.Expired, "keys_removed", res.KeysRemoved, "tags_removed", res.TagsRemoved, "orphaned", res.Orphaned)
 	}
 	return n, nil
 }

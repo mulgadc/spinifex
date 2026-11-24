@@ -43,6 +43,23 @@ type fakeAccounts struct {
 	active bool
 	err    error
 	calls  int
+	// gone lists accounts whose record is removed.
+	gone map[string]bool
+}
+
+func (f *fakeAccounts) AccountExists(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.gone[id], f.err
+}
+
+func (f *fakeAccounts) remove(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.gone == nil {
+		f.gone = map[string]bool{}
+	}
+	f.gone[id] = true
 }
 
 var _ AccountStatus = (*fakeAccounts)(nil)

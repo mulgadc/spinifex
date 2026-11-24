@@ -5,10 +5,10 @@ import (
 	"math"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -56,8 +56,8 @@ var ec2TaggableTypes = map[string]taggableTypes{
 }
 
 // validateTagSpecifications refuses a TagSpecifications entry whose ResourceType
-// the action cannot tag, or a tag key with the reserved aws: prefix. Only
-// customer requests come through here, so system callers may still set aws: tags.
+// the action cannot tag, or a reserved tag key. Only customer requests come
+// through here, so system callers may still set aws: and platform tags.
 func validateTagSpecifications(action string, input any) error {
 	allowed, ok := ec2TaggableTypes[action]
 	if !ok {
@@ -68,10 +68,11 @@ func validateTagSpecifications(action string, input any) error {
 			continue
 		}
 		for _, tag := range spec.Tags {
-			// AWS reserves the prefix in any case.
-			if key := aws.StringValue(tag.Key); strings.HasPrefix(strings.ToLower(key), "aws:") {
-				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-					"Value ( %s ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", key)
+			if tag == nil {
+				continue
+			}
+			if err := ec2tagsapi.ReservedKeyError(aws.StringValue(tag.Key)); err != nil {
+				return err
 			}
 		}
 		if spec.ResourceType == nil {

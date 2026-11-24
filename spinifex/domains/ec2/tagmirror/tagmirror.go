@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -28,10 +30,10 @@ func MergeTagsMut(input *ec2.CreateTagsInput) func(map[string]string) {
 
 // ApplyTagRemovals applies AWS-faithful DeleteTags semantics to a tag map:
 // keys delete unconditionally, valueMatch entries delete only when the stored
-// value matches, and both empty clears every tag.
+// value matches, and both empty clears every tag but the platform's own.
 func ApplyTagRemovals(tags map[string]string, keys []string, valueMatch map[string]string) {
 	if len(keys) == 0 && len(valueMatch) == 0 {
-		clear(tags)
+		maps.DeleteFunc(tags, func(k string, _ string) bool { return k != awstags.ManagedByKey })
 		return
 	}
 	for _, k := range keys {

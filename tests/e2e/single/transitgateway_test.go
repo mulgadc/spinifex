@@ -201,20 +201,24 @@ func runTransitGateway(t *testing.T, fix *Fixture) {
 		require.Containsf(t, trace, "drop;", "packet was not dropped\n%s", trace)
 	})
 
-	harness.Step(t, "6. after B's attachment is deleted, no path and A's route is a blackhole")
+	harness.Step(t, "6. after B's attachment is deleted, no path, and A's route stays active")
+	// A route's state follows its own VPC's attachment, as on AWS.
 	detachVPC(t, c, attB)
-	requirePingBlocked(t, a.tgt, b.privateIP, "after the attachment is deleted")
+	requirePingBlocked(t, a.tgt, b.privateIP, "after B's attachment is deleted")
+	require.Equal(t, "active", routeState(t, c, a.rtbID, b.cidr))
+
+	harness.Step(t, "7. after A's attachment is deleted, A's route is a blackhole")
+	detachVPC(t, c, attA)
 	harness.Eventually(t, func() bool { return routeState(t, c, a.rtbID, b.cidr) == "blackhole" }, 60*time.Second, 2*time.Second,
 		"A's route to B never became a blackhole")
 	t.Run("BlackholeBeatsDefaultRoute", func(t *testing.T) {
 		harness.SkipIfNoOVN(t)
-		stage := tracePolicy(t, a.vpcID, "rtr-"+a.subnetID, a.privateIP, b.privateIP)
+		stage := awaitPolicy(t, a.vpcID, "rtr-"+a.subnetID, a.privateIP, b.privateIP, peeringDropPriority(16))
 		requirePolicyDrop(t, stage, peeringDropPriority(16), "blackhole route in a subnet whose table has 0.0.0.0/0 to an IGW")
 		require.Falsef(t, strings.Contains(stage, "outport = "), "the blackhole forwarded\n%s", stage)
 	})
 
-	harness.Step(t, "7. the gateway deletes once no attachment is live")
-	detachVPC(t, c, attA)
+	harness.Step(t, "8. the gateway deletes once no attachment is live")
 	deleteTransitGateway(t, c, tgw)
 	require.Equal(t, "blackhole", routeState(t, c, a.rtbID, b.cidr))
 }

@@ -61,7 +61,7 @@ func TestCurrentBehaviour_AccountTermination_SnapshottedDeleteOnTerminationVolum
 	require.NoError(t, volumes.UpdateVolumeState(accountID, volumeID, "in-use", instanceID, "/dev/sda1"))
 
 	err = volumes.DeleteVolumeOnTerminate(ctx, volumeID, accountID, ec2instance.OwedUnpublish{})
-	assert.EqualError(t, err, awserrors.ErrorVolumeInUse, "the snapshot index refuses the terminate delete")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorVolumeInUse), "the snapshot index refuses the terminate delete: %v", err)
 
 	survivor, err := metadata.GetVolume(ctx, accountID, volumeID)
 	require.NoError(t, err, "the volume survives its instance")
@@ -76,5 +76,5 @@ func TestCurrentBehaviour_AccountTermination_SnapshottedDeleteOnTerminationVolum
 	assert.Zero(t, marked, "with no attachment left, the leak reaper cannot attribute the volume to its instance")
 
 	_, err = volumes.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, accountID)
-	assert.EqualError(t, err, awserrors.ErrorVolumeInUse, "an ordinary delete is refused for the same reason")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorVolumeInUse), "an ordinary delete is refused for the same reason: %v", err)
 }

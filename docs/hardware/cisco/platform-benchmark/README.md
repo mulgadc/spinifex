@@ -223,7 +223,7 @@ EKS is the pattern to reach for when automatic rescheduling matters over manual 
 
 ### 5. Storage benchmark
 
-Predastore and Viperblock — Spinifex's S3 and EBS implementations — represent the
+Predastore and Viperblock — the Spinifex implementations of the S3 and EBS APIs — represent the
 most substantial engineering work in the platform. Implementing reliable erasure-coded
 object storage and a distributed block device stack on commodity NVMe, while exposing
 the AWS API surface that most workloads depend on, is where most of the hard problems

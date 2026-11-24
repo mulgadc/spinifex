@@ -25,7 +25,7 @@ resources:
 
 # ECS (Elastic Container Service)
 
-> Spinifex's ECS service gives you an AWS-compatible container orchestrator: you register task definitions and run them — one-off as tasks, or kept-running as a service behind a load balancer — on container instances you launch from the Spinifex node image for ECS. Standard tools — `aws ecs`, the Terraform AWS provider — work unchanged.
+> The Spinifex service for ECS gives you an AWS-compatible container orchestrator: you register task definitions and run them — one-off as tasks, or kept-running as a service behind a load balancer — on container instances you launch from the Spinifex node image for ECS. Standard tools — `aws ecs`, the Terraform AWS provider — work unchanged.
 
 ## Overview
 

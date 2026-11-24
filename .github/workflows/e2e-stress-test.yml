@@ -54,10 +54,10 @@ on:
         default: false
         type: boolean
 
-# Two stages never share the cluster: queued, not cancelled.
+# Two stages never share the cluster: every dispatch waits its turn, first in, first out.
 concurrency:
   group: devprod-stress
-  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

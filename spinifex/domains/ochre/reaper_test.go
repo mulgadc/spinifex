@@ -457,17 +457,15 @@ func TestReaper_ReleaseFreesTheLeaseImmediately(t *testing.T) {
 // delays a reclaim rather than duplicating one.
 func TestReaper_NonLeaderSweepsNothing(t *testing.T) {
 	t.Parallel()
-	f := newReaperFixture(t, ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Nanosecond})
+	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
 	f.ready(t)
 	f.age(t, time.Hour, time.Hour)
 
 	holder := testReaper(t, f.svc, "node-b", ReaperDeps{})
 	lead(t, holder)
-	require.True(t, holder.IsLeader())
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
-	defer cancel()
-	f.reaper.Run(ctx)
+	_, err := f.reaper.lease.TryLock(t.Context())
+	require.ErrorAs(t, err, new(*kvsync.HeldError), "the election must find the lease held")
+	f.reaper.tick(t.Context())
 
 	_, found := f.current(t)
 	assert.True(t, found, "a non-leader must not reap")

@@ -164,6 +164,9 @@ var ec2Actions = map[string]ec2Action{
 		passRoleCheck := func(roleARN string) error {
 			return c.passRole(roleARN)
 		}
+		if ec2spotinstanceapi.IsSpotLaunch(input) {
+			return ec2spotinstanceapi.RunSpotInstances(ctx, input, c.NATS, c.clientTokenBucket, c.IAM, accountID, c.AZ, passRoleCheck, c.Quota, c.ExpectedNodes)
+		}
 		launchQuotaCheck := func() error {
 			return c.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
 		}

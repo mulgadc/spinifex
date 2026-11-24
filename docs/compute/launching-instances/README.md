@@ -146,6 +146,16 @@ aws ec2 describe-spot-instance-requests
 aws ec2 cancel-spot-instance-requests --spot-instance-request-ids $SIR_ID
 ```
 
+`run-instances` with `--instance-market-options MarketType=spot` also launches a Spot Instance. Each instance gets a one-time spot request, unless `SpotOptions.SpotInstanceType` names another type. The instance shows `InstanceLifecycle` `spot` and its `SpotInstanceRequestId`, and `describe-spot-instance-requests` lists the request.
+
+```bash
+aws ec2 run-instances \
+  --image-id $SPINIFEX_AMI \
+  --instance-type t3.small \
+  --key-name spinifex-key \
+  --instance-market-options MarketType=spot
+```
+
 ## Console Output
 
 Retrieve the serial console log for a running instance. Output is base64-encoded.

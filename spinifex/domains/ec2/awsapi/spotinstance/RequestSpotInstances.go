@@ -49,13 +49,7 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	switch aws.StringValue(input.Type) {
-	case "", ec2.SpotInstanceTypeOneTime, ec2.SpotInstanceTypePersistent:
-	default:
-		return errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	return nil
+	return validateSpotType(aws.StringValue(input.Type))
 }
 
 // RequestSpotInstances validates the request, launches real VMs via the shared
@@ -72,35 +66,95 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 
 	count := spotInstanceCount(input)
 	runInput := runInputFromLaunchSpec(input, count)
+	spotType := aws.StringValue(input.Type)
+	tags := awstags.Extract(input.TagSpecifications, ec2.ResourceTypeSpotInstancesRequest)
 
+	_, requests, err := launchSpot(ctx, runInput, spotType, input.SpotPrice, tags, natsConn, tokenBucket, iamSvc, accountID, az, passRoleCheck, quota, expectedNodes)
+	if err != nil {
+		return output, err
+	}
+	output.SpotInstanceRequests = requests
+	return output, nil
+}
+
+// IsSpotLaunch reports whether a RunInstances request asks for the spot market.
+func IsSpotLaunch(input *ec2.RunInstancesInput) bool {
+	return input != nil && input.InstanceMarketOptions != nil &&
+		aws.StringValue(input.InstanceMarketOptions.MarketType) == ec2.MarketTypeSpot
+}
+
+// RunSpotInstances serves RunInstances with MarketType=spot: it launches the
+// instances like RequestSpotInstances, backs each with a spot request, and
+// returns the reservation with the spot lineage set on each instance.
+func RunSpotInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, tokenBucket ec2idemapi.Bucket, iamSvc ec2instanceapi.InstanceProfiles, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota LaunchQuota, expectedNodes int) (ec2.Reservation, error) {
+	var spotType string
+	var spotPrice *string
+	if opts := input.InstanceMarketOptions.SpotOptions; opts != nil {
+		spotType = aws.StringValue(opts.SpotInstanceType)
+		spotPrice = opts.MaxPrice
+	}
+	if err := validateSpotType(spotType); err != nil {
+		return ec2.Reservation{}, err
+	}
+	tags := awstags.Extract(input.TagSpecifications, ec2.ResourceTypeSpotInstancesRequest)
+
+	reservation, requests, err := launchSpot(ctx, input, spotType, spotPrice, tags, natsConn, tokenBucket, iamSvc, accountID, az, passRoleCheck, quota, expectedNodes)
+	if err != nil {
+		return reservation, err
+	}
+	sirByInstance := make(map[string]*string, len(requests))
+	for _, req := range requests {
+		sirByInstance[aws.StringValue(req.InstanceId)] = req.SpotInstanceRequestId
+	}
+	for _, inst := range reservation.Instances {
+		if inst == nil {
+			continue
+		}
+		inst.InstanceLifecycle = aws.String(ec2.InstanceLifecycleTypeSpot)
+		inst.SpotInstanceRequestId = sirByInstance[aws.StringValue(inst.InstanceId)]
+	}
+	return reservation, nil
+}
+
+// validateSpotType accepts the AWS spot request types; empty means one-time.
+func validateSpotType(spotType string) error {
+	switch spotType {
+	case "", ec2.SpotInstanceTypeOneTime, ec2.SpotInstanceTypePersistent:
+		return nil
+	}
+	return errors.New(awserrors.ErrorInvalidParameterValue)
+}
+
+// launchSpot launches runInput on the on-demand path under the vCPU quota, then
+// persists one active/fulfilled spot request per launched instance. On a launch
+// or persist failure it returns the error.
+func launchSpot(ctx context.Context, runInput *ec2.RunInstancesInput, spotType string, spotPrice *string, tags map[string]string, natsConn *nats.Conn, tokenBucket ec2idemapi.Bucket, iamSvc ec2instanceapi.InstanceProfiles, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota LaunchQuota, expectedNodes int) (ec2.Reservation, []*ec2.SpotInstanceRequest, error) {
 	// Gate on the per-account vCPU cap exactly like the on-demand path; spot
 	// launches are real VMs and must not slip past the quota.
 	launchQuotaCheck := func() error {
-		return quota.EnforceLaunch(ctx, accountID, aws.StringValue(runInput.InstanceType), int(count))
+		return quota.EnforceLaunch(ctx, accountID, aws.StringValue(runInput.InstanceType), int(aws.Int64Value(runInput.MaxCount)))
 	}
 
 	// RunInstances normalises runInput in place (e.g. instance profile to ARN),
 	// so the launch spec echoed back is built from runInput afterwards.
 	reservation, err := ec2instanceapi.RunInstances(ctx, runInput, natsConn, tokenBucket, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	if err != nil {
-		return output, err
+		return reservation, nil, err
 	}
 
 	// Charge the actual launched vCPUs; a counter write failure is drift for
 	// reconcile to correct, so it must not fail the already-successful launch.
 	if err := quota.ChargeLaunch(ctx, accountID, &reservation); err != nil {
-		slog.WarnContext(ctx, "RequestSpotInstances: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
+		slog.WarnContext(ctx, "spot launch: vcpu quota charge failed, reconcile will correct", "account", accountID, "err", err)
 	}
 
-	requests := buildSpotRequests(input, runInput, reservation.Instances, az)
+	requests := buildSpotRequests(runInput, reservation.Instances, az, spotType, spotPrice, tags)
 
 	svc := ec2spotinstance.NewNATSSpotInstanceService(natsConn)
 	if _, err := svc.PutSpotInstanceRequests(ctx, &ec2spotinstance.PutSpotRequestsInput{Requests: requests}, accountID); err != nil {
-		slog.ErrorContext(ctx, "RequestSpotInstances: VMs launched but SIR persist failed", "count", count, "accountID", accountID, "err", err)
-		return output, err
+		slog.ErrorContext(ctx, "spot launch: VMs launched but SIR persist failed", "count", len(requests), "accountID", accountID, "err", err)
+		return ec2.Reservation{}, nil, err
 	}
-
-	output.SpotInstanceRequests = requests
 
 	// Stamp spot lineage onto each launched VM in the background: it is
 	// best-effort (a miss only drops the projection, never the request), so it
@@ -108,13 +162,13 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "RequestSpotInstances: spot lineage write-back panic", "panic", r)
+				slog.ErrorContext(ctx, "spot launch: spot lineage write-back panic", "panic", r)
 			}
 		}()
 		stampSpotLineage(ctx, natsConn, requests, accountID)
 	}()
 
-	return output, nil
+	return reservation, requests, nil
 }
 
 // spotInstanceCount returns the requested instance count, defaulting to 1.
@@ -174,22 +228,21 @@ func launchSpecFromRunInput(runInput *ec2.RunInstancesInput) *ec2.LaunchSpecific
 }
 
 // buildSpotRequests constructs one active/fulfilled SpotInstanceRequest per
-// launched instance, mapping instances to requests by order. Creation-time tags
-// come from the spot-instances-request TagSpecification.
-func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunInstancesInput, instances []*ec2.Instance, az string) []*ec2.SpotInstanceRequest {
-	count := spotInstanceCount(input)
-
-	spotType := aws.StringValue(input.Type)
+// launched instance, in instance order. An empty spotType means one-time, and
+// tags are the spot-instances-request creation-time tags.
+func buildSpotRequests(runInput *ec2.RunInstancesInput, instances []*ec2.Instance, az, spotType string, spotPrice *string, tags map[string]string) []*ec2.SpotInstanceRequest {
 	if spotType == "" {
 		spotType = ec2.SpotInstanceTypeOneTime
 	}
 
-	tags := awstags.MapToEC2(awstags.Extract(input.TagSpecifications, ec2.ResourceTypeSpotInstancesRequest))
 	launchSpec := launchSpecFromRunInput(runInput)
 	now := time.Now().UTC()
 
-	requests := make([]*ec2.SpotInstanceRequest, 0, count)
-	for range count {
+	requests := make([]*ec2.SpotInstanceRequest, 0, len(instances))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
 		req := &ec2.SpotInstanceRequest{
 			SpotInstanceRequestId:    aws.String(awsidentifiers.GenerateResourceID("sir")),
 			State:                    aws.String(ec2.SpotInstanceStateActive),
@@ -198,29 +251,20 @@ func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunIn
 			LaunchedAvailabilityZone: aws.String(az),
 			CreateTime:               aws.Time(now),
 			LaunchSpecification:      launchSpec,
-			Tags:                     tags,
+			InstanceId:               inst.InstanceId,
+			Tags:                     awstags.MapToEC2(tags),
 			Status: &ec2.SpotInstanceStatus{
 				Code:       aws.String(ec2spotinstance.SpotStatusCodeFulfilled),
 				Message:    aws.String("Your Spot request is fulfilled."),
 				UpdateTime: aws.Time(now),
 			},
 		}
-		if input.SpotPrice != nil {
-			req.SpotPrice = input.SpotPrice
+		if spotPrice != nil {
+			req.SpotPrice = spotPrice
 		}
 		requests = append(requests, req)
 	}
 
-	// Map launched instances to requests by order. All-or-nothing fulfilment
-	// makes len(instances) == count on success; the guard tolerates any short read.
-	for i, inst := range instances {
-		if i >= len(requests) {
-			break
-		}
-		if inst != nil {
-			requests[i].InstanceId = inst.InstanceId
-		}
-	}
 	return requests
 }
 

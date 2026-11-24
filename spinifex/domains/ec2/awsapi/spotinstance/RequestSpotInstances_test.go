@@ -186,11 +186,6 @@ func TestBuildSpotRequests_MapsInstancesAndDefaults(t *testing.T) {
 	input := &ec2.RequestSpotInstancesInput{
 		LaunchSpecification: validLaunchSpec(),
 		InstanceCount:       aws.Int64(2),
-		SpotPrice:           aws.String("0.05"),
-		TagSpecifications: []*ec2.TagSpecification{{
-			ResourceType: aws.String(ec2.ResourceTypeSpotInstancesRequest),
-			Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("worker")}},
-		}},
 	}
 	runInput := runInputFromLaunchSpec(input, 2)
 	instances := []*ec2.Instance{
@@ -198,7 +193,7 @@ func TestBuildSpotRequests_MapsInstancesAndDefaults(t *testing.T) {
 		{InstanceId: aws.String("i-bbb")},
 	}
 
-	requests := buildSpotRequests(input, runInput, instances, "ap-southeast-2a")
+	requests := buildSpotRequests(runInput, instances, "ap-southeast-2a", "", aws.String("0.05"), map[string]string{"Name": "worker"})
 
 	require.Len(t, requests, 2)
 	for _, req := range requests {
@@ -224,8 +219,21 @@ func TestBuildSpotRequests_PersistentTypePreserved(t *testing.T) {
 	}
 	runInput := runInputFromLaunchSpec(input, 1)
 
-	requests := buildSpotRequests(input, runInput, []*ec2.Instance{{InstanceId: aws.String("i-ccc")}}, "ap-southeast-2a")
+	requests := buildSpotRequests(runInput, []*ec2.Instance{{InstanceId: aws.String("i-ccc")}}, "ap-southeast-2a", aws.StringValue(input.Type), nil, nil)
 
 	require.Len(t, requests, 1)
 	assert.Equal(t, ec2.SpotInstanceTypePersistent, aws.StringValue(requests[0].Type))
+}
+
+func TestRunSpotInstances_RejectsUnknownSpotType(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-0abcdef1234567890"), InstanceType: aws.String("t2.micro"),
+		MinCount: aws.Int64(1), MaxCount: aws.Int64(1),
+		InstanceMarketOptions: &ec2.InstanceMarketOptionsRequest{
+			MarketType:  aws.String(ec2.MarketTypeSpot),
+			SpotOptions: &ec2.SpotMarketOptions{SpotInstanceType: aws.String("spot-block")},
+		},
+	}
+	_, err := RunSpotInstances(t.Context(), input, nil, nil, nil, testAccountID, "ap-southeast-2a", nil, nil, 1)
+	assert.Equal(t, errors.New(awserrors.ErrorInvalidParameterValue), err)
 }

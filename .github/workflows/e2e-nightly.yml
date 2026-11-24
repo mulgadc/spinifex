@@ -7,7 +7,8 @@ name: E2E Nightly
 # copy of this file — leaving a fix to the workflow itself untestable until it
 # had already shipped. A dispatch takes both the file and the source from its ref.
 #
-# Cells (matrix cells are defined in .github/e2e-cells.json):
+# Cells (matrix cells are defined in .github/e2e-cells.json, in matrix order: cell 25
+# first, as only one runner has its NVMe, then longest first):
 #
 #   Single node                       Three nodes
 #    1  Debian 13, DHCP                 8  Debian 13, DHCP
@@ -38,7 +39,7 @@ on:
         description: "Comma-separated cell numbers, no spaces, e.g. 1,25,27 (blank = all). The cell list is at the top of .github/workflows/e2e-nightly.yml."
         required: false
       max_parallel:
-        description: "Matrix cells at once (blank = the E2E_NIGHTLY_MAX_PARALLEL variable, else 6)."
+        description: "Matrix cells at once (blank = the E2E_NIGHTLY_MAX_PARALLEL variable, else 8)."
         required: false
 
 permissions:
@@ -138,12 +139,12 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
-    # Six by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input raises it. Cells use
-    # 4 ci-single-nightly and 5 ci-multi runners; ci-single-5 and -6 lack the label, so
+    # Eight by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input overrides it. Cells use
+    # 6 ci-single-nightly and 5 ci-multi runners; ci-single-5 and -6 lack the label, so
     # these selectors never put a nightly job there. hv-lock.sh serialises provisioning per hypervisor.
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '6') }}
+      max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '8') }}
       matrix:
         include: ${{ fromJSON(needs.select.outputs.cells) }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]

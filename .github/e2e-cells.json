@@ -1,5 +1,17 @@
 [
   {
+    "cell": 25,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single-nvme",
+    "extra": "eks",
+    "suite": "eks",
+    "timeout_minutes": 60
+  },
+  {
     "cell": 1,
     "install": "binary",
     "topo": "single",
@@ -36,11 +48,23 @@
     "timeout_minutes": 75
   },
   {
-    "cell": 8,
+    "cell": 34,
+    "install": "binary",
+    "topo": "single",
+    "net": "dhcp",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-single-nightly",
+    "extra": "",
+    "suite": "",
+    "timeout_minutes": 75
+  },
+  {
+    "cell": 10,
     "install": "binary",
     "topo": "real-multi",
     "net": "dhcp",
-    "host": "debian-13",
+    "host": "ubuntu-26.04",
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
@@ -58,71 +82,29 @@
     "suite": ""
   },
   {
-    "cell": 10,
+    "cell": 40,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "storagefault",
+    "timeout_minutes": 100,
+    "shard": 2,
+    "shards": 2
+  },
+  {
+    "cell": 8,
     "install": "binary",
     "topo": "real-multi",
     "net": "dhcp",
-    "host": "ubuntu-26.04",
+    "host": "debian-13",
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
     "suite": ""
-  },
-  {
-    "cell": 17,
-    "install": "binary",
-    "topo": "single",
-    "net": "static",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-pseudo",
-    "extra": "tofu-examples",
-    "suite": ""
-  },
-  {
-    "cell": 18,
-    "install": "binary",
-    "topo": "single",
-    "net": "static",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-single-nightly",
-    "extra": "reboot-single",
-    "suite": ""
-  },
-  {
-    "cell": 19,
-    "install": "binary",
-    "topo": "single",
-    "net": "nat",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-single-nightly",
-    "extra": "nat-single",
-    "suite": ""
-  },
-  {
-    "cell": 25,
-    "install": "binary",
-    "topo": "single",
-    "net": "static",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-single-nvme",
-    "extra": "eks",
-    "suite": "eks",
-    "timeout_minutes": 60
-  },
-  {
-    "cell": 26,
-    "install": "binary",
-    "topo": "single",
-    "net": "static",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-single-nightly",
-    "extra": "ecs",
-    "suite": "ecs"
   },
   {
     "cell": 27,
@@ -139,28 +121,14 @@
     "shards": 2
   },
   {
-    "cell": 29,
+    "cell": 37,
     "install": "binary",
     "topo": "real-multi",
-    "net": "static",
-    "host": "debian-13",
+    "net": "dhcp",
+    "host": "oracle-10",
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
-    "suite": "storagefault",
-    "timeout_minutes": 100,
-    "shard": 1,
-    "shards": 2
-  },
-  {
-    "cell": 30,
-    "install": "binary",
-    "topo": "real-multi",
-    "net": "nat",
-    "host": "debian-13",
-    "arch": "x86_64",
-    "runner": "ci-multi",
-    "extra": "nat-multi",
     "suite": ""
   },
   {
@@ -176,6 +144,20 @@
     "timeout_minutes": 125
   },
   {
+    "cell": 39,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single-nightly",
+    "extra": "rds",
+    "suite": "rds",
+    "timeout_minutes": 120,
+    "shard": 2,
+    "shards": 2
+  },
+  {
     "cell": 32,
     "install": "binary",
     "topo": "real-multi",
@@ -188,7 +170,7 @@
     "timeout_minutes": 90
   },
   {
-    "cell": 33,
+    "cell": 29,
     "install": "binary",
     "topo": "real-multi",
     "net": "static",
@@ -196,20 +178,21 @@
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
-    "suite": "kvquorum",
-    "timeout_minutes": 55
+    "suite": "storagefault",
+    "timeout_minutes": 100,
+    "shard": 1,
+    "shards": 2
   },
   {
-    "cell": 34,
+    "cell": 17,
     "install": "binary",
     "topo": "single",
-    "net": "dhcp",
-    "host": "oracle-10",
+    "net": "static",
+    "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single-nightly",
-    "extra": "",
-    "suite": "",
-    "timeout_minutes": 75
+    "runner": "ci-pseudo",
+    "extra": "tofu-examples",
+    "suite": ""
   },
   {
     "cell": 35,
@@ -217,6 +200,17 @@
     "topo": "single",
     "net": "static",
     "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-single-nightly",
+    "extra": "reboot-single",
+    "suite": ""
+  },
+  {
+    "cell": 18,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
     "arch": "x86_64",
     "runner": "ci-single-nightly",
     "extra": "reboot-single",
@@ -234,14 +228,25 @@
     "suite": ""
   },
   {
-    "cell": 37,
+    "cell": 19,
+    "install": "binary",
+    "topo": "single",
+    "net": "nat",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single-nightly",
+    "extra": "nat-single",
+    "suite": ""
+  },
+  {
+    "cell": 30,
     "install": "binary",
     "topo": "real-multi",
-    "net": "dhcp",
-    "host": "oracle-10",
+    "net": "nat",
+    "host": "debian-13",
     "arch": "x86_64",
     "runner": "ci-multi",
-    "extra": "",
+    "extra": "nat-multi",
     "suite": ""
   },
   {
@@ -256,21 +261,18 @@
     "suite": ""
   },
   {
-    "cell": 39,
+    "cell": 26,
     "install": "binary",
     "topo": "single",
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
     "runner": "ci-single-nightly",
-    "extra": "rds",
-    "suite": "rds",
-    "timeout_minutes": 120,
-    "shard": 2,
-    "shards": 2
+    "extra": "ecs",
+    "suite": "ecs"
   },
   {
-    "cell": 40,
+    "cell": 33,
     "install": "binary",
     "topo": "real-multi",
     "net": "static",
@@ -278,9 +280,7 @@
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
-    "suite": "storagefault",
-    "timeout_minutes": 100,
-    "shard": 2,
-    "shards": 2
+    "suite": "kvquorum",
+    "timeout_minutes": 55
   }
 ]

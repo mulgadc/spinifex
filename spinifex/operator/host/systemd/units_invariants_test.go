@@ -447,7 +447,7 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8",
 		2: "157e9a7683ac58760ad96679cad9f94121294f34d5cb668d1e586ba0686b4968",
 		3: "f5448bc2aabd3cf1af9dc74f0f12954a9294069da9f5115f8b95b529a070cbdc",
-		4: "44612d3ea6e85bcbad36fbc29765bd9174e33f2f2684ef0cdf7c8b1d740d7691",
+		4: "9c5c522342fef0cc0652f1062550fd4bd920940782ebee57dd26dffe21613b39",
 	},
 	"spinifex-qmp-collector.service": {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
 	"spinifex-shutdown.service":      {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},

@@ -24,7 +24,7 @@ RestartSec=5
 TimeoutStopSec=30
 OOMScoreAdjust=-500
 # The most memory-hungry infra service. Page cache from shard writes is charged
-# here, so reclaim at High under sustained writes is expected and harmless;
+# here, so reclaim at High under sustained writes is expected;
 # Max bounds a leak short of the slice-wide cap.
 MemoryHigh=40%
 MemoryMax=55%

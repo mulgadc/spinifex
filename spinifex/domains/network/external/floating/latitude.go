@@ -121,10 +121,11 @@ func (p *LatitudeProvider) Members(ctx context.Context) ([]Address, error) {
 }
 
 // reportMembers reads each configured address once at start and logs, naming the pool,
-// each one the allocator will not use and a pool left with none. It returns only a read
-// failure other than not found, as Members does.
+// each one the allocator will not use and a pool left with none. It returns the error
+// Members would: a read failure other than not found, or an unusable member.
 func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error {
-	usable, refused := 0, false
+	usable := 0
+	var refused error
 	for _, id := range p.ids {
 		e, err := p.api.GetElasticIP(ctx, id)
 		switch {
@@ -134,7 +135,7 @@ func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error
 		case err != nil:
 			return fmt.Errorf("floating: configured Elastic IP %s: %w", id, mapLatitude(err))
 		case e.Unusable() != "":
-			refused = true
+			refused = fmt.Errorf("floating: configured Elastic IP %s is unusable: %s", id, e.Unusable())
 			slog.ErrorContext(ctx, "floating: a configured Elastic IP will not be used: the pool refuses all its addresses while it is configured",
 				"pool", pool, "pool_member", id, "reason", e.Unusable())
 		case e.Status == latitude.StatusError:
@@ -144,8 +145,8 @@ func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error
 			usable++
 		}
 	}
-	if usable == 0 || refused {
+	if usable == 0 || refused != nil {
 		slog.ErrorContext(ctx, "floating: pool has no usable address; public addresses will fail until fixed", "pool", pool)
 	}
-	return nil
+	return refused
 }

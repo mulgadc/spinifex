@@ -397,10 +397,13 @@ func TestReportMembers_MixedSetNamesEachUnusedMember(t *testing.T) {
 	f.Seed(latitude.ElasticIP{ID: "eip_bgp", Address: netip.MustParseAddr("203.0.113.50"), Mode: "bgp", Family: "IPv4", PrefixLength: 24})
 	p, err = NewLatitudeProvider(f, []string{"eip_1", "eip_bgp"})
 	require.NoError(t, err)
-	require.NoError(t, p.reportMembers(context.Background(), pool))
+	_, err = fromProvider(context.Background(), nil, external.ExternalPoolConfig{Name: pool, Source: external.SourceLatitude, ProviderHostID: "sv_a"}, "", p, nil)
+	require.NoError(t, err)
 	out = buf.String()
-	assert.Contains(t, out, "pool_member=eip_bgp")
+	assert.Contains(t, out, `level=ERROR msg="floating: a configured Elastic IP will not be used: the pool refuses all its addresses while it is configured" pool=`+pool+" pool_member=eip_bgp")
 	assert.Contains(t, out, "no usable address", "an unusable member makes Members refuse the whole set")
+	assert.Contains(t, out, "refused the pool's first call")
+	assert.NotContains(t, out, "floating pool ready")
 }
 
 func TestReportMembers_AnyOtherReadFailureIsReturned(t *testing.T) {

@@ -132,7 +132,7 @@ func TestEKSRequest_NodegroupScopeMatchesExactStoredARN(t *testing.T) {
 	)
 
 	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
-	// A tag request naming any UUID acts on the stored group, so it is fenced too.
+	// The gate evaluates a tag request against the stored group's ARN.
 	stale := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers", uuid.NewV4().String())
 	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodPost, "/tags/"+url.PathEscape(stale), `{"tags":{"k":"v"}}`))
 	assertNotDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))

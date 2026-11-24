@@ -2059,7 +2059,7 @@ func (s *EKSServiceImpl) TagResource(ctx context.Context, input *eks.TagResource
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, arn, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			if len(add) == 0 {
 				return tags, false
 			}
@@ -2102,7 +2102,7 @@ func (s *EKSServiceImpl) UntagResource(ctx context.Context, input *eks.UntagReso
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, arn, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			changed := false
 			for _, k := range keys {
 				if _, ok := tags[k]; ok {
@@ -2147,6 +2147,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 			}
 			return nil, err
 		}
+		if !namesIncarnation(arn, rec) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
 		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(rec.Tags)}, nil
 	}
 
@@ -2156,7 +2159,7 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 // casUpdateNodegroupTags applies mutate to the nodegroup record's tag map under
 // compare-and-swap. mutate returns the new tag map and whether it changed; a
 // no-op skips the write. A missing nodegroup surfaces as ResourceNotFound.
-func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
+func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, arn, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
 	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return err
@@ -2166,6 +2169,9 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
 		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
 	}, func(rec *NodegroupRecord) (bool, error) {
+		if !namesIncarnation(arn, rec) {
+			return false, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
 		tags, changed := mutate(rec.Tags)
 		if !changed {
 			return false, nil
@@ -2250,6 +2256,14 @@ func nodegroupRefFromARN(arn string) (string, string, bool) {
 		return "", "", false
 	}
 	return seg[0], seg[1], true
+}
+
+// namesIncarnation reports whether arn carries rec's UUID, so an ARN of a
+// deleted group never reaches a re-created group of the same name.
+func namesIncarnation(arn string, rec *NodegroupRecord) bool {
+	_, want, _ := strings.CutLast(arn, "/")
+	_, have, _ := strings.CutLast(rec.Arn, "/")
+	return want == have
 }
 
 // eksTagErr maps a meta-store error to the AWS-visible tag-op error: a missing

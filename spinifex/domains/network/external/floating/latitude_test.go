@@ -417,6 +417,7 @@ func TestReportMembers_AnyOtherReadFailureIsReturned(t *testing.T) {
 // failGetFor fails the read of one ID and passes every other call to the fake.
 type failGetFor struct {
 	*latitude.Fake
+
 	id  string
 	err error
 }

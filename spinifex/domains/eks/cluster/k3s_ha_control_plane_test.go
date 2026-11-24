@@ -25,13 +25,13 @@ import (
 )
 
 // newTestHostScheduler ends each node.status fan-out once every fake node has
-// replied, and skips the node.vms wait, so slow replies under load are not lost.
+// replied, so slow replies under load are not lost.
 // The long window only bounds a test whose fakes never answer.
 func newTestHostScheduler(nc *nats.Conn, nodes int) HostScheduler {
 	return &natsHostScheduler{
 		nc:            nc,
 		fanoutTimeout: time.Minute,
-		expectReplies: map[string]int{types.NodeStatusSubject: nodes, types.NodeVMsSubject: 0},
+		expectReplies: map[string]int{types.NodeStatusSubject: nodes},
 	}
 }
 

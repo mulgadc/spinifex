@@ -7,6 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -65,6 +68,29 @@ func TestCreateOpenIDConnectProvider_InvalidURL(t *testing.T) {
 			t.Fatalf("url %q: err = %v, want InvalidInput", bad, err)
 		}
 	}
+}
+
+func TestCreateOpenIDConnectProvider_RefusesIssuerSTSCannotVerify(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	acct := "000000000001"
+
+	_, err := svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{
+		Url:          aws.String("https://token.actions.githubusercontent.com"),
+		ClientIDList: aws.StringSlice([]string{"sts.amazonaws.com"}),
+	})
+	requireIAMError(t, err, awserrors.ErrorIAMInvalidInput,
+		"The specified value for url is invalid: only Spinifex EKS cluster issuers are supported, "+
+			"because tokens from other issuers cannot be verified: issuer path must be /oidc/eks/{region}/{accountID}/{clusterName}")
+	out, err := svc.ListOpenIDConnectProviders(acct, &iam.ListOpenIDConnectProvidersInput{})
+	require.NoError(t, err)
+	assert.Empty(t, out.OpenIDConnectProviderList, "a refused issuer must not be stored")
+
+	_, err = svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{
+		Url:          aws.String(testIssuer),
+		ClientIDList: aws.StringSlice([]string{"sts.amazonaws.com"}),
+	})
+	require.NoError(t, err, "a cluster-local issuer must still register")
 }
 
 func TestGetOpenIDConnectProvider(t *testing.T) {
@@ -247,7 +273,7 @@ func TestCreateOpenIDConnectProvider_ListEntryLengths(t *testing.T) {
 
 	svc := setupTestIAMService(t)
 	_, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
-		Url:            aws.String("https://oidc.example.com/id/BOUNDS"),
+		Url:            aws.String(testIssuer),
 		ClientIDList:   aws.StringSlice([]string{"c", strings.Repeat("c", 255)}),
 		ThumbprintList: aws.StringSlice([]string{thumbprint}),
 	})

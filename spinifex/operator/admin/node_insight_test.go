@@ -270,3 +270,32 @@ func TestDescribeNetworkTestsReportsARunningTestWithoutItsClaimAsInterrupted(t *
 	}
 	assert.Equal(t, map[string]string{"nt-live": NetworkTestRunning, "nt-orphan": NetworkTestFailed}, status)
 }
+
+// finishingStore completes and releases the test just before the claim read.
+type finishingStore struct {
+	*KVNetworkTests
+
+	finish func()
+}
+
+func (s finishingStore) Holder(ctx context.Context) (string, error) {
+	s.finish()
+	return s.KVNetworkTests.Holder(ctx)
+}
+
+func TestDescribeNetworkTestsReportsATestThatFinishesDuringTheReadAsComplete(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	kv := NewKVNetworkTests(js)
+	test := &NetworkTest{TestID: "nt-done", Status: NetworkTestRunning, StartedAt: time.Now().UTC()}
+	require.NoError(t, kv.Claim(ctx, test.TestID, time.Now().Add(time.Minute)))
+	require.NoError(t, kv.Put(ctx, test))
+	d := Deps{NetworkTests: finishingStore{KVNetworkTests: kv, finish: func() {
+		require.NoError(t, kv.Put(ctx, &NetworkTest{TestID: test.TestID, Status: NetworkTestComplete}))
+		require.NoError(t, kv.Release(ctx, test.TestID))
+	}}}
+
+	out, err := d.DescribeNetworkTests(ctx, map[string]string{"TestId": test.TestID})
+	require.NoError(t, err)
+	assert.Equal(t, NetworkTestComplete, out.Tests[0].Status)
+}

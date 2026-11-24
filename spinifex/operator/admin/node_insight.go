@@ -517,8 +517,16 @@ func (d Deps) markInterrupted(ctx context.Context, tests []NetworkTest) error {
 		if t.Status != NetworkTestRunning || t.TestID == holder {
 			continue
 		}
+		// The runner saves its outcome before it releases, so read it again.
+		fresh, err := d.NetworkTests.Get(ctx, t.TestID)
+		if err != nil {
+			return err
+		}
+		if fresh.Status != NetworkTestRunning {
+			*t = *fresh
+			continue
+		}
 		t.Status, t.Error = NetworkTestFailed, "interrupted"
-		t.Runs = slices.Clone(t.Runs)
 		for j := range t.Runs {
 			if t.Runs[j].Status == NetworkTestRunning {
 				t.Runs[j].Status, t.Runs[j].Error = NetworkTestFailed, "interrupted"

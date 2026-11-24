@@ -1,7 +1,7 @@
-...@aws
+...@style
 direction: right
 
-internet: Internet {class: res; icon: icons/Res_Internet_48_Light.svg}
+internet: Internet {class: internet}
 
 region: Region {
   class: region
@@ -9,7 +9,7 @@ region: Region {
   vpc: VPC {
     class: vpc
 
-    alb: "Application\nLoad Balancer\ntarget_type = ip" {class: res; icon: icons/Res_Elastic-Load-Balancing_Application-Load-Balancer_48.svg}
+    alb: "ALB\ntarget_type = ip" {class: lb}
 
     az_a: az-a {
       class: az
@@ -17,8 +17,8 @@ region: Region {
         class: public-subnet
         ci: "Container instance" {
           class: instance-contents
-          t1: "task (web)\nawsvpc ENI" {class: res; icon: icons/Res_Amazon-Elastic-Container-Service_Task_48.svg}
-          t2: "task (web)\nawsvpc ENI" {class: res; icon: icons/Res_Amazon-Elastic-Container-Service_Task_48.svg}
+          t1: "ECS task (web)\nawsvpc ENI" {class: ecs}
+          t2: "ECS task (web)\nawsvpc ENI" {class: ecs}
         }
       }
     }
@@ -29,14 +29,14 @@ region: Region {
         class: public-subnet
         ci: "Container instance" {
           class: instance-contents
-          t1: "task (web)\nawsvpc ENI" {class: res; icon: icons/Res_Amazon-Elastic-Container-Service_Task_48.svg}
+          t1: "ECS task (web)\nawsvpc ENI" {class: ecs}
         }
       }
     }
   }
 
-  gw: "Spinifex gateway\n:9999 control plane" {class: res; icon: icons/Res_Server_48_Light.svg}
-  ecr: "Registry / ECR" {class: res; icon: icons/Arch_Amazon-Elastic-Container-Registry_48.svg}
+  gw: "Spinifex gateway\n:9999 control plane" {class: node}
+  ecr: "ECR\nregistry" {class: ecr}
 }
 
 internet -> region.vpc.alb: {class: flow}

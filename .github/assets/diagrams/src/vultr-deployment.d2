@@ -1,9 +1,9 @@
-...@aws
+...@style
 direction: down
 
-machine: "Your machine\ndeploy-vultr.sh\nOpenTofu or Terraform" {class: res; icon: icons/Res_Client_48_Light.svg}
+machine: "Client\nyour machine: deploy-vultr.sh\nOpenTofu or Terraform" {class: client}
 api: "Vultr API\nVPC · servers · reserved IPs" {class: box}
-internet: "Internet\ncustomers reach your EC2\nand load balancers" {class: res; icon: icons/Res_Internet_48_Light.svg}
+internet: "Internet\ncustomers reach your EC2\nand load balancers" {class: internet}
 
 vultr: "Vultr VPC · private network 10.10.8.0/24\n--nodes 1 or 3 · vx1-g-16c-64g or bare metal" {
   class: datacenter
@@ -27,14 +27,14 @@ fleet: "AWS services across the fleet" {
   class: group
   grid-columns: 8
   grid-gap: 16
-  ec2: "EC2\ninstances" {class: res; icon: icons/Arch_Amazon-EC2_48.svg}
-  elb: "ALB / NLB\nload balancers" {class: res; icon: icons/Arch_Elastic-Load-Balancing_48.svg}
-  eks: "EKS\nKubernetes" {class: res; icon: icons/Arch_Amazon-Elastic-Kubernetes-Service_48.svg}
-  ecs: "ECS\ncontainers" {class: res; icon: icons/Arch_Amazon-Elastic-Container-Service_48.svg}
-  rds: "RDS\ndatabases" {class: res; icon: icons/Arch_Amazon-RDS_48.svg}
-  s3: "S3\nobject storage" {class: res; icon: icons/Arch_Amazon-Simple-Storage-Service_48.svg}
-  ebs: "EBS\nvolumes" {class: res; icon: icons/Arch_Amazon-Elastic-Block-Store_48.svg}
-  iam: "IAM\naccess" {class: res; icon: icons/Arch_AWS-Identity-and-Access-Management_48.svg}
+  ec2: "EC2 instances" {class: instance}
+  elb: "ELB\nALB and NLB" {class: lb}
+  eks: "EKS\nKubernetes" {class: eks}
+  ecs: "ECS\ncontainers" {class: ecs}
+  rds: "RDS\ndatabases" {class: database}
+  s3: "S3\nobject storage" {class: bucket}
+  ebs: "EBS volumes" {class: volume}
+  iam: "IAM\naccess" {class: iam}
 }
 
 

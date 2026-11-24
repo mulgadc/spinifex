@@ -1,8 +1,8 @@
-...@aws
+...@style
 direction: right
 
-laptop: "Your laptop\naws-cli · Terraform · boto3" {class: res; icon: icons/Res_Client_48_Light.svg}
-internet: "Internet" {class: res; icon: icons/Res_Internet_48_Light.svg}
+laptop: "Client\nyour laptop: aws-cli,\nTerraform, boto3" {class: client}
+internet: "Internet" {class: internet}
 
 vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.0.1 · internet gateway" {
   class: datacenter
@@ -12,8 +12,8 @@ vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.
     vnic0: "VNIC 0 · 10.200.0.252\nmesh · advertise · encap" {class: box}
     vnic1: "VNIC 1 · br-wan\n10.200.1.233/32\npublic IP pairs · table 200" {class: box}
     svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
-    i: "i-23d2… 10.0.1.4\n→ 150.230.13.131" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
-    vol: "/dev/sdb\n/var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+    i: "EC2 instance\ni-23d2… 10.0.1.4\n→ 150.230.13.131" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
   }
 
   n2: "spinifex-node-02\nFAULT-DOMAIN-2 · BM.Standard.E2.64" {
@@ -21,8 +21,8 @@ vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.
     vnic0: "VNIC 0 · 10.200.0.118\nmesh · advertise · encap" {class: box}
     vnic1: "VNIC 1 · br-wan\n10.200.1.96/32\npublic IP pairs · table 200" {class: box}
     svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
-    i: "i-6b91… 10.0.1.9\n→ 137.23.9.125" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
-    vol: "/dev/sdb\n/var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+    i: "EC2 instance\ni-6b91… 10.0.1.9\n→ 137.23.9.125" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
   }
 
   n3: "spinifex-node-03\nFAULT-DOMAIN-3 · BM.Standard.E2.64" {
@@ -30,8 +30,8 @@ vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.
     vnic0: "VNIC 0 · 10.200.0.41\nmesh · advertise · encap" {class: box}
     vnic1: "VNIC 1 · br-wan\n10.200.1.12/32\npublic IP pairs · table 200" {class: box}
     svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
-    i: "i-0ae4… 10.0.2.6\n→ 150.230.4.88" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
-    vol: "/dev/sdb\n/var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+    i: "EC2 instance\ni-0ae4… 10.0.2.6\n→ 150.230.4.88" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
   }
 
   ew: "East–west inside the VCN\nno public address\n\nGeneve UDP 6081\nNATS JetStream R3\npredastore RS(2,1)\nOVN Northbound raft · OVSDB" {class: box}

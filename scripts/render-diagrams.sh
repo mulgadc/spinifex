@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Renders .github/assets/diagrams/src/<name>.d2 to .github/assets/diagrams/<name>.svg.
 #
-# Usage: scripts/render-diagrams.sh [--check] [name ...]
+# Usage: scripts/render-diagrams.sh [--lint | --check] [name ...]
+#   --lint   only check the sources against style.d2 and icons.tsv.
 #   --check  render to a temp dir and fail if a committed SVG differs.
 #   name     render only these sources (default: all).
 #
-# Output is byte-stable for one d2 release only, so the release is pinned.
-# Set D2_BIN to use a d2 binary that is not on PATH.
+# Every render and check runs the lint first. Output is byte-stable for one
+# d2 release only, so the release is pinned. Set D2_BIN to use a d2 binary
+# that is not on PATH, and DIAGRAMS_SRC to lint another source directory.
 set -euo pipefail
 
 D2_VERSION="v0.7.1"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/.github/assets/diagrams/src"
+SRC="${DIAGRAMS_SRC:-$ROOT/.github/assets/diagrams/src}"
 OUT="$ROOT/.github/assets/diagrams"
 POST="$ROOT/scripts/diagram-postprocess.py"
+TOOL="$ROOT/scripts/diagram-sources.py"
 
 D2_FLAGS=(
 	--omit-version --pad 10 --theme 0 --layout elk
@@ -23,10 +26,17 @@ D2_FLAGS=(
 )
 
 check=0
-if [[ "${1:-}" == "--check" ]]; then
+case "${1:-}" in
+--lint)
+	exec python3 -I "$TOOL" lint "$SRC"
+	;;
+--check)
 	check=1
 	shift
-fi
+	;;
+esac
+
+python3 -I "$TOOL" lint "$SRC"
 
 d2="${D2_BIN:-$(command -v d2 || true)}"
 if [[ -z "$d2" ]]; then
@@ -45,7 +55,7 @@ else
 	names=()
 	for f in "$SRC"/*.d2; do
 		n="$(basename "$f" .d2)"
-		[[ "$n" == "aws" ]] && continue # shared classes, not a diagram
+		[[ "$n" == "style" ]] && continue # shared classes, not a diagram
 		names+=("$n")
 	done
 fi
@@ -54,40 +64,28 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 # Icons are not committed: each SVG embeds the icons it uses. Fetch the pinned
-# AWS Architecture Icons package once, then fill the gitignored src/icons/ with
-# every icon a source names. A group icon is drawn small on a 64px canvas.
-ICONS_URL="https://d1.awsstatic.com/onedam/marketing-channels/website/public/shared/architecture-icon-release/Icon-package_07312026.5846e92413caa21490223536cc97f1269e44fa92.zip"
-ICONS_SHA256="d2d166c453526471749d520e0db022c459abef759d2946cf2dd1d1c992dc6526"
-ICONS_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/spinifex-diagrams/$ICONS_SHA256"
+# lucide-static package once, then write the gitignored src/icons/ from the
+# icon and colour that icons.tsv gives each class.
+LUCIDE_VERSION="1.78.0"
+LUCIDE_URL="https://registry.npmjs.org/lucide-static/-/lucide-static-$LUCIDE_VERSION.tgz"
+LUCIDE_SHA256="8312fadb97e45c76e2f847f883ece725be167cb360aac53d2540e54e357bc778"
+LUCIDE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/spinifex-diagrams/lucide-static-$LUCIDE_SHA256"
 
-if [[ ! -d "$ICONS_CACHE/x" ]]; then
-	mkdir -p "$ICONS_CACHE"
-	curl -sSfL -o "$tmp/icons.zip" "$ICONS_URL"
-	echo "$ICONS_SHA256  $tmp/icons.zip" | sha256sum -c --quiet - || {
-		echo "render-diagrams: icon package checksum mismatch" >&2
+if [[ ! -d "$LUCIDE_CACHE/icons" ]]; then
+	mkdir -p "$LUCIDE_CACHE"
+	curl -sSfL -o "$tmp/lucide.tgz" "$LUCIDE_URL"
+	echo "$LUCIDE_SHA256  $tmp/lucide.tgz" | sha256sum -c --quiet - || {
+		echo "render-diagrams: lucide-static checksum mismatch" >&2
 		exit 1
 	}
-	unzip -q "$tmp/icons.zip" -x '__MACOSX/*' -d "$ICONS_CACHE/x.partial"
-	mv "$ICONS_CACHE/x.partial" "$ICONS_CACHE/x"
+	rm -rf "$LUCIDE_CACHE/x.partial"
+	mkdir -p "$LUCIDE_CACHE/x.partial"
+	tar -xzf "$tmp/lucide.tgz" -C "$LUCIDE_CACHE/x.partial" package/icons
+	mv "$LUCIDE_CACHE/x.partial/package/icons" "$LUCIDE_CACHE/icons"
+	rm -rf "$LUCIDE_CACHE/x.partial"
 fi
 
-mkdir -p "$SRC/icons/group"
-while read -r ref; do
-	dest="$SRC/$ref"
-	[[ -f "$dest" ]] && continue
-	name="$(basename "$ref")"
-	found="$(find "$ICONS_CACHE/x" -name "$name" | sort | head -1)"
-	[[ -n "$found" ]] || {
-		echo "render-diagrams: no icon $name in the AWS package" >&2
-		exit 1
-	}
-	if [[ "$ref" == icons/group/* ]]; then
-		printf '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><image x="0" y="0" width="26" height="26" href="data:image/svg+xml;base64,%s"/></svg>\n' \
-			"$(base64 -w0 "$found")" >"$dest"
-	else
-		cp "$found" "$dest"
-	fi
-done < <(grep -ohE 'icons/[A-Za-z0-9_./-]+\.svg' "$SRC"/*.d2 | sort -u)
+python3 -I "$TOOL" icons "$SRC" "$LUCIDE_CACHE/icons"
 
 stale=0
 for n in "${names[@]}"; do

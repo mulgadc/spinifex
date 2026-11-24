@@ -53,5 +53,5 @@ Thumbs.db
 *-report.txt
 /rds-agent
 
-# Docs diagram icons, fetched by scripts/render-diagrams.sh
+# Docs diagram icons, written by scripts/render-diagrams.sh
 .github/assets/diagrams/src/icons/

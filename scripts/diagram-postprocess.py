@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Put each AWS group label beside its group icon in a d2-rendered SVG.
+"""Put each group label beside its group icon in a d2-rendered SVG.
 
 d2 centres a top-left container label on its own width estimate, so the
 label sits under the icon. This moves it to start just right of the icon.
@@ -7,7 +7,7 @@ label sits under the icon. This moves it to start just right of the icon.
 import re
 import sys
 
-# Group classes in src/aws.d2 that carry a top-left icon.
+# Group classes in src/style.d2 that carry a top-left icon.
 ICON_GROUPS = (
     "region",
     "vpc",

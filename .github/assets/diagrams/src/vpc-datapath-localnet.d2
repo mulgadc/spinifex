@@ -1,7 +1,7 @@
-...@aws
+...@style
 direction: right
 
-vm: "VM" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+vm: "EC2 instance" {class: instance}
 
 ovs: "Open vSwitch · setup-ovn.sh" {
   class: group
@@ -19,7 +19,7 @@ hostnet: "Host network" {
   br-wan -> nic: {class: flow}
 }
 
-wan: "WAN" {class: res; icon: icons/Res_Internet_48_Light.svg}
+wan: "Internet\nWAN" {class: internet}
 
 vm -> ovs.br-int: "TAP" {class: flow}
 ovs.br-ext -> hostnet.br-wan: "veth pair" {class: flow}

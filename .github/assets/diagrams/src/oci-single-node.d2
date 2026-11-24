@@ -1,13 +1,13 @@
-...@aws
+...@style
 direction: down
 
-laptop: "Your laptop\naws-cli · Terraform\nboto3" {class: res; icon: icons/Res_Client_48_Light.svg}
-internet: "Internet" {class: res; icon: icons/Res_Internet_48_Light.svg}
+laptop: "Client\nyour laptop: aws-cli,\nTerraform, boto3" {class: client}
+internet: "Internet" {class: internet}
 
 vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.0.1 · internet gateway" {
   class: datacenter
 
-  pip: "Reserved public IP\n150.230.13.131" {class: res; icon: icons/Res_Amazon-EC2_Elastic-IP-Address_48.svg}
+  pip: "Reserved public IP\n150.230.13.131" {class: eip}
 
   node: "spinifex-node-01 · BM.Standard.E2.64\nFAULT-DOMAIN-1" {
     class: server
@@ -35,16 +35,16 @@ vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.
       vpcb: "vpc-b\n172.31.0.0/16" {
         class: vpc
         width: 300
-        i2: "i-… 172.31.4.9\nprivate, egress only" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+        i2: "EC2 instance\ni-… 172.31.4.9\nprivate, egress only" {class: instance}
       }
       vpca: "vpc-a\n10.0.0.0/16" {
         class: vpc
         width: 300
-        i1: "i-… 10.0.1.4\n→ 150.230.13.131" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+        i1: "EC2 instance\ni-… 10.0.1.4\n→ 150.230.13.131" {class: instance}
       }
     }
 
-    vol: "Block volume 256 GB+\n/dev/sdb → /var/lib/spinifex" {class: res; icon: icons/Res_Disk_48_Light.svg}
+    vol: "Disk\nblock volume 256 GB+\n/dev/sdb → /var/lib/spinifex" {class: disk}
   }
 }
 

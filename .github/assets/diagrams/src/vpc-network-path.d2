@@ -1,7 +1,7 @@
-...@aws
+...@style
 direction: down
 
-wan: "Physical network (WAN)" {class: res; icon: icons/Res_Internet_48_Light.svg}
+wan: "Internet\nphysical network (WAN)" {class: internet}
 
 host: "Host bridges" {
   class: group
@@ -16,7 +16,6 @@ vpc: "VPC = OVN logical router" {
   extsw: "External switch\nOVN logical switch · localnet port" {class: box}
   router: "VPC router\ngateway port: public IP" {
     class: box
-    icon: icons/Res_Amazon-VPC_Router_48.svg
     width: 190
     height: 100
   }
@@ -24,13 +23,13 @@ vpc: "VPC = OVN logical router" {
 
   subnet-a: "subnet-a (public)\n10.0.1.0/24" {
     class: public-subnet
-    eni-1: eni-1 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
-    eni-2: eni-2 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+    eni-1: "ENI\neni-1" {class: eni}
+    eni-2: "ENI\neni-2" {class: eni}
   }
   subnet-b: "subnet-b (private)\n10.0.2.0/24" {
     class: private-subnet
-    eni-3: eni-3 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
-    eni-4: eni-4 {class: res; icon: icons/Res_Amazon-VPC_Elastic-Network-Interface_48.svg}
+    eni-3: "ENI\neni-3" {class: eni}
+    eni-4: "ENI\neni-4" {class: eni}
   }
 
   extsw -> router: {class: flow}

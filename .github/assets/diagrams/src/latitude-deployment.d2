@@ -1,14 +1,14 @@
-...@aws
+...@style
 direction: right
 
-machine: "Your machine\ndeploy-latitude.sh\nOpenTofu or Terraform" {class: res; icon: icons/Res_Client_48_Light.svg}
+machine: "Client\nyour machine: deploy-latitude.sh\nOpenTofu or Terraform" {class: client}
 api: "latitude.sh API\nproject · server\nElastic IP" {class: box}
-internet: "Internet\ncustomers" {class: res; icon: icons/Res_Internet_48_Light.svg}
+internet: "Internet\ncustomers" {class: internet}
 
 site: "latitude.sh site\nDAL by default · --site for another" {
   class: datacenter
 
-  eip: "Elastic IP" {class: res; icon: icons/Res_Amazon-EC2_Elastic-IP-Address_48.svg}
+  eip: "Elastic IP" {class: eip}
 
   node: "node1 · m4-metal-medium · --nodes 1\nbare metal · Ubuntu 26.04" {
     class: server
@@ -19,8 +19,8 @@ site: "latitude.sh site\nDAL by default · --site for another" {
       class: vpc
       subnet: "Public subnet" {
         class: public-subnet
-        guest: "EC2 guest\nNginx web server" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
-        ebs: "EBS volume" {class: res; icon: icons/Res_Amazon-Elastic-Block-Store_Volume_48.svg}
+        guest: "EC2 instance\nNginx web server" {class: instance}
+        ebs: "EBS volume" {class: volume}
       }
     }
   }

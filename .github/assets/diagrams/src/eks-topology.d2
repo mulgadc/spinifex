@@ -1,15 +1,15 @@
-...@aws
+...@style
 direction: right
 
-users: "kubectl\naws eks" {class: res; icon: icons/Res_Internet_48_Light.svg}
+users: "Internet\nkubectl, aws eks" {class: internet}
 
 region: Region {
   class: region
 
   cp: "EKS control plane · Spinifex-managed" {
     class: group
-    nlb: "public\nAPI NLB" {class: res; icon: icons/Res_Elastic-Load-Balancing_Network-Load-Balancer_48.svg}
-    api: "apiserver\nVM" {class: res; icon: icons/Arch_Amazon-Elastic-Kubernetes-Service_48.svg}
+    nlb: "NLB\npublic API" {class: lb}
+    api: "EKS control plane\napiserver VM" {class: eks}
     nlb -> api: {class: flow}
   }
 
@@ -46,7 +46,7 @@ region: Region {
     }
   }
 
-  ecr: ECR {class: res; icon: icons/Arch_Amazon-Elastic-Container-Registry_48.svg}
+  ecr: ECR {class: ecr}
 }
 
 users -> region.cp.nlb: "API" {class: flow}

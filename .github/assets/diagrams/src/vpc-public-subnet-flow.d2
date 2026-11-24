@@ -1,20 +1,20 @@
-...@aws
+...@style
 direction: right
 
 out: "Outbound" {
   class: group
-  instance: "Instance\n10.0.1.5" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+  instance: "EC2 instance\n10.0.1.5" {class: instance}
   snat: "SNAT\nsource IP rewritten\nexits as 203.0.113.10" {class: box}
-  wan: "WAN" {class: res; icon: icons/Res_Internet_48_Light.svg}
+  wan: "Internet\nWAN" {class: internet}
   instance -> snat: {class: flow}
   snat -> wan: {class: flow}
 }
 
 in: "Inbound" {
   class: group
-  client: "WAN client" {class: res; icon: icons/Res_Client_48_Light.svg}
+  client: "Client\nWAN client" {class: client}
   dnat: "DNAT\ndestination IP rewritten\narrives at 10.0.1.5" {class: box}
-  instance: "Instance\n10.0.1.5" {class: res; icon: icons/Res_Amazon-EC2_Instance_48.svg}
+  instance: "EC2 instance\n10.0.1.5" {class: instance}
   client -> dnat: "to 203.0.113.10" {class: flow}
   dnat -> instance: {class: flow}
 }

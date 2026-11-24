@@ -367,3 +367,46 @@ func TestHolderLabel_NamesOnlyConfiguredHosts(t *testing.T) {
 	other := &PoolAllocator{cfg: Config{HostID: "sv_a"}}
 	assert.Equal(t, "whatever-the-provider-says", other.holderLabel("whatever-the-provider-says"))
 }
+
+func TestReportMembers_SoleAddressInErrorLeavesThePoolWithNoUsableAddress(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_1", Address: netip.MustParseAddr("203.0.113.1"), Status: latitude.StatusError})
+	p, err := NewLatitudeProvider(f, []string{"eip_1"})
+	require.NoError(t, err)
+	require.NoError(t, p.reportMembers(context.Background(), pool))
+	out := buf.String()
+	assert.Contains(t, out, `level=ERROR msg="floating: a configured Elastic IP will not be used: latitude.sh reports it in the error state" pool=`+pool+" pool_member=eip_1")
+	assert.Contains(t, out, `level=ERROR msg="floating: pool has no usable address; public addresses will fail until fixed" pool=`+pool)
+}
+
+func TestReportMembers_MixedSetNamesEachUnusedMember(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_bad", Address: netip.MustParseAddr("203.0.113.3"), Status: latitude.StatusError})
+	p, err := NewLatitudeProvider(f, []string{"eip_1", "eip_gone", "eip_bad"})
+	require.NoError(t, err)
+	require.NoError(t, p.reportMembers(context.Background(), pool))
+	out := buf.String()
+	assert.Contains(t, out, "does not exist at latitude.sh\" pool="+pool+" pool_member=eip_gone")
+	assert.Contains(t, out, "error state\" pool="+pool+" pool_member=eip_bad")
+	assert.NotContains(t, out, "eip_1")
+	assert.NotContains(t, out, "no usable address", "eip_1 is still usable")
+
+	buf.Reset()
+	f.Seed(latitude.ElasticIP{ID: "eip_bgp", Address: netip.MustParseAddr("203.0.113.50"), Mode: "bgp", Family: "IPv4", PrefixLength: 24})
+	p, err = NewLatitudeProvider(f, []string{"eip_1", "eip_bgp"})
+	require.NoError(t, err)
+	require.NoError(t, p.reportMembers(context.Background(), pool))
+	out = buf.String()
+	assert.Contains(t, out, "pool_member=eip_bgp")
+	assert.Contains(t, out, "no usable address", "an unusable member makes Members refuse the whole set")
+}
+
+func TestReportMembers_AnyOtherReadFailureIsReturned(t *testing.T) {
+	f := latitudeFake()
+	f.Fail["get"] = errors.New("timeout")
+	p, err := NewLatitudeProvider(f, []string{"eip_1"})
+	require.NoError(t, err)
+	assert.ErrorContains(t, p.reportMembers(context.Background(), pool), "eip_1")
+}

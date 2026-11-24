@@ -62,7 +62,7 @@ resources:
 
 NIST SP 800-88 Rev 1 defines three sanitization categories — **Clear**, **Purge**, and **Destroy** — chosen by the confidentiality of the data and whether the medium will leave the operator's control. Spinifex discharges MP.L1-3.8.3 along two tracks:
 
-1. **Volume-level sanitization** for EBS volumes and VM disks returning to the free pool. Handled in-platform by **cryptographic erase** — the per-volume data encryption key (DEK) is deleted, rendering the ciphertext in Predastore S3 irrecoverable. This is the NIST SP 800-88 **Purge**-level method for encrypted media.
+1. **Volume-level sanitization** for EBS volumes and VM disks returning to the free pool. Handled in-platform by **cryptographic erase** — the per-volume data encryption key (DEK) is deleted, rendering the ciphertext in Predastore irrecoverable. This is the NIST SP 800-88 **Purge**-level method for encrypted media.
 2. **Whole-drive sanitization** for physical media leaving a Spinifex node — drive replacement, node retirement, warranty return, resale, or destruction. The operator runs the sanitization; Spinifex does not and cannot reach the firmware commands required. This guide prescribes the method per media type and the records to keep.
 
 The key principle: every piece of media that ever held plaintext FCI (or keys that wrapped FCI ciphertext) must be sanitized to at least **Purge** before release for reuse, and to **Purge** or **Destroy** before leaving operator control. When in doubt, Destroy.
@@ -113,7 +113,7 @@ Applies to EBS volumes, AMIs, and snapshots whose underlying storage will be reu
 
 Deletion is sanitization:
 
-- `DeleteVolume` removes the wrapped DEK from NATS KV. The chunks in Predastore S3 remain but are unrecoverable ciphertext. No further operator action is required.
+- `DeleteVolume` removes the wrapped DEK from NATS KV. The chunks in Predastore remain but are unrecoverable ciphertext. No further operator action is required.
 - `TerminateInstances` with the default `DeleteOnTermination=true` on root volumes performs the same cryptographic erase for the terminated instance's root.
 - `DeleteSnapshot` removes the snapshot's DEK wrapper; the underlying chunks become irrecoverable ciphertext.
 

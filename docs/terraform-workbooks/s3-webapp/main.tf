@@ -82,7 +82,7 @@ variable "spinifex_endpoint" {
 variable "predastore_endpoint" {
   type        = string
   default     = "https://127.0.0.1:8443"
-  description = "Predastore S3 endpoint (for Terraform to create buckets)"
+  description = "Predastore endpoint for S3 (for Terraform to create buckets)"
 }
 
 variable "predastore_host" {
@@ -337,7 +337,7 @@ resource "aws_security_group" "webapp" {
 }
 
 # ---------------------------------------------------------------------------
-# EC2 Instance — Flask webapp that talks to Predastore S3
+# EC2 Instance — Flask webapp that talks to Predastore over the S3 API
 # ---------------------------------------------------------------------------
 
 resource "aws_instance" "webapp" {
@@ -423,9 +423,9 @@ resource "aws_instance" "webapp" {
 
         return f"""<!DOCTYPE html>
     <html>
-    <head><title>Spinifex S3 File Browser</title></head>
+    <head><title>Spinifex File Browser for S3</title></head>
     <body style="font-family: sans-serif; max-width: 700px; margin: 40px auto;">
-      <h1>Spinifex S3 File Browser</h1>
+      <h1>Spinifex File Browser for S3</h1>
       <p>Bucket: <code>{BUCKET}</code></p>
 
       <h2>Upload a File</h2>

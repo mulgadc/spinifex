@@ -481,7 +481,7 @@ resource "tls_self_signed_cert" "ingress" {
 
   subject {
     common_name  = var.cert_common_name
-    organization = "Spinifex EKS Demo"
+    organization = "Spinifex Demo for EKS"
   }
 
   dns_names             = [var.cert_common_name]

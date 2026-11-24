@@ -29,7 +29,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { ec2TransitGatewayVpcAttachmentsQueryOptions } from "@/queries/ec2"
+import { ec2GatewayTransitGatewayAttachmentsQueryOptions } from "@/queries/ec2"
 
 import { TransitGatewayDetails } from "./transit-gateway-details"
 
@@ -42,29 +42,26 @@ const TGW: TransitGateway = {
 
 function renderDetails(tgw: TransitGateway, tab: "overview" | "settings") {
   const qc = createTestQueryClient()
-  qc.setQueryData(ec2TransitGatewayVpcAttachmentsQueryOptions.queryKey, {
-    $metadata: {},
-    TransitGatewayVpcAttachments: [
-      {
-        TransitGatewayAttachmentId: "tgw-attach-live",
-        TransitGatewayId: "tgw-1",
-        VpcId: "vpc-1",
-        State: "available",
-      },
-      {
-        TransitGatewayAttachmentId: "tgw-attach-gone",
-        TransitGatewayId: "tgw-1",
-        VpcId: "vpc-2",
-        State: "deleted",
-      },
-      {
-        TransitGatewayAttachmentId: "tgw-attach-other",
-        TransitGatewayId: "tgw-2",
-        VpcId: "vpc-3",
-        State: "available",
-      },
-    ],
-  })
+  qc.setQueryData(
+    ec2GatewayTransitGatewayAttachmentsQueryOptions("tgw-1").queryKey,
+    {
+      $metadata: {},
+      TransitGatewayVpcAttachments: [
+        {
+          TransitGatewayAttachmentId: "tgw-attach-live",
+          TransitGatewayId: "tgw-1",
+          VpcId: "vpc-1",
+          State: "available",
+        },
+        {
+          TransitGatewayAttachmentId: "tgw-attach-gone",
+          TransitGatewayId: "tgw-1",
+          VpcId: "vpc-2",
+          State: "deleted",
+        },
+      ],
+    },
+  )
   const onClose = vi.fn()
   renderWithClient(
     <TransitGatewayDetails
@@ -81,10 +78,9 @@ function renderDetails(tgw: TransitGateway, tab: "overview" | "settings") {
 }
 
 describe("transit gateway details", () => {
-  it("lists only the gateway's own attachments that are not deleted", () => {
+  it("lists the gateway's attachments that are not deleted", () => {
     renderDetails(TGW, "overview")
 
-    expect(screen.getByText("VPC attachments (1)")).toBeInTheDocument()
     expect(
       screen.getByRole("link", { name: "tgw-attach-live" }),
     ).toHaveAttribute(
@@ -94,9 +90,25 @@ describe("transit gateway details", () => {
     expect(
       screen.queryByRole("link", { name: "tgw-attach-gone" }),
     ).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole("link", { name: "tgw-attach-other" }),
-    ).not.toBeInTheDocument()
+  })
+
+  it("says the attachments failed to load rather than that there are none", async () => {
+    sdk.send.mockRejectedValueOnce(new Error("UnauthorizedOperation"))
+    renderWithClient(
+      <TransitGatewayDetails
+        layout="page"
+        onClose={vi.fn()}
+        onTabChange={vi.fn()}
+        tab="overview"
+        tgw={TGW}
+      />,
+      createTestQueryClient(),
+    )
+
+    await expect(
+      screen.findByText("Failed to load VPC attachments"),
+    ).resolves.toBeInTheDocument()
+    expect(screen.queryByText(/No VPC attachments/)).not.toBeInTheDocument()
   })
 
   it("deletes only after it is confirmed, then closes", async () => {

@@ -13,7 +13,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
+  PanelSpinner,
 } from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
@@ -23,7 +25,7 @@ import type { PanelTab } from "@/lib/panel-search"
 import { enabledLabel, isGoneState } from "@/lib/transit-gateway"
 import { formatDateTime, getNameTag } from "@/lib/utils"
 import { useDeleteTransitGateway } from "@/mutations/ec2"
-import { ec2TransitGatewayVpcAttachmentsQueryOptions } from "@/queries/ec2"
+import { ec2GatewayTransitGatewayAttachmentsQueryOptions } from "@/queries/ec2"
 
 const ATTACHMENT_COLUMNS: DataColumn<TransitGatewayVpcAttachment>[] = [
   {
@@ -58,24 +60,40 @@ const ATTACHMENT_COLUMNS: DataColumn<TransitGatewayVpcAttachment>[] = [
   },
 ]
 
-function Attachments({ tgwId }: { tgwId: string }) {
-  const { data } = useQuery(ec2TransitGatewayVpcAttachmentsQueryOptions)
+function AttachmentList({ tgwId }: { tgwId: string }) {
+  const query = useQuery(ec2GatewayTransitGatewayAttachmentsQueryOptions(tgwId))
+
+  if (query.isPending) {
+    return <PanelSpinner />
+  }
+
+  if (query.error) {
+    return (
+      <ErrorBanner error={query.error} msg="Failed to load VPC attachments" />
+    )
+  }
 
   // A deleted attachment stays visible to Describe for a while; it holds nothing.
-  const attachments = (data?.TransitGatewayVpcAttachments ?? []).filter(
-    (att) => att.TransitGatewayId === tgwId && att.State !== "deleted",
+  const attachments = (query.data.TransitGatewayVpcAttachments ?? []).filter(
+    (att) => att.State !== "deleted",
   )
 
   return (
-    <PanelSection title={`VPC attachments (${attachments.length})`}>
+    <DataTable
+      caption="VPC attachments"
+      columns={ATTACHMENT_COLUMNS}
+      empty="No VPC attachments. A VPC routes through this gateway once it is attached and its route tables name the gateway."
+      getRowId={(att) => att.TransitGatewayAttachmentId ?? ""}
+      rows={attachments}
+    />
+  )
+}
+
+function Attachments({ tgwId }: { tgwId: string }) {
+  return (
+    <PanelSection title="VPC attachments">
       <div className="flex flex-col gap-3">
-        <DataTable
-          caption="VPC attachments"
-          columns={ATTACHMENT_COLUMNS}
-          empty="No VPC attachments. A VPC routes through this gateway once it is attached and its route tables name the gateway."
-          getRowId={(att) => att.TransitGatewayAttachmentId ?? ""}
-          rows={attachments}
-        />
+        <AttachmentList tgwId={tgwId} />
         <div>
           <Link
             className={buttonVariants({ size: "sm", variant: "outline" })}

@@ -183,6 +183,8 @@ const TRANSIT_GATEWAYS = `<transitGatewaySet><item>
 <defaultRouteTableAssociation>enable</defaultRouteTableAssociation></options>
 <tagSet><item><key>Name</key><value>hub</value></item></tagSet></item></transitGatewaySet>`
 
+const NEW_ATTACHMENT_ID = "tgw-attach-0e2e000000000002"
+
 const ATTACHMENTS = `<transitGatewayVpcAttachments><item>
 <transitGatewayAttachmentId>${ATTACHMENT_ID}</transitGatewayAttachmentId>
 <transitGatewayId>${TGW_ID}</transitGatewayId><vpcId>${VPC_ID}</vpcId>
@@ -208,7 +210,9 @@ test.describe("transit gateways", () => {
     await page.getByRole("link", { name: /hub/ }).click()
 
     const panel = page.getByRole("region", { name: "Transit gateway details" })
-    await expect(panel).toContainText("VPC attachments (1)")
+    await expect(
+      panel.getByRole("table", { name: "VPC attachments" }),
+    ).toBeVisible()
     await expect(
       panel.getByRole("link", { name: ATTACHMENT_ID }),
     ).toHaveAttribute(
@@ -222,6 +226,19 @@ test.describe("transit gateways", () => {
     page,
   }) => {
     const created: string[][] = []
+
+    // Describe shows the new attachment only once Create has been asked for it.
+    api.handle("DescribeTransitGatewayVpcAttachments", (params) =>
+      ec2(
+        "DescribeTransitGatewayVpcAttachments",
+        created.length === 0
+          ? "<transitGatewayVpcAttachments/>"
+          : `<transitGatewayVpcAttachments><item>
+<transitGatewayAttachmentId>${NEW_ATTACHMENT_ID}</transitGatewayAttachmentId>
+<transitGatewayId>${TGW_ID}</transitGatewayId><vpcId>${VPC_ID}</vpcId>
+<state>pending</state></item></transitGatewayVpcAttachments>`,
+      )(params),
+    )
     api.handle("CreateTransitGatewayVpcAttachment", (params) => {
       created.push([
         params.get("TransitGatewayId") ?? "",
@@ -231,7 +248,7 @@ test.describe("transit gateways", () => {
 
       return ec2(
         "CreateTransitGatewayVpcAttachment",
-        `<transitGatewayVpcAttachment><transitGatewayAttachmentId>${ATTACHMENT_ID}</transitGatewayAttachmentId></transitGatewayVpcAttachment>`,
+        `<transitGatewayVpcAttachment><transitGatewayAttachmentId>${NEW_ATTACHMENT_ID}</transitGatewayAttachmentId></transitGatewayVpcAttachment>`,
       )(params)
     })
 
@@ -248,7 +265,7 @@ test.describe("transit gateways", () => {
 
     await expect(
       page.getByRole("region", { name: "Attachment details" }),
-    ).toBeVisible()
+    ).toContainText(NEW_ATTACHMENT_ID)
     expect(created).toStrictEqual([[TGW_ID, VPC_ID, "subnet-0e2e000000000001"]])
   })
 

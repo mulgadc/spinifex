@@ -44,7 +44,7 @@ function peering(
   }
 }
 
-async function renderPage() {
+async function renderPage({ transitGateways = true } = {}) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "routeTables", "rtb-1"], {
     RouteTables: [
@@ -71,24 +71,31 @@ async function renderPage() {
       peering("pcx-elsewhere", "active", "vpc-2", "vpc-3"),
     ],
   })
-  qc.setQueryData(["ec2", "transitGateways"], {
-    TransitGateways: [
-      { TransitGatewayId: "tgw-ready", State: "available" },
+
+  if (transitGateways) {
+    qc.setQueryData(["ec2", "transitGatewayVpcAttachments", "vpc", "vpc-1"], {
+      TransitGatewayVpcAttachments: [
+        { TransitGatewayId: "tgw-ready", VpcId: "vpc-1", State: "available" },
+        { TransitGatewayId: "tgw-named", VpcId: "vpc-1", State: "pending" },
+        { TransitGatewayId: "tgw-new", VpcId: "vpc-1", State: "available" },
+      ],
+    })
+    qc.setQueryData(
+      ["ec2", "transitGateways", "ids", "tgw-named", "tgw-new", "tgw-ready"],
       {
-        TransitGatewayId: "tgw-named",
-        State: "available",
-        Tags: [{ Key: "Name", Value: "core" }],
+        TransitGateways: [
+          { TransitGatewayId: "tgw-ready", State: "available" },
+          {
+            TransitGatewayId: "tgw-named",
+            State: "available",
+            Tags: [{ Key: "Name", Value: "core" }],
+          },
+          { TransitGatewayId: "tgw-new", State: "pending" },
+        ],
       },
-      { TransitGatewayId: "tgw-elsewhere", State: "available" },
-    ],
-  })
-  qc.setQueryData(["ec2", "transitGatewayVpcAttachments"], {
-    TransitGatewayVpcAttachments: [
-      { TransitGatewayId: "tgw-ready", VpcId: "vpc-1", State: "available" },
-      { TransitGatewayId: "tgw-named", VpcId: "vpc-1", State: "pending" },
-      { TransitGatewayId: "tgw-elsewhere", VpcId: "vpc-2", State: "available" },
-    ],
-  })
+    )
+  }
+
   qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
   const Detail = Route.options.component
 
@@ -218,5 +225,22 @@ describe("route table detail", () => {
         TransitGatewayId: "tgw-named",
       },
     })
+  })
+
+  it("says the transit gateways failed to load rather than that there are none", async () => {
+    const user = userEvent.setup()
+    sdk.send.mockRejectedValue(new Error("UnauthorizedOperation"))
+    await renderPage({ transitGateways: false })
+
+    await user.click(screen.getByRole("combobox", { name: "Target type" }))
+    await user.click(
+      await screen.findByRole("option", { name: "Transit gateway" }),
+    )
+
+    await expect(
+      screen.findByText(
+        "Could not load transit gateways: UnauthorizedOperation",
+      ),
+    ).resolves.toBeInTheDocument()
   })
 })

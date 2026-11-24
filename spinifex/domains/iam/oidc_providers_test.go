@@ -84,13 +84,13 @@ func TestCreateOpenIDConnectProvider_RefusesIssuerSTSCannotVerify(t *testing.T) 
 			"because tokens from other issuers cannot be verified: issuer path must be /oidc/eks/{region}/{accountID}/{clusterName}")
 	out, err := svc.ListOpenIDConnectProviders(acct, &iam.ListOpenIDConnectProvidersInput{})
 	require.NoError(t, err)
-	assert.Empty(t, out.OpenIDConnectProviderList, "a refused issuer must not be stored")
+	assert.Empty(t, out.OpenIDConnectProviderList, "Q-247.5: a refused issuer must not be stored")
 
 	_, err = svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{
 		Url:          aws.String(testIssuer),
 		ClientIDList: aws.StringSlice([]string{"sts.amazonaws.com"}),
 	})
-	require.NoError(t, err, "a cluster-local issuer must still register")
+	require.NoError(t, err, "Q-247.5: a cluster-local issuer must still register")
 }
 
 func TestGetOpenIDConnectProvider(t *testing.T) {

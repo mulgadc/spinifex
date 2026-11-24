@@ -7,7 +7,7 @@ name: E2E Nightly
 # copy of this file — leaving a fix to the workflow itself untestable until it
 # had already shipped. A dispatch takes both the file and the source from its ref.
 #
-# Cells (matrix cells are defined in .github/e2e-cells.json, in start order: cell 25
+# Cells (matrix cells are defined in .github/e2e-cells.json, in matrix order: cell 25
 # first, as only one runner has its NVMe, then longest first):
 #
 #   Single node                       Three nodes

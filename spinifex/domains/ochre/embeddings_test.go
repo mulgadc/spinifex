@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -482,6 +483,11 @@ func TestEmbeddingsProvider_Embed_BoundsSuccessfulResponseSize(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(tc.body)
+				if tc.wantErr != "" {
+					// Hold the stream open: only a bounded read can return.
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				}
 			}))
 			defer ts.Close()
 
@@ -489,7 +495,9 @@ func TestEmbeddingsProvider_Embed_BoundsSuccessfulResponseSize(t *testing.T) {
 			p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 			p.httpClient = ts.Client()
 
-			got, err := p.Embed(context.Background(), modelID, []string{"hello"})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			got, err := p.Embed(ctx, modelID, []string{"hello"})
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantErr, err.Error())

@@ -1,6 +1,7 @@
 package tgw
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -449,4 +450,24 @@ func TestDescribeTransitGateways_FiltersAndIDs(t *testing.T) {
 	other, err := f.svc.DescribeTransitGateways(t.Context(), &ec2.DescribeTransitGatewaysInput{}, "210987654321")
 	require.NoError(t, err)
 	assert.Empty(t, other.TransitGateways, "another account sees none")
+}
+
+// While a rollback below the level is recorded, reads are served and writes
+// refused, so a live gateway stays listed and its delete changes nothing.
+func TestBlockedRollback_ReadsServedWritesRefused(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tgwID := f.availableTGW()
+	f.svc.SetActivation(func(context.Context) (func(), bool, error) { return func() {}, false, nil },
+		func(context.Context) (bool, error) { return true, nil })
+
+	out, err := f.svc.DescribeTransitGateways(t.Context(), &ec2.DescribeTransitGatewaysInput{}, testAccount)
+	require.NoError(t, err)
+	require.Len(t, out.TransitGateways, 1)
+	require.Equal(t, tgwID, aws.StringValue(out.TransitGateways[0].TransitGatewayId))
+	_, err = f.svc.DeleteTransitGateway(t.Context(), &ec2.DeleteTransitGatewayInput{TransitGatewayId: aws.String(tgwID)}, testAccount)
+	requireCode(t, err, awserrors.ErrorUnsupportedOperation)
+	rec, _, err := f.svc.transitGateway(t.Context(), testAccount, tgwID)
+	require.NoError(t, err)
+	require.Equal(t, StateAvailable, rec.State)
 }

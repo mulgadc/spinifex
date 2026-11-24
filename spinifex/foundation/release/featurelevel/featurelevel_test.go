@@ -372,3 +372,31 @@ func TestGateActive_AnswersAsAdmitWithoutCounting(t *testing.T) {
 	assert.False(t, ok, "a rollback below the level closes it")
 	assert.Empty(t, g.InFlight())
 }
+
+// A rollback below the level that waits on its drain keeps the level recorded,
+// so its resources stay readable; a finished rollback removes it.
+func TestGateRecorded_HoldsThroughBlockedRollback(t *testing.T) {
+	t.Parallel()
+	s, _ := newStore(t)
+	g := NewGate(s)
+	ok, err := g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok, "below the level")
+
+	_, _, err = s.Advance(t.Context(), members(GatewayEndpoints, true, true))
+	require.NoError(t, err)
+	_, rev, err := s.StartRollback(t.Context(), Baseline, Build)
+	require.NoError(t, err)
+	ok, err = g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.True(t, ok, "a recorded rollback has not given the level up")
+	active, err := g.Active(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, active, "writes stay closed")
+
+	_, err = s.FinishRollback(t.Context(), rev, Baseline)
+	require.NoError(t, err)
+	ok, err = g.Recorded(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}

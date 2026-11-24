@@ -24,6 +24,12 @@ var errClaimHeld = errors.New("tgw: claim held")
 // errLinkSpaceExhausted reports that every link slot is held.
 var errLinkSpaceExhausted = errors.New("tgw: no free link address")
 
+// errKeyLost is an index key or claim that is absent or names another owner.
+var errKeyLost = errors.New("tgw: key lost")
+
+// errPairTaken is a lost pair claim: another attachment of the VPC holds it.
+var errPairTaken = fmt.Errorf("%w: pair claim", errKeyLost)
+
 // Store holds the Transit Gateway buckets and the VPC capability admission
 // fences on. The service, the reconciler callbacks and the sweep use it.
 type Store struct {
@@ -124,6 +130,51 @@ func touchIndexes(ctx context.Context, kv jetstream.KeyValue, revs map[string]ui
 		}
 	}
 	return nil
+}
+
+// reaffirm rewrites key unchanged at its current revision while owned accepts
+// its value, so a sweep or taker that read an earlier revision loses its write.
+// An absent or unowned key is errKeyLost.
+func reaffirm(ctx context.Context, kv jetstream.KeyValue, key string, owned func([]byte) bool) error {
+	for range moveAttempts {
+		entry, err := kv.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return fmt.Errorf("%s: %w", key, errKeyLost)
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", key, err)
+		}
+		if !owned(entry.Value()) {
+			return fmt.Errorf("%s: %w", key, errKeyLost)
+		}
+		if _, err := kv.Update(ctx, key, entry.Value(), entry.Revision()); err != nil {
+			if kvstore.IsRevisionConflict(err) {
+				continue
+			}
+			return fmt.Errorf("rewrite %s: %w", key, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("reaffirm %s: %w", key, errConflict)
+}
+
+// reaffirmAttachmentKeys confirms, after rec's record write, that every index
+// key and the pair claim still belong to rec. The admission and the reconciler
+// both call it, and neither fails the other.
+func (s *Store) reaffirmAttachmentKeys(ctx context.Context, rec *AttachmentRecord) error {
+	for _, k := range attachmentIndexKeys(rec) {
+		if err := reaffirm(ctx, s.atts, k, func([]byte) bool { return true }); err != nil {
+			return err
+		}
+	}
+	err := reaffirm(ctx, s.atts, pairKey(rec.TransitGatewayID, rec.VpcID), func(v []byte) bool {
+		var held claim
+		return json.Unmarshal(v, &held) == nil && held.Owner == rec.ID
+	})
+	if errors.Is(err, errKeyLost) {
+		return errPairTaken
+	}
+	return err
 }
 
 // writeJSON creates key when rev is 0, else updates it at rev; a lost race
@@ -486,16 +537,29 @@ func (s *Store) finishTransitGatewayMove(ctx context.Context, rec *TransitGatewa
 	return s.releaseQuotaSlot(ctx, rec.AccountID, rec.ID)
 }
 
-// liveAttachmentsUnder returns the IDs of the live attachments, and the young
-// orphan keys, in an index prefix such as "tgw.<id>.". Either blocks a delete.
-func (s *Store) liveAttachmentsUnder(ctx context.Context, prefix string) ([]string, error) {
-	ids, err := listIndex(ctx, s.atts, prefix)
+// maxBlockingListed bounds the attachments a refused DeleteTransitGateway reads
+// and names, so its cost does not grow with the gateway's attachments.
+const maxBlockingListed = 50
+
+// liveAttachmentsUnder returns up to limit IDs of the live attachments, and the
+// young orphan keys, in an index prefix such as "tgw.<id>.". Either blocks a
+// delete. It stops reading once it has limit.
+func (s *Store) liveAttachmentsUnder(ctx context.Context, prefix string, limit int) ([]string, error) {
+	lister, err := s.atts.ListKeysFiltered(ctx, prefix+"*")
 	if err != nil {
-		return nil, err
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list %s: %w", prefix, err)
 	}
+	defer func() { _ = lister.Stop() }()
 	var out []string
-	for _, id := range ids {
-		entry, _, err := getJSON[indexEntry](ctx, s.atts, prefix+id)
+	for key := range lister.Keys() {
+		id := idFromIndexKey(key)
+		if id == "" {
+			continue
+		}
+		entry, _, err := getJSON[indexEntry](ctx, s.atts, key)
 		if err != nil {
 			return nil, err
 		}
@@ -508,7 +572,14 @@ func (s *Store) liveAttachmentsUnder(ctx context.Context, prefix string) ([]stri
 		}
 		if (rec != nil && rec.isLive()) || (rec == nil && s.now().Sub(entry.CreatedAt) < claimGrace) {
 			out = append(out, id)
+			if len(out) >= limit {
+				return out, nil
+			}
 		}
+	}
+	// Cancellation closes the lister early, and a short list must not read as complete.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

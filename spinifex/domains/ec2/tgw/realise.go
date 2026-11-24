@@ -104,8 +104,8 @@ func (s *Store) MarkTransitGatewayCleaned(ctx context.Context, accountID, id str
 }
 
 // PrepareAttachment readies a pending attachment for realization: it rewrites
-// each parent at the revision read, then takes a link slot. An absent or
-// marked parent, or a full pool, moves the attachment to failed. It returns
+// each parent at the revision read, reaffirms its keys, then takes a link slot.
+// An absent or marked parent, a lost key, or a full pool moves it to failed. It returns
 // the record to realise, or nil when there is none.
 func (s *Store) PrepareAttachment(ctx context.Context, accountID, id string) (*AttachmentRecord, error) {
 	for range moveAttempts {
@@ -122,6 +122,13 @@ func (s *Store) PrepareAttachment(ctx context.Context, accountID, id string) (*A
 		}
 		if !present {
 			return nil, s.failAttachment(ctx, rec, rev, "a parent is gone")
+		}
+		// An admission that stopped after its record write never confirmed its keys.
+		if err := s.reaffirmAttachmentKeys(ctx, rec); err != nil {
+			if errors.Is(err, errKeyLost) {
+				return nil, s.failAttachment(ctx, rec, rev, "an index key or claim is lost")
+			}
+			return nil, err
 		}
 		if rec.LinkPrefix != "" {
 			return rec, nil
@@ -296,13 +303,13 @@ func (s *Store) RouteActive(ctx context.Context, accountID, tgwID, vpcID string)
 // VpcBlocksDeletion reports a live attachment of the VPC, or a young index
 // key whose record is not yet written. It reads only the VPC's index.
 func (s *Store) VpcBlocksDeletion(ctx context.Context, _, vpcID string) (bool, error) {
-	ids, err := s.liveAttachmentsUnder(ctx, "vpc."+vpcID+".")
+	ids, err := s.liveAttachmentsUnder(ctx, "vpc."+vpcID+".", 1)
 	return len(ids) > 0, err
 }
 
 // SubnetBlocksDeletion is VpcBlocksDeletion for a subnet.
 func (s *Store) SubnetBlocksDeletion(ctx context.Context, _, subnetID string) (bool, error) {
-	ids, err := s.liveAttachmentsUnder(ctx, "subnet."+subnetID+".")
+	ids, err := s.liveAttachmentsUnder(ctx, "subnet."+subnetID+".", 1)
 	return len(ids) > 0, err
 }
 

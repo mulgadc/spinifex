@@ -245,21 +245,54 @@ func TestReconcile_TransitGatewayRouteNeedsAttachmentZone(t *testing.T) {
 	}
 }
 
-// An attachment whose confirmation fails delivers nothing: its routes keep
-// only their drops, and the pass reports the link.
-func TestReconcile_TransitGatewayUnconfirmedLinkDoesNotDeliver(t *testing.T) {
-	rec, m := newTestReconciler(t)
+// An attachment whose confirmation fails stays pending and fails the pass, so
+// the next pass confirms it again.
+func TestReconcile_TransitGatewayUnconfirmedLinkStaysPending(t *testing.T) {
+	rec, _ := newTestReconciler(t)
 	p := &tgwRecorder{failActive: errors.New("kv down")}
 	p.wire(rec)
+	ctx := context.Background()
+	if err := rec.Reconcile(ctx, tgwIntent(false)); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+	p.failActive = nil
+	p.calls = nil
+	if err := rec.Reconcile(ctx, tgwIntent(false)); err != nil {
+		t.Fatalf("Reconcile retry: %v", err)
+	}
+	if want := []string{"barrier", "available:" + testAttA + ":4", "available:" + testAttB + ":4"}; !slices.Equal(p.calls, want) {
+		t.Errorf("retry calls = %v, want %v", p.calls, want)
+	}
+}
+
+// tgwRoutesFailFor fails the Transit Gateway route sync of one VPC.
+type tgwRoutesFailFor struct {
+	policy.PeeringRouteManager
+
+	vpcID string
+}
+
+func (f tgwRoutesFailFor) SyncTransitGatewayRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error {
+	if vpcID == f.vpcID {
+		return errors.New("ovsdb transact failed")
+	}
+	return f.PeeringRouteManager.SyncTransitGatewayRoutes(ctx, vpcID, want)
+}
+
+// A pending attachment whose VPC route rows failed to write is not confirmed,
+// so no route that names it describes as active while the datapath drops.
+// An attachment of another VPC is confirmed in the same pass.
+func TestReconcile_TransitGatewayRouteSyncFailureLeavesPending(t *testing.T) {
+	rec, _ := newTestReconciler(t)
+	p := &tgwRecorder{}
+	p.wire(rec)
+	rec.peeringRoutes = tgwRoutesFailFor{PeeringRouteManager: rec.peeringRoutes, vpcID: "vpc-a"}
 	err := rec.Reconcile(context.Background(), tgwIntent(false))
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
 	}
-	if got := reroutedSubnets(t, m, "vpc-vpc-a"); len(got) != 0 {
-		t.Errorf("reroutes = %v, want none before confirmation", got)
-	}
-	if got := len(policiesWith(t, m, "vpc-vpc-a", policy.TransitGatewayRouteDropRole)); got != 2 {
-		t.Errorf("route drops = %d, want 2", got)
+	if want := []string{"barrier", "available:" + testAttB + ":4"}; !slices.Equal(p.calls, want) {
+		t.Errorf("calls = %v, want %v", p.calls, want)
 	}
 }
 

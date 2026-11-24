@@ -117,21 +117,9 @@ func TestScenario_TransitGatewayTrace(t *testing.T) {
 	if lab.nb == "" || lab.sb == "" {
 		t.Skip("SPINIFEX_OVN_TRACE_NB and SPINIFEX_OVN_TRACE_SB name a lab NB and SB with ovn-northd")
 	}
-	if got := lab.nbctl("lr-list"); got != "" {
+	if got := lab.nbctl("lr-list") + lab.nbctl("ls-list"); got != "" {
 		t.Fatalf("lab NB is not empty:\n%s", got)
 	}
-	t.Cleanup(func() {
-		for line := range strings.SplitSeq(lab.nbctl("--bare", "--columns=name", "list", "Logical_Router"), "\n") {
-			if line != "" {
-				lab.nbctl("lr-del", line)
-			}
-		}
-		for line := range strings.SplitSeq(lab.nbctl("--bare", "--columns=name", "list", "Logical_Switch"), "\n") {
-			if line != "" {
-				lab.nbctl("ls-del", line)
-			}
-		}
-	})
 	rec, _ := newReconcilerAt(t, lab.nb)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -150,6 +138,27 @@ func TestScenario_TransitGatewayTrace(t *testing.T) {
 			tgwRoute("10.0.0.0/16"), {DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-b"},
 		}},
 	}
+	// Remove only what this test creates, so a lab shared with other work keeps it.
+	t.Cleanup(func() {
+		routers := []string{topology.TransitGatewayRouter(testTGW)}
+		switches := []string{"ext-trace"}
+		for _, v := range vpcs {
+			routers = append(routers, topology.VPCRouter(v.id))
+			for id := range v.subnets {
+				switches = append(switches, topology.SubnetSwitch(id))
+				for uuid := range strings.FieldsSeq(lab.nbctl("--bare", "--columns=_uuid", "find", "DHCP_Options", "external_ids:spinifex\\:subnet_id="+id)) {
+					lab.nbctl("destroy", "DHCP_Options", uuid)
+				}
+			}
+		}
+		for _, lr := range routers {
+			lab.nbctl("--if-exists", "lr-del", lr)
+		}
+		for _, ls := range switches {
+			lab.nbctl("--if-exists", "ls-del", ls)
+		}
+		lab.nbctl("--if-exists", "destroy", "Port_Group", "pg_trace")
+	})
 	atts := func(bDeleted bool) []ec2projection.TransitGatewayAttachment {
 		return []ec2projection.TransitGatewayAttachment{
 			traceAttachment("tgw-attach-a", "vpc-a", "subnet-a1", 1, 1, false),

@@ -408,8 +408,9 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 	r.applyNATGWRoutes(ctx, intent, actual, res)
 	deliver := r.applyPeeringLinks(ctx, intent, actual, res)
 	r.applyPeeringRoutes(ctx, intent, actual, deliver, res)
-	tgwDeliver := r.applyTransitGateways(ctx, intent, actual, res)
-	r.applyTGWRoutes(ctx, intent, actual, tgwDeliver, res)
+	tgwDeliver, tgwPending := r.applyTransitGateways(ctx, intent, actual, res)
+	unsynced := r.applyTGWRoutes(ctx, intent, actual, tgwDeliver, res)
+	r.confirmTGWLinks(ctx, intent, tgwPending, unsynced, res)
 	if pruneTopology {
 		r.prunePeeringOrphans(ctx, intent, res)
 		r.pruneTGWOrphans(ctx, intent, res)

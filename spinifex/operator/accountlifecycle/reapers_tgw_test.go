@@ -319,3 +319,26 @@ func TestFinalRereadSkipsReapersThatDoNotOptIn(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, accounts.deleted)
 }
+
+// A rollback below the Transit Gateway level that waits on its drain still
+// serves reads and refuses writes. The live gateway stays listed, its refused
+// delete is not taken as gone, and the account record is kept.
+func TestBlockedRollbackKeepsTheAccountForALiveGateway(t *testing.T) {
+	t.Parallel()
+	svc := &fakeTransitGateways{
+		gateways:  []*ec2.TransitGateway{gateway("tgw-1", ec2tgw.StateAvailable)},
+		deleteErr: awserrors.Errorf(awserrors.ErrorUnsupportedOperation, "Transit Gateways are not available."),
+	}
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts, &tgwAttachmentReaper{svc: svc}, &transitGatewayReaper{svc: svc})
+
+	result, err := engine.Teardown(t.Context(), request())
+	require.ErrorIs(t, err, ErrResourcesStuck)
+	assert.False(t, accounts.deleted)
+	stuck := networkStage(t, result).Stuck
+	require.NotEmpty(t, stuck)
+	for _, s := range stuck {
+		assert.Equal(t, "tgw-1", s.Resource.ID)
+	}
+	assert.Empty(t, svc.deletedGateways)
+}

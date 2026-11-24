@@ -116,12 +116,13 @@ func tgwAdmission(gate *featurelevel.Gate) func(context.Context) (func(), bool, 
 	}
 }
 
-// tgwOffered answers whether Transit Gateway reads are served.
+// tgwOffered answers whether Transit Gateway reads are served: while the level
+// is recorded, so a rollback blocked on a live gateway still lists it.
 func tgwOffered(gate *featurelevel.Gate) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		if gate == nil {
 			return false, errors.New("feature level gate not ready")
 		}
-		return gate.Active(ctx, featurelevel.TransitGateways)
+		return gate.Recorded(ctx, featurelevel.TransitGateways)
 	}
 }

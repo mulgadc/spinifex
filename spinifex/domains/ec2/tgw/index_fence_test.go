@@ -17,16 +17,26 @@ import (
 type recordWriteHook struct {
 	jetstream.KeyValue
 
-	onCreate func()
+	onCreate    func()
+	afterCreate func()
 }
 
 func (h *recordWriteHook) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
-	if h.onCreate != nil && strings.HasPrefix(key, testAccount+".") {
+	if !strings.HasPrefix(key, testAccount+".") {
+		return h.KeyValue.Create(ctx, key, value, opts...)
+	}
+	if h.onCreate != nil {
 		f := h.onCreate
 		h.onCreate = nil
 		f()
 	}
-	return h.KeyValue.Create(ctx, key, value, opts...)
+	rev, err := h.KeyValue.Create(ctx, key, value, opts...)
+	if h.afterCreate != nil {
+		f := h.afterCreate
+		h.afterCreate = nil
+		f()
+	}
+	return rev, err
 }
 
 // sweepView is what a sweep paused after its absent-owner read holds.
@@ -138,4 +148,106 @@ func TestCreateTransitGateway_PausedSweepLosesAccountKeyDelete(t *testing.T) {
 	ids, err := listIndex(t.Context(), hook.KeyValue, "acct."+testAccount+".")
 	require.NoError(t, err)
 	require.Equal(t, []string{aws.StringValue(out.TransitGateway.TransitGatewayId)}, ids)
+}
+
+// An admission that stopped after its record write, while a sweep removed its
+// keys, leaves a pending attachment that no parent delete sees. The reconciler
+// moves it to failed and never takes a link for it.
+func TestPrepareAttachment_LostKeysFailAttachment(t *testing.T) {
+	t.Parallel()
+	for _, lost := range []string{"acct.", "tgw.", "vpc.", "subnet.", "pair."} {
+		t.Run(lost, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tgwID := f.availableTGW()
+			vpcID, subnetID := f.network("vpc-00000001")
+			att, err := f.attach(tgwID, vpcID, subnetID)
+			require.NoError(t, err)
+			attID := aws.StringValue(att.TransitGatewayAttachmentId)
+			for _, key := range keys(t, f.svc.atts) {
+				if strings.HasPrefix(key, lost) {
+					require.NoError(t, deleteKey(t.Context(), f.svc.atts, key))
+				}
+			}
+
+			rec, err := f.svc.PrepareAttachment(t.Context(), testAccount, attID)
+			require.NoError(t, err)
+			require.Nil(t, rec)
+			term, err := f.svc.terminalAttachment(t.Context(), testAccount, attID)
+			require.NoError(t, err)
+			require.NotNil(t, term)
+			require.Equal(t, StateFailed, term.State)
+			for _, key := range keys(t, f.svc.atts) {
+				require.False(t, hasAnyPrefix(key, []string{"link.", testAccount + "."}), "left %s", key)
+			}
+		})
+	}
+}
+
+// A pair claim taken over by another attachment fails the reconcile the same way.
+func TestPrepareAttachment_PairOwnedElsewhereFailsAttachment(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tgwID := f.availableTGW()
+	vpcID, subnetID := f.network("vpc-00000001")
+	att, err := f.attach(tgwID, vpcID, subnetID)
+	require.NoError(t, err)
+	attID := aws.StringValue(att.TransitGatewayAttachmentId)
+	_, err = putJSON(t.Context(), f.svc.atts, pairKey(tgwID, vpcID), claim{Owner: "tgw-attach-0000000000000000f", AccountID: testAccount})
+	require.NoError(t, err)
+
+	rec, err := f.svc.PrepareAttachment(t.Context(), testAccount, attID)
+	require.NoError(t, err)
+	require.Nil(t, rec)
+	term, err := f.svc.terminalAttachment(t.Context(), testAccount, attID)
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, term.State)
+	held, _, err := getJSON[claim](t.Context(), f.svc.atts, pairKey(tgwID, vpcID))
+	require.NoError(t, err)
+	require.Equal(t, "tgw-attach-0000000000000000f", held.Owner, "the other holder keeps its claim")
+}
+
+// A reconcile that prepares the attachment between the record write and the
+// admission's key check does not fail the admission.
+func TestAttachmentAdmission_PrepareDuringAdmission(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tgwID := f.availableTGW()
+	vpcID, subnetID := f.network("vpc-00000001")
+	var prepared *AttachmentRecord
+	hook := &recordWriteHook{KeyValue: f.svc.atts}
+	hook.afterCreate = func() {
+		ids, err := listIndex(t.Context(), hook.KeyValue, "acct."+testAccount+".")
+		require.NoError(t, err)
+		require.Len(t, ids, 1)
+		prepared, err = f.svc.PrepareAttachment(t.Context(), testAccount, ids[0])
+		require.NoError(t, err)
+	}
+	f.svc.atts = hook
+
+	att, err := f.attach(tgwID, vpcID, subnetID)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	require.NotEmpty(t, prepared.LinkPrefix)
+	rec, _, err := f.svc.attachment(t.Context(), testAccount, aws.StringValue(att.TransitGatewayAttachmentId))
+	require.NoError(t, err)
+	require.Equal(t, StatePending, rec.State)
+	require.Equal(t, prepared.LinkPrefix, rec.LinkPrefix)
+}
+
+// A refused delete reads only as many index keys as it names, however many
+// attachments the gateway has.
+func TestLiveAttachmentsUnder_StopsAtLimit(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for _, id := range []string{"tgw-attach-00000001", "tgw-attach-00000002", "tgw-attach-00000003"} {
+		_, err := putJSON(t.Context(), f.svc.atts, tgwIndexKey("tgw-00000001", id), indexEntry{AccountID: testAccount, CreatedAt: f.svc.now()})
+		require.NoError(t, err)
+	}
+	got, err := f.svc.liveAttachmentsUnder(t.Context(), "tgw.tgw-00000001.", 2)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	got, err = f.svc.liveAttachmentsUnder(t.Context(), "tgw.tgw-00000001.", maxBlockingListed)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
 }

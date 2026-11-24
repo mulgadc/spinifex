@@ -31,13 +31,13 @@ type TransitGatewayHooks struct {
 var defaultRoute = netip.MustParsePrefix("0.0.0.0/0")
 
 // applyTransitGateways prepares new attachments, tears down deleted links and
-// routers, writes each live router and link, and confirms pending ones. It
-// returns the attachments that may deliver this pass.
-func (r *reconciler) applyTransitGateways(ctx context.Context, intent IntentState, actual ActualState, res *passResult) map[string]bool {
+// routers, and writes each live router and link. It returns the links written
+// this pass, which may deliver, and those of them still to confirm.
+func (r *reconciler) applyTransitGateways(ctx context.Context, intent IntentState, actual ActualState, res *passResult) (deliver map[string]bool, pending []string) {
 	if intent.TGWIncomplete != nil {
 		slog.Warn("reconcile/apply: Transit Gateway intent incomplete; left unchanged", "err", intent.TGWIncomplete)
 		res.fail(classTGWLink, "intent", intent.TGWIncomplete)
-		return nil
+		return nil, nil
 	}
 	h := r.tgwHooks
 	for _, id := range slices.Sorted(maps.Keys(intent.TGWPrepare)) {
@@ -105,7 +105,7 @@ func reportCleaned(ctx context.Context, hook func(ctx context.Context, accountID
 	}
 }
 
-func (r *reconciler) applyTGWLinks(ctx context.Context, intent IntentState, actual ActualState, res *passResult) map[string]bool {
+func (r *reconciler) applyTGWLinks(ctx context.Context, intent IntentState, actual ActualState, res *passResult) (deliver map[string]bool, pending []string) {
 	igw := map[string]bool{}
 	for _, spec := range intent.IGWs {
 		igw[spec.VPCID] = true
@@ -122,8 +122,7 @@ func (r *reconciler) applyTGWLinks(ctx context.Context, intent IntentState, actu
 		}
 		entries[key][rt.Dest] = struct{}{}
 	}
-	deliver := map[string]bool{}
-	var pending []string
+	deliver = map[string]bool{}
 	for _, id := range slices.Sorted(maps.Keys(intent.TGWLinks)) {
 		link := intent.TGWLinks[id]
 		ends := tgwLinkEnds(link, entries[link.Spec.VPCID+"|"+link.Spec.TransitGatewayID])
@@ -136,35 +135,43 @@ func (r *reconciler) applyTGWLinks(ctx context.Context, intent IntentState, actu
 			res.fail(classTGWLink, id, err)
 			continue
 		}
-		switch {
-		case link.Available || r.tgwHooks.MarkAttachmentAvailable == nil:
-			deliver[id] = true
-		default:
+		deliver[id] = true
+		if !link.Available && r.tgwHooks.MarkAttachmentAvailable != nil {
 			pending = append(pending, id)
 		}
 	}
-	if len(pending) == 0 {
-		return deliver
+	return deliver, pending
+}
+
+// confirmTGWLinks marks each pending link available once its own rows and its
+// VPC's route rows are written and the flows barrier has passed. A link whose
+// VPC route sync failed this pass stays pending.
+func (r *reconciler) confirmTGWLinks(ctx context.Context, intent IntentState, pending []string, unsynced map[string]bool, res *passResult) {
+	var ready []string
+	for _, id := range pending {
+		if !unsynced[intent.TGWLinks[id].Spec.VPCID] {
+			ready = append(ready, id)
+		}
+	}
+	if len(ready) == 0 {
+		return
 	}
 	if r.flowsBarrier != nil {
 		if err := r.flowsBarrier(); err != nil {
 			slog.Warn("reconcile/apply: flows barrier failed before attachment activation", "err", err)
-			for _, id := range pending {
+			for _, id := range ready {
 				res.fail(classTGWLink, id, err)
 			}
-			return deliver
+			return
 		}
 	}
-	for _, id := range pending {
+	for _, id := range ready {
 		link := intent.TGWLinks[id]
 		if err := r.tgwHooks.MarkAttachmentAvailable(ctx, link.AccountID, id, link.Generation); err != nil {
 			slog.Warn("reconcile/apply: marking attachment available failed", "transit_gateway_attachment_id", id, "err", err)
 			res.fail(classTGWLink, id, err)
-			continue
 		}
-		deliver[id] = true
 	}
-	return deliver
 }
 
 func firstMissingRouter(actual ActualState, names ...string) string {
@@ -208,11 +215,13 @@ func comparePrefix(a, b netip.Prefix) int {
 
 // applyTGWRoutes makes each local VPC router's Transit Gateway route rows
 // exactly what its tables say. A route delivers only over a link in deliver,
-// and only from a subnet in a zone the attachment has a subnet in.
-func (r *reconciler) applyTGWRoutes(ctx context.Context, intent IntentState, actual ActualState, deliver map[string]bool, res *passResult) {
+// and only from a subnet in a zone the attachment has a subnet in. It returns
+// the VPCs whose sync failed.
+func (r *reconciler) applyTGWRoutes(ctx context.Context, intent IntentState, actual ActualState, deliver map[string]bool, res *passResult) map[string]bool {
 	if intent.TGWIncomplete != nil {
-		return
+		return nil
 	}
+	unsynced := map[string]bool{}
 	links := map[string]string{}
 	for id, link := range intent.TGWLinks {
 		links[link.Spec.VPCID+"|"+link.Spec.TransitGatewayID] = id
@@ -244,8 +253,10 @@ func (r *reconciler) applyTGWRoutes(ctx context.Context, intent IntentState, act
 		if err != nil {
 			slog.Error("reconcile/apply: Transit Gateway route sync failed", "vpc_id", vpcID, "err", err)
 			res.fail(classTGWRoute, vpcID, err)
+			unsynced[vpcID] = true
 		}
 	}
+	return unsynced
 }
 
 // pruneTGWOrphans deletes Transit Gateway routers and attachment rows whose

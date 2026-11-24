@@ -279,7 +279,7 @@ func (s *ServiceImpl) DeleteTransitGateway(ctx context.Context, input *ec2.Delet
 		if rec.State == StateDeleting || rec.State == StateDeleted {
 			return &ec2.DeleteTransitGatewayOutput{TransitGateway: s.transitGatewayToEC2(rec, false)}, nil
 		}
-		blocking, err := s.liveAttachmentsUnder(ctx, "tgw."+id+".")
+		blocking, err := s.liveAttachmentsUnder(ctx, "tgw."+id+".", maxBlockingListed)
 		if err != nil {
 			return nil, internalError(ctx, op, err)
 		}
@@ -378,27 +378,23 @@ func (s *ServiceImpl) CreateTransitGatewayVpcAttachment(ctx context.Context, inp
 	duplicate := awserrors.Errorf(awserrors.ErrorDuplicateTransitGatewayAttachment,
 		"%s has non-deleted Transit Gateway Attachments with same VPC ID.", tgwID)
 	pair := pairKey(tgwID, vpcID)
-	pairRev, err := s.takeClaim(ctx, s.atts, pair, s.attachmentClaim(rec), s.attachmentHolderStale)
+	_, err = s.takeClaim(ctx, s.atts, pair, s.attachmentClaim(rec), s.attachmentHolderStale)
 	if errors.Is(err, errClaimHeld) {
 		return nil, duplicate
 	}
 	if err != nil {
 		return nil, internalError(ctx, op, err)
 	}
-	indexRevs, err := s.writeAttachmentIndexes(ctx, rec)
-	if err != nil {
+	if _, err := s.writeAttachmentIndexes(ctx, rec); err != nil {
 		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
 	}
 	if _, err := writeJSON(ctx, s.atts, recordKey(accountID, rec.ID), rec, 0); err != nil {
 		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
 	}
-	if err := touchIndexes(ctx, s.atts, indexRevs); err != nil {
-		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))
-	}
-	// A newer admission took the pair over while this one paused before its
-	// record write.
-	if err := touchAt(ctx, s.atts, pair, pairRev); err != nil {
-		if errors.Is(err, errConflict) {
+	// A sweep removed a key, or a newer admission took the pair over, while
+	// this one paused before its record write.
+	if err := s.reaffirmAttachmentKeys(ctx, rec); err != nil {
+		if errors.Is(err, errPairTaken) {
 			return nil, s.undoAdmission(ctx, op, rec, duplicate)
 		}
 		return nil, s.undoAdmission(ctx, op, rec, internalError(ctx, op, err))

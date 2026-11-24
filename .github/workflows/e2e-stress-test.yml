@@ -1,0 +1,118 @@
+name: E2E Stress Test (dev-prod)
+
+# One stress stage on the dev-prod cluster: N real tenant accounts deploying the load test's
+# stacks at once. Dispatch only. The runner is bottlebrush, which holds the test data, the
+# images and the site-crawler mirror the harness reads.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Stage id, e.g. devprod-stress-1-1 (also the record's name)"
+        required: true
+        type: string
+      accounts:
+        description: "Tenant accounts"
+        required: true
+        default: "2"
+        type: string
+      metatrail_accounts:
+        description: "Accounts that also run metatrail (at most one per account)"
+        required: true
+        default: "2"
+        type: string
+      nginx_per_account:
+        description: "nginx web tiers per account"
+        required: true
+        default: "1"
+        type: string
+      rds_per_account:
+        description: "RDS + pgbench stacks per account"
+        required: true
+        default: "1"
+        type: string
+      reset:
+        description: "Reset dev-prod to the ISO and install dev first. Setting this is the approval for that reset."
+        required: true
+        default: false
+        type: boolean
+      layout:
+        description: "With reset: storage layout to install onto"
+        required: true
+        default: current
+        type: choice
+        options:
+          - current
+          - split
+      teardown:
+        description: "Destroy every stack and delete every account at the end"
+        required: true
+        default: true
+        type: boolean
+
+# Two stages never share the cluster: queued, not cancelled.
+concurrency:
+  group: devprod-stress
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Stress stage ${{ inputs.stage }}
+    runs-on: [self-hosted, devprod-stress]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/create-github-app-token@v3.4.0
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga,spinifex,predastore,viperblock,northstar,bluebottle
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: mulgadc/mulga
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: mulga
+
+      # The cluster is installed from every sub-repo's dev, as the dev-prod runbook does.
+      - uses: actions/checkout@v7.0.1
+        with: { repository: mulgadc/spinifex, ref: dev, token: "${{ steps.app-token.outputs.token }}", path: mulga/spinifex }
+      - uses: actions/checkout@v7.0.1
+        with: { repository: mulgadc/predastore, ref: dev, token: "${{ steps.app-token.outputs.token }}", path: mulga/predastore }
+      - uses: actions/checkout@v7.0.1
+        with: { repository: mulgadc/viperblock, ref: dev, token: "${{ steps.app-token.outputs.token }}", path: mulga/viperblock }
+      - uses: actions/checkout@v7.0.1
+        with: { repository: mulgadc/northstar, ref: dev, token: "${{ steps.app-token.outputs.token }}", path: mulga/northstar }
+      - uses: actions/checkout@v7.0.1
+        with: { repository: mulgadc/bluebottle, ref: dev, token: "${{ steps.app-token.outputs.token }}", path: mulga/bluebottle }
+
+      - name: Run the stage
+        working-directory: mulga
+        env:
+          STAGE: ${{ inputs.stage }}
+          ACCOUNTS: ${{ inputs.accounts }}
+          MT: ${{ inputs.metatrail_accounts }}
+          NGINX: ${{ inputs.nginx_per_account }}
+          RDS: ${{ inputs.rds_per_account }}
+          RESET: ${{ inputs.reset }}
+          LAYOUT: ${{ inputs.layout }}
+          TEARDOWN: ${{ inputs.teardown }}
+        run: |
+          export PATH="$HOME/bin:$PATH" SITE_CRAWLER_REPO="$HOME/site-crawler.git"
+          args=(--stage "$STAGE" --accounts "$ACCOUNTS" --metatrail-accounts "$MT" --nginx "$NGINX" --rds "$RDS")
+          [ "$RESET" = true ] && args+=(--reset --layout "$LAYOUT")
+          [ "$TEARDOWN" = true ] || args+=(--no-teardown)
+          scripts/e2e-loadtest/stress.sh "${args[@]}"
+
+      # An allowlist of reports and metrics, scanned for secrets by stress.sh before it is written.
+      - name: Upload the stage record
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ inputs.stage }}
+          path: ~/loadtest-runs/${{ inputs.stage }}/${{ inputs.stage }}-artifact.tgz
+          if-no-files-found: warn
+          retention-days: 90

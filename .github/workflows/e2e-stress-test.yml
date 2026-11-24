@@ -107,10 +107,22 @@ jobs:
           MT: ${{ inputs.metatrail_accounts }}
           NGINX: ${{ inputs.nginx_per_account }}
           RDS: ${{ inputs.rds_per_account }}
+          RESET: ${{ inputs.reset }}
         run: |
+          # A re-run keeps the original inputs, so a reset is approved for the first attempt only.
+          if [ "$RESET" = true ] && [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            echo "::error::reset is approved for one attempt; dispatch a new run to reset again"; exit 1
+          fi
           [[ "$STAGE" =~ ^[a-z0-9][a-z0-9-]{2,26}$ ]] || { echo "::error::stage: lowercase, digits and dashes, 3-27 chars"; exit 1; }
           for v in "$ACCOUNTS" "$MT" "$NGINX" "$RDS"; do [[ "$v" =~ ^[0-9]{1,2}$ ]] || { echo "::error::counts are 0-99"; exit 1; }; done
           [ "$MT" -le 2 ] || { echo "::error::metatrail_accounts is at most 2"; exit 1; }
+
+      # A directory of this attempt's own: nothing left by an earlier attempt can be uploaded.
+      - name: Make this attempt's output directory
+        run: |
+          out="$RUNNER_TEMP/stress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$out" && mkdir "$out"
+          echo "STRESS_OUT=$out" >> "$GITHUB_ENV"
 
       - name: Run the stage
         working-directory: mulga
@@ -126,7 +138,7 @@ jobs:
           BENCH: ${{ inputs.bench }}
         run: |
           export PATH="$HOME/bin:$PATH" SITE_CRAWLER_REPO="$HOME/site-crawler.git"
-          export MONGO_DUMP_PATH="$HOME/metatrail/metatrail-v2" ARTIFACT_OUT="$RUNNER_TEMP/stress-artifact.tgz"
+          export MONGO_DUMP_PATH="$HOME/metatrail/metatrail-v2" ARTIFACT_OUT="$STRESS_OUT/stress-artifact.tgz"
           args=(--stage "$STAGE" --accounts "$ACCOUNTS" --metatrail-accounts "$MT" --nginx "$NGINX" --rds "$RDS")
           [ "$RESET" = true ] && args+=(--reset --layout "$LAYOUT")
           [ "$TEARDOWN" = true ] || args+=(--no-teardown)
@@ -140,6 +152,6 @@ jobs:
         uses: actions/upload-artifact@v7.0.2
         with:
           name: stress-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/stress-artifact.tgz
+          path: ${{ env.STRESS_OUT }}/stress-artifact.tgz
           if-no-files-found: error
           retention-days: 90

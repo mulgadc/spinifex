@@ -238,3 +238,35 @@ func TestDescribeNetworkTestsUnknownID(t *testing.T) {
 	code, _ := awserrors.ResolveErrorCode(err)
 	assert.Equal(t, awserrors.ErrorResourceNotFound, code)
 }
+
+func TestDescribeNetworkTestsReportsARunningTestWithoutItsClaimAsInterrupted(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	store := NewKVNetworkTests(js)
+	d := Deps{NetworkTests: store}
+	orphan := &NetworkTest{TestID: "nt-orphan", Status: NetworkTestRunning, StartedAt: time.Now().UTC(), Runs: []NetworkTestResult{
+		{From: "a", To: "b", Status: NetworkTestComplete},
+		{From: "b", To: "a", Status: NetworkTestRunning},
+	}}
+	require.NoError(t, store.Claim(ctx, orphan.TestID, time.Now().Add(-time.Second)), "the gateway died and its claim lapsed")
+	require.NoError(t, store.Put(ctx, orphan))
+
+	out, err := d.DescribeNetworkTests(ctx, map[string]string{"TestId": orphan.TestID})
+	require.NoError(t, err)
+	got := out.Tests[0]
+	assert.Equal(t, NetworkTestFailed, got.Status)
+	assert.Equal(t, "interrupted", got.Error)
+	assert.Equal(t, NetworkTestComplete, got.Runs[0].Status)
+	assert.Equal(t, NetworkTestFailed, got.Runs[1].Status)
+
+	live := &NetworkTest{TestID: "nt-live", Status: NetworkTestRunning, StartedAt: time.Now().UTC()}
+	require.NoError(t, store.Claim(ctx, live.TestID, time.Now().Add(time.Minute)))
+	require.NoError(t, store.Put(ctx, live))
+	listed, err := d.DescribeNetworkTests(ctx, nil)
+	require.NoError(t, err)
+	status := map[string]string{}
+	for _, test := range listed.Tests {
+		status[test.TestID] = test.Status
+	}
+	assert.Equal(t, map[string]string{"nt-live": NetworkTestRunning, "nt-orphan": NetworkTestFailed}, status)
+}

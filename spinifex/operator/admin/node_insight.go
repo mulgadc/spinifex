@@ -104,6 +104,8 @@ type NetworkTestStore interface {
 	Put(ctx context.Context, t *NetworkTest) error
 	Get(ctx context.Context, testID string) (*NetworkTest, error)
 	List(ctx context.Context) ([]NetworkTest, error)
+	// Holder is the test that holds an unexpired claim, or "" when none does.
+	Holder(ctx context.Context) (string, error)
 }
 
 // ErrNetworkTestBusy is a claim refused because another test is running.
@@ -221,6 +223,20 @@ func (s *KVNetworkTests) List(ctx context.Context) ([]NetworkTest, error) {
 		return tests, nil
 	}
 	return append(tests, *newest), nil
+}
+
+func (s *KVNetworkTests) Holder(ctx context.Context) (string, error) {
+	claim, _, err := s.claims.Get(ctx, networkTestClaimKey)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !time.Now().Before(claim.Until) {
+		return "", nil
+	}
+	return claim.TestID, nil
 }
 
 // newest is the test the claim names, or nil when there is no claim or its
@@ -466,10 +482,17 @@ func (d Deps) DescribeNetworkTests(ctx context.Context, args map[string]string) 
 		if err != nil {
 			return nil, err
 		}
-		return &DescribeNetworkTestsOutput{Tests: []NetworkTest{*t}}, nil
+		tests := []NetworkTest{*t}
+		if err := d.markInterrupted(ctx, tests); err != nil {
+			return nil, err
+		}
+		return &DescribeNetworkTestsOutput{Tests: tests}, nil
 	}
 	tests, err := d.NetworkTests.List(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := d.markInterrupted(ctx, tests); err != nil {
 		return nil, err
 	}
 	slices.SortFunc(tests, func(a, b NetworkTest) int { return b.StartedAt.Compare(a.StartedAt) })
@@ -480,4 +503,27 @@ func (d Deps) DescribeNetworkTests(ctx context.Context, args map[string]string) 
 		tests = []NetworkTest{}
 	}
 	return &DescribeNetworkTestsOutput{Tests: tests}, nil
+}
+
+// markInterrupted reports a running test that no longer holds the claim as
+// failed: its runner died with its gateway and will never write the outcome.
+func (d Deps) markInterrupted(ctx context.Context, tests []NetworkTest) error {
+	holder, err := d.NetworkTests.Holder(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range tests {
+		t := &tests[i]
+		if t.Status != NetworkTestRunning || t.TestID == holder {
+			continue
+		}
+		t.Status, t.Error = NetworkTestFailed, "interrupted"
+		t.Runs = slices.Clone(t.Runs)
+		for j := range t.Runs {
+			if t.Runs[j].Status == NetworkTestRunning {
+				t.Runs[j].Status, t.Runs[j].Error = NetworkTestFailed, "interrupted"
+			}
+		}
+	}
+	return nil
 }

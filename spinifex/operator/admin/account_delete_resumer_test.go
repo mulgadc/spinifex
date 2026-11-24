@@ -4,12 +4,14 @@ package admin
 // with a retried request are unexported.
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -139,6 +141,43 @@ func TestDeletionResumerStopsWithItsContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumer did not stop")
 	}
+}
+
+// A bucket that first appears a minute after the gateway starts changes the
+// cluster's bucket list under the replica audit and repair.
+func TestDeletionResumerOpensItsBucketAtStart(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	js, err := jetstream.New(gw.NATS)
+	require.NoError(t, err)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound)
+
+	stop := gw.StartDeletionResumer(t.Context())
+	t.Cleanup(stop)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.NoError(t, err, "the bucket must exist once the resumer has started, before the gateway serves")
+}
+
+// A failed open at start leaves the bucket to the scan, which creates it even on
+// a gateway that cannot run a teardown.
+func TestDeletionScanCreatesTheBucketAfterAFailedStartOpen(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	gw.Termination = nil
+	failed, cancel := context.WithCancel(t.Context())
+	cancel()
+	gw.StartDeletionResumer(failed)()
+
+	js, err := jetstream.New(gw.NATS)
+	require.NoError(t, err)
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "the open at start must have failed")
+
+	assert.Zero(t, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+
+	_, err = js.KeyValue(t.Context(), KVBucketAccountDeletions)
+	require.NoError(t, err)
 }
 
 // A gateway whose cleanup failed to build must leave an abandoned job for one

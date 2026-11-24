@@ -18,10 +18,21 @@ import (
 // stays well below the lease.
 const accountDeletionResumeInterval = 60 * time.Second
 
+// accountDeletionOpenTimeout bounds the bucket open at start, which runs before
+// the gateway serves.
+const accountDeletionOpenTimeout = 10 * time.Second
+
 // StartDeletionResumer scans until ctx is cancelled or stop is called, and stop
 // waits for the loop to exit. A resumed teardown runs on its own context, like
 // one started by a request.
 func (d Deps) StartDeletionResumer(ctx context.Context) (stop func()) {
+	if d.NATS != nil {
+		// Opened before serving, so a successful open keeps the bucket list from
+		// growing under a replica audit; on failure the scan and requests create it.
+		openCtx, cancelOpen := context.WithTimeout(ctx, accountDeletionOpenTimeout)
+		_, _ = d.accountDeletionStore(openCtx)
+		cancelOpen()
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -50,11 +61,11 @@ func jittered(d time.Duration) time.Duration {
 // have no live lease, which completes a decision already recorded (ADR-0003:S7).
 // Records without an operation id and fence, and failed jobs, are left alone.
 func (d Deps) resumeDeletions(ctx context.Context, now time.Time) int {
-	if d.Termination == nil || d.NATS == nil {
+	if d.NATS == nil {
 		return 0
 	}
 	jobs, err := d.accountDeletionStore(ctx)
-	if err != nil {
+	if err != nil || d.Termination == nil {
 		return 0
 	}
 	keys, err := jobs.Keys(ctx)

@@ -1,7 +1,7 @@
 name: E2E Stress Test (dev-prod)
 
 # One stress stage on the dev-prod cluster: N real tenant accounts deploying the load test's
-# stacks at once. Dispatch only. The runner is bottlebrush, which holds the test data, the
+# stacks at once. Dispatch only, from dev. The runner is bottlebrush, which holds the test data, the
 # images and the site-crawler mirror the harness reads.
 on:
   workflow_dispatch:
@@ -65,7 +65,10 @@ permissions:
 jobs:
   stress:
     name: Stress stage ${{ inputs.stage }}
-    runs-on: [self-hosted, devprod-stress]
+    # Only from dev, and only on the runner registered with this one label and no default ones,
+    # so no job asking for a generic self-hosted runner can land on a host with cluster access.
+    if: github.ref == 'refs/heads/dev'
+    runs-on: [devprod-stress]
     timeout-minutes: 720
     steps:
       - uses: actions/create-github-app-token@v3.4.0

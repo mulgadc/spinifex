@@ -17,6 +17,8 @@ import {
   DescribeSecurityGroupsCommand,
   DescribeSnapshotsCommand,
   DescribeSubnetsCommand,
+  DescribeTransitGatewaysCommand,
+  DescribeTransitGatewayVpcAttachmentsCommand,
   DescribeVolumesCommand,
   DescribeVpcEndpointServicesCommand,
   DescribeVpcEndpointsCommand,
@@ -382,6 +384,54 @@ export const ec2VpcPeeringConnectionQueryOptions = (connectionId: string) =>
     queryFn: async () => {
       const command = new DescribeVpcPeeringConnectionsCommand({
         VpcPeeringConnectionIds: [connectionId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2TransitGatewaysQueryOptions = queryOptions({
+  queryKey: ["ec2", "transitGateways"],
+  queryFn: async () => {
+    const command = new DescribeTransitGatewaysCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2TransitGatewayQueryOptions = (transitGatewayId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGateways", transitGatewayId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewaysCommand({
+        TransitGatewayIds: [transitGatewayId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2TransitGatewayVpcAttachmentsQueryOptions = queryOptions({
+  queryKey: ["ec2", "transitGatewayVpcAttachments"],
+  queryFn: async () => {
+    const command = new DescribeTransitGatewayVpcAttachmentsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2TransitGatewayVpcAttachmentQueryOptions = (
+  attachmentId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGatewayVpcAttachments", attachmentId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewayVpcAttachmentsCommand({
+        TransitGatewayAttachmentIds: [attachmentId],
       })
 
       return await getEc2Client().send(command)

@@ -21,12 +21,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { routableTransitGateways } from "@/lib/transit-gateway"
 import { getNameTag } from "@/lib/utils"
 import { isLivePeering, peerOf, touchesVpc } from "@/lib/vpc-peering"
 import { useCreateRoute, useDeleteRoute } from "@/mutations/ec2"
 import {
   ec2InternetGatewaysQueryOptions,
   ec2NatGatewaysQueryOptions,
+  ec2TransitGatewaysQueryOptions,
+  ec2TransitGatewayVpcAttachmentsQueryOptions,
   ec2VpcPeeringConnectionsQueryOptions,
 } from "@/queries/ec2"
 import { type CreateRouteFormData, createRouteSchema } from "@/types/ec2"
@@ -44,12 +47,13 @@ export function routeTarget(route: RouteEntry): string {
     route.NetworkInterfaceId ??
     route.InstanceId ??
     route.VpcPeeringConnectionId ??
+    route.TransitGatewayId ??
     "—"
   )
 }
 
-// The table's routes, with add and delete. Only gateways and peering connections of
-// the table's own VPC are offered as targets; the local route cannot be deleted.
+// The table's routes, with add and delete. Only targets the table's own VPC can
+// reach are offered; the local route cannot be deleted.
 function routeColumns(
   deleting: boolean,
   onDelete: (cidr: string) => void,
@@ -113,6 +117,12 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   const { data: igwData } = useQuery(ec2InternetGatewaysQueryOptions)
   const { data: natData } = useQuery(ec2NatGatewaysQueryOptions)
   const { data: pcxData } = useQuery(ec2VpcPeeringConnectionsQueryOptions)
+  const { data: tgwData } = useQuery(ec2TransitGatewaysQueryOptions)
+
+  const { data: attachmentData } = useQuery(
+    ec2TransitGatewayVpcAttachmentsQueryOptions,
+  )
+
   const createRoute = useCreateRoute()
   const deleteRoute = useDeleteRoute()
   const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
@@ -141,6 +151,12 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
     (pcx) => touchesVpc(pcx, rtb.VpcId) && isLivePeering(pcx),
   )
 
+  const vpcTransitGateways = routableTransitGateways(
+    tgwData?.TransitGateways ?? [],
+    attachmentData?.TransitGatewayVpcAttachments ?? [],
+    rtb.VpcId,
+  )
+
   const targets = {
     igw: attachedIgws.map((igw) => ({
       id: igw.InternetGatewayId ?? "",
@@ -159,6 +175,12 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
         id,
         label: `${id} (${name ?? `${peer?.VpcId ?? ""} ${peer?.CidrBlock ?? ""}`.trim()})`,
       }
+    }),
+    tgw: vpcTransitGateways.map((tgw) => {
+      const id = tgw.TransitGatewayId ?? ""
+      const name = getNameTag(tgw.Tags)
+
+      return { id, label: name ? `${id} (${name})` : id }
     }),
   }[targetType]
 
@@ -190,6 +212,8 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
         natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
         vpcPeeringConnectionId:
           values.targetType === "pcx" ? values.targetId : undefined,
+        transitGatewayId:
+          values.targetType === "tgw" ? values.targetId : undefined,
       })
     } catch {
       // Shown by the banner above the form.
@@ -251,6 +275,7 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
                       <SelectItem value="igw">Internet gateway</SelectItem>
                       <SelectItem value="nat">NAT gateway</SelectItem>
                       <SelectItem value="pcx">Peering connection</SelectItem>
+                      <SelectItem value="tgw">Transit gateway</SelectItem>
                     </SelectContent>
                   </Select>
                 )}

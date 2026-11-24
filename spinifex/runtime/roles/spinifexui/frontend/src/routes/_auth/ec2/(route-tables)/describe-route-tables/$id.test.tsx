@@ -71,6 +71,24 @@ async function renderPage() {
       peering("pcx-elsewhere", "active", "vpc-2", "vpc-3"),
     ],
   })
+  qc.setQueryData(["ec2", "transitGateways"], {
+    TransitGateways: [
+      { TransitGatewayId: "tgw-ready", State: "available" },
+      {
+        TransitGatewayId: "tgw-named",
+        State: "available",
+        Tags: [{ Key: "Name", Value: "core" }],
+      },
+      { TransitGatewayId: "tgw-elsewhere", State: "available" },
+    ],
+  })
+  qc.setQueryData(["ec2", "transitGatewayVpcAttachments"], {
+    TransitGatewayVpcAttachments: [
+      { TransitGatewayId: "tgw-ready", VpcId: "vpc-1", State: "available" },
+      { TransitGatewayId: "tgw-named", VpcId: "vpc-1", State: "pending" },
+      { TransitGatewayId: "tgw-elsewhere", VpcId: "vpc-2", State: "available" },
+    ],
+  })
   qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
   const Detail = Route.options.component
 
@@ -164,6 +182,40 @@ describe("route table detail", () => {
         RouteTableId: "rtb-1",
         DestinationCidrBlock: "10.3.0.0/16",
         VpcPeeringConnectionId: "pcx-accepted",
+      },
+    })
+  })
+
+  it("routes to a transit gateway attached to the table's own VPC", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(screen.getByRole("combobox", { name: "Target type" }))
+    await user.click(
+      await screen.findByRole("option", { name: "Transit gateway" }),
+    )
+    await user.click(screen.getByRole("combobox", { name: "Target" }))
+
+    const options = await screen.findAllByRole("option")
+
+    expect(options.map((o) => o.textContent)).toStrictEqual([
+      "tgw-ready",
+      "tgw-named (core)",
+    ])
+
+    await user.click(screen.getByRole("option", { name: "tgw-named (core)" }))
+    await user.clear(screen.getByLabelText("Destination"))
+    await user.type(screen.getByLabelText("Destination"), "10.8.0.0/16")
+    await user.click(screen.getByRole("button", { name: "Add route" }))
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: {
+        RouteTableId: "rtb-1",
+        DestinationCidrBlock: "10.8.0.0/16",
+        TransitGatewayId: "tgw-named",
       },
     })
   })

@@ -314,6 +314,26 @@ export type CreateVpcPeeringConnectionFormData = z.infer<
   typeof createVpcPeeringConnectionSchema
 >
 
+export const createTransitGatewaySchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+})
+
+export type CreateTransitGatewayFormData = z.infer<
+  typeof createTransitGatewaySchema
+>
+
+export const createTransitGatewayVpcAttachmentSchema = z.object({
+  name: z.string().optional(),
+  transitGatewayId: z.string().min(1, "Transit gateway is required"),
+  vpcId: z.string().min(1, "VPC is required"),
+  subnetIds: z.array(z.string()).min(1, "Choose at least one subnet"),
+})
+
+export type CreateTransitGatewayVpcAttachmentFormData = z.infer<
+  typeof createTransitGatewayVpcAttachmentSchema
+>
+
 export const createVpcEndpointSchema = z
   .object({
     name: z.string().optional(),
@@ -357,7 +377,7 @@ export const createRouteSchema = z.object({
     0,
     32,
   ),
-  targetType: z.enum(["igw", "nat", "pcx"]),
+  targetType: z.enum(["igw", "nat", "pcx", "tgw"]),
   targetId: z.string().min(1, "Target is required"),
 })
 

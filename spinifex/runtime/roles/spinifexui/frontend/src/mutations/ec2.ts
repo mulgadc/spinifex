@@ -28,6 +28,8 @@ import {
   CreateSecurityGroupCommand,
   CreateSnapshotCommand,
   CreateSubnetCommand,
+  CreateTransitGatewayCommand,
+  CreateTransitGatewayVpcAttachmentCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
   CreateVpcEndpointCommand,
@@ -43,6 +45,8 @@ import {
   DeleteSecurityGroupCommand,
   DeleteSnapshotCommand,
   DeleteSubnetCommand,
+  DeleteTransitGatewayCommand,
+  DeleteTransitGatewayVpcAttachmentCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
   DeleteVpcEndpointsCommand,
@@ -1688,6 +1692,100 @@ export function useDeleteRouteTable() {
   })
 }
 
+// Routes derive their state from the gateway and its attachments, so they refresh too.
+function invalidateTransitGateways(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "transitGateways"] })
+  void queryClient.invalidateQueries({
+    queryKey: ["ec2", "transitGatewayVpcAttachments"],
+  })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+}
+
+export function useCreateTransitGateway() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: { name?: string; description?: string }) => {
+      const command = new CreateTransitGatewayCommand({
+        Description: params.description,
+        TagSpecifications: buildTagSpec(
+          ResourceType.transit_gateway,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useDeleteTransitGateway() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (transitGatewayId: string) => {
+      const command = new DeleteTransitGatewayCommand({
+        TransitGatewayId: transitGatewayId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useCreateTransitGatewayVpcAttachment() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      transitGatewayId: string
+      vpcId: string
+      subnetIds: string[]
+      name?: string
+    }) => {
+      const command = new CreateTransitGatewayVpcAttachmentCommand({
+        TransitGatewayId: params.transitGatewayId,
+        VpcId: params.vpcId,
+        SubnetIds: params.subnetIds,
+        TagSpecifications: buildTagSpec(
+          ResourceType.transit_gateway_attachment,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useDeleteTransitGatewayVpcAttachment() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (attachmentId: string) => {
+      const command = new DeleteTransitGatewayVpcAttachmentCommand({
+        TransitGatewayAttachmentId: attachmentId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
 export function useCreateRoute() {
   const queryClient = useQueryClient()
 
@@ -1698,6 +1796,7 @@ export function useCreateRoute() {
       gatewayId?: string
       natGatewayId?: string
       vpcPeeringConnectionId?: string
+      transitGatewayId?: string
     }) => {
       const command = new CreateRouteCommand({
         RouteTableId: params.routeTableId,
@@ -1705,6 +1804,7 @@ export function useCreateRoute() {
         GatewayId: params.gatewayId,
         NatGatewayId: params.natGatewayId,
         VpcPeeringConnectionId: params.vpcPeeringConnectionId,
+        TransitGatewayId: params.transitGatewayId,
       })
 
       return await getEc2Client().send(command)

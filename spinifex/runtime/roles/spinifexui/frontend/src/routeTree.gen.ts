@@ -31,6 +31,8 @@ import { Route as AuthEc2securityGroupsCreateSecurityGroupRouteImport } from './
 import { Route as AuthEc2snapshotsCreateSnapshotRouteImport } from './routes/_auth/ec2/(snapshots)/create-snapshot'
 import { Route as AuthEc2subnetCreateSubnetRouteImport } from './routes/_auth/ec2/(subnet)/create-subnet'
 import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './routes/_auth/ec2/(target-groups)/create-target-group'
+import { Route as AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRouteImport } from './routes/_auth/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment'
+import { Route as AuthEc2transitGatewaysCreateTransitGatewayRouteImport } from './routes/_auth/ec2/(transit-gateways)/create-transit-gateway'
 import { Route as AuthEc2volumesCreateVolumeRouteImport } from './routes/_auth/ec2/(volumes)/create-volume'
 import { Route as AuthEc2vpcCreateVpcRouteImport } from './routes/_auth/ec2/(vpc)/create-vpc'
 import { Route as AuthEc2vpcEndpointsCreateVpcEndpointRouteImport } from './routes/_auth/ec2/(vpc-endpoints)/create-vpc-endpoint'
@@ -88,6 +90,10 @@ import { Route as AuthEc2subnetDescribeSubnetsIndexRouteImport } from './routes/
 import { Route as AuthEc2subnetDescribeSubnetsIdRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/$id'
 import { Route as AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/index'
 import { Route as AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/$id'
+import { Route as AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRouteImport } from './routes/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/index'
+import { Route as AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRouteImport } from './routes/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id'
+import { Route as AuthEc2transitGatewaysDescribeTransitGatewaysIndexRouteImport } from './routes/_auth/ec2/(transit-gateways)/describe-transit-gateways/index'
+import { Route as AuthEc2transitGatewaysDescribeTransitGatewaysIdRouteImport } from './routes/_auth/ec2/(transit-gateways)/describe-transit-gateways/$id'
 import { Route as AuthEc2volumesDescribeVolumesIndexRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/index'
 import { Route as AuthEc2volumesDescribeVolumesIdRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/$id'
 import { Route as AuthEc2volumesModifyVolumeIdRouteImport } from './routes/_auth/ec2/(volumes)/modify-volume/$id'
@@ -250,6 +256,20 @@ const AuthEc2targetGroupsCreateTargetGroupRoute =
   AuthEc2targetGroupsCreateTargetGroupRouteImport.update({
     id: '/ec2/(target-groups)/create-target-group',
     path: '/ec2/create-target-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute =
+  AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRouteImport.update(
+    {
+      id: '/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment',
+      path: '/ec2/create-transit-gateway-vpc-attachment',
+      getParentRoute: () => AuthRouteRoute,
+    } as any,
+  )
+const AuthEc2transitGatewaysCreateTransitGatewayRoute =
+  AuthEc2transitGatewaysCreateTransitGatewayRouteImport.update({
+    id: '/ec2/(transit-gateways)/create-transit-gateway',
+    path: '/ec2/create-transit-gateway',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2volumesCreateVolumeRoute =
@@ -588,6 +608,34 @@ const AuthEc2targetGroupsDescribeTargetGroupsIdRoute =
     path: '/ec2/describe-target-groups/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute =
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRouteImport.update(
+    {
+      id: '/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/',
+      path: '/ec2/describe-transit-gateway-vpc-attachments/',
+      getParentRoute: () => AuthRouteRoute,
+    } as any,
+  )
+const AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute =
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRouteImport.update(
+    {
+      id: '/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id',
+      path: '/ec2/describe-transit-gateway-vpc-attachments/$id',
+      getParentRoute: () => AuthRouteRoute,
+    } as any,
+  )
+const AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute =
+  AuthEc2transitGatewaysDescribeTransitGatewaysIndexRouteImport.update({
+    id: '/ec2/(transit-gateways)/describe-transit-gateways/',
+    path: '/ec2/describe-transit-gateways/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute =
+  AuthEc2transitGatewaysDescribeTransitGatewaysIdRouteImport.update({
+    id: '/ec2/(transit-gateways)/describe-transit-gateways/$id',
+    path: '/ec2/describe-transit-gateways/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2volumesDescribeVolumesIndexRoute =
   AuthEc2volumesDescribeVolumesIndexRouteImport.update({
     id: '/ec2/(volumes)/describe-volumes/',
@@ -868,6 +916,8 @@ export interface FileRoutesByFullPath {
   '/ec2/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/ec2/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
+  '/ec2/create-transit-gateway-vpc-attachment': typeof AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute
+  '/ec2/create-transit-gateway': typeof AuthEc2transitGatewaysCreateTransitGatewayRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
   '/ec2/create-vpc-endpoint': typeof AuthEc2vpcEndpointsCreateVpcEndpointRoute
@@ -905,6 +955,8 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/ec2/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
   '/ec2/describe-target-groups/$id': typeof AuthEc2targetGroupsDescribeTargetGroupsIdRoute
+  '/ec2/describe-transit-gateway-vpc-attachments/$id': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute
+  '/ec2/describe-transit-gateways/$id': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
@@ -944,6 +996,8 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-snapshots/': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/ec2/describe-subnets/': typeof AuthEc2subnetDescribeSubnetsIndexRoute
   '/ec2/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
+  '/ec2/describe-transit-gateway-vpc-attachments/': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute
+  '/ec2/describe-transit-gateways/': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute
   '/ec2/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
   '/ec2/describe-vpc-endpoints/': typeof AuthEc2vpcEndpointsDescribeVpcEndpointsIndexRoute
@@ -989,6 +1043,8 @@ export interface FileRoutesByTo {
   '/ec2/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/ec2/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
+  '/ec2/create-transit-gateway-vpc-attachment': typeof AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute
+  '/ec2/create-transit-gateway': typeof AuthEc2transitGatewaysCreateTransitGatewayRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
   '/ec2/create-vpc-endpoint': typeof AuthEc2vpcEndpointsCreateVpcEndpointRoute
@@ -1026,6 +1082,8 @@ export interface FileRoutesByTo {
   '/ec2/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/ec2/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
   '/ec2/describe-target-groups/$id': typeof AuthEc2targetGroupsDescribeTargetGroupsIdRoute
+  '/ec2/describe-transit-gateway-vpc-attachments/$id': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute
+  '/ec2/describe-transit-gateways/$id': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
@@ -1065,6 +1123,8 @@ export interface FileRoutesByTo {
   '/ec2/describe-snapshots': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/ec2/describe-subnets': typeof AuthEc2subnetDescribeSubnetsIndexRoute
   '/ec2/describe-target-groups': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
+  '/ec2/describe-transit-gateway-vpc-attachments': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute
+  '/ec2/describe-transit-gateways': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute
   '/ec2/describe-volumes': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs': typeof AuthEc2vpcDescribeVpcsIndexRoute
   '/ec2/describe-vpc-endpoints': typeof AuthEc2vpcEndpointsDescribeVpcEndpointsIndexRoute
@@ -1113,6 +1173,8 @@ export interface FileRoutesById {
   '/_auth/ec2/(snapshots)/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/_auth/ec2/(subnet)/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
   '/_auth/ec2/(target-groups)/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
+  '/_auth/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment': typeof AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute
+  '/_auth/ec2/(transit-gateways)/create-transit-gateway': typeof AuthEc2transitGatewaysCreateTransitGatewayRoute
   '/_auth/ec2/(volumes)/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/_auth/ec2/(vpc)/create-vpc': typeof AuthEc2vpcCreateVpcRoute
   '/_auth/ec2/(vpc-endpoints)/create-vpc-endpoint': typeof AuthEc2vpcEndpointsCreateVpcEndpointRoute
@@ -1150,6 +1212,8 @@ export interface FileRoutesById {
   '/_auth/ec2/(snapshots)/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/_auth/ec2/(subnet)/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
   '/_auth/ec2/(target-groups)/describe-target-groups/$id': typeof AuthEc2targetGroupsDescribeTargetGroupsIdRoute
+  '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute
+  '/_auth/ec2/(transit-gateways)/describe-transit-gateways/$id': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute
   '/_auth/ec2/(volumes)/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/_auth/ec2/(volumes)/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/_auth/ec2/(vpc)/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
@@ -1189,6 +1253,8 @@ export interface FileRoutesById {
   '/_auth/ec2/(snapshots)/describe-snapshots/': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/_auth/ec2/(subnet)/describe-subnets/': typeof AuthEc2subnetDescribeSubnetsIndexRoute
   '/_auth/ec2/(target-groups)/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
+  '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/': typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute
+  '/_auth/ec2/(transit-gateways)/describe-transit-gateways/': typeof AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute
   '/_auth/ec2/(volumes)/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/_auth/ec2/(vpc)/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
   '/_auth/ec2/(vpc-endpoints)/describe-vpc-endpoints/': typeof AuthEc2vpcEndpointsDescribeVpcEndpointsIndexRoute
@@ -1237,6 +1303,8 @@ export interface FileRouteTypes {
     | '/ec2/create-snapshot'
     | '/ec2/create-subnet'
     | '/ec2/create-target-group'
+    | '/ec2/create-transit-gateway-vpc-attachment'
+    | '/ec2/create-transit-gateway'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
     | '/ec2/create-vpc-endpoint'
@@ -1274,6 +1342,8 @@ export interface FileRouteTypes {
     | '/ec2/describe-snapshots/$id'
     | '/ec2/describe-subnets/$id'
     | '/ec2/describe-target-groups/$id'
+    | '/ec2/describe-transit-gateway-vpc-attachments/$id'
+    | '/ec2/describe-transit-gateways/$id'
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
@@ -1313,6 +1383,8 @@ export interface FileRouteTypes {
     | '/ec2/describe-snapshots/'
     | '/ec2/describe-subnets/'
     | '/ec2/describe-target-groups/'
+    | '/ec2/describe-transit-gateway-vpc-attachments/'
+    | '/ec2/describe-transit-gateways/'
     | '/ec2/describe-volumes/'
     | '/ec2/describe-vpcs/'
     | '/ec2/describe-vpc-endpoints/'
@@ -1358,6 +1430,8 @@ export interface FileRouteTypes {
     | '/ec2/create-snapshot'
     | '/ec2/create-subnet'
     | '/ec2/create-target-group'
+    | '/ec2/create-transit-gateway-vpc-attachment'
+    | '/ec2/create-transit-gateway'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
     | '/ec2/create-vpc-endpoint'
@@ -1395,6 +1469,8 @@ export interface FileRouteTypes {
     | '/ec2/describe-snapshots/$id'
     | '/ec2/describe-subnets/$id'
     | '/ec2/describe-target-groups/$id'
+    | '/ec2/describe-transit-gateway-vpc-attachments/$id'
+    | '/ec2/describe-transit-gateways/$id'
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
@@ -1434,6 +1510,8 @@ export interface FileRouteTypes {
     | '/ec2/describe-snapshots'
     | '/ec2/describe-subnets'
     | '/ec2/describe-target-groups'
+    | '/ec2/describe-transit-gateway-vpc-attachments'
+    | '/ec2/describe-transit-gateways'
     | '/ec2/describe-volumes'
     | '/ec2/describe-vpcs'
     | '/ec2/describe-vpc-endpoints'
@@ -1481,6 +1559,8 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(snapshots)/create-snapshot'
     | '/_auth/ec2/(subnet)/create-subnet'
     | '/_auth/ec2/(target-groups)/create-target-group'
+    | '/_auth/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment'
+    | '/_auth/ec2/(transit-gateways)/create-transit-gateway'
     | '/_auth/ec2/(volumes)/create-volume'
     | '/_auth/ec2/(vpc)/create-vpc'
     | '/_auth/ec2/(vpc-endpoints)/create-vpc-endpoint'
@@ -1518,6 +1598,8 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(snapshots)/describe-snapshots/$id'
     | '/_auth/ec2/(subnet)/describe-subnets/$id'
     | '/_auth/ec2/(target-groups)/describe-target-groups/$id'
+    | '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id'
+    | '/_auth/ec2/(transit-gateways)/describe-transit-gateways/$id'
     | '/_auth/ec2/(volumes)/describe-volumes/$id'
     | '/_auth/ec2/(volumes)/modify-volume/$id'
     | '/_auth/ec2/(vpc)/describe-vpcs/$id'
@@ -1557,6 +1639,8 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(snapshots)/describe-snapshots/'
     | '/_auth/ec2/(subnet)/describe-subnets/'
     | '/_auth/ec2/(target-groups)/describe-target-groups/'
+    | '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/'
+    | '/_auth/ec2/(transit-gateways)/describe-transit-gateways/'
     | '/_auth/ec2/(volumes)/describe-volumes/'
     | '/_auth/ec2/(vpc)/describe-vpcs/'
     | '/_auth/ec2/(vpc-endpoints)/describe-vpc-endpoints/'
@@ -1740,6 +1824,20 @@ declare module '@tanstack/react-router' {
       path: '/ec2/create-target-group'
       fullPath: '/ec2/create-target-group'
       preLoaderRoute: typeof AuthEc2targetGroupsCreateTargetGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment': {
+      id: '/_auth/ec2/(transit-gateway-attachments)/create-transit-gateway-vpc-attachment'
+      path: '/ec2/create-transit-gateway-vpc-attachment'
+      fullPath: '/ec2/create-transit-gateway-vpc-attachment'
+      preLoaderRoute: typeof AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(transit-gateways)/create-transit-gateway': {
+      id: '/_auth/ec2/(transit-gateways)/create-transit-gateway'
+      path: '/ec2/create-transit-gateway'
+      fullPath: '/ec2/create-transit-gateway'
+      preLoaderRoute: typeof AuthEc2transitGatewaysCreateTransitGatewayRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(volumes)/create-volume': {
@@ -2141,6 +2239,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/': {
+      id: '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/'
+      path: '/ec2/describe-transit-gateway-vpc-attachments'
+      fullPath: '/ec2/describe-transit-gateway-vpc-attachments/'
+      preLoaderRoute: typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id': {
+      id: '/_auth/ec2/(transit-gateway-attachments)/describe-transit-gateway-vpc-attachments/$id'
+      path: '/ec2/describe-transit-gateway-vpc-attachments/$id'
+      fullPath: '/ec2/describe-transit-gateway-vpc-attachments/$id'
+      preLoaderRoute: typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(transit-gateways)/describe-transit-gateways/': {
+      id: '/_auth/ec2/(transit-gateways)/describe-transit-gateways/'
+      path: '/ec2/describe-transit-gateways'
+      fullPath: '/ec2/describe-transit-gateways/'
+      preLoaderRoute: typeof AuthEc2transitGatewaysDescribeTransitGatewaysIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(transit-gateways)/describe-transit-gateways/$id': {
+      id: '/_auth/ec2/(transit-gateways)/describe-transit-gateways/$id'
+      path: '/ec2/describe-transit-gateways/$id'
+      fullPath: '/ec2/describe-transit-gateways/$id'
+      preLoaderRoute: typeof AuthEc2transitGatewaysDescribeTransitGatewaysIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(volumes)/describe-volumes/': {
       id: '/_auth/ec2/(volumes)/describe-volumes/'
       path: '/ec2/describe-volumes'
@@ -2512,6 +2638,8 @@ interface AuthRouteRouteChildren {
   AuthEc2snapshotsCreateSnapshotRoute: typeof AuthEc2snapshotsCreateSnapshotRoute
   AuthEc2subnetCreateSubnetRoute: typeof AuthEc2subnetCreateSubnetRoute
   AuthEc2targetGroupsCreateTargetGroupRoute: typeof AuthEc2targetGroupsCreateTargetGroupRoute
+  AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute: typeof AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute
+  AuthEc2transitGatewaysCreateTransitGatewayRoute: typeof AuthEc2transitGatewaysCreateTransitGatewayRoute
   AuthEc2volumesCreateVolumeRoute: typeof AuthEc2volumesCreateVolumeRoute
   AuthEc2vpcCreateVpcRoute: typeof AuthEc2vpcCreateVpcRoute
   AuthEc2vpcEndpointsCreateVpcEndpointRoute: typeof AuthEc2vpcEndpointsCreateVpcEndpointRoute
@@ -2546,6 +2674,8 @@ interface AuthRouteRouteChildren {
   AuthEc2snapshotsDescribeSnapshotsIdRoute: typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   AuthEc2subnetDescribeSubnetsIdRoute: typeof AuthEc2subnetDescribeSubnetsIdRoute
   AuthEc2targetGroupsDescribeTargetGroupsIdRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIdRoute
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute: typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute
+  AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute: typeof AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute
   AuthEc2volumesDescribeVolumesIdRoute: typeof AuthEc2volumesDescribeVolumesIdRoute
   AuthEc2volumesModifyVolumeIdRoute: typeof AuthEc2volumesModifyVolumeIdRoute
   AuthEc2vpcDescribeVpcsIdRoute: typeof AuthEc2vpcDescribeVpcsIdRoute
@@ -2579,6 +2709,8 @@ interface AuthRouteRouteChildren {
   AuthEc2snapshotsDescribeSnapshotsIndexRoute: typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   AuthEc2subnetDescribeSubnetsIndexRoute: typeof AuthEc2subnetDescribeSubnetsIndexRoute
   AuthEc2targetGroupsDescribeTargetGroupsIndexRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute: typeof AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute
+  AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute: typeof AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute
   AuthEc2volumesDescribeVolumesIndexRoute: typeof AuthEc2volumesDescribeVolumesIndexRoute
   AuthEc2vpcDescribeVpcsIndexRoute: typeof AuthEc2vpcDescribeVpcsIndexRoute
   AuthEc2vpcEndpointsDescribeVpcEndpointsIndexRoute: typeof AuthEc2vpcEndpointsDescribeVpcEndpointsIndexRoute
@@ -2630,6 +2762,10 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2subnetCreateSubnetRoute: AuthEc2subnetCreateSubnetRoute,
   AuthEc2targetGroupsCreateTargetGroupRoute:
     AuthEc2targetGroupsCreateTargetGroupRoute,
+  AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute:
+    AuthEc2transitGatewayAttachmentsCreateTransitGatewayVpcAttachmentRoute,
+  AuthEc2transitGatewaysCreateTransitGatewayRoute:
+    AuthEc2transitGatewaysCreateTransitGatewayRoute,
   AuthEc2volumesCreateVolumeRoute: AuthEc2volumesCreateVolumeRoute,
   AuthEc2vpcCreateVpcRoute: AuthEc2vpcCreateVpcRoute,
   AuthEc2vpcEndpointsCreateVpcEndpointRoute:
@@ -2683,6 +2819,10 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2subnetDescribeSubnetsIdRoute: AuthEc2subnetDescribeSubnetsIdRoute,
   AuthEc2targetGroupsDescribeTargetGroupsIdRoute:
     AuthEc2targetGroupsDescribeTargetGroupsIdRoute,
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute:
+    AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIdRoute,
+  AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute:
+    AuthEc2transitGatewaysDescribeTransitGatewaysIdRoute,
   AuthEc2volumesDescribeVolumesIdRoute: AuthEc2volumesDescribeVolumesIdRoute,
   AuthEc2volumesModifyVolumeIdRoute: AuthEc2volumesModifyVolumeIdRoute,
   AuthEc2vpcDescribeVpcsIdRoute: AuthEc2vpcDescribeVpcsIdRoute,
@@ -2741,6 +2881,10 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2subnetDescribeSubnetsIndexRoute,
   AuthEc2targetGroupsDescribeTargetGroupsIndexRoute:
     AuthEc2targetGroupsDescribeTargetGroupsIndexRoute,
+  AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute:
+    AuthEc2transitGatewayAttachmentsDescribeTransitGatewayVpcAttachmentsIndexRoute,
+  AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute:
+    AuthEc2transitGatewaysDescribeTransitGatewaysIndexRoute,
   AuthEc2volumesDescribeVolumesIndexRoute:
     AuthEc2volumesDescribeVolumesIndexRoute,
   AuthEc2vpcDescribeVpcsIndexRoute: AuthEc2vpcDescribeVpcsIndexRoute,

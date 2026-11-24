@@ -172,3 +172,97 @@ test.describe("internet gateways", () => {
     await expectNoHorizontalOverflow(page)
   })
 })
+
+const TGW_ID = "tgw-0e2e000000000001"
+const ATTACHMENT_ID = "tgw-attach-0e2e000000000001"
+
+const TRANSIT_GATEWAYS = `<transitGatewaySet><item>
+<transitGatewayId>${TGW_ID}</transitGatewayId><state>available</state>
+<ownerId>000000000001</ownerId><description>hub for the e2e VPCs</description>
+<options><amazonSideAsn>64512</amazonSideAsn><dnsSupport>enable</dnsSupport>
+<defaultRouteTableAssociation>enable</defaultRouteTableAssociation></options>
+<tagSet><item><key>Name</key><value>hub</value></item></tagSet></item></transitGatewaySet>`
+
+const ATTACHMENTS = `<transitGatewayVpcAttachments><item>
+<transitGatewayAttachmentId>${ATTACHMENT_ID}</transitGatewayAttachmentId>
+<transitGatewayId>${TGW_ID}</transitGatewayId><vpcId>${VPC_ID}</vpcId>
+<vpcOwnerId>000000000001</vpcOwnerId><state>available</state>
+<subnetIds><item>subnet-0e2e000000000001</item></subnetIds></item></transitGatewayVpcAttachments>`
+
+test.describe("transit gateways", () => {
+  test.beforeEach(({ api }) => {
+    api.handle(
+      "DescribeTransitGateways",
+      ec2("DescribeTransitGateways", TRANSIT_GATEWAYS),
+    )
+    api.handle(
+      "DescribeTransitGatewayVpcAttachments",
+      ec2("DescribeTransitGatewayVpcAttachments", ATTACHMENTS),
+    )
+  })
+
+  test("opens a gateway in the side panel with its attachments", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-transit-gateways")
+    await page.getByRole("link", { name: /hub/ }).click()
+
+    const panel = page.getByRole("region", { name: "Transit gateway details" })
+    await expect(panel).toContainText("VPC attachments (1)")
+    await expect(
+      panel.getByRole("link", { name: ATTACHMENT_ID }),
+    ).toHaveAttribute(
+      "href",
+      `/ec2/describe-transit-gateway-vpc-attachments/${ATTACHMENT_ID}`,
+    )
+  })
+
+  test("creates an attachment from a panel beside the list", async ({
+    api,
+    page,
+  }) => {
+    const created: string[][] = []
+    api.handle("CreateTransitGatewayVpcAttachment", (params) => {
+      created.push([
+        params.get("TransitGatewayId") ?? "",
+        params.get("VpcId") ?? "",
+        params.get("SubnetIds.1") ?? "",
+      ])
+
+      return ec2(
+        "CreateTransitGatewayVpcAttachment",
+        `<transitGatewayVpcAttachment><transitGatewayAttachmentId>${ATTACHMENT_ID}</transitGatewayAttachmentId></transitGatewayVpcAttachment>`,
+      )(params)
+    })
+
+    await page.goto("/ec2/describe-transit-gateway-vpc-attachments")
+    await page.getByRole("link", { name: "Create VPC attachment" }).click()
+    await page.getByRole("combobox", { name: "Transit gateway" }).click()
+    await page.getByRole("option", { name: `${TGW_ID} (hub)` }).click()
+    await page.getByRole("combobox", { name: "VPC" }).click()
+    await page.getByRole("option", { name: new RegExp(VPC_ID) }).click()
+    await page
+      .getByRole("switch", { name: "Subnet subnet-0e2e000000000001" })
+      .click()
+    await page.getByRole("button", { name: "Create VPC attachment" }).click()
+
+    await expect(
+      page.getByRole("region", { name: "Attachment details" }),
+    ).toBeVisible()
+    expect(created).toStrictEqual([[TGW_ID, VPC_ID, "subnet-0e2e000000000001"]])
+  })
+
+  test("shows the attachment panel as its own page on a phone", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(
+      `/ec2/describe-transit-gateway-vpc-attachments?selected=${ATTACHMENT_ID}`,
+    )
+
+    await expect(
+      page.getByRole("region", { name: "Attachment details" }),
+    ).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+  })
+})

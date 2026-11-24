@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowLeftRight,
   Brain,
+  Cable,
   Camera,
   Container,
   Crosshair,
@@ -37,6 +38,7 @@ import {
   Users,
   UsersRound,
   Waypoints,
+  Workflow,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -236,6 +238,33 @@ export const NAV: readonly NavGroup[] = [
         match: [
           "/ec2/describe-vpc-peering-connections",
           "/ec2/create-vpc-peering-connection",
+        ],
+      },
+      {
+        label: "Transit Gateways",
+        icon: Workflow,
+        to: "/ec2/describe-transit-gateways",
+        create: {
+          label: "Create transit gateway",
+          to: "/ec2/create-transit-gateway",
+        },
+        match: [
+          "/ec2/describe-transit-gateways",
+          "/ec2/create-transit-gateway",
+        ],
+      },
+      {
+        label: "TGW Attachments",
+        tooltip: "Transit gateway attachments",
+        icon: Cable,
+        to: "/ec2/describe-transit-gateway-vpc-attachments",
+        create: {
+          label: "Create VPC attachment",
+          to: "/ec2/create-transit-gateway-vpc-attachment",
+        },
+        match: [
+          "/ec2/describe-transit-gateway-vpc-attachments",
+          "/ec2/create-transit-gateway-vpc-attachment",
         ],
       },
       {

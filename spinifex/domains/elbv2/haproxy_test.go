@@ -434,9 +434,10 @@ func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir3/lst-dd"
 	listeners := []*ListenerRecord{
 		{
-			ListenerArn: listenerArn,
-			Port:        80,
-			Protocol:    ProtocolHTTPS,
+			ListenerArn:  listenerArn,
+			Port:         80,
+			Protocol:     ProtocolHTTPS,
+			Certificates: []ListenerCertificate{{CertificateArn: "c"}},
 			DefaultActions: []ListenerAction{
 				{Type: ActionTypeRedirect, Redirect: &RedirectAction{
 					Protocol:   "#{protocol}",
@@ -450,7 +451,7 @@ func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
 		},
 	}
 
-	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", map[string]string{"c": "PEM"})
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "http-request redirect location https://alt.example.com:8443/moved?ref=1 code 302")

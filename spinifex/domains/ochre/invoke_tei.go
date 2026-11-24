@@ -17,8 +17,9 @@ import (
 // request and response bodies are this model-specific InvokeModel contract.
 const teiEmbeddingsPath = "/v1/embeddings"
 
-// teiEmbeddingsResponseLimit caps the upstream body read: 32 inputs of a
-// 768-dim float vector stay well under it.
+// teiEmbeddingsResponseLimit caps every successful TEI embeddings body read,
+// for InvokeModel and the knowledge-base embedder: 32 inputs of a 768-dim
+// float vector stay well under it.
 const teiEmbeddingsResponseLimit = 16 << 20
 
 // teiEmbeddingsRequest is the accepted InvokeModel body. Dimensions must be

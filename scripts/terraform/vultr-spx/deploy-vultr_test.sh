@@ -50,6 +50,8 @@ expect() {
     fi
 }
 
+# A stale installer from an earlier run must not run when the new download fails.
+echo "echo \"installer ran stale\" >> \"\$FAKE_LOG\"" > "$work/root/install.sh"
 FAKE_CURL_FAIL=1 expect "install fails when the download fails" 1 install_spinifex
 grep -q 'installer ran' "$FAKE_LOG" && { echo "FAIL the installer ran without a download"; fail=1; }
 expect "install runs the downloaded installer" 0 install_spinifex

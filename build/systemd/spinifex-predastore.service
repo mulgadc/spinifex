@@ -1,4 +1,4 @@
-# spinifex-unit-version: 3
+# spinifex-unit-version: 4
 [Unit]
 Description=Spinifex Predastore (S3-compatible Object Storage)
 PartOf=spinifex.target
@@ -23,9 +23,9 @@ RestartSec=5
 # budget); this is the backstop if that ordering is ever bypassed.
 TimeoutStopSec=30
 OOMScoreAdjust=-500
-# Legitimately the most memory-hungry infra service (S3 buffering/caching);
-# High/Max stay well above idle so normal load isn't throttled, while still
-# bounding a leak short of the slice-wide cap.
+# The most memory-hungry infra service. Page cache from shard writes is charged
+# here, so reclaim at High under sustained writes is expected;
+# Max bounds a leak short of the slice-wide cap.
 MemoryHigh=40%
 MemoryMax=55%
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml

@@ -201,6 +201,11 @@ type Config struct {
 	// at a fabricated directory.
 	procRoot string
 
+	// terminateNbdkit overrides how a reaped nbdkit is sent SIGTERM. Nil means
+	// sigtermProcess. Tests whose /proc entries are fabricated inject here, so a
+	// fake PID never reaches a real process.
+	terminateNbdkit func(pid int) error
+
 	// sealVolume overrides how a detached volume is sealed to predastore.
 	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
 	// inject here rather than pointing S3Host at an unreachable endpoint: the
@@ -344,6 +349,15 @@ func (cfg *Config) procScanRoot() string {
 		return "/proc"
 	}
 	return cfg.procRoot
+}
+
+// terminateProcess sends pid SIGTERM through cfg.terminateNbdkit, or the real
+// signal when none is set.
+func (cfg *Config) terminateProcess(pid int) error {
+	if cfg.terminateNbdkit != nil {
+		return cfg.terminateNbdkit(pid)
+	}
+	return sigtermProcess(pid)
 }
 
 //  nbdkit -p 10812 --pidfile /tmp/vb-vol-1.pid ./lib/nbdkit-viperblock-plugin.so -v -f size=67108864 volume=vol-2 bucket=predastore region=ap-southeast-2 access_key="X" secret_key="Y" base_dir="/tmp/vb/" host="https://127.0.0.1:8443" cache_size=0

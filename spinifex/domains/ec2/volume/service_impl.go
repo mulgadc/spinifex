@@ -1331,7 +1331,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 
 	// Snapshot-backed clones read chunk files from the source volume's S3
 	// prefix, so deleting a volume that still has snapshots would break them.
-	if err := s.checkVolumeHasNoSnapshots(ctx, volumeID); err != nil {
+	if err := s.checkVolumeHasNoSnapshots(ctx, accountID, volumeID); err != nil {
 		return nil, err
 	}
 
@@ -1350,40 +1350,49 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots
 // using the JetStream KV index.
-func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, volumeID string) error {
+func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, accountID, volumeID string) error {
 	if s.snapshotKV == nil {
 		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	has, err := s.volumeHasSnapshotsKV(ctx, volumeID)
+	snapshots, err := s.volumeSnapshotsKV(ctx, volumeID)
 	if err != nil {
 		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if has {
-		slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
-		return errors.New(awserrors.ErrorVolumeInUse)
+	if len(snapshots) == 0 {
+		return nil
 	}
-	return nil
+	slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID, "snapshots", len(snapshots))
+	// The metadata read sees only the caller's prefix, so a snapshot is named
+	// only when the caller owns it and DescribeSnapshots would show it.
+	if s.metadata != nil {
+		snap, err := s.metadata.GetSnapshot(ctx, accountID, snapshots[0])
+		if err == nil && snap.SnapshotID == snapshots[0] && !snap.Hidden() {
+			return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because snapshot '%s' depends on it", volumeID, snapshots[0])
+		}
+	}
+	return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because a snapshot depends on it", volumeID)
 }
 
-// volumeHasSnapshotsKV checks the JetStream KV index for snapshot references.
-func (s *VolumeServiceImpl) volumeHasSnapshotsKV(ctx context.Context, volumeID string) (bool, error) {
+// volumeSnapshotsKV returns the snapshot IDs the JetStream KV index records
+// against volumeID.
+func (s *VolumeServiceImpl) volumeSnapshotsKV(ctx context.Context, volumeID string) ([]string, error) {
 	entry, err := s.snapshotKV.Get(ctx, volumeID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
 
 	var snapshots []string
 	if err := json.Unmarshal(entry.Value(), &snapshots); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return len(snapshots) > 0, nil
+	return snapshots, nil
 }
 
 // ApplyRecordTags mirrors CreateTags into the owning volume's tags.json so

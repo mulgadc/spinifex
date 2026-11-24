@@ -1367,11 +1367,8 @@ func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, accou
 	slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID, "snapshots", len(snapshots))
 	// The metadata read sees only the caller's prefix, so a snapshot is named
 	// only when the caller owns it and DescribeSnapshots would show it.
-	if s.metadata != nil {
-		snap, err := s.metadata.GetSnapshot(ctx, accountID, snapshots[0])
-		if err == nil && snap.SnapshotID == snapshots[0] && !snap.Hidden() {
-			return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because snapshot '%s' depends on it", volumeID, snapshots[0])
-		}
+	if snap, err := s.metadata.GetSnapshot(ctx, accountID, snapshots[0]); err == nil && !snap.Hidden() {
+		return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because snapshot '%s' depends on it", volumeID, snapshots[0])
 	}
 	return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because a snapshot depends on it", volumeID)
 }

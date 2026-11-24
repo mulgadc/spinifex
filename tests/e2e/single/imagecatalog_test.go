@@ -45,7 +45,7 @@ const ownImageDomain = "mulgadc.com"
 // imagecatalog.WithheldImages is deliberately not walked: those are the entries whose
 // artifact is known to be unpublished, so HEADing them would assert a failure
 // we already know about and hide the ones we do not.
-func runImageCatalogReachable(t *testing.T, _ *Fixture) {
+func runImageCatalogReachable(t *testing.T) {
 	harness.Phase(t, "Single — Image catalog URLs still answer")
 
 	client := &http.Client{

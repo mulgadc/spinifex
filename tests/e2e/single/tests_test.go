@@ -2,7 +2,10 @@
 
 package single
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Top-level Test* entry points. Each delegates to a runX function in the
 // matching <name>_test.go file. Every run* self-bootstraps prerequisites so
@@ -38,10 +41,14 @@ func TestAccountVersionedBucketTeardown(t *testing.T) {
 }
 
 // Reaches the public internet rather than the cluster: it asks whether the
-// upstreams our image catalog names are still publishing what it claims.
+// upstreams our image catalog names are still publishing what it claims. It
+// opts in on SPINIFEX_E2E alone, so it builds no fixture and opens no SG.
 func TestImageCatalogReachable(t *testing.T) {
 	t.Parallel()
-	runImageCatalogReachable(t, requireSingleNodeFixture(t))
+	if os.Getenv("SPINIFEX_E2E") == "" {
+		t.Skip("SPINIFEX_E2E unset")
+	}
+	runImageCatalogReachable(t)
 }
 
 // --- Sequential: singleton VM lifecycle ---

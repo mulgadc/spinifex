@@ -367,3 +367,76 @@ func TestHolderLabel_NamesOnlyConfiguredHosts(t *testing.T) {
 	other := &PoolAllocator{cfg: Config{HostID: "sv_a"}}
 	assert.Equal(t, "whatever-the-provider-says", other.holderLabel("whatever-the-provider-says"))
 }
+
+func TestReportMembers_SoleAddressInErrorLeavesThePoolWithNoUsableAddress(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_1", Address: netip.MustParseAddr("203.0.113.1"), Status: latitude.StatusError})
+	p, err := NewLatitudeProvider(f, []string{"eip_1"})
+	require.NoError(t, err)
+	require.NoError(t, p.reportMembers(context.Background(), pool))
+	out := buf.String()
+	assert.Contains(t, out, `level=ERROR msg="floating: a configured Elastic IP will not be used: latitude.sh reports it in the error state" pool=`+pool+" pool_member=eip_1")
+	assert.Contains(t, out, `level=ERROR msg="floating: pool has no usable address; public addresses will fail until fixed" pool=`+pool)
+}
+
+func TestReportMembers_MixedSetNamesEachUnusedMember(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_bad", Address: netip.MustParseAddr("203.0.113.3"), Status: latitude.StatusError})
+	p, err := NewLatitudeProvider(f, []string{"eip_1", "eip_gone", "eip_bad"})
+	require.NoError(t, err)
+	require.NoError(t, p.reportMembers(context.Background(), pool))
+	out := buf.String()
+	assert.Contains(t, out, "does not exist at latitude.sh\" pool="+pool+" pool_member=eip_gone")
+	assert.Contains(t, out, "error state\" pool="+pool+" pool_member=eip_bad")
+	assert.NotContains(t, out, "eip_1")
+	assert.NotContains(t, out, "no usable address", "eip_1 is still usable")
+
+	buf.Reset()
+	f.Seed(latitude.ElasticIP{ID: "eip_bgp", Address: netip.MustParseAddr("203.0.113.50"), Mode: "bgp", Family: "IPv4", PrefixLength: 24})
+	p, err = NewLatitudeProvider(f, []string{"eip_1", "eip_bgp"})
+	require.NoError(t, err)
+	_, err = fromProvider(context.Background(), nil, external.ExternalPoolConfig{Name: pool, Source: external.SourceLatitude, ProviderHostID: "sv_a"}, "", p, nil)
+	require.NoError(t, err)
+	out = buf.String()
+	assert.Contains(t, out, `level=ERROR msg="floating: a configured Elastic IP will not be used: the pool refuses all its addresses while it is configured" pool=`+pool+" pool_member=eip_bgp")
+	assert.Contains(t, out, "no usable address", "an unusable member makes Members refuse the whole set")
+	assert.Contains(t, out, "refused the pool's first call")
+	assert.NotContains(t, out, "floating pool ready")
+}
+
+func TestReportMembers_AnyOtherReadFailureIsReturned(t *testing.T) {
+	f := latitudeFake()
+	f.Fail["get"] = errors.New("timeout")
+	p, err := NewLatitudeProvider(f, []string{"eip_1"})
+	require.NoError(t, err)
+	assert.ErrorContains(t, p.reportMembers(context.Background(), pool), "eip_1")
+}
+
+// failGetFor fails the read of one ID and passes every other call to the fake.
+type failGetFor struct {
+	*latitude.Fake
+	id  string
+	err error
+}
+
+func (f failGetFor) GetElasticIP(ctx context.Context, id string) (latitude.ElasticIP, error) {
+	if id == f.id {
+		return latitude.ElasticIP{}, f.err
+	}
+	return f.Fake.GetElasticIP(ctx, id)
+}
+
+func TestReportMembers_LaterReadFailureKeepsThePoolUnusableWarning(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_bgp", Address: netip.MustParseAddr("203.0.113.50"), Mode: "bgp", Family: "IPv4", PrefixLength: 24})
+	p, err := NewLatitudeProvider(failGetFor{Fake: f, id: "eip_2", err: errors.New("timeout")}, []string{"eip_bgp", "eip_1", "eip_2"})
+	require.NoError(t, err)
+	err = p.reportMembers(context.Background(), pool)
+	assert.ErrorContains(t, err, "eip_2", "the read failure is returned, not the refusal")
+	out := buf.String()
+	assert.Contains(t, out, "the pool refuses all its addresses while it is configured\" pool="+pool+" pool_member=eip_bgp")
+	assert.Equal(t, 1, strings.Count(out, "no usable address"))
+}

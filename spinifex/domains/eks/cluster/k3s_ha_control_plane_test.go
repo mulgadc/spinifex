@@ -24,10 +24,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testFanoutTimeout shortens the fan-out window, which has no early exit and so
-// is otherwise the whole runtime of every scheduler test. The replies here are
-// in-process and land in a few milliseconds, well inside this.
-const testFanoutTimeout = 50 * time.Millisecond
+// newTestHostScheduler ends each node.status fan-out once every fake node has
+// replied, and skips the node.vms wait, so slow replies under load are not lost.
+// The long window only bounds a test whose fakes never answer.
+func newTestHostScheduler(nc *nats.Conn, nodes int) HostScheduler {
+	return &natsHostScheduler{
+		nc:            nc,
+		fanoutTimeout: time.Minute,
+		expectReplies: map[string]int{types.NodeStatusSubject: nodes, types.NodeVMsSubject: 0},
+	}
+}
 
 // serveNodeStatus replies to spinifex.node.status fan-outs with the given node
 // snapshots so the NATS host scheduler can be exercised end-to-end.
@@ -58,7 +64,7 @@ func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
 			InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 0}},
 		},
 	})
-	sched := NewNATSHostScheduler(nc, WithFanoutTimeout(testFanoutTimeout))
+	sched := newTestHostScheduler(nc, 2)
 
 	// Customer type: only the node advertising free capacity is schedulable.
 	require.Equal(t, []string{"nodeA"}, sched.SchedulableHosts(context.Background(), "t3.medium"))
@@ -140,7 +146,7 @@ func TestNATSHostScheduler_SchedulableHosts_SpreadsByAZ(t *testing.T) {
 		{Node: "node-3", AZ: "az-b", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
 		{Node: "node-4", AZ: "az-c", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
 	})
-	sched := NewNATSHostScheduler(nc, WithFanoutTimeout(testFanoutTimeout))
+	sched := newTestHostScheduler(nc, 4)
 
 	hosts := sched.SchedulableHosts(context.Background(), "t3.medium")
 	require.Len(t, hosts, 4)
@@ -417,7 +423,7 @@ func TestPlaceControlPlane_SpreadPrefersDistinctAZs(t *testing.T) {
 		{Node: "node-c", AZ: "az-2", TotalVCPU: 32, TotalMemGB: 128},
 		{Node: "node-d", AZ: "az-3", TotalVCPU: 32, TotalMemGB: 128},
 	})
-	sched := NewNATSHostScheduler(nc, WithFanoutTimeout(testFanoutTimeout))
+	sched := newTestHostScheduler(nc, 4)
 	placer := &fakePlacer{} // reserved unset: defaults to the first MaxCount EligibleNodes, like the real service.
 	vpc := &seqK3sVPC{}
 	inst := &seqK3sInst{}

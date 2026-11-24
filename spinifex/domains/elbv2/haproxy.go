@@ -314,6 +314,9 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 				}
 				cfg.CertFiles[c.Path] = c.PEM
 			}
+			if len(frontend.CertPaths) == 0 {
+				continue // never serve a secure listener as plaintext
+			}
 		}
 
 		for _, r := range rulesByListener[l.ListenerArn] {

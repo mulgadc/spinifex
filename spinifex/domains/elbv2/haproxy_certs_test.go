@@ -329,6 +329,6 @@ func TestUpdateStoredConfig_PendingCertKeepsHTTPListener(t *testing.T) {
 	after, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
 	require.NoError(t, err)
 	assert.Contains(t, after.ConfigText, "bind *:80")
-	assert.NotContains(t, after.ConfigText, "ssl crt")
+	assert.NotContains(t, after.ConfigText, ":443")
 	assert.Empty(t, after.CertFiles)
 }

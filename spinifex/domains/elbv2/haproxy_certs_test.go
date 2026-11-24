@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
@@ -276,4 +277,58 @@ func TestCertFilesToSDK_SortedAndNilSafe(t *testing.T) {
 	assert.Equal(t, "/a.pem", *out[0].Path)
 	assert.Equal(t, "A", *out[0].PEM)
 	assert.Equal(t, "/b.pem", *out[1].Path)
+}
+
+// putPendingCert stores the record RequestCertificate writes before issuance:
+// no leaf, chain or private key.
+func putPendingCert(t *testing.T, svc *ELBv2ServiceImpl, arn string) {
+	t.Helper()
+	require.NoError(t, svc.acmStore.PutCert(t.Context(), &acmdomain.CertRecord{
+		CertificateArn: arn,
+		AccountID:      testAccountID,
+		DomainName:     "*.example.net",
+		Status:         "PENDING_VALIDATION",
+	}))
+}
+
+func TestResolveCertPEM_PendingCertHasNoMaterial(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	putPendingCert(t, svc, certTestArn)
+
+	pem, err := svc.resolveCertPEM(t.Context(), certTestArn, testAccountID)
+	require.ErrorIs(t, err, errCertNoMaterial)
+	assert.Empty(t, pem)
+
+	err = svc.validateListenerCerts(t.Context(),
+		[]ListenerCertificate{{CertificateArn: certTestArn}}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorELBv2CertificateNotFound)
+}
+
+// A listener whose certificate lost its material must not stage an empty PEM,
+// because HAProxy then refuses the whole config and the HTTP frontend dies too.
+func TestUpdateStoredConfig_PendingCertKeepsHTTPListener(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lb := activeLB(t, svc, "lb-pending1", "pending-lb1")
+	_, err := svc.CreateListener(t.Context(), &elbv2.CreateListenerInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+		Protocol:        aws.String(ProtocolHTTP),
+		Port:            aws.Int64(80),
+		DefaultActions:  fixedResponseAction(),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(t.Context(), httpsListenerInput(lb.LoadBalancerArn, testCertArn, 443), testAccountID)
+	require.NoError(t, err)
+
+	putPendingCert(t, svc, testCertArn)
+	cur, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	require.NoError(t, svc.updateStoredConfig(t.Context(), cur))
+
+	after, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Contains(t, after.ConfigText, "bind *:80")
+	assert.NotContains(t, after.ConfigText, "ssl crt")
+	assert.Empty(t, after.CertFiles)
 }

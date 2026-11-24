@@ -447,6 +447,10 @@ func (f failingPeeringRoutes) SyncPeeringRoutes(context.Context, string, []nbdb.
 	return f.err
 }
 
+func (f failingPeeringRoutes) SyncTransitGatewayRoutes(context.Context, string, []nbdb.LogicalRouterPolicy) error {
+	return f.err
+}
+
 // A router deleted after the pass snapshot is skipped without failing the
 // pass; the surviving VPC still syncs.
 func TestApplyPeeringRoutes_RouterGoneMidPassIsSkipped(t *testing.T) {

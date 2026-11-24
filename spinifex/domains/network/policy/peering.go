@@ -92,17 +92,7 @@ type PeeringRouteSpec struct {
 // PeeringRouteRows compiles one route to its drop and, while it delivers, its
 // reroute. Both rank by D, never by the intersection with the peer range.
 func PeeringRouteRows(spec PeeringRouteSpec) []nbdb.LogicalRouterPolicy {
-	prio := peeringRouteBase + 2*spec.Dest.Bits()
-	ids := map[string]string{
-		"spinifex:rtb_id":    spec.RouteTableID,
-		"spinifex:subnet":    spec.SubnetID,
-		"spinifex:route_dst": spec.Dest.String(),
-		ovn.ExternalIDRole:   PeeringRouteDropRole,
-	}
-	rows := []nbdb.LogicalRouterPolicy{{
-		Priority: prio, Match: peeringRouteMatch(spec.SubnetID, spec.Dest, spec.Exclude),
-		Action: "drop", Options: map[string]string{}, ExternalIDs: ids,
-	}}
+	rows := routeRows(spec.RouteTableID, spec.SubnetID, spec.Dest, spec.Exclude, PeeringRouteDropRole)
 	r := spec.Reroute
 	if r == nil || !spec.Dest.Overlaps(r.PeerCIDR) {
 		return rows
@@ -111,21 +101,42 @@ func PeeringRouteRows(spec PeeringRouteSpec) []nbdb.LogicalRouterPolicy {
 	if r.PeerCIDR.Bits() > deliver.Bits() {
 		deliver = r.PeerCIDR
 	}
+	return append(rows, rerouteRow(spec.SubnetID, spec.Dest, deliver, spec.Exclude, r.Nexthop, map[string]string{
+		ovn.ExternalIDPcxID:    r.PcxID,
+		"spinifex:output_port": r.OutputPort,
+		ovn.ExternalIDRole:     PeeringRerouteRole,
+	}))
+}
+
+// routeRows is the drop of a route to dest on one subnet.
+func routeRows(rtbID, subnetID string, dest netip.Prefix, exclude []netip.Prefix, role string) []nbdb.LogicalRouterPolicy {
+	return []nbdb.LogicalRouterPolicy{{
+		Priority: routePriority(dest), Match: peeringRouteMatch(subnetID, dest, exclude),
+		Action: "drop", Options: map[string]string{},
+		ExternalIDs: map[string]string{
+			"spinifex:rtb_id":    rtbID,
+			"spinifex:subnet":    subnetID,
+			"spinifex:route_dst": dest.String(),
+			ovn.ExternalIDRole:   role,
+		},
+	}}
+}
+
+// rerouteRow delivers deliver, the part of a route to dest that leaves over a
+// link, one above the route's drop. ids carry the owner, port and role.
+func rerouteRow(subnetID string, dest, deliver netip.Prefix, exclude []netip.Prefix, nexthop netip.Addr, ids map[string]string) nbdb.LogicalRouterPolicy {
+	ids["spinifex:subnet"] = subnetID
+	ids["spinifex:route_dst"] = dest.String()
 	// nexthops, not nexthop: OVN 26.03 ignores the deprecated column, which
 	// would leave only the drop below.
-	rows = append(rows, nbdb.LogicalRouterPolicy{
-		Priority: prio + 1, Match: peeringRouteMatch(spec.SubnetID, deliver, spec.Exclude),
-		Action: "reroute", Nexthops: []string{r.Nexthop.String()}, Options: map[string]string{},
-		ExternalIDs: map[string]string{
-			ovn.ExternalIDPcxID:    r.PcxID,
-			"spinifex:subnet":      spec.SubnetID,
-			"spinifex:route_dst":   spec.Dest.String(),
-			"spinifex:output_port": r.OutputPort,
-			ovn.ExternalIDRole:     PeeringRerouteRole,
-		},
-	})
-	return rows
+	return nbdb.LogicalRouterPolicy{
+		Priority: routePriority(dest) + 1, Match: peeringRouteMatch(subnetID, deliver, exclude),
+		Action: "reroute", Nexthops: []string{nexthop.String()}, Options: map[string]string{},
+		ExternalIDs: ids,
+	}
 }
+
+func routePriority(dest netip.Prefix) int { return peeringRouteBase + 2*dest.Bits() }
 
 func peeringRouteMatch(subnetID string, dst netip.Prefix, exclude []netip.Prefix) string {
 	match := fmt.Sprintf(`inport == %q && ip4.dst == %s`, topology.SubnetRouterPort(subnetID), dst)
@@ -137,12 +148,15 @@ func peeringRouteMatch(subnetID string, dst netip.Prefix, exclude []netip.Prefix
 	return match
 }
 
-// PeeringRouteManager converges a VPC router's peering route policies.
+// PeeringRouteManager converges a VPC router's peering and Transit Gateway
+// route policies, each kind on its own so a failed read of one leaves the other.
 type PeeringRouteManager interface {
 	// SyncPeeringRoutes makes vpcID's peering route policies exactly want:
 	// missing or drifted rows are written, and peering route rows not in want
 	// are deleted. Guards are not route rows and are left alone.
 	SyncPeeringRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error
+	// SyncTransitGatewayRoutes is SyncPeeringRoutes for Transit Gateway route rows.
+	SyncTransitGatewayRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error
 }
 
 type peeringRouteManager struct {
@@ -162,6 +176,15 @@ func isPeeringRouteRow(p *nbdb.LogicalRouterPolicy) bool {
 }
 
 func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error {
+	return m.syncRouteRows(ctx, vpcID, want, isPeeringRouteRow)
+}
+
+func (m *peeringRouteManager) SyncTransitGatewayRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error {
+	return m.syncRouteRows(ctx, vpcID, want, isTransitGatewayRouteRow)
+}
+
+// syncRouteRows makes the route rows of one kind, those isRow reports, exactly want.
+func (m *peeringRouteManager) syncRouteRows(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy, isRow func(*nbdb.LogicalRouterPolicy) bool) error {
 	router := topology.VPCRouter(vpcID)
 	existing, err := m.ovn.ListLogicalRouterPolicies(ctx, router)
 	if err != nil {
@@ -181,7 +204,7 @@ func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID strin
 		k := key{row.Priority, row.Match}
 		wanted[k] = struct{}{}
 		if cur, ok := have[k]; ok {
-			if peeringRowMatches(cur, &row) {
+			if routeRowMatches(cur, &row, isRow) {
 				continue
 			}
 			// Rewritten in place: a delete then add would leave the destination
@@ -196,7 +219,7 @@ func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID strin
 		}
 	}
 	for k, cur := range have {
-		if _, ok := wanted[k]; ok || !isPeeringRouteRow(cur) {
+		if _, ok := wanted[k]; ok || !isRow(cur) {
 			continue
 		}
 		if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, cur.Priority, cur.Match); err != nil {
@@ -206,8 +229,8 @@ func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID strin
 	return nil
 }
 
-func peeringRowMatches(cur, want *nbdb.LogicalRouterPolicy) bool {
-	if cur.Action != want.Action || !isPeeringRouteRow(cur) {
+func routeRowMatches(cur, want *nbdb.LogicalRouterPolicy, isRow func(*nbdb.LogicalRouterPolicy) bool) bool {
+	if cur.Action != want.Action || !isRow(cur) {
 		return false
 	}
 	if (cur.Nexthop == nil) != (want.Nexthop == nil) || (cur.Nexthop != nil && *cur.Nexthop != *want.Nexthop) {
@@ -216,7 +239,7 @@ func peeringRowMatches(cur, want *nbdb.LogicalRouterPolicy) bool {
 	if !slices.Equal(cur.Nexthops, want.Nexthops) {
 		return false
 	}
-	for _, k := range []string{ovn.ExternalIDPcxID, "spinifex:output_port", "spinifex:rtb_id", ovn.ExternalIDRole} {
+	for _, k := range []string{ovn.ExternalIDPcxID, ovn.ExternalIDTGWAttachmentID, "spinifex:output_port", "spinifex:rtb_id", ovn.ExternalIDRole} {
 		if cur.ExternalIDs[k] != want.ExternalIDs[k] {
 			return false
 		}

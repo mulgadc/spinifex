@@ -150,6 +150,12 @@ func upsertOwnedOps[T any](c *LiveClient, lr *nbdb.LogicalRouter, field *[]strin
 }
 
 func (c *LiveClient) DeletePeeringLink(ctx context.Context, pcxID string, routers []string) error {
+	return c.deleteOwnedLink(ctx, ExternalIDPcxID, pcxID, routers)
+}
+
+// deleteOwnedLink removes every row whose external ID key is id on the named
+// routers in one transaction, skipping a router absent from NB.
+func (c *LiveClient) deleteOwnedLink(ctx context.Context, key, id string, routers []string) error {
 	var ops []ovsdb.Operation
 	for _, name := range routers {
 		var found []nbdb.LogicalRouter
@@ -159,8 +165,7 @@ func (c *LiveClient) DeletePeeringLink(ctx context.Context, pcxID string, router
 		if len(found) == 0 {
 			continue
 		}
-		lr := &found[0]
-		routerOps, err := c.deletePeeringRowsOps(ctx, lr, pcxID)
+		routerOps, err := c.deleteOwnedRowsOps(ctx, &found[0], key, id)
 		if err != nil {
 			return err
 		}
@@ -170,13 +175,14 @@ func (c *LiveClient) DeletePeeringLink(ctx context.Context, pcxID string, router
 		return nil
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("delete peering link transact: %w", err)
+		return fmt.Errorf("delete %s rows transact: %w", id, err)
 	}
 	return nil
 }
 
-// deletePeeringRowsOps detaches and deletes lr's ports, policies and static routes stamped pcxID.
-func (c *LiveClient) deletePeeringRowsOps(ctx context.Context, lr *nbdb.LogicalRouter, pcxID string) ([]ovsdb.Operation, error) {
+// deleteOwnedRowsOps detaches and deletes lr's ports, policies and static
+// routes whose external ID key is id.
+func (c *LiveClient) deleteOwnedRowsOps(ctx context.Context, lr *nbdb.LogicalRouter, key, id string) ([]ovsdb.Operation, error) {
 	ports, err := rowsIn(ctx, c, lr.Ports, portStamp)
 	if err != nil {
 		return nil, fmt.Errorf("list ports on %s: %w", lr.Name, err)
@@ -191,9 +197,9 @@ func (c *LiveClient) deletePeeringRowsOps(ctx context.Context, lr *nbdb.LogicalR
 	}
 	var d rowDeletes
 	if err := errors.Join(
-		deleteOwned(c, &d, &lr.Ports, ports, portStamp, pcxID),
-		deleteOwned(c, &d, &lr.Policies, policies, policyStamp, pcxID),
-		deleteOwned(c, &d, &lr.StaticRoutes, routes, routeStamp, pcxID),
+		deleteOwned(c, &d, &lr.Ports, ports, portStamp, key, id),
+		deleteOwned(c, &d, &lr.Policies, policies, policyStamp, key, id),
+		deleteOwned(c, &d, &lr.StaticRoutes, routes, routeStamp, key, id),
 	); err != nil {
 		return nil, err
 	}
@@ -202,7 +208,7 @@ func (c *LiveClient) deletePeeringRowsOps(ctx context.Context, lr *nbdb.LogicalR
 	}
 	m, err := c.client.Where(lr).Mutate(lr, d.mutations...)
 	if err != nil {
-		return nil, fmt.Errorf("detach peering rows from %s ops: %w", lr.Name, err)
+		return nil, fmt.Errorf("detach owned rows from %s ops: %w", lr.Name, err)
 	}
 	return append(m, d.ops...), nil
 }
@@ -213,18 +219,18 @@ type rowDeletes struct {
 	mutations []model.Mutation
 }
 
-// deleteOwned adds the deletion of each row in rows stamped pcxID, and its
-// detach from *field, to d.
-func deleteOwned[T any](c *LiveClient, d *rowDeletes, field *[]string, rows []T, at stamp[T], pcxID string) error {
+// deleteOwned adds the deletion of each row in rows whose external ID key is
+// id, and its detach from *field, to d.
+func deleteOwned[T any](c *LiveClient, d *rowDeletes, field *[]string, rows []T, at stamp[T], key, id string) error {
 	var uuids []string
 	for i := range rows {
 		uuid, ext := at(&rows[i])
-		if ext[ExternalIDPcxID] != pcxID {
+		if ext[key] != id {
 			continue
 		}
 		del, err := c.client.Where(&rows[i]).Delete()
 		if err != nil {
-			return fmt.Errorf("delete peering row ops: %w", err)
+			return fmt.Errorf("delete owned row ops: %w", err)
 		}
 		d.ops = append(d.ops, del...)
 		uuids = append(uuids, *uuid)

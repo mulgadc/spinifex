@@ -173,6 +173,9 @@ type Config struct {
 	// MarkPeeringCleaned reports that a deleted connection's rows are gone.
 	// Optional: nil leaves the cleanup obligation recorded.
 	MarkPeeringCleaned func(ctx context.Context, pcxID string) error
+	// TransitGateways reports Transit Gateway realization. Optional: the zero
+	// value changes no record and lets every link deliver.
+	TransitGateways TransitGatewayHooks
 }
 
 type reconciler struct {
@@ -199,6 +202,7 @@ type reconciler struct {
 	flowsBarrier       func() error
 	markPeeringActive  func(ctx context.Context, pcxID string, generation int64) error
 	markPeeringCleaned func(ctx context.Context, pcxID string) error
+	tgwHooks           TransitGatewayHooks
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.
@@ -277,6 +281,7 @@ func New(cfg Config) (Reconciler, error) {
 		flowsBarrier:       cfg.FlowsBarrier,
 		markPeeringActive:  cfg.MarkPeeringActive,
 		markPeeringCleaned: cfg.MarkPeeringCleaned,
+		tgwHooks:           cfg.TransitGateways,
 	}, nil
 }
 
@@ -329,6 +334,9 @@ const (
 	classPublicEgress = "public_egress"
 	classPeeringLink  = "peering_link"
 	classPeeringRoute = "peering_route"
+	classTGW          = "transit_gateway"
+	classTGWLink      = "tgw_link"
+	classTGWRoute     = "tgw_route"
 )
 
 // Reconcile diffs intent vs. actual OVN state and applies in topological order.
@@ -383,6 +391,8 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 		"intent_natgw_routes", len(intent.NATGWRoutes),
 		"intent_peering_links", len(intent.PeeringLinks),
 		"intent_peering_routes", len(intent.PeeringRoutes),
+		"intent_tgw_links", len(intent.TGWLinks),
+		"intent_tgw_routes", len(intent.TGWRoutes),
 	)
 
 	res := &passResult{}
@@ -398,8 +408,11 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 	r.applyNATGWRoutes(ctx, intent, actual, res)
 	deliver := r.applyPeeringLinks(ctx, intent, actual, res)
 	r.applyPeeringRoutes(ctx, intent, actual, deliver, res)
+	tgwDeliver := r.applyTransitGateways(ctx, intent, actual, res)
+	r.applyTGWRoutes(ctx, intent, actual, tgwDeliver, res)
 	if pruneTopology {
 		r.prunePeeringOrphans(ctx, intent, res)
+		r.pruneTGWOrphans(ctx, intent, res)
 	}
 	r.applyDropGates(ctx, intent, actual, res)
 	r.applyPublicInstanceEgress(ctx, intent, actual, res)

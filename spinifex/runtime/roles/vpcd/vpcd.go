@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
@@ -771,6 +772,11 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("open VPC peering store: %w", err)
 	}
 
+	tgwStore, err := ec2tgw.OpenStore(ctx, js)
+	if err != nil {
+		return fmt.Errorf("open Transit Gateway store: %w", err)
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:            liveClient,
 		SG:             sgMgr,
@@ -808,6 +814,16 @@ func launchService(cfg *Config) error {
 		FlowsBarrier:       flowsBarrier,
 		MarkPeeringActive:  peeringStore.MarkActive,
 		MarkPeeringCleaned: peeringStore.MarkCleaned,
+		TransitGateways: reconcile.TransitGatewayHooks{
+			PrepareAttachment: func(ctx context.Context, accountID, id string) error {
+				_, err := tgwStore.PrepareAttachment(ctx, accountID, id)
+				return err
+			},
+			MarkTransitGatewayAvailable: tgwStore.MarkTransitGatewayAvailable,
+			MarkTransitGatewayCleaned:   tgwStore.MarkTransitGatewayCleaned,
+			MarkAttachmentAvailable:     tgwStore.MarkAttachmentAvailable,
+			MarkAttachmentCleaned:       tgwStore.MarkAttachmentCleaned,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

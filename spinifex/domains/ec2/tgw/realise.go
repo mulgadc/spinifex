@@ -34,6 +34,20 @@ func listRecords[T any](ctx context.Context, kv jetstream.KeyValue) ([]T, error)
 	return out, nil
 }
 
+// ListRecords reads every record in the two live buckets, for network's
+// projection. It never creates a bucket.
+func ListRecords(ctx context.Context, tgws, atts jetstream.KeyValue) ([]TransitGatewayRecord, []AttachmentRecord, error) {
+	gws, err := listRecords[TransitGatewayRecord](ctx, tgws)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list %s: %w", KVBucketTransitGateways, err)
+	}
+	as, err := listRecords[AttachmentRecord](ctx, atts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list %s: %w", KVBucketAttachments, err)
+	}
+	return gws, as, nil
+}
+
 // ListTransitGateways reads every live Transit Gateway record.
 func (s *Store) ListTransitGateways(ctx context.Context) ([]TransitGatewayRecord, error) {
 	return listRecords[TransitGatewayRecord](ctx, s.tgws)

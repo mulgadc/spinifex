@@ -437,3 +437,66 @@ func TestEmbeddingsProvider_EmbedBatch_NonTransportErrorNotRetried(t *testing.T)
 	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
 	assert.Equal(t, 1, transport.calls, "a non-transport error must not be retried")
 }
+
+// A full client batch of the widest catalog vectors, with every coordinate in
+// its longest float32 JSON form, must fit the limit; a body one byte past the
+// limit is rejected, and a body exactly at the limit is still accepted.
+func TestEmbeddingsProvider_Embed_BoundsSuccessfulResponseSize(t *testing.T) {
+	widest := 0
+	for _, e := range catalog {
+		widest = max(widest, e.EmbeddingDimensions)
+	}
+	require.Positive(t, widest)
+	vec := make([]float32, widest)
+	for i := range vec {
+		vec[i] = -1.1754944e-38
+	}
+	data := make([]embeddingsDatum, maxEmbedClientBatch)
+	for i := range data {
+		data[i] = embeddingsDatum{Index: i, Embedding: vec}
+	}
+	fullBatch, err := json.Marshal(embeddingsResponse{Data: data, Model: DefaultEmbeddingModel})
+	require.NoError(t, err)
+	require.Less(t, len(fullBatch), teiEmbeddingsResponseLimit/8, "a full batch must leave wide headroom under the limit")
+
+	small := []byte(`{"data":[{"index":0,"embedding":[0.5]}],"model":"nomic-embed-text-v1.5"}`)
+	padded := func(size int) []byte {
+		b := make([]byte, size)
+		copy(b, small)
+		for i := len(small); i < size; i++ {
+			b[i] = ' '
+		}
+		return b
+	}
+
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		wantErr string
+	}{
+		{name: "at limit", body: padded(teiEmbeddingsResponseLimit)},
+		{name: "over limit", body: padded(teiEmbeddingsResponseLimit + 1), wantErr: awserrors.ErrorModelErrorException},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(tc.body)
+			}))
+			defer ts.Close()
+
+			modelID := DefaultEmbeddingModel
+			p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+			p.httpClient = ts.Client()
+
+			got, err := p.Embed(context.Background(), modelID, []string{"hello"})
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, [][]float32{{0.5}}, got)
+		})
+	}
+}

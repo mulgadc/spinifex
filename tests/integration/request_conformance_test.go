@@ -146,7 +146,7 @@ func createRequestFixtures(t *testing.T, sender *requestSender, service awsmodel
 	}
 	switch service {
 	case awsmodel.IAM:
-		const oidcHost = "fixture.example.com"
+		oidcHost := "fixture.example.com/oidc/eks/" + testRegion + "/" + accountID + "/" + requestFixture
 		create("CreateRole", map[string]any{"RoleName": requestFixture, "AssumeRolePolicyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`})
 		create("CreatePolicy", map[string]any{"PolicyName": requestFixture, "PolicyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`})
 		create("CreateOpenIDConnectProvider", map[string]any{"Url": "https://" + oidcHost, "ClientIDList": []any{"sts.amazonaws.com"}, "ThumbprintList": []any{strings.Repeat("a", 40)}})

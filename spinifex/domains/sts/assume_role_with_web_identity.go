@@ -183,7 +183,7 @@ func (s *STSServiceImpl) webIdentityKeyFunc(ctx context.Context, roleAccountID s
 		if issuer == "" {
 			return nil, errors.New("missing iss claim")
 		}
-		issuerAccountID, clusterName, err := ParseEKSIssuerURL(issuer)
+		issuerAccountID, clusterName, err := iamdomain.ParseEKSIssuerURL(issuer)
 		if err != nil {
 			return nil, fmt.Errorf("parse issuer: %w", err)
 		}

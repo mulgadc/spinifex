@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+var errAbsent = errors.New("tgw: record absent")
+
 // listRecords reads every live record in kv. It is for background passes
 // only: the reconciler, the sweep and the rollback drain.
 func listRecords[T any](ctx context.Context, kv jetstream.KeyValue) ([]T, error) {
@@ -46,16 +48,6 @@ func ListRecords(ctx context.Context, tgws, atts jetstream.KeyValue) ([]TransitG
 		return nil, nil, fmt.Errorf("list %s: %w", KVBucketAttachments, err)
 	}
 	return gws, as, nil
-}
-
-// ListTransitGateways reads every live Transit Gateway record.
-func (s *Store) ListTransitGateways(ctx context.Context) ([]TransitGatewayRecord, error) {
-	return listRecords[TransitGatewayRecord](ctx, s.tgws)
-}
-
-// ListAttachments reads every live attachment record.
-func (s *Store) ListAttachments(ctx context.Context) ([]AttachmentRecord, error) {
-	return listRecords[AttachmentRecord](ctx, s.atts)
 }
 
 // MarkTransitGatewayAvailable confirms the router is realised at generation.

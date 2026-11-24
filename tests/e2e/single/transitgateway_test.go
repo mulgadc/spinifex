@@ -193,12 +193,7 @@ func runTransitGateway(t *testing.T, fix *Fixture) {
 	t.Run("GuardDropsOutsideDestination", func(t *testing.T) {
 		harness.SkipIfNoOVN(t)
 		harness.Step(t, "guard: a packet from the gateway for outside A's range is dropped at A's router")
-		inport, peer := "tgwv-"+attA, "tgwt-"+attA
-		flow := fmt.Sprintf(`inport == %q && eth.src == %s && eth.dst == %s && ip4.src == %s && ip4.dst == 8.8.8.8 && ip.ttl == 64 && icmp4`,
-			inport, lrpMAC(t, peer), lrpMAC(t, inport), b.privateIP)
-		trace := harness.OvnTrace(t, "vpc-"+a.vpcID, flow)
-		require.Containsf(t, trace, "priority 1400", "packet did not hit the link guard\n%s", trace)
-		require.Containsf(t, trace, "drop;", "packet was not dropped\n%s", trace)
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, "tgwv-"+attA, b.privateIP, "8.8.8.8"), 1400, "gateway -> outside A's range")
 	})
 
 	harness.Step(t, "6. after B's attachment is deleted, no path, and A's route stays active")

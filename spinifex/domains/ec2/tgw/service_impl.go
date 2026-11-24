@@ -90,7 +90,7 @@ func (s *ServiceImpl) SetActivation(admit Admission, offered func(context.Contex
 // admit holds the feature level for a write, or answers the action as not offered.
 func (s *ServiceImpl) admit(ctx context.Context, op string) (func(), error) {
 	if s.active == nil {
-		return nil, notOffered()
+		return nil, NotOffered()
 	}
 	done, ok, err := s.active(ctx)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *ServiceImpl) admit(ctx context.Context, op string) (func(), error) {
 	}
 	if !ok {
 		done()
-		return nil, notOffered()
+		return nil, NotOffered()
 	}
 	return done, nil
 }
@@ -107,14 +107,14 @@ func (s *ServiceImpl) admit(ctx context.Context, op string) (func(), error) {
 // readable answers whether reads are offered.
 func (s *ServiceImpl) readable(ctx context.Context, op string) error {
 	if s.offered == nil {
-		return notOffered()
+		return NotOffered()
 	}
 	ok, err := s.offered(ctx)
 	if err != nil {
 		return internalError(ctx, op, err)
 	}
 	if !ok {
-		return notOffered()
+		return NotOffered()
 	}
 	return nil
 }

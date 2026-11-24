@@ -113,7 +113,7 @@ func TestCreateTransitGateway_ConcurrentCreatesNeverPassTheQuota(t *testing.T) {
 		requireCode(t, err, awserrors.ErrorResourceLimitExceeded)
 	}
 	assert.Equal(t, accountLimit, created)
-	recs, err := f.svc.ListTransitGateways(t.Context())
+	recs, err := listRecords[TransitGatewayRecord](t.Context(), f.svc.tgws)
 	require.NoError(t, err)
 	assert.Len(t, recs, accountLimit)
 }
@@ -284,7 +284,7 @@ func TestCreateAttachment_OneLiveAttachmentPerVpc(t *testing.T) {
 		assert.Contains(t, []string{awserrors.ErrorDuplicateTransitGatewayAttachment, awserrors.ErrorServerInternal}, code)
 	}
 	assert.Equal(t, 1, created)
-	atts, err := f.svc.ListAttachments(t.Context())
+	atts, err := listRecords[AttachmentRecord](t.Context(), f.svc.atts)
 	require.NoError(t, err)
 	assert.Len(t, atts, 1)
 }

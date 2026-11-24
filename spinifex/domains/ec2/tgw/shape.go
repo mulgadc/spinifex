@@ -53,7 +53,8 @@ func invalidValue(param, value string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Value (%s) for parameter %s is invalid.", value, param)
 }
 
-func notOffered() error {
+// NotOffered is the refusal of a Transit Gateway write below its feature level.
+func NotOffered() error {
 	return awserrors.Errorf(awserrors.ErrorUnsupportedOperation,
 		"Transit Gateways are not available until every node in the formation runs a release that supports them.")
 }

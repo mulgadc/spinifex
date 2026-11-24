@@ -2,17 +2,10 @@ package tgw
 
 import (
 	"context"
-	"errors"
-	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/nats-io/nats.go/jetstream"
 )
-
-var errAbsent = errors.New("tgw: record absent")
 
 // ApplyRecordTags mirrors CreateTags into each named live record, so tag
 // filters see tags added after create.
@@ -39,33 +32,20 @@ func (s *ServiceImpl) mirrorTags(ctx context.Context, resources []*string, accou
 		var err error
 		switch id := *res; {
 		case isAttachmentID(id):
-			err = updateTags[AttachmentRecord](ctx, s.atts, recordKey(accountID, id), func(r *AttachmentRecord) *map[string]string { return &r.Tags }, mut)
+			err = tagmirror.UpdateKVRecordTags(ctx, s.atts, accountID, id, func(r *AttachmentRecord) { mutTags(&r.Tags, mut) })
 		case isTransitGatewayID(id):
-			err = updateTags[TransitGatewayRecord](ctx, s.tgws, recordKey(accountID, id), func(r *TransitGatewayRecord) *map[string]string { return &r.Tags }, mut)
-		default:
-			continue
+			err = tagmirror.UpdateKVRecordTags(ctx, s.tgws, accountID, id, func(r *TransitGatewayRecord) { mutTags(&r.Tags, mut) })
 		}
 		if err != nil {
-			slog.ErrorContext(ctx, "Transit Gateway tag mirror failed", "resourceId", *res, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
+			return err
 		}
 	}
 	return nil
 }
 
-// updateTags rewrites a live record's tags at the revision read; an absent
-// record is skipped.
-func updateTags[T any](ctx context.Context, kv jetstream.KeyValue, key string, tags func(*T) *map[string]string, mut func(map[string]string)) error {
-	_, err := kvstore.Update(ctx, kv, key, kvstore.CASConfig{NotFound: errAbsent}, func(rec *T) (bool, error) {
-		m := tags(rec)
-		if *m == nil {
-			*m = map[string]string{}
-		}
-		mut(*m)
-		return true, nil
-	})
-	if errors.Is(err, errAbsent) {
-		return nil
+func mutTags(tags *map[string]string, mut func(map[string]string)) {
+	if *tags == nil {
+		*tags = map[string]string{}
 	}
-	return err
+	mut(*tags)
 }

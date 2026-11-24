@@ -24,9 +24,8 @@ type TransitGatewayLookup interface {
 
 var _ TransitGatewayLookup = (*ec2tgw.Store)(nil)
 
-// Admission admits a write at a feature level. The caller calls done exactly
-// once, after the write is recorded or abandoned.
-type Admission func(ctx context.Context) (done func(), ok bool, err error)
+// Admission admits a write at the Transit Gateway feature level.
+type Admission = ec2tgw.Admission
 
 // SetTransitGatewayLookup installs the Transit Gateway query and the feature
 // level admission for routes that name a Transit Gateway.
@@ -44,7 +43,7 @@ func transitGatewayNotFoundError(id string) error {
 func (s *RouteTableServiceImpl) transitGatewayRoute(ctx context.Context, accountID string, record *RouteTableRecord, destCidr, tgwID string) (RouteRecord, func(), error) {
 	noop := func() {}
 	if s.tgwAdmit == nil || s.tgws == nil {
-		return RouteRecord{}, noop, transitGatewaysNotOffered()
+		return RouteRecord{}, noop, ec2tgw.NotOffered()
 	}
 	done, ok, err := s.tgwAdmit(ctx)
 	if err != nil {
@@ -52,7 +51,7 @@ func (s *RouteTableServiceImpl) transitGatewayRoute(ctx context.Context, account
 		return RouteRecord{}, done, errors.New(awserrors.ErrorServerInternal)
 	}
 	if !ok {
-		return RouteRecord{}, done, transitGatewaysNotOffered()
+		return RouteRecord{}, done, ec2tgw.NotOffered()
 	}
 	routable, err := s.tgws.RouteTarget(ctx, accountID, tgwID, record.VpcId)
 	if err != nil {
@@ -63,11 +62,6 @@ func (s *RouteTableServiceImpl) transitGatewayRoute(ctx context.Context, account
 		return RouteRecord{}, done, transitGatewayNotFoundError(tgwID)
 	}
 	return RouteRecord{DestinationCidrBlock: destCidr, TransitGatewayId: tgwID, Origin: ec2.RouteOriginCreateRoute}, done, nil
-}
-
-func transitGatewaysNotOffered() error {
-	return awserrors.Errorf(awserrors.ErrorUnsupportedOperation,
-		"Transit Gateways are not available until every node in the formation runs a release that supports them.")
 }
 
 // deriveTransitGatewayStates sets each Transit Gateway route's state in

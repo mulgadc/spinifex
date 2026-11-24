@@ -2,8 +2,6 @@ package projection
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/netip"
 	"time"
 
@@ -51,11 +49,11 @@ type TransitGatewayAttachment struct {
 // LoadTransitGateways reads every live Transit Gateway and attachment. A
 // missing bucket is none; any other read failure is an error, never a partial list.
 func LoadTransitGateways(ctx context.Context, js jetstream.JetStream) ([]TransitGateway, []TransitGatewayAttachment, error) {
-	tgwKV, err := openOptional(ctx, js, TransitGatewayBucket)
+	tgwKV, err := openBucket(ctx, js, TransitGatewayBucket)
 	if err != nil || tgwKV == nil {
 		return nil, nil, err
 	}
-	attKV, err := openOptional(ctx, js, TransitGatewayAttachmentBucket)
+	attKV, err := openBucket(ctx, js, TransitGatewayAttachmentBucket)
 	if err != nil || attKV == nil {
 		return nil, nil, err
 	}
@@ -93,16 +91,4 @@ func attachment(rec *ec2tgw.AttachmentRecord) TransitGatewayAttachment {
 		a.VPCAddr, a.TGWAddr, _ = ec2tgw.LinkAddresses(rec.LinkPrefix)
 	}
 	return a
-}
-
-// openOptional opens bucket, or returns nil when it was never created.
-func openOptional(ctx context.Context, js jetstream.JetStream, bucket string) (jetstream.KeyValue, error) {
-	kv, err := js.KeyValue(ctx, bucket)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", bucket, err)
-	}
-	return kv, nil
 }

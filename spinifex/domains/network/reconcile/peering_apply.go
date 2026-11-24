@@ -216,6 +216,53 @@ func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState,
 	}
 }
 
+// ownedRowIDs returns every logical router and the IDs that key names on any
+// router port, router policy or static route.
+func (r *reconciler) ownedRowIDs(ctx context.Context, key string) ([]nbdb.LogicalRouter, map[string]struct{}, error) {
+	routers, err := r.ovn.ListLogicalRouters(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	ports, err := r.ovn.ListLogicalRouterPorts(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := map[string]struct{}{}
+	add := func(ext map[string]string) {
+		if id := ext[key]; id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	for _, p := range ports {
+		add(p.ExternalIDs)
+	}
+	for _, lr := range routers {
+		policies, err := r.ovn.ListLogicalRouterPolicies(ctx, lr.Name)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, p := range policies {
+			add(p.ExternalIDs)
+		}
+		routes, err := r.ovn.ListStaticRoutes(ctx, lr.Name)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, rt := range routes {
+			add(rt.ExternalIDs)
+		}
+	}
+	return routers, ids, nil
+}
+
+func routerNames(routers []nbdb.LogicalRouter) []string {
+	names := make([]string, 0, len(routers))
+	for _, lr := range routers {
+		names = append(names, lr.Name)
+	}
+	return names
+}
+
 // prunePeeringOrphans deletes link ports, policies and entry routes whose connection
 // has no live record. It is a backstop behind teardown and runs only on a
 // complete read of the peering bucket.
@@ -223,46 +270,12 @@ func (r *reconciler) prunePeeringOrphans(ctx context.Context, intent IntentState
 	if intent.PeeringIncomplete != nil {
 		return
 	}
-	ports, err := r.ovn.ListLogicalRouterPorts(ctx)
+	routers, orphans, err := r.ownedRowIDs(ctx, ovn.ExternalIDPcxID)
 	if err != nil {
 		res.fail(classPeeringLink, "prune", err)
 		return
 	}
-	routers, err := r.ovn.ListLogicalRouters(ctx)
-	if err != nil {
-		res.fail(classPeeringLink, "prune", err)
-		return
-	}
-	orphans := map[string]struct{}{}
-	for _, p := range ports {
-		if id := p.ExternalIDs[ovn.ExternalIDPcxID]; id != "" {
-			orphans[id] = struct{}{}
-		}
-	}
-	names := make([]string, 0, len(routers))
-	for _, lr := range routers {
-		names = append(names, lr.Name)
-		policies, err := r.ovn.ListLogicalRouterPolicies(ctx, lr.Name)
-		if err != nil {
-			res.fail(classPeeringLink, "prune", err)
-			return
-		}
-		for _, p := range policies {
-			if id := p.ExternalIDs[ovn.ExternalIDPcxID]; id != "" {
-				orphans[id] = struct{}{}
-			}
-		}
-		routes, err := r.ovn.ListStaticRoutes(ctx, lr.Name)
-		if err != nil {
-			res.fail(classPeeringLink, "prune", err)
-			return
-		}
-		for _, rt := range routes {
-			if id := rt.ExternalIDs[ovn.ExternalIDPcxID]; id != "" {
-				orphans[id] = struct{}{}
-			}
-		}
-	}
+	names := routerNames(routers)
 	for id := range intent.PeeringLive {
 		delete(orphans, id)
 	}

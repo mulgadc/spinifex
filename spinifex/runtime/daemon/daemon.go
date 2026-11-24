@@ -2290,7 +2290,7 @@ func (d *Daemon) startCluster() error {
 	}
 	d.tgwService.SetActivation(tgwAdmission(d.featureGate), tgwOffered(d.featureGate))
 	d.tgwService.SetCentralTagStore(d.tagsService)
-	d.routeTableService.SetTransitGatewayLookup(d.tgwService.Store, ec2routetable.Admission(tgwAdmission(d.featureGate)))
+	d.routeTableService.SetTransitGatewayLookup(d.tgwService.Store, tgwAdmission(d.featureGate))
 	d.vpcService.SetDependencyCheck("transit-gateway-attachment", d.tgwService.VpcBlocksDeletion)
 	d.vpcService.SetSubnetDependencyCheck("transit-gateway-attachment", d.tgwService.SubnetBlocksDeletion)
 	d.vpcService.SetDeletionMarkAdmission(tgwAdmission(d.featureGate))

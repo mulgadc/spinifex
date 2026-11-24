@@ -268,48 +268,17 @@ func (r *reconciler) pruneTGWOrphans(ctx context.Context, intent IntentState, re
 	if intent.TGWIncomplete != nil {
 		return
 	}
-	routers, err := r.ovn.ListLogicalRouters(ctx)
+	routers, orphans, err := r.ownedRowIDs(ctx, ovn.ExternalIDTGWAttachmentID)
 	if err != nil {
 		res.fail(classTGWLink, "prune", err)
 		return
 	}
-	ports, err := r.ovn.ListLogicalRouterPorts(ctx)
-	if err != nil {
-		res.fail(classTGWLink, "prune", err)
-		return
-	}
-	orphans := map[string]struct{}{}
-	for _, p := range ports {
-		if id := p.ExternalIDs[ovn.ExternalIDTGWAttachmentID]; id != "" {
-			orphans[id] = struct{}{}
-		}
-	}
-	var names, orphanRouters []string
+	names := routerNames(routers)
+	var orphanRouters []string
 	for _, lr := range routers {
-		names = append(names, lr.Name)
 		if id := lr.ExternalIDs[ovn.ExternalIDTGWID]; id != "" {
 			if _, live := intent.TGWLive[id]; !live {
 				orphanRouters = append(orphanRouters, lr.Name)
-			}
-		}
-		policies, err := r.ovn.ListLogicalRouterPolicies(ctx, lr.Name)
-		if err != nil {
-			res.fail(classTGWLink, "prune", err)
-			return
-		}
-		for _, p := range policies {
-			if id := p.ExternalIDs[ovn.ExternalIDTGWAttachmentID]; id != "" {
-				orphans[id] = struct{}{}
-			}
-		}
-		routes, err := r.ovn.ListStaticRoutes(ctx, lr.Name)
-		if err != nil {
-			res.fail(classTGWLink, "prune", err)
-			return
-		}
-		for _, rt := range routes {
-			if id := rt.ExternalIDs[ovn.ExternalIDTGWAttachmentID]; id != "" {
-				orphans[id] = struct{}{}
 			}
 		}
 	}

@@ -121,8 +121,8 @@ func (p *LatitudeProvider) Members(ctx context.Context) ([]Address, error) {
 }
 
 // reportMembers reads each configured address once at start and logs, naming the pool,
-// each one the allocator will not use and a pool left with none. It returns the error
-// Members would: a read failure other than not found, or an unusable member.
+// each one the allocator will not use and a pool left with none. It returns a read
+// failure other than not found if one occurs, else the first unusable member's refusal.
 func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error {
 	usable := 0
 	var refused error
@@ -135,9 +135,12 @@ func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error
 		case err != nil:
 			return fmt.Errorf("floating: configured Elastic IP %s: %w", id, mapLatitude(err))
 		case e.Unusable() != "":
-			refused = fmt.Errorf("floating: configured Elastic IP %s is unusable: %s", id, e.Unusable())
 			slog.ErrorContext(ctx, "floating: a configured Elastic IP will not be used: the pool refuses all its addresses while it is configured",
 				"pool", pool, "pool_member", id, "reason", e.Unusable())
+			if refused == nil {
+				refused = fmt.Errorf("floating: configured Elastic IP %s is unusable: %s", id, e.Unusable())
+				logPoolUnusable(ctx, pool)
+			}
 		case e.Status == latitude.StatusError:
 			slog.ErrorContext(ctx, "floating: a configured Elastic IP will not be used: latitude.sh reports it in the error state",
 				"pool", pool, "pool_member", id)
@@ -145,8 +148,14 @@ func (p *LatitudeProvider) reportMembers(ctx context.Context, pool string) error
 			usable++
 		}
 	}
-	if usable == 0 || refused != nil {
-		slog.ErrorContext(ctx, "floating: pool has no usable address; public addresses will fail until fixed", "pool", pool)
+	if usable == 0 && refused == nil {
+		logPoolUnusable(ctx, pool)
 	}
 	return refused
+}
+
+// logPoolUnusable is logged as soon as the pool is known to be unusable, so a later
+// read failure cannot hide it.
+func logPoolUnusable(ctx context.Context, pool string) {
+	slog.ErrorContext(ctx, "floating: pool has no usable address; public addresses will fail until fixed", "pool", pool)
 }

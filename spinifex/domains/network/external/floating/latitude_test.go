@@ -413,3 +413,30 @@ func TestReportMembers_AnyOtherReadFailureIsReturned(t *testing.T) {
 	require.NoError(t, err)
 	assert.ErrorContains(t, p.reportMembers(context.Background(), pool), "eip_1")
 }
+
+// failGetFor fails the read of one ID and passes every other call to the fake.
+type failGetFor struct {
+	*latitude.Fake
+	id  string
+	err error
+}
+
+func (f failGetFor) GetElasticIP(ctx context.Context, id string) (latitude.ElasticIP, error) {
+	if id == f.id {
+		return latitude.ElasticIP{}, f.err
+	}
+	return f.Fake.GetElasticIP(ctx, id)
+}
+
+func TestReportMembers_LaterReadFailureKeepsThePoolUnusableWarning(t *testing.T) {
+	buf := captureLog(t)
+	f := latitudeFake()
+	f.Seed(latitude.ElasticIP{ID: "eip_bgp", Address: netip.MustParseAddr("203.0.113.50"), Mode: "bgp", Family: "IPv4", PrefixLength: 24})
+	p, err := NewLatitudeProvider(failGetFor{Fake: f, id: "eip_2", err: errors.New("timeout")}, []string{"eip_bgp", "eip_1", "eip_2"})
+	require.NoError(t, err)
+	err = p.reportMembers(context.Background(), pool)
+	assert.ErrorContains(t, err, "eip_2", "the read failure is returned, not the refusal")
+	out := buf.String()
+	assert.Contains(t, out, "the pool refuses all its addresses while it is configured\" pool="+pool+" pool_member=eip_bgp")
+	assert.Equal(t, 1, strings.Count(out, "no usable address"))
+}

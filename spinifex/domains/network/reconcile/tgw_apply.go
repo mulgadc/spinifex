@@ -243,11 +243,13 @@ func (r *reconciler) applyTGWRoutes(ctx context.Context, intent IntentState, act
 	}
 	for _, vpcID := range slices.Sorted(maps.Keys(intent.VPCs)) {
 		if _, ok := actual.Routers[topology.VPCRouter(vpcID)]; !ok {
+			unsynced[vpcID] = true
 			continue
 		}
 		err := r.peeringRoutes.SyncTransitGatewayRoutes(ctx, vpcID, want[vpcID])
 		if errors.Is(err, ovn.ErrLogicalRouterNotFound) {
 			slog.Debug("reconcile/apply: Transit Gateway route sync skipped, router gone", "vpc_id", vpcID, "err", err)
+			unsynced[vpcID] = true
 			continue
 		}
 		if err != nil {

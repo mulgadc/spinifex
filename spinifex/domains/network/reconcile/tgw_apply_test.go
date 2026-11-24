@@ -265,16 +265,17 @@ func TestReconcile_TransitGatewayUnconfirmedLinkStaysPending(t *testing.T) {
 	}
 }
 
-// tgwRoutesFailFor fails the Transit Gateway route sync of one VPC.
+// tgwRoutesFailFor fails the Transit Gateway route sync of one VPC with err.
 type tgwRoutesFailFor struct {
 	policy.PeeringRouteManager
 
 	vpcID string
+	err   error
 }
 
 func (f tgwRoutesFailFor) SyncTransitGatewayRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error {
 	if vpcID == f.vpcID {
-		return errors.New("ovsdb transact failed")
+		return f.err
 	}
 	return f.PeeringRouteManager.SyncTransitGatewayRoutes(ctx, vpcID, want)
 }
@@ -286,10 +287,25 @@ func TestReconcile_TransitGatewayRouteSyncFailureLeavesPending(t *testing.T) {
 	rec, _ := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
-	rec.peeringRoutes = tgwRoutesFailFor{PeeringRouteManager: rec.peeringRoutes, vpcID: "vpc-a"}
+	rec.peeringRoutes = tgwRoutesFailFor{PeeringRouteManager: rec.peeringRoutes, vpcID: "vpc-a", err: errors.New("ovsdb transact failed")}
 	err := rec.Reconcile(context.Background(), tgwIntent(false))
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+	if want := []string{"barrier", "available:" + testAttB + ":4"}; !slices.Equal(p.calls, want) {
+		t.Errorf("calls = %v, want %v", p.calls, want)
+	}
+}
+
+// A VPC router that is gone at route sync leaves its attachment pending, as a
+// failed sync does; a later pass writes the rows and confirms it.
+func TestReconcile_TransitGatewayRouterGoneLeavesPending(t *testing.T) {
+	rec, _ := newTestReconciler(t)
+	p := &tgwRecorder{}
+	p.wire(rec)
+	rec.peeringRoutes = tgwRoutesFailFor{PeeringRouteManager: rec.peeringRoutes, vpcID: "vpc-a", err: ovn.ErrLogicalRouterNotFound}
+	if err := rec.Reconcile(context.Background(), tgwIntent(false)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	if want := []string{"barrier", "available:" + testAttB + ":4"}; !slices.Equal(p.calls, want) {
 		t.Errorf("calls = %v, want %v", p.calls, want)

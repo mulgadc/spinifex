@@ -213,7 +213,7 @@ func storedNodegroupARNs(ctx context.Context, natsConn *nats.Conn, accountID str
 			return "", err
 		}
 		kv, err := js.KeyValue(ctx, ekscluster.AccountBucketName(accountID))
-		if errors.Is(err, jetstream.ErrBucketNotFound) || errors.Is(err, jetstream.ErrInvalidBucketName) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return "", nil
 		}
 		if err != nil {

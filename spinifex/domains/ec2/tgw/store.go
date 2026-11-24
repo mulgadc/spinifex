@@ -537,13 +537,20 @@ func (s *Store) finishTransitGatewayMove(ctx context.Context, rec *TransitGatewa
 	return s.releaseQuotaSlot(ctx, rec.AccountID, rec.ID)
 }
 
-// maxBlockingListed bounds the attachments a refused DeleteTransitGateway reads
-// and names, so its cost does not grow with the gateway's attachments.
+// maxBlockingListed bounds the attachments a refused DeleteTransitGateway names.
 const maxBlockingListed = 50
+
+// maxIndexReads bounds the index keys one dependency check reads, live or
+// stale, so its cost does not grow with the keys under the prefix.
+const maxIndexReads = 2 * maxBlockingListed
+
+// errIndexScanBudget is a dependency check that read maxIndexReads keys and
+// found no live attachment; the sweep removes stale keys, so a retry decides.
+var errIndexScanBudget = errors.New("tgw: dependency check read its key budget without a decision")
 
 // liveAttachmentsUnder returns up to limit IDs of the live attachments, and the
 // young orphan keys, in an index prefix such as "tgw.<id>.". Either blocks a
-// delete. It stops reading once it has limit.
+// delete. It reads at most maxIndexReads keys.
 func (s *Store) liveAttachmentsUnder(ctx context.Context, prefix string, limit int) ([]string, error) {
 	lister, err := s.atts.ListKeysFiltered(ctx, prefix+"*")
 	if err != nil {
@@ -554,11 +561,19 @@ func (s *Store) liveAttachmentsUnder(ctx context.Context, prefix string, limit i
 	}
 	defer func() { _ = lister.Stop() }()
 	var out []string
+	reads := 0
 	for key := range lister.Keys() {
 		id := idFromIndexKey(key)
 		if id == "" {
 			continue
 		}
+		if reads == maxIndexReads {
+			if len(out) > 0 {
+				return out, nil
+			}
+			return nil, errIndexScanBudget
+		}
+		reads++
 		entry, _, err := getJSON[indexEntry](ctx, s.atts, key)
 		if err != nil {
 			return nil, err

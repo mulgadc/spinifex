@@ -2,6 +2,7 @@ package tgw
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -250,4 +251,33 @@ func TestLiveAttachmentsUnder_StopsAtLimit(t *testing.T) {
 	got, err = f.svc.liveAttachmentsUnder(t.Context(), "tgw.tgw-00000001.", maxBlockingListed)
 	require.NoError(t, err)
 	require.Len(t, got, 3)
+}
+
+// Stale keys count against the read budget: a check that reads its budget of
+// stale keys answers an error and never reads past it, and a blocker found
+// within the budget still refuses the delete.
+func TestLiveAttachmentsUnder_StaleKeysBounded(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	const prefix = "tgw.tgw-00000001."
+	stale := f.svc.now().Add(-2 * claimGrace)
+	for i := range maxIndexReads {
+		_, err := putJSON(t.Context(), f.svc.atts, tgwIndexKey("tgw-00000001", fmt.Sprintf("tgw-attach-%08x", i+2)), indexEntry{AccountID: testAccount, CreatedAt: stale})
+		require.NoError(t, err)
+	}
+	_, err := putJSON(t.Context(), f.svc.atts, tgwIndexKey("tgw-00000001", "tgw-attach-ffffffff"), indexEntry{AccountID: testAccount, CreatedAt: f.svc.now()})
+	require.NoError(t, err)
+	_, err = f.svc.liveAttachmentsUnder(t.Context(), prefix, maxBlockingListed)
+	require.ErrorIs(t, err, errIndexScanBudget, "the young key is past the budget and is never read")
+
+	g := newFixture(t)
+	_, err = putJSON(t.Context(), g.svc.atts, tgwIndexKey("tgw-00000001", "tgw-attach-00000001"), indexEntry{AccountID: testAccount, CreatedAt: g.svc.now()})
+	require.NoError(t, err)
+	for i := range maxIndexReads {
+		_, err := putJSON(t.Context(), g.svc.atts, tgwIndexKey("tgw-00000001", fmt.Sprintf("tgw-attach-%08x", i+2)), indexEntry{AccountID: testAccount, CreatedAt: stale})
+		require.NoError(t, err)
+	}
+	got, err := g.svc.liveAttachmentsUnder(t.Context(), prefix, maxBlockingListed)
+	require.NoError(t, err)
+	require.Equal(t, []string{"tgw-attach-00000001"}, got)
 }

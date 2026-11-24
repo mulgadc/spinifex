@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **155 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **161 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -92,6 +92,8 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `CreateSnapshot` |
 | `CreateSubnet` |
 | `CreateTags` |
+| `CreateTransitGateway` |
+| `CreateTransitGatewayVpcAttachment` |
 | `CreateVolume` |
 | `CreateVpc` |
 | `CreateVpcEndpoint` |
@@ -110,6 +112,8 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DeleteSnapshot` |
 | `DeleteSubnet` |
 | `DeleteTags` |
+| `DeleteTransitGateway` |
+| `DeleteTransitGatewayVpcAttachment` |
 | `DeleteVolume` |
 | `DeleteVpc` |
 | `DeleteVpcEndpoints` |
@@ -153,6 +157,8 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeSpotInstanceRequests` |
 | `DescribeSubnets` |
 | `DescribeTags` |
+| `DescribeTransitGatewayVpcAttachments` |
+| `DescribeTransitGateways` |
 | `DescribeVolumeAttribute` |
 | `DescribeVolumeStatus` |
 | `DescribeVolumes` |

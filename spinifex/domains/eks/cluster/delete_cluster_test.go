@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -458,32 +459,61 @@ func TestDeleteClusterForgetsTheClusterLeases(t *testing.T) {
 	}
 }
 
+// releaseGatedStore holds the first delete of key until release closes, and
+// closes entered once a delete of key has reached it.
+type releaseGatedStore struct {
+	kvsync.KVStore
+
+	key     string
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *releaseGatedStore) CompareAndDelete(ctx context.Context, key string, rev uint64) error {
+	if key == g.key {
+		g.once.Do(func() { close(g.entered); <-g.release })
+	}
+	return g.KVStore.CompareAndDelete(ctx, key, rev)
+}
+
 // TestDeleteClusterCleanupLeavesARecreatedClustersLease: once the record is
-// gone a same-name cluster may lead, and the old teardown's cleanup, still
-// running, must not release the lease it took.
+// gone a same-name cluster may lead, and the old teardown's cleanup, run after
+// the recreated cluster took its lease, must not release that lease.
 func TestDeleteClusterCleanupLeavesARecreatedClustersLease(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
-	entered, release := blockTerminate(t, f.inst)
+	// The old teardown's cleanup starts by releasing its teardown lease, so
+	// parking that release parks the whole cleanup after the record is gone.
+	gated := &releaseGatedStore{
+		KVStore: kvstore.OpenSyncBucket(testutil.NewJetStream(t, f.svc.deps.NATSConn)),
+		key:     KeyPrefixCluster + teardownLeaseName(testAccountID, "alpha"),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(gated.release) })
+	t.Cleanup(release)
+	f.svc.leases = NewClusterLeases(gated, "node-1")
+
 	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
 	require.NoError(t, err)
-	waitEntered(t, entered)
-
-	// Holding the gate's mutex parks the old teardown before its gate opens.
-	f.svc.teardownMu.Lock()
-	release()
-	require.Eventually(t, func() bool {
-		_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
-		return errors.Is(err, ErrClusterNotFound)
-	}, 10*time.Second, 10*time.Millisecond, "the old teardown must remove the record")
+	select {
+	case <-gated.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the old teardown never reached its cleanup")
+	}
+	_, err = GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.ErrorIs(t, err, ErrClusterNotFound, "the old teardown removes the record before its cleanup")
 
 	replacement := f.svc.leases.Get(clusterLeaseName(testAccountID, "alpha"))
 	tok, err := replacement.TryLock(t.Context())
 	require.NoError(t, err, "the recreated cluster's reconciler takes the free lease")
-	f.svc.teardownMu.Unlock()
+	release()
 	f.svc.WaitTeardowns()
 
 	assert.True(t, replacement.Held(), "the old teardown's cleanup released the recreated cluster's lease")
+	assert.True(t, leaseKeyHeld(t, f.svc, clusterLeaseName(testAccountID, "alpha")),
+		"the old teardown's cleanup deleted the recreated cluster's lease key")
 	replacement.Unlock(t.Context(), tok)
 }
 

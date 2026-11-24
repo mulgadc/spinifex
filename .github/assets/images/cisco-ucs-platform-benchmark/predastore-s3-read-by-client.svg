@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="470" viewBox="0 0 760 470" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
 <rect width="760" height="470" fill="#ffffff"/>
-<text x="74" y="30" font-size="19" font-weight="700" fill="#1f2937">Predastore read throughput by client (S3 API)</text>
+<text x="74" y="30" font-size="19" font-weight="700" fill="#1f2937">Predastore read throughput by client</text>
 <text x="74" y="49" font-size="12.5" fill="#6b7280">1 GiB objects, same presigned-curl client on every path — Spinifex v1.20.0</text>
 <line x1="74" y1="386.0" x2="734" y2="386.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="64" y="390.0" font-size="12" text-anchor="end" fill="#6b7280">0</text>

@@ -259,7 +259,7 @@ Predastore validation (S3 API) used 1 GiB objects. The AWS CLI splits any downlo
 | CPU1 guest | 525 MiB/s | 350 MiB/s |
 | CPU2 guest | 517 MiB/s | 351 MiB/s |
 
-<img src="../../../../.github/assets/images/cisco-ucs-platform-benchmark/predastore-s3-read-by-client.svg" alt="Predastore read throughput by client (S3 API), single-stream versus chunked/concurrent GET">
+<img src="../../../../.github/assets/images/cisco-ucs-platform-benchmark/predastore-s3-read-by-client.svg" alt="Predastore read throughput by client, single-stream versus chunked/concurrent GET">
 
 Single-stream writes land at 282–304 MiB/s across the host and all three guests. Under three simultaneous clients — one per physical node — the cluster sustains 640 MiB/s aggregate read and 538 MiB/s aggregate write from the host, and 665 / 515 MiB/s from the guests.
 

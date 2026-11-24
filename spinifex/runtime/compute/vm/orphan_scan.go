@@ -77,10 +77,14 @@ type qemuOrphan struct {
 
 // classifyQEMUOrphans returns every live QEMU PID not vouched for by
 // a pidfile naming a known instance. This is the gap classifyRestoredInstances
-// cannot see, since it only walks Snapshot().
+// cannot see, since it only walks Snapshot(). It refuses to answer when a
+// pidfile names a live pid the scan missed, since the view is then partial.
 func classifyQEMUOrphans(procRoot, runtimeDir string, known map[string]bool) ([]qemuOrphan, error) {
 	live, err := scanLiveQEMUPIDs(procRoot)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkPidFilesVisible(runtimeDir, live); err != nil {
 		return nil, err
 	}
 	if len(live) == 0 {

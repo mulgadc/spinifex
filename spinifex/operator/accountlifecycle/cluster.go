@@ -77,6 +77,7 @@ func NewClusterEngine(
 	// live spot request launches a replacement for anything already terminated.
 	reapers = append(reapers, ELBv2Reapers(nc)...)
 	reapers = append(reapers, EC2ExtraReapers(nc)...)
+	reapers = append(reapers, TransitGatewayReapers(nc)...)
 	reapers = append(reapers, EC2Reapers(nc, nodes.Expected, nodes.DaemonIDs)...)
 
 	reapers = append(reapers, S3Reapers(buckets)...)

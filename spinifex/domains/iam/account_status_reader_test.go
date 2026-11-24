@@ -103,3 +103,41 @@ func mustMasterKey(t *testing.T) []byte {
 	require.NoError(t, err)
 	return key
 }
+
+func TestAccountStatusReader_OnlyActiveIsActive(t *testing.T) {
+	t.Parallel()
+	svc, reader, _ := newStatusReaderFixture(t)
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
+
+	active, err := svc.CreateAccount("active@example.com")
+	require.NoError(t, err)
+	ok, err := reader.AccountActive(t.Context(), active.AccountID)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	suspended, err := svc.CreateAccount("suspended@example.com")
+	require.NoError(t, err)
+	_, err = svc.SetAccountStatus(suspended.AccountID, iamdomain.AccountStatusSuspended)
+	require.NoError(t, err)
+	ok, err = reader.AccountActive(t.Context(), suspended.AccountID)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	quiesced, err := svc.CreateAccount("tenant@example.com")
+	require.NoError(t, err)
+	_, err = svc.QuiesceAccount(quiesced.AccountID, "op-1", 1)
+	require.NoError(t, err)
+	ok, err = reader.AccountActive(t.Context(), quiesced.AccountID)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// A deleted account has no record; a create that reads it must be refused.
+func TestAccountStatusReader_MissingRecordIsNotActive(t *testing.T) {
+	t.Parallel()
+	_, reader, _ := newStatusReaderFixture(t)
+	ok, err := reader.AccountActive(t.Context(), "999999999999")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}

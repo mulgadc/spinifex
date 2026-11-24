@@ -297,6 +297,26 @@ func (e *Engine) rereadComputeStorage(ctx context.Context, accountID string, res
 	e.addFinalStuck(result, StageStorage, accountID, storage, serr)
 }
 
+// rereadLate lists, immediately before the record is removed, each kind that
+// a create admitted before the quiesce can add after its stage drained. A
+// failed listing is named, never taken as empty.
+func (e *Engine) rereadLate(ctx context.Context, accountID string, result *Result) {
+	for _, reaper := range e.Reapers {
+		if _, ok := reaper.(finalRereader); !ok {
+			continue
+		}
+		found, err := reaper.List(ctx, accountID)
+		var stuck []Stuck
+		if err != nil {
+			stuck = []Stuck{{Resource: Resource{Kind: "inventory", ID: reaper.Kind()}, Reason: operatorv1.AccountingReasonRereadIncomplete}}
+		}
+		for _, r := range found {
+			stuck = append(stuck, Stuck{Resource: r, Reason: "created after its stage drained"})
+		}
+		e.appendStuck(result, reaper.Stage(), stuck)
+	}
+}
+
 func (e *Engine) addFinalStuck(result *Result, stage Stage, accountID string, out *accountcleanup.Outcome, err error) {
 	var stuck []Stuck
 	if err != nil || out == nil {
@@ -304,6 +324,10 @@ func (e *Engine) addFinalStuck(result *Result, stage Stage, accountID string, ou
 	} else {
 		stuck = stuckFrom(nil, &accountcleanup.Outcome{}, out)
 	}
+	e.appendStuck(result, stage, stuck)
+}
+
+func (e *Engine) appendStuck(result *Result, stage Stage, stuck []Stuck) {
 	if len(stuck) == 0 {
 		return
 	}

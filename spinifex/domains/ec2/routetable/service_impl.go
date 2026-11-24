@@ -45,6 +45,8 @@ type RouteTableServiceImpl struct {
 	natsConn  *nats.Conn
 	peering   PeeringLookup
 	endpoints EndpointLookup
+	tgws      TransitGatewayLookup
+	tgwAdmit  Admission
 }
 
 // NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence.
@@ -605,6 +607,7 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"route.gateway-id":                       true,
 	"route.nat-gateway-id":                   true,
 	"route.vpc-peering-connection-id":        true,
+	"route.transit-gateway-id":               true,
 	"route.state":                            true,
 	"route.origin":                           true,
 	"owner-id":                               true,
@@ -662,6 +665,10 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 
 	if err := s.derivePeeringStates(ctx, records); err != nil {
 		slog.ErrorContext(ctx, "DescribeRouteTables: peering route state lookup failed", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.deriveTransitGatewayStates(ctx, accountID, records); err != nil {
+		slog.ErrorContext(ctx, "DescribeRouteTables: Transit Gateway route state lookup failed", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if err := s.deriveEndpointRoutes(ctx, records); err != nil {
@@ -822,6 +829,15 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		}
 		publish = func(*RouteTableRecord) {}
 
+	case input.TransitGatewayId != nil && *input.TransitGatewayId != "":
+		var done func()
+		route, done, err = s.transitGatewayRoute(ctx, accountID, record, destCidr, *input.TransitGatewayId)
+		defer done()
+		if err != nil {
+			return nil, err
+		}
+		publish = func(*RouteTableRecord) {}
+
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -957,7 +973,7 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		return nil, err
 	}
 
-	// Targets: GatewayId (internet gateway) or VpcPeeringConnectionId.
+	// Targets: GatewayId (internet gateway), VpcPeeringConnectionId or TransitGatewayId.
 	var replacement RouteRecord
 	var igwRecord ec2igw.IGWRecord
 	switch {
@@ -974,6 +990,13 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		replacement = RouteRecord{GatewayId: igwID, State: ec2.RouteStateActive}
 	case input.VpcPeeringConnectionId != nil && *input.VpcPeeringConnectionId != "":
 		replacement, err = s.peeringRoute(ctx, accountID, record, destCidr, *input.VpcPeeringConnectionId)
+		if err != nil {
+			return nil, err
+		}
+	case input.TransitGatewayId != nil && *input.TransitGatewayId != "":
+		var done func()
+		replacement, done, err = s.transitGatewayRoute(ctx, accountID, record, destCidr, *input.TransitGatewayId)
+		defer done()
 		if err != nil {
 			return nil, err
 		}
@@ -1002,6 +1025,7 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		rec.Routes[idx].GatewayId = replacement.GatewayId
 		rec.Routes[idx].NatGatewayId = ""
 		rec.Routes[idx].VpcPeeringConnectionId = replacement.VpcPeeringConnectionId
+		rec.Routes[idx].TransitGatewayId = replacement.TransitGatewayId
 		rec.Routes[idx].State = replacement.State
 		return true, nil
 	})
@@ -1010,7 +1034,8 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 	}
 
 	slog.InfoContext(ctx, "ReplaceRoute completed", "routeTableId", rtbID, "destination", destCidr,
-		"gatewayId", replacement.GatewayId, "vpcPeeringConnectionId", replacement.VpcPeeringConnectionId, "accountID", accountID)
+		"gatewayId", replacement.GatewayId, "vpcPeeringConnectionId", replacement.VpcPeeringConnectionId,
+		"transitGatewayId", replacement.TransitGatewayId, "accountID", accountID)
 
 	return &ec2.ReplaceRouteOutput{}, nil
 }
@@ -1365,6 +1390,7 @@ var routeFilterFields = map[string]func(RouteRecord) string{
 	"route.gateway-id":                 func(r RouteRecord) string { return r.GatewayId },
 	"route.nat-gateway-id":             func(r RouteRecord) string { return r.NatGatewayId },
 	"route.vpc-peering-connection-id":  func(r RouteRecord) string { return r.VpcPeeringConnectionId },
+	"route.transit-gateway-id":         func(r RouteRecord) string { return r.TransitGatewayId },
 	"route.state":                      func(r RouteRecord) string { return r.State },
 	"route.origin":                     func(r RouteRecord) string { return r.Origin },
 }
@@ -1598,6 +1624,9 @@ func recordToEC2(record *RouteTableRecord) *ec2.RouteTable {
 		}
 		if r.VpcPeeringConnectionId != "" {
 			route.VpcPeeringConnectionId = aws.String(r.VpcPeeringConnectionId)
+		}
+		if r.TransitGatewayId != "" {
+			route.TransitGatewayId = aws.String(r.TransitGatewayId)
 		}
 		rtb.Routes = append(rtb.Routes, route)
 	}

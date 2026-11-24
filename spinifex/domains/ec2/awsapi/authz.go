@@ -91,6 +91,13 @@ var (
 	vpcPeeringScope    = &resourceScope{paths: []string{"VpcPeeringConnectionId"}, kind: arn.EC2VPCPeeringConnection}
 	vpcPeeringNewScope = &resourceScope{kind: arn.EC2VPCPeeringConnection}
 
+	tgwScope              = &resourceScope{paths: []string{"TransitGatewayId"}, kind: arn.EC2TransitGateway}
+	tgwOptScope           = &resourceScope{paths: []string{"TransitGatewayId"}, kind: arn.EC2TransitGateway, optional: true}
+	tgwNewScope           = &resourceScope{kind: arn.EC2TransitGateway}
+	tgwAttachmentScope    = &resourceScope{paths: []string{"TransitGatewayAttachmentId"}, kind: arn.EC2TransitGatewayAttachment}
+	tgwAttachmentNewScope = &resourceScope{kind: arn.EC2TransitGatewayAttachment}
+	subnetListScope       = &resourceScope{paths: []string{"SubnetIds"}, kind: arn.EC2Subnet}
+
 	vpcEndpointScope     = &resourceScope{paths: []string{"VpcEndpointId"}, kind: arn.EC2VPCEndpoint}
 	vpcEndpointListScope = &resourceScope{paths: []string{"VpcEndpointIds"}, kind: arn.EC2VPCEndpoint}
 	vpcEndpointNewScope  = &resourceScope{kind: arn.EC2VPCEndpoint}
@@ -203,8 +210,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	// Route tables.
 	"CreateRouteTable":             {routeTableNewScope, vpcScope},
 	"DeleteRouteTable":             {routeTableScope},
-	"CreateRoute":                  {routeTableScope, gatewayOptScope, natGatewayOptScope},
-	"ReplaceRoute":                 {routeTableScope, gatewayOptScope},
+	"CreateRoute":                  {routeTableScope, gatewayOptScope, natGatewayOptScope, tgwOptScope},
+	"ReplaceRoute":                 {routeTableScope, gatewayOptScope, tgwOptScope},
 	"DeleteRoute":                  {routeTableScope},
 	"AssociateRouteTable":          {routeTableScope, subnetOptScope, gatewayOptScope},
 	"ReplaceRouteTableAssociation": {routeTableScope},
@@ -226,6 +233,11 @@ var ec2Scopes = map[string][]*resourceScope{
 	"RejectVpcPeeringConnection":        {vpcPeeringScope},
 	"DeleteVpcPeeringConnection":        {vpcPeeringScope},
 	"ModifyVpcPeeringConnectionOptions": {vpcPeeringScope},
+
+	"CreateTransitGateway":              {tgwNewScope},
+	"DeleteTransitGateway":              {tgwScope},
+	"CreateTransitGatewayVpcAttachment": {tgwAttachmentNewScope, tgwScope, vpcScope, subnetListScope},
+	"DeleteTransitGatewayVpcAttachment": {tgwAttachmentScope},
 
 	// VPC endpoints and the managed prefix list.
 	"CreateVpcEndpoint":           {vpcEndpointNewScope, vpcScope, routeTableListOpt},
@@ -323,6 +335,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeLaunchTemplates":                unscoped,
 	"DescribeNatGateways":                    unscoped,
 	"DescribeVpcPeeringConnections":          unscoped,
+	"DescribeTransitGateways":                unscoped,
+	"DescribeTransitGatewayVpcAttachments":   unscoped,
 	"DescribeNetworkInterfaceAttribute":      unscoped,
 	"DescribeNetworkInterfaces":              unscoped,
 	"DescribePlacementGroups":                unscoped,

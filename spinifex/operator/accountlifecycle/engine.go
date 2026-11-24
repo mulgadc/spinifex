@@ -236,6 +236,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	}
 	e.rereadPlatform(ctx, req, platform, result)
 	e.rereadComputeStorage(ctx, req.AccountID, result)
+	e.rereadLate(ctx, req.AccountID, result)
 
 	if stuck := result.StuckCount(); stuck > 0 {
 		// The account stays TERMINATING on purpose. Removing the record now

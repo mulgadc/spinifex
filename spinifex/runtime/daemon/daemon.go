@@ -63,6 +63,7 @@ import (
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
@@ -208,6 +209,7 @@ type Daemon struct {
 	natGatewayService  *ec2natgw.NatGatewayServiceImpl
 	vpcPeeringService  *ec2vpcpeering.ServiceImpl
 	vpcEndpointService *ec2vpcendpoint.ServiceImpl
+	tgwService         *ec2tgw.ServiceImpl
 	prefixListService  *ec2prefixlist.ServiceImpl
 	externalIPAM       *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
@@ -1034,6 +1036,12 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DeleteVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DeleteVpcEndpoints), "spinifex-workers"},
 		{"ec2.DescribeVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpoints), "spinifex-workers"},
 		{"ec2.DescribeVpcEndpointServices", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpointServices), "spinifex-workers"},
+		{"ec2.CreateTransitGateway", handleNATSRequest(d.node, d.tgwService.CreateTransitGateway), "spinifex-workers"},
+		{"ec2.DeleteTransitGateway", handleNATSRequest(d.node, d.tgwService.DeleteTransitGateway), "spinifex-workers"},
+		{"ec2.DescribeTransitGateways", handleNATSRequest(d.node, d.tgwService.DescribeTransitGateways), "spinifex-workers"},
+		{"ec2.CreateTransitGatewayVpcAttachment", handleNATSRequest(d.node, d.tgwService.CreateTransitGatewayVpcAttachment), "spinifex-workers"},
+		{"ec2.DeleteTransitGatewayVpcAttachment", handleNATSRequest(d.node, d.tgwService.DeleteTransitGatewayVpcAttachment), "spinifex-workers"},
+		{"ec2.DescribeTransitGatewayVpcAttachments", handleNATSRequest(d.node, d.tgwService.DescribeTransitGatewayVpcAttachments), "spinifex-workers"},
 		{"ec2.DescribePrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribePrefixLists), "spinifex-workers"},
 		{"ec2.DescribeManagedPrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribeManagedPrefixLists), "spinifex-workers"},
 		{"ec2.GetManagedPrefixListEntries", handleNATSRequest(d.node, d.prefixListService.GetManagedPrefixListEntries), "spinifex-workers"},
@@ -2019,6 +2027,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.vpcPeeringService must be nil before startCluster")
 	case d.vpcEndpointService != nil:
 		return errors.New("d.vpcEndpointService must be nil before startCluster")
+	case d.tgwService != nil:
+		return errors.New("d.tgwService must be nil before startCluster")
 	case d.prefixListService != nil:
 		return errors.New("d.prefixListService must be nil before startCluster")
 	case d.externalIPAM != nil:
@@ -2271,6 +2281,24 @@ func (d *Daemon) startCluster() error {
 	d.vpcEndpointService.SetCentralTagStore(d.tagsService)
 	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
 	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)
+
+	d.tgwService, err = initServiceWithRetry("Transit Gateway service", func() (*ec2tgw.ServiceImpl, error) {
+		return ec2tgw.NewServiceImplWithNATS(d.ctx, d.natsConn, d.config.Region)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize Transit Gateway service: %w", err)
+	}
+	d.tgwService.SetActivation(tgwAdmission(d.featureGate), tgwOffered(d.featureGate))
+	d.tgwService.SetCentralTagStore(d.tagsService)
+	d.routeTableService.SetTransitGatewayLookup(d.tgwService.Store, ec2routetable.Admission(tgwAdmission(d.featureGate)))
+	d.vpcService.SetDependencyCheck("transit-gateway-attachment", d.tgwService.VpcBlocksDeletion)
+	d.vpcService.SetSubnetDependencyCheck("transit-gateway-attachment", d.tgwService.SubnetBlocksDeletion)
+	tgwAccountsJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream handle for Transit Gateway account status: %w", err)
+	}
+	var _ ec2tgw.AccountStatus = (*iamdomain.AccountStatusReader)(nil)
+	d.tgwService.SetAccountStatus(iamdomain.NewAccountStatusReader(tgwAccountsJS))
 	d.prefixListService = ec2prefixlist.NewServiceImpl(d.config.Region, d.mgmtBridgeIP, func() *config.ClusterConfig { return d.clusterConfig })
 	d.prefixListService.SetGossiped(prefixListGossiped(d.featureGate))
 	d.vpcService.SetPrefixListAdmission(prefixListAdmission(d.featureGate))
@@ -2750,6 +2778,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.vpcEndpointService != nil {
 			reapers = append(reapers, clusterWideReaper{d.vpcEndpointService.NewSweepReaper()})
+		}
+		if d.tgwService != nil {
+			reapers = append(reapers, clusterWideReaper{d.tgwService.NewSweepReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

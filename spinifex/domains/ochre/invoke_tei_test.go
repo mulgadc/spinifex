@@ -246,6 +246,11 @@ func TestEmbeddingInvoke_RejectsInvalidBodiesBeforeTEI(t *testing.T) {
 		"input is not text json": `{"input":{"text":"a"}}`,
 		"null model":             `{"input":"a","model":null}`,
 		"null encoding format":   `{"input":"a","encoding_format":null}`,
+		"uppercase input key":    `{"Input":"a"}`,
+		"uppercase model key":    `{"input":"a","MODEL":"nomic-embed-text-v1.5"}`,
+		"mixed-case format key":  `{"input":"a","Encoding_Format":"float"}`,
+		"mixed-case dims key":    `{"input":"a","Dimensions":null}`,
+		"case-folded duplicate":  `{"input":"a","INPUT":"b"}`,
 	}
 	tei := newFakeTEI(t)
 	rt := staticTEIRouter(t, tei, &fakeRecorder{})
@@ -260,7 +265,7 @@ func TestEmbeddingInvoke_RejectsInvalidBodiesBeforeTEI(t *testing.T) {
 }
 
 func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
-	vec := `"embedding":` + nativeVector("0.1")
+	vec := `"object":"embedding","embedding":` + nativeVector("0.1")
 	bodies := map[string]string{
 		"not json":                `not json`,
 		"missing usage":           `{"data":[{` + vec + `,"index":0}]}`,
@@ -269,13 +274,16 @@ func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
 		"wrong vector count":      `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"missing index":           `{"data":[{` + vec + `}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"out of range index":      `{"data":[{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
-		"null vector element":     `{"data":[{"embedding":` + nativeVector("null") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
-		"narrower than native":    `{"data":[{"embedding":[` + nativeWidthFill + `-1],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
-		"wider than native":       `{"data":[{"embedding":` + nativeVector("0.1,0.2") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
-		"empty vector":            `{"data":[{"embedding":[],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"null vector element":     `{"data":[{"object":"embedding","embedding":` + nativeVector("null") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"narrower than native":    `{"data":[{"object":"embedding","embedding":[` + nativeWidthFill + `-1],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"wider than native":       `{"data":[{"object":"embedding","embedding":` + nativeVector("0.1,0.2") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"empty vector":            `{"data":[{"object":"embedding","embedding":[],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"missing total tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1}}`,
 		"negative total tokens":   `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":-1}}`,
 		"string prompt tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":"1","total_tokens":1}}`,
+		"missing object":          `{"data":[{"embedding":` + nativeVector("0.1") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"wrong object":            `{"data":[{"object":"list","embedding":` + nativeVector("0.1") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"uppercase object":        `{"data":[{"object":"Embedding","embedding":` + nativeVector("0.1") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"duplicate index (batch)": `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 	}
 	for name, body := range bodies {

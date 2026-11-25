@@ -189,6 +189,77 @@ func TestSetSecurityGroups_CrossAccount(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
 }
 
+// A record with a non-appliance realization must keep its stored groups and the
+// groups on its retained ENI when the appliance security-group path is asked to
+// replace them.
+func TestSetSecurityGroups_RetainedOVNRecordRefusesApplianceChange(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, _ := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.42.0/24", "us-east-1a")
+	newSG := func(name string) string {
+		out, err := vpcSvc.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
+			GroupName:   aws.String(name),
+			Description: aws.String(name),
+			VpcId:       aws.String(vid),
+		}, testAccountID)
+		require.NoError(t, err)
+		return *out.GroupId
+	}
+	sgOrig := newSG("ovn-sg-orig")
+	sgNew := newSG("ovn-sg-new")
+	eniOut, err := vpcSvc.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(sub1),
+		Groups:   aws.StringSlice([]string{sgOrig}),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniID := *eniOut.NetworkInterface.NetworkInterfaceId
+
+	lb := newTestLB("ovnsgs000000001", "ovn-sgs")
+	lb.LoadBalancerArn = "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/net/ovn-sgs/ovnsgs000000001"
+	lb.Type = LoadBalancerTypeNetwork
+	lb.Realization = "ovn"
+	lb.VpcId = vid
+	lb.SecurityGroups = []string{sgOrig}
+	lb.Subnets = []string{sub1}
+	lb.AvailZones = []AvailZoneInfo{{ZoneName: "us-east-1a", SubnetId: sub1}}
+	lb.ENIs = []string{eniID}
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	_, err = svc.SetSecurityGroups(t.Context(), &elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+		SecurityGroups:  aws.StringSlice([]string{sgNew}),
+	}, "999999999999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
+
+	_, err = svc.SetSecurityGroups(t.Context(), &elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+		SecurityGroups:  aws.StringSlice([]string{sgNew}),
+	}, testAccountID)
+	assert.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorELBv2InvalidConfigurationRequest, code)
+
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ovn", got.Realization)
+	assert.Equal(t, []string{sgOrig}, got.SecurityGroups)
+	assert.Equal(t, []string{eniID}, got.ENIs)
+
+	enis, err := vpcSvc.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: aws.StringSlice([]string{eniID}),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, enis.NetworkInterfaces, 1)
+	var eniGroups []string
+	for _, g := range enis.NetworkInterfaces[0].Groups {
+		eniGroups = append(eniGroups, aws.StringValue(g.GroupId))
+	}
+	assert.Equal(t, []string{sgOrig}, eniGroups, "retained ENI groups must not change")
+}
+
 // frontendPublicIP returns the first non-empty public IpAddress across the LB's
 // AZ addresses, or "" when none is set yet.
 func frontendPublicIP(lb *elbv2.LoadBalancer) string {

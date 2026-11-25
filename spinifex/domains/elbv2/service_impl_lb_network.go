@@ -72,6 +72,12 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(ctx context.Context, input *elbv2.S
 	if lb == nil || lb.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
+	// Group changes re-attach appliance ENIs, which only the appliance
+	// realization owns.
+	if lb.Realization != "" {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2InvalidConfigurationRequest,
+			"SetSecurityGroups is not supported for load balancer %s with realization %q.", lb.LoadBalancerID, lb.Realization)
+	}
 
 	// SGs are fixed at create time on NLBs: they can be replaced on an NLB created
 	// with SGs, but not added to one created without (it carries the managed SG

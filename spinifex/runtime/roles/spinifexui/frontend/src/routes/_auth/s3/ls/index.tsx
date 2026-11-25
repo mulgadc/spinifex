@@ -41,7 +41,7 @@ export const Route = createFileRoute("/_auth/s3/ls/")({
   head: () => ({
     meta: [
       {
-        title: "Buckets | Object Storage | Mulga",
+        title: "Buckets | Object Storage",
       },
     ],
   }),

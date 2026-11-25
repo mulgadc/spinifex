@@ -26,7 +26,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Databases | RDS | Mulga",
+        title: "Databases | RDS",
       },
     ],
   }),

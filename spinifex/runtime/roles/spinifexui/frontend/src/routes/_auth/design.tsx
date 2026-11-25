@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_auth/design")({
     }
   },
   head: () => ({
-    meta: [{ title: "Design system | Mulga" }],
+    meta: [{ title: "Design system" }],
   }),
   component: import.meta.env.DEV ? DesignCataloguePage : () => null,
 })

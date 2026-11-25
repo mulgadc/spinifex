@@ -53,7 +53,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: `${safeDecodeURIComponent(params.id)} | Load Balancer | Mulga`,
+        title: `${safeDecodeURIComponent(params.id)} | Load Balancer`,
       },
     ],
   }),

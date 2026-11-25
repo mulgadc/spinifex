@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_auth/ec2/(subnet)/describe-subnets/")({
   head: () => ({
     meta: [
       {
-        title: "Subnets | EC2 | Mulga",
+        title: "Subnets | EC2",
       },
     ],
   }),

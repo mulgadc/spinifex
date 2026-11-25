@@ -28,7 +28,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Transit Gateway Attachments | EC2 | Mulga",
+        title: "Transit Gateway Attachments | EC2",
       },
     ],
   }),

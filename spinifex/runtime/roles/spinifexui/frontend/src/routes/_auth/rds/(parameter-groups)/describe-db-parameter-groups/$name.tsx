@@ -50,7 +50,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: `${safeDecodeURIComponent(params.name)} | RDS | Mulga`,
+        title: `${safeDecodeURIComponent(params.name)} | RDS`,
       },
     ],
   }),

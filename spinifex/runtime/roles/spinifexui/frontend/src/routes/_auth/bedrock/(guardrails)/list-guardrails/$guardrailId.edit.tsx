@@ -16,7 +16,7 @@ export const Route = createFileRoute(
     })
   },
   head: ({ params }) => ({
-    meta: [{ title: `Edit ${params.guardrailId} | Guardrail | Mulga` }],
+    meta: [{ title: `Edit ${params.guardrailId} | Guardrail` }],
   }),
   component: RouteComponent,
 })

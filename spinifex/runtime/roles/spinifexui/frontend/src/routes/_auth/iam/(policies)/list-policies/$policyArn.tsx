@@ -39,7 +39,7 @@ export const Route = createFileRoute(
   head: ({ loaderData }) => ({
     meta: [
       {
-        title: `${loaderData?.Policy?.PolicyName ?? "Policy"} | IAM | Mulga`,
+        title: `${loaderData?.Policy?.PolicyName ?? "Policy"} | IAM`,
       },
     ],
   }),

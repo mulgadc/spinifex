@@ -44,7 +44,7 @@ export const Route = createFileRoute("/_auth/nodes/")({
   // Defaults stay out of the URL, so the plain list keeps its plain address.
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: "Nodes | Mulga" }],
+    meta: [{ title: "Nodes" }],
   }),
   component: NodesPage,
 })

@@ -85,7 +85,7 @@ export const Route = createFileRoute("/_auth/")({
     ])
   },
   head: () => ({
-    meta: [{ title: "Dashboard | Mulga" }],
+    meta: [{ title: "Dashboard" }],
   }),
   component: Dashboard,
 })

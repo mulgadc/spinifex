@@ -28,7 +28,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Load Balancers | EC2 | Mulga",
+        title: "Load Balancers | EC2",
       },
     ],
   }),

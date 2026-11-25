@@ -24,7 +24,7 @@ export const Route = createFileRoute(
     })
   },
   head: () => ({
-    meta: [{ title: "Guardrails | Ochre | Mulga" }],
+    meta: [{ title: "Guardrails | Ochre" }],
   }),
   component: Guardrails,
 })

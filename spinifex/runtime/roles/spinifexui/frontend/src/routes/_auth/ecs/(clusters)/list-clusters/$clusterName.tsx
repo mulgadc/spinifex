@@ -34,7 +34,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.clusterName} | ECS | Mulga` }],
+    meta: [{ title: `${params.clusterName} | ECS` }],
   }),
   component: ClusterDetail,
 })

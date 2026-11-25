@@ -28,7 +28,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Peering Connections | EC2 | Mulga",
+        title: "Peering Connections | EC2",
       },
     ],
   }),

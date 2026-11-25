@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_auth/ec2/(volumes)/describe-volumes/")({
   head: () => ({
     meta: [
       {
-        title: "Volumes | EC2 | Mulga",
+        title: "Volumes | EC2",
       },
     ],
   }),

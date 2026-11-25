@@ -22,7 +22,7 @@ export const Route = createFileRoute(
   head: ({ loaderData }) => ({
     meta: [
       {
-        title: `${loaderData?.Reservations?.[0]?.Instances?.[0]?.InstanceId ?? "Instance"} | EC2 | Mulga`,
+        title: `${loaderData?.Reservations?.[0]?.Instances?.[0]?.InstanceId ?? "Instance"} | EC2`,
       },
     ],
   }),

@@ -32,7 +32,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.clusterName} | EKS | Mulga` }],
+    meta: [{ title: `${params.clusterName} | EKS` }],
   }),
   component: ClusterDetail,
 })

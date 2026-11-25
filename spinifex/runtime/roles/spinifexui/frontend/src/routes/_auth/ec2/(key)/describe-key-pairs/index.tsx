@@ -32,7 +32,7 @@ export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/")({
   head: () => ({
     meta: [
       {
-        title: "Key Pairs | EC2 | Mulga",
+        title: "Key Pairs | EC2",
       },
     ],
   }),

@@ -52,7 +52,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Instances | EC2 | Mulga",
+        title: "Instances | EC2",
       },
     ],
   }),

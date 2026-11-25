@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_auth/ec2/(vpc)/describe-vpcs/$id")({
   head: ({ params }) => ({
     meta: [
       {
-        title: `${params.id} | VPC | Mulga`,
+        title: `${params.id} | VPC`,
       },
     ],
   }),

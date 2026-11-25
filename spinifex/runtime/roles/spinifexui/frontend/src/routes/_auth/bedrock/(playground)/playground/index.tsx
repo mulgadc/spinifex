@@ -22,7 +22,7 @@ export const Route = createFileRoute("/_auth/bedrock/(playground)/playground/")(
       ])
     },
     head: () => ({
-      meta: [{ title: "Playground | Ochre | Mulga" }],
+      meta: [{ title: "Playground | Ochre" }],
     }),
     component: PlaygroundPage,
   },

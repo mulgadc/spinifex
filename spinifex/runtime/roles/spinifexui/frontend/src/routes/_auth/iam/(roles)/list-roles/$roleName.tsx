@@ -43,7 +43,7 @@ export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/$roleName")(
       ])
     },
     head: ({ params }) => ({
-      meta: [{ title: `${params.roleName} | IAM | Mulga` }],
+      meta: [{ title: `${params.roleName} | IAM` }],
     }),
     component: RoleDetail,
   },

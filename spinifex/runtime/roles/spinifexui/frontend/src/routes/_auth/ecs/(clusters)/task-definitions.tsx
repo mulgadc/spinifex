@@ -21,7 +21,7 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/task-definitions")({
     })
   },
   head: () => ({
-    meta: [{ title: "Task Definitions | ECS | Mulga" }],
+    meta: [{ title: "Task Definitions | ECS" }],
   }),
   component: TaskDefinitions,
 })

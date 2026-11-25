@@ -26,7 +26,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.serviceName} | ECS | Mulga` }],
+    meta: [{ title: `${params.serviceName} | ECS` }],
   }),
   component: ServiceDetail,
 })

@@ -22,7 +22,7 @@ export const Route = createFileRoute("/_auth/iam/(groups)/list-groups/")({
     })
   },
   head: () => ({
-    meta: [{ title: "Groups | IAM | Mulga" }],
+    meta: [{ title: "Groups | IAM" }],
   }),
   component: Groups,
 })

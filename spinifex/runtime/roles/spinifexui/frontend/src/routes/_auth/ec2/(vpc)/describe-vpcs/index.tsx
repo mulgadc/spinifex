@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_auth/ec2/(vpc)/describe-vpcs/")({
   head: () => ({
     meta: [
       {
-        title: "VPCs | EC2 | Mulga",
+        title: "VPCs | EC2",
       },
     ],
   }),

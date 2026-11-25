@@ -29,7 +29,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.instanceProfileName} | IAM | Mulga` }],
+    meta: [{ title: `${params.instanceProfileName} | IAM` }],
   }),
   component: InstanceProfileDetail,
 })

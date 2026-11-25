@@ -44,7 +44,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.groupName} | IAM | Mulga` }],
+    meta: [{ title: `${params.groupName} | IAM` }],
   }),
   component: GroupDetail,
 })

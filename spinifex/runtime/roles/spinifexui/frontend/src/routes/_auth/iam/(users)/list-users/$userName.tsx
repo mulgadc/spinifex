@@ -48,7 +48,7 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
       ])
     },
     head: ({ params }) => ({
-      meta: [{ title: `${params.userName} | IAM | Mulga` }],
+      meta: [{ title: `${params.userName} | IAM` }],
     }),
     component: UserDetail,
   },

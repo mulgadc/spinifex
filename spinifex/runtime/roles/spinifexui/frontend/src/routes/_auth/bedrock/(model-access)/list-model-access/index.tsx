@@ -9,7 +9,7 @@ export const Route = createFileRoute(
 )({
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: "Model Access | Ochre | Mulga" }],
+    meta: [{ title: "Model Access | Ochre" }],
   }),
   component: ModelAccessPage,
 })

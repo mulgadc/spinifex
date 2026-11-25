@@ -48,7 +48,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: `Restore ${safeDecodeURIComponent(params.id)} | RDS | Mulga`,
+        title: `Restore ${safeDecodeURIComponent(params.id)} | RDS`,
       },
     ],
   }),

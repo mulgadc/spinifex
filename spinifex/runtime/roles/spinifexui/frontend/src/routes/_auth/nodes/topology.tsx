@@ -29,7 +29,7 @@ import { type NICFacts, nodeFactsQueryOptions } from "@/queries/nodes"
 export const Route = createFileRoute("/_auth/nodes/topology")({
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: "Topology | Nodes | Mulga" }],
+    meta: [{ title: "Topology | Nodes" }],
   }),
   component: TopologyPage,
 })

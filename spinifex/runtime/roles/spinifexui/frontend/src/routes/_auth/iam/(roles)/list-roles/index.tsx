@@ -22,7 +22,7 @@ export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/")({
     })
   },
   head: () => ({
-    meta: [{ title: "Roles | IAM | Mulga" }],
+    meta: [{ title: "Roles | IAM" }],
   }),
   component: Roles,
 })

@@ -21,7 +21,7 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/list-clusters/")({
     })
   },
   head: () => ({
-    meta: [{ title: "Clusters | ECS | Mulga" }],
+    meta: [{ title: "Clusters | ECS" }],
   }),
   component: Clusters,
 })

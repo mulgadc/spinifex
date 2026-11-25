@@ -24,7 +24,7 @@ export const Route = createFileRoute(
     })
   },
   head: () => ({
-    meta: [{ title: "Knowledge Bases | Ochre | Mulga" }],
+    meta: [{ title: "Knowledge Bases | Ochre" }],
   }),
   component: KnowledgeBases,
 })

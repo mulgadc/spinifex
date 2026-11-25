@@ -29,7 +29,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.knowledgeBaseId} | Knowledge Base | Mulga` }],
+    meta: [{ title: `${params.knowledgeBaseId} | Knowledge Base` }],
   }),
   component: KnowledgeBaseDetail,
 })

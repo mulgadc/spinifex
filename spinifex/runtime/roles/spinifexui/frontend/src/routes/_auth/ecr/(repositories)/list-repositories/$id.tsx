@@ -32,7 +32,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: `${safeDecodeURIComponent(params.id)} | Repository | Mulga`,
+        title: `${safeDecodeURIComponent(params.id)} | Repository`,
       },
     ],
   }),

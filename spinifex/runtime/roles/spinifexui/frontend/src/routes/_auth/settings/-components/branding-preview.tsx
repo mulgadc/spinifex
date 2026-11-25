@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react"
+import { type CSSProperties, useId } from "react"
 
 import { Button } from "@/components/ui/button"
 import { type ThemeName, tokenHex } from "@/lib/brand-contrast"
@@ -22,6 +22,7 @@ function PreviewCard({
   primary,
   logo,
 }: PreviewTheme & { productName: string }) {
+  const captionId = useId()
   const colour = primary === "" ? tokenHex(theme, "--primary") : primary
 
   const tokens: CSSVariables = {
@@ -36,10 +37,11 @@ function PreviewCard({
 
   return (
     <figure
+      aria-labelledby={captionId}
       className="space-y-3 rounded-lg border bg-background p-4 text-foreground"
       style={tokens}
     >
-      <figcaption className="text-xs opacity-70">
+      <figcaption className="text-xs opacity-70" id={captionId}>
         {theme === "light" ? "Light theme" : "Dark theme"}
       </figcaption>
       <div className="flex items-center gap-2">

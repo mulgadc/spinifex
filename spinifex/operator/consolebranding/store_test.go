@@ -204,3 +204,35 @@ func TestHandler_AnswersWhileStoreIsDown(t *testing.T) {
 	assert.Equal(t, "Acme Cloud", out.ProductName)
 	assert.Equal(t, "logo?rev="+strconv.Itoa(3), out.Logo)
 }
+
+// A bucket that cannot open at startup leaves the built-in brand in place and
+// is opened again by a later refresh.
+func TestLazyBucket_RetriesAFailedOpen(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	down := true
+	opens := 0
+	b := &consolebranding.LazyBucket{JS: js, Open: func(ctx context.Context, m jetstream.KeyValueManager) (jetstream.KeyValue, error) {
+		opens++
+		if down {
+			return nil, errors.New("nats: no responders available for request")
+		}
+		return consolebranding.OpenBucket(ctx, m)
+	}}
+	s := consolebranding.Store{KV: b}
+
+	var c consolebranding.Cache
+	require.Error(t, c.Refresh(t.Context(), s))
+	rec, rev := c.Snapshot()
+	assert.Nil(t, rec, "a failed open leaves the built-in brand")
+	assert.Zero(t, rev)
+
+	down = false
+	rev1, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"}, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Refresh(t.Context(), s))
+	rec, rev = c.Snapshot()
+	require.NotNil(t, rec)
+	assert.Equal(t, "Acme", rec.ProductName)
+	assert.Equal(t, rev1, rev)
+	assert.Equal(t, 2, opens, "an open bucket is kept, not opened on every call")
+}

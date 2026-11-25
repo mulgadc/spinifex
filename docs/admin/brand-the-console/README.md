@@ -74,13 +74,14 @@ A brand saved earlier is kept, and shows again when you turn the setting back on
 4. Check the **Preview**, which shows the sidebar header, a login card, a button and a link in both themes.
 5. Click **Save**.
 
-Each colour field lists the five places the colour is used and the contrast it gets in each.
+Each colour field lists the six places the colour is used and the contrast it gets in each.
 A colour is refused unless every one meets the minimum:
 
 | Use | Minimum |
 |---|---|
 | Button text on the colour | 4.5:1 |
-| Button text on the colour as the button is hovered | 4.5:1 |
+| Button text on the colour as the button is hovered on the page | 4.5:1 |
+| Button text on the colour as the button is hovered on a card | 4.5:1 |
 | The colour as link text on the page | 4.5:1 |
 | The colour as link text on a card | 4.5:1 |
 | The colour as the focus ring | 3:1 |
@@ -97,14 +98,16 @@ The name, colours, Docs link and every image are removed in one change, and ever
 
 The account's `admin` user can always change the brand.
 A principal made with `spx admin principal create` holds the admin methods that existed on the day it was made, so a principal made before this release cannot read or change the brand.
-Run the command again with the same name to give it every current method, these two included:
+Make a new principal that holds only these two methods:
 
 ```sh
-spx admin principal create <name>
+spx admin principal create <name> --grant GetConsoleBranding,PutConsoleBranding
 ```
 
-This replaces the principal's access key, so give the new key to whoever uses it.
-To grant only branding, pass `--grant GetConsoleBranding,PutConsoleBranding`.
+To add them to an existing principal, run the command again with the same name and pass every method it must keep in `--grant`, these two included.
+The command replaces the principal's policy with the `--grant` list, so a method you leave out is removed.
+It also replaces the access key, so give the new key to whoever uses the principal before you run it.
+Without `--grant`, the command grants every admin method; do not use that to add branding.
 
 ## Troubleshooting
 

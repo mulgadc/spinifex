@@ -130,7 +130,8 @@ const (
 )
 
 // checkPrimary reports the first use of --primary that the colour fails in
-// the theme: button text at rest and on hover, link text or the focus ring.
+// the theme: button text at rest and on hover over the page or a card, link
+// text or the focus ring.
 // Only a colour the operator sets is checked; an unset one keeps the built-in.
 func checkPrimary(t theme, c rgb) error {
 	checks := []struct {
@@ -140,6 +141,7 @@ func checkPrimary(t theme, c rgb) error {
 	}{
 		{"button text", t.primaryInk, c, minTextContrast},
 		{"button hover text", t.primaryInk, c.over(t.background, hoverOpacity), minTextContrast},
+		{"button hover text on a card", t.primaryInk, c.over(t.card, hoverOpacity), minTextContrast},
 		{"link text on the page", c, t.background, minTextContrast},
 		{"link text on a card", c, t.card, minTextContrast},
 		{"focus ring", c, t.background, minRingContrast},

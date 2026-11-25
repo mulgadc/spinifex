@@ -27,6 +27,7 @@ import {
   brandingFormSchema,
   brandingFormValues,
   type BrandingImageChanges,
+  type ImageChange,
   brandingRequest,
   type ConsoleBrandingResponse,
   type DocsLink,
@@ -43,6 +44,20 @@ const KEEP_ALL: BrandingImageChanges = {
   logo: { kind: "keep" },
   logoDark: { kind: "keep" },
   favicon: { kind: "keep" },
+}
+
+// The stored image the preview shows, or none once the operator removes it. A
+// new upload cannot show, as the page's CSP allows only same-origin images.
+function previewLogo(
+  stored: ConsoleBrandingResponse,
+  change: ImageChange,
+  name: "logo" | "logo-dark",
+): string | undefined {
+  const present = name === "logo" ? stored.logo : stored.logoDark
+
+  return present && change.kind === "keep"
+    ? storedAsset(stored, name)
+    : undefined
 }
 
 const DOCS_OPTIONS: { value: DocsLink; label: string }[] = [
@@ -97,7 +112,7 @@ export function BrandingPage() {
 }
 
 const GRANT_HELP =
-  "It needs spinifex:GetConsoleBranding and spinifex:PutConsoleBranding. Sign in as the account's admin user, or run spx admin principal create <name> again on a node: with no --grant it grants every admin method and replaces the access key."
+  "It needs spinifex:GetConsoleBranding and spinifex:PutConsoleBranding. Sign in as the account's admin user, or make a principal for branding on a node with spx admin principal create <name> --grant GetConsoleBranding,PutConsoleBranding."
 
 // The grant check comes first, so an operator whose principal predates these
 // methods is told how to get them rather than shown a bare refusal.
@@ -149,8 +164,8 @@ function BrandingForm({
   })
 
   const values = useWatch({ control })
-  const logo = stored.logo ? storedAsset(stored, "logo") : undefined
-  const logoDark = stored.logoDark ? storedAsset(stored, "logo-dark") : logo
+  const logo = previewLogo(stored, images.logo, "logo")
+  const logoDark = previewLogo(stored, images.logoDark, "logo-dark") ?? logo
   const locked = save.isPending || isSubmitting || resetPending
 
   async function onSubmit(form: BrandingFormData) {
@@ -267,8 +282,8 @@ function BrandingForm({
             ]}
           />
           <p className="mt-3 text-xs text-muted-foreground">
-            The preview shows stored images; a newly chosen image shows after
-            Save.
+            The preview shows a removed image as gone at once; a newly chosen
+            image shows after Save.
           </p>
         </PanelSection>
 

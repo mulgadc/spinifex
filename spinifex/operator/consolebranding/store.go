@@ -37,6 +37,60 @@ type KV interface {
 
 var _ KV = (jetstream.KeyValue)(nil)
 
+// LazyBucket opens the bucket on first use and again after a failed open, so
+// a store that is down at startup cannot stop the gateway.
+type LazyBucket struct {
+	JS jetstream.KeyValueManager
+	// Open defaults to OpenBucket; tests replace it.
+	Open func(context.Context, jetstream.KeyValueManager) (jetstream.KeyValue, error)
+	mu   sync.Mutex
+	kv   jetstream.KeyValue
+}
+
+var _ KV = (*LazyBucket)(nil)
+
+func (b *LazyBucket) bucket(ctx context.Context) (jetstream.KeyValue, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.kv != nil {
+		return b.kv, nil
+	}
+	open := b.Open
+	if open == nil {
+		open = OpenBucket
+	}
+	kv, err := open(ctx, b.JS)
+	if err != nil {
+		return nil, fmt.Errorf("open branding bucket: %w", err)
+	}
+	b.kv = kv
+	return kv, nil
+}
+
+func (b *LazyBucket) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	kv, err := b.bucket(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return kv.Get(ctx, key)
+}
+
+func (b *LazyBucket) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	kv, err := b.bucket(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return kv.Create(ctx, key, value, opts...)
+}
+
+func (b *LazyBucket) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	kv, err := b.bucket(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return kv.Update(ctx, key, value, revision)
+}
+
 // Store reads and writes the branding record.
 type Store struct {
 	KV KV

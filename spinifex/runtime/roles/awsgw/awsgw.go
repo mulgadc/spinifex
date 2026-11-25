@@ -584,14 +584,11 @@ func launchService(config *config.ClusterConfig) error {
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
 	// Every gateway keeps its own copy of the console branding, so the public
-	// route never waits on NATS; only the [console] gate allows writes.
-	brandingKV, err := consolebranding.OpenBucket(janitorCtx, js)
-	if err != nil {
-		return fmt.Errorf("init console branding bucket: %w", err)
-	}
+	// route never waits on NATS. The bucket opens lazily, so a branding store
+	// that is down cannot stop the gateway; only the [console] gate allows writes.
 	branding := &operatoradmin.ConsoleBranding{
 		Enabled: config.Console.BrandingEnabled,
-		Store:   consolebranding.Store{KV: brandingKV},
+		Store:   consolebranding.Store{KV: &consolebranding.LazyBucket{JS: js}},
 		Cache:   &consolebranding.Cache{},
 	}
 	go branding.Cache.Run(janitorCtx, branding.Store, brandingRefreshInterval)

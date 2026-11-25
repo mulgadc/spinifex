@@ -87,6 +87,7 @@ func TestApply_PrimaryColour(t *testing.T) {
 		{"short hex", operatorv1.BrandingColors{Light: "#fff"}, "primary.light", "#RRGGBB"},
 		{"light button text", operatorv1.BrandingColors{Light: "#0073EE"}, "primary.light", "button text contrast"},
 		{"light passes at rest, fails on hover", operatorv1.BrandingColors{Light: "#0050EE"}, "primary.light", "button hover text"},
+		{"light passes hover on the page, fails it on a card", operatorv1.BrandingColors{Light: "#585858"}, "primary.light", "button hover text on a card"},
 		{"dark button text", operatorv1.BrandingColors{Dark: "#000000"}, "primary.dark", "button text contrast"},
 		{"dark passes at rest, fails on hover", operatorv1.BrandingColors{Dark: "#0082EE"}, "primary.dark", "button hover text"},
 	}

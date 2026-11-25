@@ -137,6 +137,11 @@ export function primaryChecks(theme: ThemeName, hex: string): ContrastCheck[] {
       minimum: 4.5,
     },
     {
+      use: "button hover text on a card",
+      ratio: contrast(ink, over(colour, card, 0.8)),
+      minimum: 4.5,
+    },
+    {
       use: "link text on the page",
       ratio: contrast(colour, background),
       minimum: 4.5,

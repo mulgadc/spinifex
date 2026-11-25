@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -53,6 +53,12 @@ async function renderPage() {
   renderWithClient(<BrandingPage />, createTestQueryClient())
 
   return await screen.findByLabelText("Product name")
+}
+
+function previewLogo(theme: string): HTMLElement {
+  return within(screen.getByRole("figure", { name: theme })).getByRole(
+    "presentation",
+  )
 }
 
 describe("BrandingPage", () => {
@@ -137,6 +143,26 @@ describe("BrandingPage", () => {
       data: "iVBORw==",
     })
     expect(puts[0]?.logo).toBeNull()
+  })
+
+  it("previews a removed logo as gone before it is saved", async () => {
+    const user = userEvent.setup()
+    serve()
+    await renderPage()
+
+    expect(previewLogo("Light theme")).toHaveAttribute(
+      "src",
+      "/branding/logo?rev=4",
+    )
+    expect(previewLogo("Dark theme")).toHaveAttribute(
+      "src",
+      "/branding/logo?rev=4",
+    )
+
+    await user.click(screen.getByRole("button", { name: "Remove Logo" }))
+
+    expect(previewLogo("Light theme")).toHaveAttribute("src", "/mulga-logo.svg")
+    expect(previewLogo("Dark theme")).toHaveAttribute("src", "/mulga-logo.svg")
   })
 
   it("refuses an image over the limit before sending it", async () => {

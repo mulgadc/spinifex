@@ -17,6 +17,7 @@ describe("primaryChecks", () => {
   it.each([
     ["light", "#0073EE", "button text"],
     ["light", "#0050EE", "button hover text"],
+    ["light", "#585858", "button hover text on a card"],
     ["dark", "#000000", "button text"],
     ["dark", "#0082EE", "button hover text"],
   ] as const)("rejects %s %s for %s", (theme, hex, use) => {

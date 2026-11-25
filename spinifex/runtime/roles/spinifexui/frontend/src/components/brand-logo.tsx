@@ -1,28 +1,25 @@
 import { brandingAsset, getBranding, productName } from "@/lib/branding"
 import { cn } from "@/lib/utils"
 
-// The operator's logo, with its dark-theme variant when one is set. Without
-// one the dark theme shows the same logo as is; the built-in mark is inverted.
+const BUILT_IN = "/mulga-logo.svg"
+
+// Each theme's logo on its own: the dark theme falls back to the logo, and a
+// theme with no logo shows the built-in mark, inverted in the dark theme.
 export function BrandLogo({ className }: { className?: string }) {
   const branding = getBranding()
-  const logo = brandingAsset(branding.logo)
   const alt = productName()
+  const light = brandingAsset(branding.logo) ?? BUILT_IN
+  const dark = brandingAsset(branding.logoDark) ?? brandingAsset(branding.logo)
 
-  if (!logo) {
+  if (light === BUILT_IN && !dark) {
     return (
-      <img
-        alt={alt}
-        className={cn("dark:invert", className)}
-        src="/mulga-logo.svg"
-      />
+      <img alt={alt} className={cn("dark:invert", className)} src={light} />
     )
   }
 
-  const logoDark = brandingAsset(branding.logoDark)
-
-  if (!logoDark) {
+  if (light === dark || !dark) {
     return (
-      <img alt={alt} className={cn("object-contain", className)} src={logo} />
+      <img alt={alt} className={cn("object-contain", className)} src={light} />
     )
   }
 
@@ -31,12 +28,12 @@ export function BrandLogo({ className }: { className?: string }) {
       <img
         alt={alt}
         className={cn("object-contain dark:hidden", className)}
-        src={logo}
+        src={light}
       />
       <img
         alt={alt}
         className={cn("hidden object-contain dark:block", className)}
-        src={logoDark}
+        src={dark}
       />
     </>
   )

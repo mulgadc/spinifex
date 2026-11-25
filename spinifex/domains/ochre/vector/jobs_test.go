@@ -26,6 +26,7 @@ func newJobStoreTestStore(t *testing.T) *JobStore {
 }
 
 func TestJobStore_ReserveClaimAndCollision(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -50,6 +51,7 @@ func TestJobStore_ReserveClaimAndCollision(t *testing.T) {
 }
 
 func TestJobStore_GetNotFound(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -59,6 +61,7 @@ func TestJobStore_GetNotFound(t *testing.T) {
 }
 
 func TestJobStore_SetStateTransitions(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -81,6 +84,7 @@ func TestJobStore_SetStateTransitions(t *testing.T) {
 }
 
 func TestJobStore_SetStateNotFound(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -90,6 +94,7 @@ func TestJobStore_SetStateNotFound(t *testing.T) {
 }
 
 func TestJobStore_Update(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -115,6 +120,7 @@ func TestJobStore_Update(t *testing.T) {
 }
 
 func TestJobStore_UpdateNotFound(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -124,6 +130,7 @@ func TestJobStore_UpdateNotFound(t *testing.T) {
 }
 
 func TestJobStore_Delete(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -142,6 +149,7 @@ func TestJobStore_Delete(t *testing.T) {
 // TestJobStore_PurgeAll proves PurgeAll clears every job record across every
 // account, not just one -- the appliance-teardown use case it exists for.
 func TestJobStore_PurgeAll(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -159,11 +167,13 @@ func TestJobStore_PurgeAll(t *testing.T) {
 // TestJobStore_PurgeAllOnEmptyBucketIsANoOp proves PurgeAll succeeds against
 // a job store with no records yet -- a bucket kv.Keys reports as ErrNoKeysFound.
 func TestJobStore_PurgeAllOnEmptyBucketIsANoOp(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	require.NoError(t, store.PurgeAll(context.Background()))
 }
 
 func TestJobStore_ListAccountScoped(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -183,6 +193,7 @@ func TestJobStore_ListAccountScoped(t *testing.T) {
 }
 
 func TestJobStore_ListAll(t *testing.T) {
+	t.Parallel()
 	store := newJobStoreTestStore(t)
 	ctx := context.Background()
 
@@ -196,6 +207,7 @@ func TestJobStore_ListAll(t *testing.T) {
 }
 
 func TestJobStore_BucketRequiresJetStream(t *testing.T) {
+	t.Parallel()
 	store := NewJobStore(nil)
 	_, err := store.Get(context.Background(), "acct-a", "job-1")
 	require.ErrorContains(t, err, "job store has no JetStream client configured")

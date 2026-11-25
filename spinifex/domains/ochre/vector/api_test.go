@@ -56,6 +56,7 @@ func newAPITestSetup(t *testing.T) *apiTestSetup {
 }
 
 func TestVectorService_CreateIndex_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 
@@ -69,12 +70,14 @@ func TestVectorService_CreateIndex_HappyPath(t *testing.T) {
 }
 
 func TestVectorService_CreateIndex_MissingIndexIDErrors(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	_, err := s.svc.CreateIndex(context.Background(), &CreateIndexRequest{Name: "kb1", Dimension: 768}, apiAccountA)
 	require.Error(t, err)
 }
 
 func TestVectorService_CreateIndex_ExistsErrorPropagates(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	req := &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 768}
@@ -88,6 +91,7 @@ func TestVectorService_CreateIndex_ExistsErrorPropagates(t *testing.T) {
 }
 
 func TestVectorService_DeleteIndex_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 768}, apiAccountA)
@@ -102,12 +106,14 @@ func TestVectorService_DeleteIndex_HappyPath(t *testing.T) {
 }
 
 func TestVectorService_DeleteIndex_AbsentIsNoop(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	_, err := s.svc.DeleteIndex(context.Background(), &DeleteIndexRequest{IndexID: "no-such-index"}, apiAccountA)
 	require.NoError(t, err)
 }
 
 func TestVectorService_ListIndexes_ScopedPerAccount(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-a", Name: "a", Dimension: 8}, apiAccountA)
@@ -122,6 +128,7 @@ func TestVectorService_ListIndexes_ScopedPerAccount(t *testing.T) {
 }
 
 func TestVectorService_ListJobs_ScopedPerAccount(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 8}, apiAccountA)
@@ -145,6 +152,7 @@ func TestVectorService_ListJobs_ScopedPerAccount(t *testing.T) {
 // registered values (D6/D8): the stored source-spec must always match the
 // index it belongs to, not whatever a stale or spoofed caller supplied.
 func TestVectorService_Ingest_StampsIndexPinnedModel(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{
@@ -167,6 +175,7 @@ func TestVectorService_Ingest_StampsIndexPinnedModel(t *testing.T) {
 // end through the real IngestService.StartIngest, not just JobRecord's own
 // field plumbing.
 func TestVectorService_Ingest_ThreadsDataSourceIDOntoJob(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 8}, apiAccountA)
@@ -184,6 +193,7 @@ func TestVectorService_Ingest_ThreadsDataSourceIDOntoJob(t *testing.T) {
 }
 
 func TestVectorService_Ingest_MissingIndexErrors(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	_, err := s.svc.Ingest(context.Background(), &IngestRequest{IndexID: "no-such-index", Source: SourceSpec{Bucket: "docs"}}, apiAccountA)
 	require.Error(t, err)
@@ -191,6 +201,7 @@ func TestVectorService_Ingest_MissingIndexErrors(t *testing.T) {
 }
 
 func TestVectorService_DescribeJob_HappyPath(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 8}, apiAccountA)
@@ -204,6 +215,7 @@ func TestVectorService_DescribeJob_HappyPath(t *testing.T) {
 }
 
 func TestVectorService_DescribeJob_AbsentReturnsErrJobNotFound(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	_, err := s.svc.DescribeJob(context.Background(), &DescribeJobRequest{JobID: "no-such-job"}, apiAccountA)
 	require.Error(t, err)
@@ -215,6 +227,7 @@ func TestVectorService_DescribeJob_AbsentReturnsErrJobNotFound(t *testing.T) {
 // have sent -- QueryRequest has no such field at all, but this also confirms
 // the value actually reaching Embedder is the registry's.
 func TestVectorService_Query_UsesIndexPinnedModel(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{
@@ -235,6 +248,7 @@ func TestVectorService_Query_UsesIndexPinnedModel(t *testing.T) {
 // (D4): it is not yet, or no longer, queryable, but a query against it is not
 // a caller mistake.
 func TestVectorService_Query_NonReadyIndexReturnsEmptyNotError(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -249,6 +263,7 @@ func TestVectorService_Query_NonReadyIndexReturnsEmptyNotError(t *testing.T) {
 }
 
 func TestVectorService_Query_MissingIndexErrors(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	_, err := s.svc.Query(context.Background(), &QueryRequest{IndexID: "no-such-index", Text: "hello"}, apiAccountA)
 	require.Error(t, err)
@@ -256,6 +271,7 @@ func TestVectorService_Query_MissingIndexErrors(t *testing.T) {
 }
 
 func TestVectorService_Query_EmbedderErrorPropagates(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 2}, apiAccountA)
@@ -271,6 +287,7 @@ func TestVectorService_Query_EmbedderErrorPropagates(t *testing.T) {
 // response, with a marker pointing back at the source object rather than
 // silently dropping the excess.
 func TestVectorService_Query_TruncatesLongChunkText(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 2}, apiAccountA)
@@ -289,6 +306,7 @@ func TestVectorService_Query_TruncatesLongChunkText(t *testing.T) {
 }
 
 func TestVectorService_Query_ShortChunkUntouched(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t)
 	ctx := context.Background()
 	_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: "idx-one", Name: "kb1", Dimension: 2}, apiAccountA)
@@ -356,6 +374,7 @@ func subscribeVectorService(t *testing.T, nc *nats.Conn, svc VectorService) {
 }
 
 func TestNATSVectorService_RoundTrip(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	registry := NewRegistry(js)
@@ -416,6 +435,7 @@ func TestNATSVectorService_RoundTrip(t *testing.T) {
 // B's client never sees account A's index even though both use the same
 // wire and subject names.
 func TestNATSVectorService_AccountIsolation(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	registry := NewRegistry(js)

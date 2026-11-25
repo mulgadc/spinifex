@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -80,6 +81,13 @@ func (f *fakeLauncher) lastPassword() string {
 	return f.passwords[len(f.passwords)-1]
 }
 
+// TestMain shortens the loser poll interval so concurrent Ensure callers
+// re-check the winner's record promptly instead of sleeping 2s.
+func TestMain(m *testing.M) {
+	appliancePollInterval = 10 * time.Millisecond
+	os.Exit(m.Run())
+}
+
 func testMasterKey(t *testing.T) []byte {
 	t.Helper()
 	key := make([]byte, 32)
@@ -89,12 +97,14 @@ func testMasterKey(t *testing.T) []byte {
 }
 
 func TestNewAppliance_RequiresMasterKey(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	_, err := NewAppliance(js, nil, &fakeLauncher{})
 	assert.Error(t, err)
 }
 
 func TestNewAppliance_RequiresLauncher(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	_, err := NewAppliance(js, testMasterKey(t), nil)
 	assert.Error(t, err)
@@ -104,6 +114,7 @@ func TestNewAppliance_RequiresLauncher(t *testing.T) {
 // encrypt-then-decrypt unchanged, and that the persisted ciphertext is never
 // the plaintext itself.
 func TestCredentialRoundTrip(t *testing.T) {
+	t.Parallel()
 	masterKey := testMasterKey(t)
 
 	password, err := generateMasterPassword()
@@ -130,6 +141,7 @@ func TestCredentialRoundTrip(t *testing.T) {
 // calls against one Appliance must produce exactly one launcher invocation
 // and hand every caller back the same connection info.
 func TestEnsure_SingletonRace(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.5", port: 5432}
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
@@ -168,6 +180,7 @@ func TestEnsure_SingletonRace(t *testing.T) {
 // Ensure call against an already-AVAILABLE appliance returns immediately
 // with the same connection info and never calls the launcher again.
 func TestEnsure_LoserReturnsAvailableWithoutRelaunch(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.6", port: 5432}
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
@@ -188,6 +201,7 @@ func TestEnsure_LoserReturnsAvailableWithoutRelaunch(t *testing.T) {
 // re-driven through the SAME identifier and stored password, reaching
 // AVAILABLE, rather than a second claim being minted.
 func TestEnsure_StaleProvisioningIsResumed(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.7", port: 5432}
@@ -228,6 +242,7 @@ func TestEnsure_StaleProvisioningIsResumed(t *testing.T) {
 // record within the staleness grace period is waited on, bounded by the
 // caller's context, and never resumed/relaunched.
 func TestEnsure_FreshProvisioningIsWaitedNotResumed(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.8", port: 5432}
@@ -256,7 +271,7 @@ func TestEnsure_FreshProvisioningIsWaitedNotResumed(t *testing.T) {
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
-	waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	_, err = appliance.Ensure(waitCtx)
 	assert.Error(t, err)
@@ -267,6 +282,7 @@ func TestEnsure_FreshProvisioningIsWaitedNotResumed(t *testing.T) {
 // password the launcher receives is never present in the raw bytes stored in
 // the KV bucket.
 func TestEnsure_PlaintextPasswordNeverPersisted(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.9", port: 5432}
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
@@ -291,6 +307,7 @@ func TestEnsure_PlaintextPasswordNeverPersisted(t *testing.T) {
 // and that a second, still-fresh Ensure call neither relaunches nor mints a
 // new password for it.
 func TestEnsure_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{err: errors.New("boom")}
@@ -308,7 +325,7 @@ func TestEnsure_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 	require.NotNil(t, rec)
 	assert.Equal(t, ApplianceStateProvisioning, rec.State)
 
-	waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	_, err = appliance.Ensure(waitCtx)
 	assert.Error(t, err)
@@ -320,6 +337,7 @@ func TestEnsure_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 // of a stale record that also fails leaves the record PROVISIONING with the
 // same stored password, not a rollback or a fresh claim.
 func TestResume_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{err: errors.New("boom")}
@@ -362,6 +380,7 @@ func TestResume_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 // TestConnect_NotProvisioned proves Connect refuses to build a backend when
 // the appliance has no record yet, without needing any postgres to run.
 func TestConnect_NotProvisioned(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
@@ -372,6 +391,7 @@ func TestConnect_NotProvisioned(t *testing.T) {
 
 // TestConnect_NotAvailable proves Connect refuses a PROVISIONING record.
 func TestConnect_NotAvailable(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
@@ -446,6 +466,7 @@ func seedAvailableAppliance(t *testing.T, appliance *Appliance, masterKey []byte
 // in this test) pgx dial, not on anything host-port related, and the ENI
 // side is left untouched.
 func TestConnect_NoHostPortDepsSkipsEnsure(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
@@ -462,6 +483,7 @@ func TestConnect_NoHostPortDepsSkipsEnsure(t *testing.T) {
 // Postgres: a host-port failure surfaces as that failure, not as a pgx
 // connection error, and the ENI is still minted along the way.
 func TestConnect_EnsuresHostPortBeforeDialing_PropagatesFailure(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
@@ -485,6 +507,7 @@ func TestConnect_EnsuresHostPortBeforeDialing_PropagatesFailure(t *testing.T) {
 // Connect last installed, and is a no-op both before any Connect and for an
 // Appliance that never opted into host-port management at all.
 func TestAppliance_TeardownHostPort(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
@@ -508,6 +531,7 @@ func TestAppliance_TeardownHostPort(t *testing.T) {
 // three steps: the launcher's Delete for the fixed appliance identifier, the
 // daemon's own host port removal, and the KV record.
 func TestTeardown_DeletesRecordLauncherAndHostPort(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.30", port: 5432}
@@ -535,6 +559,7 @@ func TestTeardown_DeletesRecordLauncherAndHostPort(t *testing.T) {
 // that was never provisioned (or already torn down) succeeds rather than
 // erroring on an absent KV record or an already-gone RDS instance.
 func TestTeardown_NoExistingApplianceIsANoOp(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	launcher := &fakeLauncher{}
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
@@ -551,6 +576,7 @@ func TestTeardown_NoExistingApplianceIsANoOp(t *testing.T) {
 // removal failure is best-effort: it does not stop the KV record from being
 // deleted, but it is still surfaced in the joined error rather than swallowed.
 func TestTeardown_StillDeletesRecordWhenHostPortRemovalFails(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.31", port: 5432}
@@ -578,6 +604,7 @@ func TestTeardown_StillDeletesRecordWhenHostPortRemovalFails(t *testing.T) {
 // does not stop the KV record from being deleted, and both failures are
 // joined into the returned error.
 func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{deleteErr: errors.New("rds unreachable")}
@@ -599,6 +626,7 @@ func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
 // later Ensure can reconcile from it -- while still clearing job history,
 // which is scoped to the now-destroyed RDS instance.
 func TestTeardown_DefaultPreservesRegistryButPurgesJobs(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.33", port: 5432}
@@ -629,6 +657,7 @@ func TestTeardown_DefaultPreservesRegistryButPurgesJobs(t *testing.T) {
 // restores the old full wipe of the index registry (and job history)
 // alongside the RDS instance, for an intentional full destroy.
 func TestTeardown_PurgeMetadataPurgesRegistryAndJobs(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.36", port: 5432}
@@ -659,6 +688,7 @@ func TestTeardown_PurgeMetadataPurgesRegistryAndJobs(t *testing.T) {
 // Teardown leaves gateway-owned KB/DataSource records intact, mirroring the
 // registry: their SourceSpec is what a later reconcile re-ingests from.
 func TestTeardown_DefaultPreservesKnowledgeBasesAndDataSources(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.35", port: 5432}
@@ -689,6 +719,7 @@ func TestTeardown_DefaultPreservesKnowledgeBasesAndDataSources(t *testing.T) {
 // purgeMetadata=true restores the old full wipe of the gateway-owned
 // knowledge-base and data-source records.
 func TestTeardown_PurgeMetadataPurgesKnowledgeBasesAndDataSources(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.37", port: 5432}
@@ -719,6 +750,7 @@ func TestTeardown_PurgeMetadataPurgesKnowledgeBasesAndDataSources(t *testing.T) 
 // true Teardown reports (rather than swallows) a failure from any of
 // registry/kb/ds PurgeAll, joined alongside every other step's own errors.
 func TestTeardown_PurgeMetadataSurfacesStorePurgeErrors(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.39", port: 5432}
@@ -754,6 +786,7 @@ func TestTeardown_PurgeMetadataSurfacesStorePurgeErrors(t *testing.T) {
 // WithStores (every pre-existing caller and test) still tears down cleanly:
 // the registry/jobs purge is nil-safe, not a new required dependency.
 func TestTeardown_WithoutStoresStillWorks(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.34", port: 5432}
@@ -768,6 +801,7 @@ func TestTeardown_WithoutStoresStillWorks(t *testing.T) {
 // client fails fast, and says which client is missing, rather than panicking
 // on first use.
 func TestBucket_RequiresJetStream(t *testing.T) {
+	t.Parallel()
 	appliance, err := NewAppliance(nil, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
 
@@ -779,6 +813,7 @@ func TestBucket_RequiresJetStream(t *testing.T) {
 // TestBuildDSN proves the DSN round-trips endpoint/port/username/password,
 // percent-encoding special characters via net/url rather than concatenation.
 func TestBuildDSN(t *testing.T) {
+	t.Parallel()
 	dsn := buildDSN("10.0.0.1", 5432, "ochre_vector_admin", "p@ss/word?")
 	parsed, err := url.Parse(dsn)
 	require.NoError(t, err)
@@ -795,6 +830,7 @@ func TestBuildDSN(t *testing.T) {
 // than returning garbage when the appliance's masterKey does not match the
 // key the record was encrypted with.
 func TestDecryptPassword_WrongKeyErrors(t *testing.T) {
+	t.Parallel()
 	rightKey := testMasterKey(t)
 	wrongKey := testMasterKey(t)
 
@@ -812,6 +848,7 @@ func TestDecryptPassword_WrongKeyErrors(t *testing.T) {
 // surfaces an encrypt failure rather than silently persisting a plaintext or
 // unencrypted password.
 func TestNewApplianceRecord_EncryptFailureOnBadKeyLength(t *testing.T) {
+	t.Parallel()
 	_, _, err := newApplianceRecord([]byte("too-short"))
 	assert.Error(t, err)
 }
@@ -819,6 +856,7 @@ func TestNewApplianceRecord_EncryptFailureOnBadKeyLength(t *testing.T) {
 // TestGetRecord_MalformedJSON proves a corrupted record is a hard decode
 // error, not a silently empty/zero record.
 func TestGetRecord_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
@@ -836,6 +874,7 @@ func TestGetRecord_MalformedJSON(t *testing.T) {
 // state neither PROVISIONING nor AVAILABLE is a hard error, not a silent
 // wait forever.
 func TestWaitOrResume_UnexpectedStateErrors(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	appliance, err := NewAppliance(js, masterKey, &fakeLauncher{})
@@ -865,6 +904,7 @@ func TestWaitOrResume_UnexpectedStateErrors(t *testing.T) {
 // record disappears before it can be read (e.g. an operator delete) retries
 // the claim from scratch rather than erroring.
 func TestWaitOrResume_VanishedRecordRetriesClaim(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.10", port: 5432}
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
@@ -882,6 +922,7 @@ func TestWaitOrResume_VanishedRecordRetriesClaim(t *testing.T) {
 // revision conflict against an already-AVAILABLE record (a concurrent
 // resume won first) as success, not an error to surface.
 func TestPromote_ConflictFallsBackToCurrentAvailable(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)

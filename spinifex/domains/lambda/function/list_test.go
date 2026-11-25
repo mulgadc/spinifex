@@ -40,6 +40,7 @@ func walk(t *testing.T, svc *MetaService, region string, maxItems int) ([]string
 }
 
 func TestList_EmptyAccountHasNoFunctionsAndNoMarker(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	resp := listPage(t, svc, testRegion, "", MaxListPage)
 	assert.Empty(t, resp.Functions)
@@ -48,6 +49,7 @@ func TestList_EmptyAccountHasNoFunctionsAndNoMarker(t *testing.T) {
 }
 
 func TestList_PagesReturnEveryFunctionOnceWithItsRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	want := make([]string, 0, 7)
 	for i := range 7 {
@@ -69,6 +71,7 @@ func TestList_PagesReturnEveryFunctionOnceWithItsRevision(t *testing.T) {
 // A page that fills on the last function looks ahead, finds the walk over,
 // and returns no marker; one that fills before it keeps the next one.
 func TestList_FullPageAtTheEndHasNoMarker(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for i := range 4 {
 		mustCreate(t, svc, fmt.Sprintf("fn-%d", i), fmt.Sprintf("f%d", i))
@@ -86,6 +89,7 @@ func TestList_FullPageAtTheEndHasNoMarker(t *testing.T) {
 }
 
 func TestList_SkipsDeletedFunctionsUploadsObligationsAndOtherRegions(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	gone := serveAs(t, svc, "gone", "f0")
 	mustCreate(t, svc, "kept", "f1")
@@ -151,6 +155,7 @@ func tombstones(t *testing.T, svc *MetaService, n int) {
 // More delete markers than one request may examine give empty pages that
 // still continue, and the walk reaches the live function after them.
 func TestList_ScanBoundGivesShortPagesThatContinue(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	tombstones(t, svc, maxListScan+5)
 	mustCreate(t, svc, "live", "f1")
@@ -167,6 +172,7 @@ func TestList_ScanBoundGivesShortPagesThatContinue(t *testing.T) {
 // bound like any other sequence: uploads, obligations, other keys and other
 // Regions' functions.
 func TestList_ExcludedRecordsCountTowardTheScanBound(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	mustCreate(t, svc, "first", "f1")
 	kv, err := svc.bucket(t.Context(), testAccount)
@@ -196,6 +202,7 @@ func TestList_ExcludedRecordsCountTowardTheScanBound(t *testing.T) {
 // A key rewritten many times leaves gaps behind its latest revision; missing
 // sequences count toward the bound and the walk crosses them.
 func TestList_SparseSequencesCountTowardTheScanBound(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	mustCreate(t, svc, "first", "f1")
 	kv, err := svc.bucket(t.Context(), testAccount)
@@ -223,6 +230,7 @@ func TestList_SparseSequencesCountTowardTheScanBound(t *testing.T) {
 // A large live set is returned once each, in stream order, in pages that
 // never exceed the requested size.
 func TestList_LargeLiveSetPagesEveryFunctionOnce(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	want := make([]string, 0, 3*MaxListPage+7)
 	for i := range cap(want) {
@@ -240,7 +248,9 @@ func TestList_LargeLiveSetPagesEveryFunctionOnce(t *testing.T) {
 // returns no marker; when the scan bound runs out first, it continues and a
 // later page finds the function beyond them.
 func TestList_LookAheadThroughDeleteMarkers(t *testing.T) {
+	t.Parallel()
 	t.Run("reaches the end", func(t *testing.T) {
+		t.Parallel()
 		svc, _ := newTestService(t)
 		mustCreate(t, svc, "live", "f1")
 		tombstones(t, svc, 3)
@@ -249,6 +259,7 @@ func TestList_LookAheadThroughDeleteMarkers(t *testing.T) {
 		assert.Empty(t, page.NextMarker)
 	})
 	t.Run("scan bound exhausted", func(t *testing.T) {
+		t.Parallel()
 		svc, _ := newTestService(t)
 		mustCreate(t, svc, "live", "f1")
 		tombstones(t, svc, maxListScan)
@@ -265,6 +276,7 @@ func TestList_LookAheadThroughDeleteMarkers(t *testing.T) {
 // An update moves a function to a later sequence, so this walk, begun before
 // the update, meets it again after the function it had not yet reached.
 func TestList_UpdateDuringWalkMovesFunctionLater(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	first := serveAs(t, svc, "a", "f1")
 	serveAs(t, svc, "b", "f2")
@@ -287,6 +299,7 @@ func TestList_UpdateDuringWalkMovesFunctionLater(t *testing.T) {
 }
 
 func TestList_RefusesForeignMalformedAndExhaustedMarkers(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for i := range 3 {
 		mustCreate(t, svc, fmt.Sprintf("fn-%d", i), fmt.Sprintf("f%d", i))
@@ -313,6 +326,7 @@ func TestList_RefusesForeignMalformedAndExhaustedMarkers(t *testing.T) {
 }
 
 func TestList_RefusesMalformedRequests(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for _, req := range []*ListRequest{
 		{Region: "Bad.Region", MaxItems: 1},

@@ -58,6 +58,7 @@ func requireRetained(t *testing.T, svc *MetaService, name, functionID string) {
 }
 
 func TestDelete_UnbindsTheNameAndRetainsTheObligationAndUploads(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	got := serveAs(t, svc, "hello", "f1")
 	_, err := svc.Delete(t.Context(), deleteReq(got), testAccount)
@@ -72,6 +73,7 @@ func TestDelete_UnbindsTheNameAndRetainsTheObligationAndUploads(t *testing.T) {
 }
 
 func TestDelete_MissingFunctionIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.Delete(t.Context(), &DeleteRequest{Region: testRegion, FunctionName: "hello", FunctionID: "f1", Revision: 1}, testAccount)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
@@ -80,6 +82,7 @@ func TestDelete_MissingFunctionIsNotFound(t *testing.T) {
 }
 
 func TestDelete_StaleRevisionOrAnotherFunctionIsRefusedWithoutAnObligation(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	got := serveAs(t, svc, "hello", "f1")
 	for name, req := range map[string]*DeleteRequest{
@@ -95,6 +98,7 @@ func TestDelete_StaleRevisionOrAnotherFunctionIsRefusedWithoutAnObligation(t *te
 }
 
 func TestDelete_RefusesMalformedRequests(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for name, req := range map[string]*DeleteRequest{
 		"bad region": {Region: "Bad.Region", FunctionName: "hello", FunctionID: "f1", Revision: 1},
@@ -111,6 +115,7 @@ func TestDelete_RefusesMalformedRequests(t *testing.T) {
 // commits; the conditional delete loses and the function stays bound. The
 // obligation it left proves nothing was deleted.
 func TestDelete_InterleavedUpdateLosesTheConditionalDelete(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	got := serveAs(t, svc, "hello", "f1")
 	paused, release := make(chan struct{}), make(chan struct{})
@@ -143,6 +148,7 @@ func TestDelete_InterleavedUpdateLosesTheConditionalDelete(t *testing.T) {
 }
 
 func TestDelete_ObligationNamingAnotherFunctionRefusesTheDelete(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	got := serveAs(t, svc, "hello", "f1")
 	kv, err := svc.bucket(t.Context(), testAccount)
@@ -162,6 +168,7 @@ func TestDelete_ObligationNamingAnotherFunctionRefusesTheDelete(t *testing.T) {
 // A delete of a create still storing its code wins; the late CodeStored and
 // RollbackCreate of that create change nothing, and its upload stays owed.
 func TestDelete_PendingCreateRacingDeletionChangesNothingLater(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	_, err := svc.Delete(t.Context(), &DeleteRequest{Region: testRegion, FunctionName: "hello", FunctionID: "f1", Revision: rev}, testAccount)
@@ -181,6 +188,7 @@ func TestDelete_PendingCreateRacingDeletionChangesNothingLater(t *testing.T) {
 }
 
 func TestDelete_SameNameRecreationKeepsEachObligationApart(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	first := serveAs(t, svc, "hello", "f1")
 	_, err := svc.Delete(t.Context(), deleteReq(first), testAccount)
@@ -237,6 +245,7 @@ func (f *faultKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDe
 // acknowledgement lost. A fresh owner then finds the binding and obligation the
 // stream actually holds, a retry converges, and a recreated name stays apart.
 func TestDelete_InterruptionAndLostAcknowledgementAtEachWrite(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		key        string
@@ -251,6 +260,7 @@ func TestDelete_InterruptionAndLostAcknowledgementAtEachWrite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			js := testutil.NewJetStream(t, nc)
 			svc := NewMetaService(js)

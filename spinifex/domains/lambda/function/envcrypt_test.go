@@ -16,6 +16,7 @@ func testAEAD(t *testing.T) *masterkey.Key {
 }
 
 func TestEnv_RoundTripAndNoPlaintext(t *testing.T) {
+	t.Parallel()
 	k := testAEAD(t)
 	vars := map[string]string{"DB_PASSWORD": "hunter2", "MODE": "prod"}
 
@@ -33,6 +34,7 @@ func TestEnv_RoundTripAndNoPlaintext(t *testing.T) {
 }
 
 func TestEnv_BoundToAccountAndFunction(t *testing.T) {
+	t.Parallel()
 	k := testAEAD(t)
 	sealed, err := SealEnv(k.AEAD, "000000000001", "fn1", map[string]string{"A": "b"})
 	require.NoError(t, err)
@@ -48,6 +50,7 @@ func TestEnv_BoundToAccountAndFunction(t *testing.T) {
 }
 
 func TestEnv_EmptyIsEmpty(t *testing.T) {
+	t.Parallel()
 	k := testAEAD(t)
 	sealed, err := SealEnv(k.AEAD, "a", "f", nil)
 	require.NoError(t, err)

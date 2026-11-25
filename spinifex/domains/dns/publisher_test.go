@@ -71,6 +71,7 @@ func cluster(nodes ...string) *config.ClusterConfig {
 }
 
 func TestZonePublisherWritesAndDeletesZoneObjects(t *testing.T) {
+	t.Parallel()
 	endpoint, get := zoneBucket(t)
 	_, nc := testutil.StartTestNATS(t)
 	pub, ok := dns.NewZonePublisher(publisherConfig(t, endpoint), func() *config.ClusterConfig { return cluster("node1") }, nc)
@@ -87,6 +88,7 @@ func TestZonePublisherWritesAndDeletesZoneObjects(t *testing.T) {
 }
 
 func TestZonePublisherNeedsTheZoneStore(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	_, ok := dns.NewZonePublisher(&config.Config{}, func() *config.ClusterConfig { return nil }, nc)
 	assert.False(t, ok)
@@ -96,6 +98,8 @@ func TestZonePublisherNeedsTheZoneStore(t *testing.T) {
 // node reports a version no digest matches, and a node answering twice does not
 // stand in for one that never answered.
 func TestZonePublisherReloadCountsEveryNorthstarNode(t *testing.T) {
+	// Not parallel: the acks must arrive before the deadline, and load from the
+	// parallel tests can delay them past it.
 	endpoint, _ := zoneBucket(t)
 	nodes := cluster("node1", "node2", "node3")
 	cases := []struct {
@@ -132,6 +136,7 @@ func TestZonePublisherReloadCountsEveryNorthstarNode(t *testing.T) {
 }
 
 func TestNorthstarServerCount(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, 1, dns.NorthstarServerCount(nil))
 	assert.Equal(t, 1, dns.NorthstarServerCount(&config.ClusterConfig{Nodes: map[string]config.Config{"node1": {}}}))
 	assert.Equal(t, 3, dns.NorthstarServerCount(cluster("node1", "node2", "node3")))

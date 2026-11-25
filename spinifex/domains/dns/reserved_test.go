@@ -8,6 +8,7 @@ import (
 )
 
 func TestReservedZoneName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		reserved bool
@@ -41,6 +42,7 @@ func TestReservedZoneName(t *testing.T) {
 }
 
 func TestReservedZoneNameHonoursTheConfiguredDomains(t *testing.T) {
+	t.Parallel()
 	assert.True(t, dns.ReservedZoneName("cloud.example.com", "cloud.example.com", "corp.internal", ""))
 	assert.True(t, dns.ReservedZoneName("example.com", "cloud.example.com", "corp.internal", ""))
 	assert.True(t, dns.ReservedZoneName("host.corp.internal", "cloud.example.com", "corp.internal", ""))

@@ -7,6 +7,7 @@ import (
 )
 
 func TestDefaultQuotasMirrorAWS(t *testing.T) {
+	t.Parallel()
 	q := DefaultQuotas()
 	assert.Equal(t, 500, q.HostedZonesPerAccount)
 	assert.Equal(t, 10_000, q.RecordsPerHostedZone)
@@ -15,6 +16,7 @@ func TestDefaultQuotasMirrorAWS(t *testing.T) {
 }
 
 func TestWithinRecordQuotaBoundary(t *testing.T) {
+	t.Parallel()
 	q := Quotas{RecordsPerHostedZone: 3}
 	assert.True(t, q.withinRecordQuota(2), "below the cap may add")
 	assert.False(t, q.withinRecordQuota(3), "at the cap may not add")

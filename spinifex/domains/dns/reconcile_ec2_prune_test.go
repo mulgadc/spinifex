@@ -39,6 +39,7 @@ func zoneTOML(domain string, records map[string]string) string {
 // that authority pruning would delete the records of every instance running
 // somewhere else, which is what the vmMgr-backed desired set could not avoid.
 func TestPrunable_InstanceRecordsNeedClusterWideAuthority(t *testing.T) {
+	t.Parallel()
 	public := "ec2-3-3-3-3.ap-southeast-2.compute"
 	private := "ip-172-31-0-6.ap-southeast-2"
 
@@ -57,6 +58,7 @@ func TestPrunable_InstanceRecordsNeedClusterWideAuthority(t *testing.T) {
 // Pruning it on "absent from the desired set" alone would take the NS set with
 // it, which is a zone outage rather than a stale address.
 func TestPrunable_PrivateZoneStructuralRecordsSurvive(t *testing.T) {
+	t.Parallel()
 	prune := prunableForZones(PruneScope{EC2: true, ELB: true, EKS: true, RDS: true})
 	for _, label := range []string{"", "ns1", "soa"} {
 		assert.False(t, prune(testPrivate, label),
@@ -68,6 +70,7 @@ func TestPrunable_PrivateZoneStructuralRecordsSurvive(t *testing.T) {
 // record name is derived from the IP, so a reallocated address otherwise keeps
 // resolving to whatever held it before.
 func TestComputeConverge_PrunesAStaleInstanceRecordInBothZones(t *testing.T) {
+	t.Parallel()
 	desired := []Change{
 		upsert("ec2-3-3-3-3.ap-southeast-2.compute."+testBase, "3.3.3.3"),
 		{Action: ActionUpsert, Zone: testPrivate,
@@ -107,6 +110,7 @@ func TestComputeConverge_PrunesAStaleInstanceRecordInBothZones(t *testing.T) {
 // it is read when no pass could act on it is an S3 GET, not a behaviour, so it
 // is not asserted here.
 func TestComputeBatch_PrunesBothZonesUnderEC2Authority(t *testing.T) {
+	t.Parallel()
 	endpoint, objects := fakeS3(t, "northstar")
 	objects[testBase+".toml"] = zoneTOML(testBase, map[string]string{
 		"ec2-3-3-3-3.ap-southeast-2.compute.": "3.3.3.3",

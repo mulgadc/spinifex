@@ -13,6 +13,7 @@ import (
 )
 
 func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	_, err := w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net", "B.r53e2e.spx3.net."}, false)
 	require.NoError(t, err)
@@ -42,6 +43,7 @@ func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
 // Withdrawing a delegation removes every NS record at the name, including
 // servers written while the cluster published a larger set.
 func TestDelegateRemoveWithdrawsServersFromAnEarlierSet(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	_, err := w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net"}, false)
 	require.NoError(t, err)
@@ -55,6 +57,7 @@ func TestDelegateRemoveWithdrawsServersFromAnEarlierSet(t *testing.T) {
 }
 
 func TestPlatformDelegationIgnoresNamesOutsideTheBaseDomain(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	for _, name := range []string{"example.com", "spx3.net", "notspx3.net"} {
 		_, _, ok, err := w.PlatformDelegation(name)
@@ -64,6 +67,7 @@ func TestPlatformDelegationIgnoresNamesOutsideTheBaseDomain(t *testing.T) {
 }
 
 func TestDelegateRefusesPlatformAndForeignNames(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	for _, name := range []string{"ns1.spx3.net", "x.elb.spx3.net", "compute.spx3.net", "example.com", "spx3.net"} {
 		_, err := w.Delegate(t.Context(), nil, []string{"ok.spx3.net", name}, false)
@@ -75,11 +79,9 @@ func TestDelegateRefusesPlatformAndForeignNames(t *testing.T) {
 }
 
 func TestDelegateWaitsForTheZoneWriterElection(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	_, _, js := testutil.StartTestJetStream(t)
-	prev := delegateLockPoll
-	delegateLockPoll = 10 * time.Millisecond
-	t.Cleanup(func() { delegateLockPoll = prev })
 
 	release, ok := reconcilelock.AcquireLeader(t.Context(), dnsLease(js, "node2"))
 	require.True(t, ok)
@@ -100,11 +102,9 @@ func TestDelegateWaitsForTheZoneWriterElection(t *testing.T) {
 // The reconcile pass and a delegation on one node share the DNS lease, so a
 // delegation waits for this node's own pass as it would for another node's.
 func TestDelegateWaitsForThisNodesOwnReconcilePass(t *testing.T) {
+	t.Parallel()
 	w, _ := newMultiNodeTestWriter(t)
 	_, _, js := testutil.StartTestJetStream(t)
-	prev := delegateLockPoll
-	delegateLockPoll = 10 * time.Millisecond
-	t.Cleanup(func() { delegateLockPoll = prev })
 
 	shared := dnsLease(js, "node1")
 	release, ok := reconcilelock.AcquireLeader(t.Context(), shared)

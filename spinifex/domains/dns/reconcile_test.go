@@ -33,6 +33,7 @@ func existingA(label, value string) zoneRecord {
 }
 
 func TestComputeConvergeUpsertsPassThroughAndPruneStale(t *testing.T) {
+	t.Parallel()
 	desired := []Change{
 		upsert("app-web-abc.ap-southeast-2.elb.spx3.net", "1.1.1.1"),
 		upsert("prod.ap-southeast-2.eks.spx3.net", "2.2.2.2"),
@@ -68,6 +69,7 @@ func TestComputeConvergeUpsertsPassThroughAndPruneStale(t *testing.T) {
 }
 
 func TestComputeConvergeSuppressesPruneWhenClassNotEnumerated(t *testing.T) {
+	t.Parallel()
 	// A cycle where the EKS enumeration failed (Prunable.EKS=false) must not
 	// delete any EKS record even though none appear in the desired set — the
 	// partial view could belong to another tenant whose buckets we could not read.
@@ -89,6 +91,7 @@ func TestComputeConvergeSuppressesPruneWhenClassNotEnumerated(t *testing.T) {
 }
 
 func TestComputeConvergeNoPruneWhenNoAuthority(t *testing.T) {
+	t.Parallel()
 	// Total enumeration failure (both flags false) must never delete anything,
 	// even against a full zone — protects every tenant from a transient outage.
 	existing := map[string][]zoneRecord{testBase: {
@@ -101,6 +104,7 @@ func TestComputeConvergeNoPruneWhenNoAuthority(t *testing.T) {
 }
 
 func TestComputeConvergePrunesRDSOnlyWhenEnumerated(t *testing.T) {
+	t.Parallel()
 	desired := []Change{upsert("orders-db.111122223333.ap-southeast-2.rds.spx3.net", "10.0.5.20")}
 	existing := map[string][]zoneRecord{testBase: {
 		existingA("orders-db.111122223333.ap-southeast-2.rds.", "10.0.5.20"),
@@ -128,6 +132,7 @@ func TestComputeConvergePrunesRDSOnlyWhenEnumerated(t *testing.T) {
 }
 
 func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
+	t.Parallel()
 	desired := []Change{{
 		Action: ActionUpsert,
 		Zone:   testBase,
@@ -142,6 +147,7 @@ func TestComputeConvergeRejectsUnsupportedRecordType(t *testing.T) {
 }
 
 func TestReconcilerDisabledIsNoop(t *testing.T) {
+	t.Parallel()
 	r := &Reconciler{} // enabled=false
 	assert.False(t, r.Enabled())
 	r.reconcileOnce(t.Context()) // must not panic with a nil desired/S3
@@ -162,6 +168,7 @@ func deletesOf(batch []Change) []Change {
 // as absent so the desired set is still published and the writer rebuilds, and
 // because nothing was read, no record can look stale and be pruned away.
 func TestReconcilerCorruptZoneRebuildsWithoutPruning(t *testing.T) {
+	t.Parallel()
 	endpoint, objects := fakeS3(t, "northstar")
 	objects[testBase+".toml"] = "version = 1.0\n[domain]\ndomain = \"spx3.ne"
 
@@ -195,6 +202,7 @@ func TestReconcilerCorruptZoneRebuildsWithoutPruning(t *testing.T) {
 // TestReconcilerBackendErrorStillAborts guards the other side: an unreachable
 // backend must not be mistaken for corrupt bytes and trigger a rebuild.
 func TestReconcilerBackendErrorStillAborts(t *testing.T) {
+	t.Parallel()
 	r := &Reconciler{enabled: true, baseDomain: testBase, s3cfg: &nsconfig.S3Config{}}
 	_, _, err := r.readZone(testBase)
 	require.Error(t, err, "a backend failure must propagate, not look like a rebuildable zone")
@@ -204,6 +212,7 @@ func TestReconcilerBackendErrorStillAborts(t *testing.T) {
 // able to start the loop unconditionally. Without it the disabled reconciler
 // would enter the watch loop and block until shutdown instead of returning.
 func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
+	t.Parallel()
 	r := NewReconciler(nil, nil, nil, nil, nil)
 	require.False(t, r.Enabled())
 
@@ -224,6 +233,7 @@ func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
 // path of Run: the startup pass must fire before any watch or resync activity,
 // and cancelling ctx must still let the loop return.
 func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	endpoint, _ := fakeS3(t, "northstar")
 
@@ -267,6 +277,7 @@ func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
 // acquirable afterwards, not merely on the call returning, since it is the
 // leadership and not the pass that the rest of the cluster waits on.
 func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	endpoint, _ := fakeS3(t, "northstar")
 
@@ -309,6 +320,7 @@ func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
 // on: sources supplied at construction have to reach the loop, and supplying
 // none is legal because that is the interval-only behaviour.
 func TestNewReconciler_RetainsItsWatchSources(t *testing.T) {
+	t.Parallel()
 	bucket := kvstore.NewBucket(nil, kvstore.Config{Name: "b"})
 
 	assert.Empty(t, NewReconciler(nil, nil, nil, nil, nil).sources)

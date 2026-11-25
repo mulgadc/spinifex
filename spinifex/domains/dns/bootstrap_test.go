@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
@@ -20,6 +19,7 @@ import (
 )
 
 func TestBootstrapBaseZone(t *testing.T) {
+	t.Parallel()
 	endpoint, objects := fakeS3(t, "northstar")
 
 	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
@@ -147,6 +147,7 @@ func assertZoneNameservers(t *testing.T, body, domain string, wantIPs []string) 
 // TestBootstrapBaseZoneMultiNode ensures the bootstrap path passes the complete
 // cluster topology into both zones rather than seeding only the writing node.
 func TestBootstrapBaseZoneMultiNode(t *testing.T) {
+	t.Parallel()
 	endpoint, objects := fakeS3(t, "northstar")
 	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
 default_domain = "spx3.net"
@@ -188,10 +189,7 @@ secret_key = "READONLY"
 }
 
 func TestBootstrapBaseZoneRetries(t *testing.T) {
-	prev := bootstrapRetryDelay
-	bootstrapRetryDelay = time.Millisecond
-	t.Cleanup(func() { bootstrapRetryDelay = prev })
-
+	t.Parallel()
 	// Fail the first two S3 requests, then succeed — the retry must seed.
 	endpoint, objects, sdkRetried := flakyS3(t, "northstar", 2)
 	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
@@ -227,6 +225,7 @@ secret_key = "READONLY"
 // service-endpoint names resolve from first boot, and re-running must stay
 // idempotent like the other two.
 func TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix(t *testing.T) {
+	t.Parallel()
 	endpoint, objects := fakeS3(t, "northstar")
 	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
 default_domain = "spx3.net"
@@ -267,7 +266,9 @@ secret_key = "READONLY"
 // guard: a suffix equal to either already-seeded zone must not seed a
 // duplicate object under a different logical slot.
 func TestBootstrapBaseZoneSuffixCollisionsDoNotDuplicate(t *testing.T) {
+	t.Parallel()
 	t.Run("suffix equals default domain", func(t *testing.T) {
+		t.Parallel()
 		endpoint, objects := fakeS3(t, "northstar")
 		tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
 [s3]
@@ -296,6 +297,7 @@ secret_key = "READONLY"
 	})
 
 	t.Run("suffix equals internal domain", func(t *testing.T) {
+		t.Parallel()
 		endpoint, objects := fakeS3(t, "northstar")
 		tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
 internal_domain = "compute.internal"
@@ -326,11 +328,13 @@ secret_key = "READONLY"
 }
 
 func TestNodeNames(t *testing.T) {
+	t.Parallel()
 	cluster := &config.ClusterConfig{Nodes: map[string]config.Config{"b": {}, "a": {}, "c": {}}}
 	assert.Equal(t, []string{"a", "b", "c"}, nodeNames(cluster))
 }
 
 func TestBootstrapBaseZoneUnknownNode(t *testing.T) {
+	t.Parallel()
 	endpoint, _ := fakeS3(t, "northstar")
 	tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
 [s3]
@@ -349,6 +353,7 @@ secret_key = "READONLY"
 }
 
 func TestBootstrapBaseZoneNoDomain(t *testing.T) {
+	t.Parallel()
 	tomlBody := `listen = "0.0.0.0:5300"
 zone_dir = "/tmp/zones"
 sync_interval = 30

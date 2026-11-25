@@ -12,6 +12,7 @@ import (
 // withdraws when it is false, and the reconcile's desired set omits — and so
 // prunes — when it is false. They have to agree on every state.
 func TestInstanceRetainsRecords(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status vm.InstanceState
@@ -26,12 +27,14 @@ func TestInstanceRetainsRecords(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, InstanceRetainsRecords(tt.status))
 		})
 	}
 }
 
 func TestEC2Names(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "ec2-1-2-3-4.ap-southeast-2.compute.spx3.net",
 		EC2PublicName("1.2.3.4", "ap-southeast-2", "spx3.net"))
 	assert.Equal(t, "ip-172-31-26-216.ap-southeast-2.compute.internal",
@@ -42,6 +45,7 @@ func TestEC2Names(t *testing.T) {
 }
 
 func TestEC2Changes(t *testing.T) {
+	t.Parallel()
 	// Public + private both present.
 	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
 	require.Len(t, changes, 2)
@@ -66,6 +70,7 @@ func TestEC2Changes(t *testing.T) {
 }
 
 func TestELBNameAndChanges(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "web-lb-abc123.ap-southeast-2.elb.spx3.net",
 		ELBName("", "web-lb", "abc123", "ap-southeast-2", "spx3.net"))
 	assert.Equal(t, "internal-web-lb-abc123.ap-southeast-2.elb.spx3.net",
@@ -83,6 +88,7 @@ func TestELBNameAndChanges(t *testing.T) {
 }
 
 func TestEKSNameAndChanges(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "my-cluster.111122223333.ap-southeast-2.eks.spx3.net",
 		EKSName("my-cluster", "111122223333", "ap-southeast-2", "spx3.net"))
 	assert.NotEqual(t,
@@ -100,6 +106,7 @@ func TestEKSNameAndChanges(t *testing.T) {
 }
 
 func TestRDSNameAndChanges(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "orders-db.111122223333.ap-southeast-2.rds.spx3.net",
 		RDSName("orders-db", "111122223333", "ap-southeast-2", "spx3.net"))
 	assert.NotEqual(t,
@@ -124,6 +131,7 @@ func TestRDSNameAndChanges(t *testing.T) {
 }
 
 func TestServiceEndpointNamesSharesTheAdminSANList(t *testing.T) {
+	t.Parallel()
 	got := ServiceEndpointNames("us-east-1", "spinifex.internal")
 	assert.Equal(t, []string{
 		"ecr.us-east-1.spinifex.internal",
@@ -140,6 +148,7 @@ func TestServiceEndpointNamesSharesTheAdminSANList(t *testing.T) {
 }
 
 func TestServiceEndpointChanges(t *testing.T) {
+	t.Parallel()
 	addrs := []string{"10.0.0.1", "10.0.0.2"}
 	changes := ServiceEndpointChanges("us-east-1", "spinifex.internal", addrs)
 	require.Len(t, changes, len(ServiceEndpointNames("us-east-1", "spinifex.internal")))
@@ -165,6 +174,7 @@ func TestServiceEndpointChanges(t *testing.T) {
 }
 
 func TestRelativeLabel(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, relativeLabel("spx3.net", "spx3.net"))
 	assert.Empty(t, relativeLabel("spx3.net.", "spx3.net"))
 	assert.Equal(t, "ec2-1-2-3-4.ap-southeast-2.compute.",

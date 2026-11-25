@@ -374,6 +374,7 @@ func TestTick_BlockedInstanceIDLookupDoesNotDelayHeartbeat(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	var calls atomic.Int32
+	setIMDSWait(t, 50*time.Millisecond)
 	a.instanceIDFn = func() (string, error) {
 		calls.Add(1)
 		<-release
@@ -403,10 +404,16 @@ func TestTick_BlockedInstanceIDLookupDoesNotDelayHeartbeat(t *testing.T) {
 }
 
 func TestFetchInstanceID_SharesOneDeadline(t *testing.T) {
+	setIMDSWait(t, 250*time.Millisecond)
+	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(3 * imdsWait)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
 	}))
 	defer srv.Close()
+	defer close(release)
 	old := imdsBase
 	imdsBase = srv.URL + "/latest"
 	defer func() { imdsBase = old }()
@@ -481,4 +488,12 @@ func TestFetchInstanceID(t *testing.T) {
 	if _, err := fetchInstanceID(); err == nil {
 		t.Error("an unreachable metadata service must fail")
 	}
+}
+
+// setIMDSWait shortens the instance ID lookup bound for one test.
+func setIMDSWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := imdsWait
+	imdsWait = d
+	t.Cleanup(func() { imdsWait = old })
 }

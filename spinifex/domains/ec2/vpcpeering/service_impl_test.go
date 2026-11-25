@@ -16,6 +16,7 @@ import (
 )
 
 func TestCreate_ReturnsInitiatingOverStoredPending(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	pcx := f.create(t, vpcA, vpcB)
 
@@ -34,6 +35,7 @@ func TestCreate_ReturnsInitiatingOverStoredPending(t *testing.T) {
 }
 
 func TestCreate_SynchronousRefusals(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	cases := []struct {
 		name  string
@@ -54,18 +56,21 @@ func TestCreate_SynchronousRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := f.svc.CreateVpcPeeringConnection(t.Context(), tc.input, testAccount)
 			requireMessage(t, err, tc.code, tc.msg)
 		})
 	}
 
 	t.Run("another Region", func(t *testing.T) {
+		t.Parallel()
 		_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
 			VpcId: aws.String(vpcA), PeerVpcId: aws.String(vpcB), PeerRegion: aws.String("us-east-1"),
 		}, testAccount)
 		requireCode(t, err, awserrors.ErrorInvalidParameterValue)
 	})
 	t.Run("the formation's Region", func(t *testing.T) {
+		t.Parallel()
 		_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
 			VpcId: aws.String(vpcA), PeerVpcId: aws.String(vpcB), PeerRegion: aws.String(testRegion),
 		}, testAccount)
@@ -74,6 +79,7 @@ func TestCreate_SynchronousRefusals(t *testing.T) {
 }
 
 func TestCreate_RepeatedRequestReturnsExistingWithNoWrite(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	first := f.create(t, vpcA, vpcB)
 	id := *first.VpcPeeringConnectionId
@@ -98,6 +104,7 @@ func TestCreate_RepeatedRequestReturnsExistingWithNoWrite(t *testing.T) {
 }
 
 func TestCreate_ConcurrentSameDirectionAnswerOneID(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	const n = 8
 	ids := make([]string, n)
@@ -124,6 +131,7 @@ func TestCreate_ConcurrentSameDirectionAnswerOneID(t *testing.T) {
 }
 
 func TestCreate_FailedGoesOnlyToTerminalBucket(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.putVPC(t, testAccount, vpcID(10), "10.1.128.0/17")
 	before := f.liveKeys(t)
@@ -144,6 +152,7 @@ func TestCreate_FailedGoesOnlyToTerminalBucket(t *testing.T) {
 }
 
 func TestCreate_DifferentAZHomesFail(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.updateVPC(t, testAccount, vpcA, func(r *ec2vpc.VPCRecord) { r.AZ = "az1" })
 	f.updateVPC(t, testAccount, vpcB, func(r *ec2vpc.VPCRecord) { r.AZ = "az2" })
@@ -152,6 +161,7 @@ func TestCreate_DifferentAZHomesFail(t *testing.T) {
 }
 
 func TestAccept_ProvisioningThenActive(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 
@@ -179,6 +189,7 @@ func TestAccept_ProvisioningThenActive(t *testing.T) {
 }
 
 func TestMarkActive_GenerationFence(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	_, err := f.accept(t, id)
@@ -194,6 +205,7 @@ func TestMarkActive_GenerationFence(t *testing.T) {
 }
 
 func TestDelete_KeepsRecordUntilMarkCleaned(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.activate(t, id)
@@ -219,6 +231,7 @@ func TestDelete_KeepsRecordUntilMarkCleaned(t *testing.T) {
 }
 
 func TestDelete_PendingMovesStraightToTerminal(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	require.NoError(t, f.del(t, id))
@@ -232,6 +245,7 @@ func TestDelete_PendingMovesStraightToTerminal(t *testing.T) {
 }
 
 func TestStateTransitions(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 
 	rejected := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
@@ -259,12 +273,14 @@ func TestStateTransitions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			requireMessage(t, tc.op(t, tc.id), awserrors.ErrorInvalidStateTransition,
 				"Invalid state transition for "+tc.id+", attempted to transition from "+tc.from+" to "+tc.to)
 		})
 	}
 
 	t.Run("unknown ID", func(t *testing.T) {
+		t.Parallel()
 		const unknown = "pcx-0123456789abcdef0"
 		requireMessage(t, f.del(t, unknown), awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound, "The vpcPeeringConnection ID '"+unknown+"' does not exist")
 		_, err := f.describe(t, "pcx-bogus")
@@ -273,7 +289,9 @@ func TestStateTransitions(t *testing.T) {
 }
 
 func TestOnePerPair(t *testing.T) {
+	t.Parallel()
 	t.Run("reversed request cannot be accepted while the forward one is active", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 		f.activate(t, fwd)
@@ -288,6 +306,7 @@ func TestOnePerPair(t *testing.T) {
 
 	for _, first := range []string{"forward", "reversed"} {
 		t.Run("both pending, "+first+" accepted first", func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			ids := map[string]string{
 				"forward":  *f.create(t, vpcA, vpcB).VpcPeeringConnectionId,
@@ -302,6 +321,7 @@ func TestOnePerPair(t *testing.T) {
 	}
 
 	t.Run("concurrent accepts of both produce one provisioning connection", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		ids := []string{*f.create(t, vpcA, vpcB).VpcPeeringConnectionId, *f.create(t, vpcB, vpcA).VpcPeeringConnectionId}
 		var wg sync.WaitGroup
@@ -320,6 +340,7 @@ func TestOnePerPair(t *testing.T) {
 }
 
 func TestAccept_CrashedPairClaimTakenOverOnlyAfterGrace(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rev := *f.create(t, vpcB, vpcA).VpcPeeringConnectionId
@@ -341,6 +362,7 @@ func TestAccept_CrashedPairClaimTakenOverOnlyAfterGrace(t *testing.T) {
 // grace just before its record write while a takeover runs: the takeover's
 // fence on the owner's record makes exactly one connection provision.
 func TestAccept_TakeoverFencesTheOwnersRetry(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rev := *f.create(t, vpcB, vpcA).VpcPeeringConnectionId
@@ -363,6 +385,7 @@ func TestAccept_TakeoverFencesTheOwnersRetry(t *testing.T) {
 }
 
 func TestCreate_InterruptedBeforeClaimIsAbsentThenSwept(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	rec := &PeeringRecord{
 		ID: "pcx-0000000000000dead", RequesterAccountID: testAccount, RequesterVpcID: vpcA, RequesterCIDR: "10.1.0.0/16",
@@ -396,6 +419,7 @@ func TestCreate_InterruptedBeforeClaimIsAbsentThenSwept(t *testing.T) {
 }
 
 func TestExpiry_ReadTimeThenSwept(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.clock.advance(requestLifetime)
@@ -417,6 +441,7 @@ func TestExpiry_ReadTimeThenSwept(t *testing.T) {
 }
 
 func TestExpiry_NewRequestKeepsTheExpiredOneVisible(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.clock.advance(requestLifetime)
@@ -428,6 +453,7 @@ func TestExpiry_NewRequestKeepsTheExpiredOneVisible(t *testing.T) {
 }
 
 func TestSweep_FinishesAMoveInterruptedAfterTheFence(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rec, rev, err := getJSON[PeeringRecord](t.Context(), f.svc.live, recordKey(id))
@@ -444,6 +470,7 @@ func TestSweep_FinishesAMoveInterruptedAfterTheFence(t *testing.T) {
 }
 
 func TestSweep_RemovesOrphanedKeysAfterGrace(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	const ghost = "pcx-00000000000000bad"
 	entry := indexEntry{CreatedAt: f.clock.now()}
@@ -466,6 +493,7 @@ func TestSweep_RemovesOrphanedKeysAfterGrace(t *testing.T) {
 }
 
 func TestPendingWithDeletedVpc_EndsRejectedWhicheverRunsFirst(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{vpcA, vpcB} {
 		f := newFixture(t)
 		id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
@@ -490,6 +518,7 @@ func TestPendingWithDeletedVpc_EndsRejectedWhicheverRunsFirst(t *testing.T) {
 // MarkCleaned of a linked connection whose VPCs both exist is a stray
 // confirmation, never a delete: the connection stays active with its claims.
 func TestMarkCleaned_LinkedWithBothVpcsChangesNothing(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.activate(t, id)
@@ -506,6 +535,7 @@ func TestMarkCleaned_LinkedWithBothVpcsChangesNothing(t *testing.T) {
 }
 
 func TestLinkedWithDeletedVpc_CleanedAsDeleted(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.activate(t, id)
@@ -517,6 +547,7 @@ func TestLinkedWithDeletedVpc_CleanedAsDeleted(t *testing.T) {
 }
 
 func TestModifyOptions(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.putVPC(t, testAccount, vpcID(30), "10.240.0.0/16")
 	f.putVPC(t, testAccount, vpcID(31), "172.31.0.0/16")
@@ -557,6 +588,7 @@ func TestModifyOptions(t *testing.T) {
 }
 
 func TestClassicIPSpace(t *testing.T) {
+	t.Parallel()
 	for cidr, want := range map[string]bool{
 		"10.0.0.0/16": false, "10.1.0.0/16": false, "10.1.4.0/24": false,
 		"10.2.0.0/16": true, "10.240.0.0/16": true, "172.16.0.0/16": false, "192.168.0.0/16": false,
@@ -566,6 +598,7 @@ func TestClassicIPSpace(t *testing.T) {
 }
 
 func TestDescribe_FiltersAndShapes(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	pending := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	active := *f.create(t, vpcA, vpcC).VpcPeeringConnectionId
@@ -603,6 +636,7 @@ func TestDescribe_FiltersAndShapes(t *testing.T) {
 }
 
 func TestTags_PerAccountAndFiltered(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	out, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
 		VpcId: aws.String(vpcA), PeerVpcId: aws.String(vpcB),
@@ -628,6 +662,7 @@ func TestTags_PerAccountAndFiltered(t *testing.T) {
 }
 
 func TestLimits(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	for i := range outstandingLimit {
 		peer := vpcID(100 + i)
@@ -641,6 +676,7 @@ func TestLimits(t *testing.T) {
 }
 
 func TestVpcBlocksDeletion(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	has, err := f.svc.VpcBlocksDeletion(t.Context(), vpcA)
@@ -659,6 +695,7 @@ func TestVpcBlocksDeletion(t *testing.T) {
 }
 
 func TestRouteTargetAndActiveConnections(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 
@@ -695,6 +732,7 @@ func countPrefix(keys map[string]bool, prefix string) int {
 // The GC ticks every few minutes; the sweep reaper scans at most hourly, and
 // the first tick after a leader change scans at once.
 func TestSweepReaper_RunsHourly(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	r := f.svc.NewSweepReaper()
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
@@ -722,6 +760,7 @@ func TestSweepReaper_RunsHourly(t *testing.T) {
 // A deleted connection leaves Describe on AWS's window even while its link
 // cleanup is still pending.
 func TestDelete_VisibilityWindowIgnoresPendingCleanup(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.activate(t, id)
@@ -738,6 +777,7 @@ func TestDelete_VisibilityWindowIgnoresPendingCleanup(t *testing.T) {
 // An ID KV cannot hold a key for answers NotFound from every entry point, as
 // an unknown well-formed ID does.
 func TestMalformedIDIsNotFound(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	for _, id := range []string{"pcx-abc*", "pcx-abc.", "pcx-a:b", "pcx-a b", "pcx-a..b"} {
 		_, err := f.describe(t, id)
@@ -758,6 +798,7 @@ func TestMalformedIDIsNotFound(t *testing.T) {
 // is still removing, a link there, and takes over one past the grace whose
 // holder never recorded it.
 func TestAccept_LinkSlotHeldOrTakenOver(t *testing.T) {
+	t.Parallel()
 	const holderID = "pcx-0000000000000beef"
 	for _, tc := range []struct {
 		name      string
@@ -776,6 +817,7 @@ func TestAccept_LinkSlotHeldOrTakenOver(t *testing.T) {
 		{"absent holder is taken over", func(string) *PeeringRecord { return nil }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 			start := linkStart(id)

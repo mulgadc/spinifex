@@ -69,6 +69,7 @@ func (f *fixture) termKeys(t *testing.T) map[string]bool {
 }
 
 func TestCrossAccount_CreateToAnOwnedPeerVpcIsPendingForBoth(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	pcx := f.createTo(t, testAccount, vpcA, peerAccount, peerVpc)
 	id := aws.StringValue(pcx.VpcPeeringConnectionId)
@@ -85,6 +86,7 @@ func TestCrossAccount_CreateToAnOwnedPeerVpcIsPendingForBoth(t *testing.T) {
 // A missing VPC, one another account owns, a malformed owner and an
 // overlapping peer all fail alike, indexed for the requester only.
 func TestCrossAccount_CreateFailsAlikeWithoutRevealingThePeer(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, owner, peer string }{
 		{"absent from the peer account", peerAccount, vpcID(77)},
 		{"owned by a third account", peerAccount, thirdVpc},
@@ -93,6 +95,7 @@ func TestCrossAccount_CreateFailsAlikeWithoutRevealingThePeer(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newCrossAccountFixture(t)
 			f.putVPC(t, peerAccount, overlapVpc, "10.1.0.0/24")
 			before := f.liveKeys(t)
@@ -115,6 +118,7 @@ func TestCrossAccount_CreateFailsAlikeWithoutRevealingThePeer(t *testing.T) {
 }
 
 func TestCrossAccount_MissingPeerWithinOneAccountStaysSynchronous(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
 		VpcId: aws.String(vpcA), PeerVpcId: aws.String(peerVpc), PeerOwnerId: aws.String(testAccount),
@@ -123,6 +127,7 @@ func TestCrossAccount_MissingPeerWithinOneAccountStaysSynchronous(t *testing.T) 
 }
 
 func TestCrossAccount_OnlyTheAccepterAcceptsOrRejects(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 	for _, account := range []string{testAccount, thirdAccount} {
@@ -140,6 +145,7 @@ func TestCrossAccount_OnlyTheAccepterAcceptsOrRejects(t *testing.T) {
 }
 
 func TestCrossAccount_ThirdAccountCannotChangeOrRouteToIt(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 	require.NoError(t, f.acceptAs(t, peerAccount, id))
@@ -176,6 +182,7 @@ func TestCrossAccount_ThirdAccountCannotChangeOrRouteToIt(t *testing.T) {
 }
 
 func TestCrossAccount_EachOwnerSeesOnlyItsTags(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 	for account, value := range map[string]string{testAccount: "requester", peerAccount: "accepter", thirdAccount: "unrelated"} {
@@ -197,6 +204,7 @@ func TestCrossAccount_EachOwnerSeesOnlyItsTags(t *testing.T) {
 }
 
 func TestCrossAccount_DeleteVpcRefusedForTheAccepterOnly(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 
@@ -231,6 +239,7 @@ func TestCrossAccount_DeleteVpcRefusedForTheAccepterOnly(t *testing.T) {
 }
 
 func TestCrossAccount_PendingWithinOneAccountNeverBlocksDeleteVpc(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	f.create(t, vpcA, vpcB)
 	for _, vpc := range []string{vpcA, vpcB} {
@@ -243,6 +252,7 @@ func TestCrossAccount_PendingWithinOneAccountNeverBlocksDeleteVpc(t *testing.T) 
 // A repeat names the same VPCs; it returns the open request only when it also
 // names the same peer owner, and otherwise fails like any unowned peer.
 func TestCrossAccount_RepeatCreateMatchesThePeerOwner(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 	assert.Equal(t, id, aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId))
@@ -254,6 +264,7 @@ func TestCrossAccount_RepeatCreateMatchesThePeerOwner(t *testing.T) {
 		{"another account named for a same-account peer", peerAccount, vpcB, same},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := aws.StringValue(f.createTo(t, testAccount, vpcA, tc.owner, tc.peer).VpcPeeringConnectionId)
 			assert.NotEqual(t, tc.open, got)
 			assert.Equal(t, StateFailed, f.statusAs(t, testAccount, got))
@@ -263,6 +274,7 @@ func TestCrossAccount_RepeatCreateMatchesThePeerOwner(t *testing.T) {
 }
 
 func TestCrossAccount_PeerSideLimitCapsOtherAccountsRequests(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	for i := range perVpcLimit {
 		requester := vpcID(300 + i)
@@ -276,6 +288,7 @@ func TestCrossAccount_PeerSideLimitCapsOtherAccountsRequests(t *testing.T) {
 }
 
 func TestCrossAccount_ExpiredRequestStopsBlockingDeleteVpc(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	f.createTo(t, testAccount, vpcA, peerAccount, peerVpc)
 	f.clock.advance(requestLifetime + time.Second)
@@ -287,6 +300,7 @@ func TestCrossAccount_ExpiredRequestStopsBlockingDeleteVpc(t *testing.T) {
 // The accepter's VPC can vanish under a pending request only by racing
 // DeleteVpc; the request then reads rejected by the accepter.
 func TestCrossAccount_MissingAccepterVpcReadsRejected(t *testing.T) {
+	t.Parallel()
 	f := newCrossAccountFixture(t)
 	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
 	f.deleteVPC(t, peerAccount, peerVpc)

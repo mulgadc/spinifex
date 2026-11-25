@@ -28,6 +28,7 @@ func newRegistryTestStore(t *testing.T) *Registry {
 }
 
 func TestRegistry_ReserveClaimAndCollision(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -52,6 +53,7 @@ func TestRegistry_ReserveClaimAndCollision(t *testing.T) {
 }
 
 func TestRegistry_GetNotFound(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -61,6 +63,7 @@ func TestRegistry_GetNotFound(t *testing.T) {
 }
 
 func TestRegistry_SetStateTransitions(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -83,6 +86,7 @@ func TestRegistry_SetStateTransitions(t *testing.T) {
 }
 
 func TestRegistry_SetStateNotFound(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -92,6 +96,7 @@ func TestRegistry_SetStateNotFound(t *testing.T) {
 }
 
 func TestRegistry_Delete(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -110,6 +115,7 @@ func TestRegistry_Delete(t *testing.T) {
 // TestRegistry_PurgeAll proves PurgeAll clears every record across every
 // account, not just one -- the appliance-teardown use case it exists for.
 func TestRegistry_PurgeAll(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -127,11 +133,13 @@ func TestRegistry_PurgeAll(t *testing.T) {
 // TestRegistry_PurgeAllOnEmptyBucketIsANoOp proves PurgeAll succeeds against
 // a registry with no records yet -- a bucket kv.Keys reports as ErrNoKeysFound.
 func TestRegistry_PurgeAllOnEmptyBucketIsANoOp(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	require.NoError(t, reg.PurgeAll(context.Background()))
 }
 
 func TestRegistry_ListAccountScoped(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -151,6 +159,7 @@ func TestRegistry_ListAccountScoped(t *testing.T) {
 }
 
 func TestRegistry_AppendSourceSpecIsIdempotent(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -182,6 +191,7 @@ func TestRegistry_AppendSourceSpecIsIdempotent(t *testing.T) {
 }
 
 func TestRegistry_AppendSourceSpecNotFound(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -194,6 +204,7 @@ func TestRegistry_AppendSourceSpecNotFound(t *testing.T) {
 // lose data: the read-check-append is not atomic, so two ingests racing on one
 // index must not drop a spec. Every distinct spec has to survive.
 func TestRegistry_AppendSourceSpecConcurrentAppendsAllLand(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -233,6 +244,7 @@ func TestRegistry_AppendSourceSpecConcurrentAppendsAllLand(t *testing.T) {
 // conversion this was a single-shot update at the read revision, so a caller
 // that lost the race got a raw revision mismatch back.
 func TestRegistry_SetStateConcurrentWritersAllSucceed(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 
@@ -260,6 +272,7 @@ func TestRegistry_SetStateConcurrentWritersAllSucceed(t *testing.T) {
 }
 
 func TestRegistry_ListAll(t *testing.T) {
+	t.Parallel()
 	reg := newRegistryTestStore(t)
 	ctx := context.Background()
 

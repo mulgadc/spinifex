@@ -209,6 +209,7 @@ func putObject(t *testing.T, store *objectstore.MemoryObjectStore, key, body str
 }
 
 func TestStartIngest_MissingIndexErrors(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -218,6 +219,7 @@ func TestStartIngest_MissingIndexErrors(t *testing.T) {
 }
 
 func TestStartIngest_ReturnsPendingJobWithoutRunning(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()
 	putObject(t, store, ingestPrefix+"doc1.txt", "hello world")
@@ -239,6 +241,7 @@ func TestStartIngest_ReturnsPendingJobWithoutRunning(t *testing.T) {
 // ochre.vector.ingest caller with no bedrock-agent DataSource) leaves it
 // empty rather than defaulting to some placeholder value.
 func TestStartIngest_StampsDataSourceID(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -261,6 +264,7 @@ func TestStartIngest_StampsDataSourceID(t *testing.T) {
 // SourceSpec, tagged with no DataSourceID -- it re-populates the index's
 // table directly from the registry, not through a bedrock-agent DataSource.
 func TestReconcileFromSource_EnqueuesPendingJobWithNoDataSourceID(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -276,6 +280,7 @@ func TestReconcileFromSource_EnqueuesPendingJobWithNoDataSourceID(t *testing.T) 
 // the same way StartIngest does for an index the registry does not have --
 // a reconcile pass must never enqueue a job against nothing.
 func TestReconcileFromSource_MissingIndexErrors(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -285,6 +290,7 @@ func TestReconcileFromSource_MissingIndexErrors(t *testing.T) {
 }
 
 func TestRunJob_HappyPath(t *testing.T) {
+	t.Parallel()
 	svc, registry, backend, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -329,6 +335,7 @@ func TestRunJob_HappyPath(t *testing.T) {
 // backend's per-key row set replaced, not doubled, and appends the source
 // spec only once despite two successful runs.
 func TestRunJob_IdempotentRerun(t *testing.T) {
+	t.Parallel()
 	svc, registry, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -422,6 +429,7 @@ func TestRunJob_EmbedderFullyDownFailsJob(t *testing.T) {
 }
 
 func TestRunJob_EmptyDocumentClearsExistingRows(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "empty.txt"
@@ -452,6 +460,7 @@ func forceJobUpdatedAt(t *testing.T, store *JobStore, accountID, jobID string, w
 }
 
 func TestIngestService_Reconcile_RedrivesStaleRunningJob(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -474,6 +483,7 @@ func TestIngestService_Reconcile_RedrivesStaleRunningJob(t *testing.T) {
 }
 
 func TestIngestService_Reconcile_LeavesFreshRunningJobAlone(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -510,6 +520,7 @@ func (f *failingGetObjectStore) GetObject(_ context.Context, _ *s3.GetObjectInpu
 // old check only caught the all-embed-failures case, so a job that ingests
 // literally nothing for any other reason used to sail through to READY.
 func TestRunJob_AllDocumentsFailNonEmbedReason_FailsJob(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 
@@ -556,6 +567,7 @@ func TestRunJob_AllDocumentsFailNonEmbedReason_FailsJob(t *testing.T) {
 // SourceSpec.Metadata's static per-source tags, plus the source key, onto
 // every ingested row -- without this, D9 filters have nothing to match.
 func TestRunJob_StampsSourceMetadataOntoRows(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -594,6 +606,7 @@ func TestRunJob_StampsSourceMetadataOntoRows(t *testing.T) {
 }
 
 func TestIngestService_Reconcile_IgnoresPendingAndTerminalJobs(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	putObject(t, store, ingestPrefix+"doc1.txt", "pending, never run")
@@ -614,6 +627,7 @@ func TestIngestService_Reconcile_IgnoresPendingAndTerminalJobs(t *testing.T) {
 // drives a fresh PENDING job to completion -- the gap Reconcile deliberately
 // leaves open, since nothing else ever calls RunJob for a PENDING job.
 func TestIngestService_Sweep_RunsPendingJobToReady(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -637,6 +651,7 @@ func TestIngestService_Sweep_RunsPendingJobToReady(t *testing.T) {
 // TestIngestService_Sweep_RedrivesStaleRunningJob proves Sweep also covers
 // Reconcile's crash-recovery case, so a single scheduler tick handles both.
 func TestIngestService_Sweep_RedrivesStaleRunningJob(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 	key := ingestPrefix + "doc1.txt"
@@ -660,6 +675,7 @@ func TestIngestService_Sweep_RedrivesStaleRunningJob(t *testing.T) {
 // does not touch a RUNNING job still within its grace period, nor a job
 // already in a terminal state (READY or FAILED).
 func TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone(t *testing.T) {
+	t.Parallel()
 	svc, _, backend, store, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -704,6 +720,7 @@ func TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone(t *testing.T
 // oversized chunk could 413 against the embedder regardless of what the
 // operator configured.
 func TestRunJob_ClampsOperatorChunkSizeToEmbedderMaxInputLength(t *testing.T) {
+	t.Parallel()
 	embedder := &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 20}
 	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
 	ctx := context.Background()
@@ -728,6 +745,7 @@ func TestRunJob_ClampsOperatorChunkSizeToEmbedderMaxInputLength(t *testing.T) {
 // still honored -- clamping only ever tightens, never loosens, an operator's
 // request.
 func TestRunJob_HonorsOperatorChunkSizeTighterThanEmbedderLimit(t *testing.T) {
+	t.Parallel()
 	embedder := &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 512}
 	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
 	ctx := context.Background()
@@ -749,6 +767,7 @@ func TestRunJob_HonorsOperatorChunkSizeTighterThanEmbedderLimit(t *testing.T) {
 // type-asserts its Embedder for TokenCounter and actually calls it during
 // chunking verification, not just TokenLimiter.
 func TestRunJob_ConsultsTokenCounterWhenEmbedderProvidesOne(t *testing.T) {
+	t.Parallel()
 	embedder := &tokenCounterStubEmbedder{tokenLimiterStubEmbedder: &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 20}}
 	svc, _, _, store := newIngestTestSetupWithEmbedder(t, embedder)
 	ctx := context.Background()
@@ -768,6 +787,7 @@ func TestRunJob_ConsultsTokenCounterWhenEmbedderProvidesOne(t *testing.T) {
 // once at the end: the 2nd document's embed call must observe the 1st
 // document's completion already persisted.
 func TestRunJob_PersistsIncrementalProgressAcrossSuccessfulDocuments(t *testing.T) {
+	t.Parallel()
 	svc, _, _, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -849,6 +869,7 @@ func TestRunJob_DeadBackendFailsPromptlyWithVisibleMidRunProgress(t *testing.T) 
 // itself transitions to JobStateStopped, not JobStateFailed -- distinct from
 // a per-document timeout, which reaches FAILED on its own.
 func TestIngestService_StopJob_CancelsRunningJobToStopped(t *testing.T) {
+	t.Parallel()
 	embedder := &blockingEmbedder{}
 	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
 	ctx := context.Background()
@@ -893,6 +914,7 @@ func TestIngestService_StopJob_CancelsRunningJobToStopped(t *testing.T) {
 // finished) is reported back as-is rather than as an error, so a caller
 // racing the job's own natural completion still gets a sane answer.
 func TestIngestService_StopJob_UnregisteredJobReturnsRecordUnchanged(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 
@@ -908,6 +930,7 @@ func TestIngestService_StopJob_UnregisteredJobReturnsRecordUnchanged(t *testing.
 // TestIngestService_StopJob_UnknownJobErrors proves StopJob reports
 // ErrJobNotFound for a job id that does not exist, mirroring DescribeJob.
 func TestIngestService_StopJob_UnknownJobErrors(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _, _ := newIngestTestSetup(t)
 	ctx := context.Background()
 

@@ -307,6 +307,7 @@ func (h *hostPortHarness) putApplianceENI(identifier, subnetID, ip string) {
 const testNodeID = "node-a"
 
 func TestEnsureApplianceHostPort_CreatesENIAndHostPort(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -326,6 +327,7 @@ func TestEnsureApplianceHostPort_CreatesENIAndHostPort(t *testing.T) {
 // The daemon's host-port ENI must join the appliance's security group, or the
 // customer ENI's self-referencing SG silently drops its traffic to pg.
 func TestEnsureApplianceHostPort_DaemonENIJoinsApplianceSG(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -346,6 +348,7 @@ func TestEnsureApplianceHostPort_DaemonENIJoinsApplianceSG(t *testing.T) {
 // A daemon ENI that predates SG inheritance (reused by description, no groups)
 // must be re-associated in place rather than left unauthorized.
 func TestEnsureApplianceHostPort_ReusedENIGetsApplianceSG(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -370,6 +373,7 @@ func TestEnsureApplianceHostPort_ReusedENIGetsApplianceSG(t *testing.T) {
 // addresses the port and still leaves the appliance unreachable, which is
 // the entire reason the port exists.
 func TestEnsureApplianceHostPort_UsesSubnetPrefixLength(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -388,6 +392,7 @@ func TestEnsureApplianceHostPort_UsesSubnetPrefixLength(t *testing.T) {
 // One ENI per node, not one per connect: without describe-or-create every
 // Connect would leak an address out of the appliance's subnet.
 func TestEnsureApplianceHostPort_ReusesTheNodesExistingENI(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -409,6 +414,7 @@ func TestEnsureApplianceHostPort_ReusesTheNodesExistingENI(t *testing.T) {
 // Two daemons sharing one address would fight over the same OVN logical
 // port, so the node identity has to reach the ENI lookup.
 func TestEnsureApplianceHostPort_DistinctENIPerNode(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -427,6 +433,7 @@ func TestEnsureApplianceHostPort_DistinctENIPerNode(t *testing.T) {
 }
 
 func TestEnsureApplianceHostPort_RequiresPlumberNodeIDAndVPC(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -453,6 +460,7 @@ func TestEnsureApplianceHostPort_RequiresPlumberNodeIDAndVPC(t *testing.T) {
 }
 
 func TestEnsureApplianceHostPort_PropagatesPlumberFailure(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -467,6 +475,7 @@ func TestEnsureApplianceHostPort_PropagatesPlumberFailure(t *testing.T) {
 // lookup must fall through and mint a usable one rather than install a
 // broken port.
 func TestEnsureApplianceHostPort_SkipsIncompleteENIRecords(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -481,6 +490,7 @@ func TestEnsureApplianceHostPort_SkipsIncompleteENIRecords(t *testing.T) {
 }
 
 func TestDaemonPortDescriptionCarriesNodeID(t *testing.T) {
+	t.Parallel()
 	assert.Contains(t, daemonPortDescription("node-a"), "node-a")
 	assert.NotEqual(t, daemonPortDescription("node-a"), daemonPortDescription("node-b"))
 }
@@ -488,6 +498,7 @@ func TestDaemonPortDescriptionCarriesNodeID(t *testing.T) {
 // --- tag-filtered appliance ENI resolution ---
 
 func TestResolveApplianceTarget_FindsTheTaggedApplianceENI(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
@@ -506,6 +517,7 @@ func TestResolveApplianceTarget_FindsTheTaggedApplianceENI(t *testing.T) {
 // order DescribeNetworkInterfaces returns them -- map iteration is unordered,
 // so a repeat loop exercises both orderings.
 func TestResolveApplianceTarget_PrefersEndpointENIOverManagementNIC(t *testing.T) {
+	t.Parallel()
 	const mgmtSubnet = "subnet-mgmt-0001"
 	const mgmtIP = "10.251.185.4"
 	for range 16 {
@@ -527,6 +539,7 @@ func TestResolveApplianceTarget_PrefersEndpointENIOverManagementNIC(t *testing.T
 
 // An ENI tagged for a different identifier must never match.
 func TestResolveApplianceTarget_IgnoresOtherIdentifiersTags(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI("some-other-db", testApplianceSubnet, testApplianceEndpoint)
@@ -537,6 +550,7 @@ func TestResolveApplianceTarget_IgnoresOtherIdentifiersTags(t *testing.T) {
 }
 
 func TestResolveApplianceTarget_ErrorsWhenSubnetHasNoCIDR(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
 
@@ -545,6 +559,7 @@ func TestResolveApplianceTarget_ErrorsWhenSubnetHasNoCIDR(t *testing.T) {
 }
 
 func TestResolveApplianceTarget_PropagatesDescribeFailure(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	failing := &failingVPC{fakeVPC: h.vpc, failDescribeENIs: errors.New("nats timeout")}
 	deps := h.deps()
@@ -556,6 +571,7 @@ func TestResolveApplianceTarget_PropagatesDescribeFailure(t *testing.T) {
 }
 
 func TestResolveApplianceTarget_RequiresVPC(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	noVPC := h.deps()
 	noVPC.VPC = nil
@@ -585,6 +601,7 @@ func (f *failingVPC) DescribeNetworkInterfaces(ctx context.Context, in *ec2.Desc
 // --- teardown ---
 
 func TestRemoveApplianceHostPort_NoopWithoutHostPortOrENI(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	require.NoError(t, removeApplianceHostPort(HostPortDeps{}, "eni-1"))
 	require.NoError(t, removeApplianceHostPort(h.deps(), ""))
@@ -592,12 +609,14 @@ func TestRemoveApplianceHostPort_NoopWithoutHostPortOrENI(t *testing.T) {
 }
 
 func TestRemoveApplianceHostPort_RemovesTheInstalledPort(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	require.NoError(t, removeApplianceHostPort(h.deps(), "eni-42"))
 	assert.Equal(t, []string{"eni-42"}, h.hostPort.removals())
 }
 
 func TestRemoveApplianceHostPort_PropagatesPlumberFailure(t *testing.T) {
+	t.Parallel()
 	h := newHostPortHarness()
 	h.hostPort.failRemove = errors.New("br-int is gone")
 	err := removeApplianceHostPort(h.deps(), "eni-42")

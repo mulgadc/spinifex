@@ -39,14 +39,17 @@ func (alwaysOverBudgetCounter) CountTokens(_ context.Context, _, _ string) (int,
 }
 
 func TestChunkText_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, ChunkText("", 50, 10))
 }
 
 func TestChunkText_WhitespaceOnly(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, ChunkText("   \n\t  \n", 50, 10))
 }
 
 func TestChunkText_UnderSize(t *testing.T) {
+	t.Parallel()
 	text := "hello world, this is short"
 	chunks := ChunkText(text, 1000, 100)
 	require.Len(t, chunks, 1)
@@ -55,6 +58,7 @@ func TestChunkText_UnderSize(t *testing.T) {
 }
 
 func TestChunkText_ExactSize(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("a", 50)
 	chunks := ChunkText(text, 50, 0)
 	require.Len(t, chunks, 1)
@@ -66,6 +70,7 @@ func TestChunkText_ExactSize(t *testing.T) {
 // fallback (no separator anywhere in the text) cuts into contiguous,
 // size-bounded spans with exactly abutting offsets when overlap is 0.
 func TestChunkText_OverSizeHardSplitNoOverlap(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("a", 205)
 	chunks := ChunkText(text, 50, 0)
 	require.Len(t, chunks, 5)
@@ -85,6 +90,7 @@ func TestChunkText_OverSizeHardSplitNoOverlap(t *testing.T) {
 // on exactly the requested overlap (not a whole extra piece) by sizing its
 // granularity to overlap rather than size.
 func TestChunkText_OverlapExactOnHardSplit(t *testing.T) {
+	t.Parallel()
 	// Each rune is distinguishable by position so an exact-overlap claim is
 	// actually verifiable, not just plausible.
 	var sb strings.Builder
@@ -110,6 +116,7 @@ func TestChunkText_OverlapExactOnHardSplit(t *testing.T) {
 // increases across a variety of separator levels (paragraphs, lines,
 // sentences, words, and unbroken text).
 func TestChunkText_OffsetMonotonicity(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("Paragraph one.\n\nParagraph two has more words in it. And another sentence! And one more?\n\nline one\nline two\n\n", 5) + strings.Repeat("x", 300)
 
 	chunks := ChunkText(text, 80, 20)
@@ -122,6 +129,7 @@ func TestChunkText_OffsetMonotonicity(t *testing.T) {
 // TestChunkText_ParagraphBoundaryPreferred proves a text with clean
 // paragraph breaks under size splits along them rather than mid-word.
 func TestChunkText_ParagraphBoundaryPreferred(t *testing.T) {
+	t.Parallel()
 	p1 := strings.Repeat("alpha ", 5) // 30 runes
 	p2 := strings.Repeat("beta ", 5)  // 25 runes
 	text := p1 + "\n\n" + p2
@@ -137,6 +145,7 @@ func TestChunkText_ParagraphBoundaryPreferred(t *testing.T) {
 // TestChunkText_SentenceAndWordFallback proves a single long line with no
 // paragraph/line breaks falls through to sentence, then word, boundaries.
 func TestChunkText_SentenceAndWordFallback(t *testing.T) {
+	t.Parallel()
 	text := "This is sentence one. This is sentence two. This is sentence three. This is sentence four."
 	chunks := ChunkText(text, 30, 5)
 	require.NotEmpty(t, chunks)
@@ -153,6 +162,7 @@ func TestChunkText_SentenceAndWordFallback(t *testing.T) {
 // TestChunkText_NoSpacesLongWord proves a single token far longer than size
 // (no separator matches at any level) still terminates and hard-splits.
 func TestChunkText_NoSpacesLongWord(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("x", 1000)
 	chunks := ChunkText(text, 100, 20)
 	require.NotEmpty(t, chunks)
@@ -164,6 +174,7 @@ func TestChunkText_NoSpacesLongWord(t *testing.T) {
 // TestChunkText_NegativeAndZeroInputsClamp proves size<=0 and overlap<0 (or
 // overlap>=size) are normalized rather than left to misbehave or loop.
 func TestChunkText_NegativeAndZeroInputsClamp(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("word ", 50)
 
 	// size<=0 defaults to DefaultChunkSize -- this text is well under it, so
@@ -185,6 +196,7 @@ func TestChunkText_NegativeAndZeroInputsClamp(t *testing.T) {
 // DefaultChunkOverlapTokens rather than misbehaving, mirroring ChunkText's
 // own clamping contract.
 func TestChunkTextForModel_ZeroAndNegativeInputsDefault(t *testing.T) {
+	t.Parallel()
 	text := "hello world, this is a short document"
 	chunks := ChunkTextForModel(context.Background(), text, "test-model", 0, -1, nil)
 	require.Len(t, chunks, 1)
@@ -194,6 +206,7 @@ func TestChunkTextForModel_ZeroAndNegativeInputsDefault(t *testing.T) {
 // TestChunkTextForModel_EmptyTextReturnsNil mirrors ChunkText's empty/
 // whitespace-only contract through the token-aware entry point.
 func TestChunkTextForModel_EmptyTextReturnsNil(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, ChunkTextForModel(context.Background(), "   \n\t  ", "test-model", 100, 10, nil))
 }
 
@@ -204,6 +217,7 @@ func TestChunkTextForModel_EmptyTextReturnsNil(t *testing.T) {
 // sizing pass used -- the guarantee that holds with zero live tokenizer
 // calls, as long as codeCharsPerToken is a true floor on real density.
 func TestChunkTextForModel_NilCounterNeverExceedsConservativeEstimate(t *testing.T) {
+	t.Parallel()
 	// No separators anywhere, forcing the hard-split fallback exactly like
 	// a long unbroken span of dense code (e.g. a minified line or a long
 	// identifier list).
@@ -226,6 +240,7 @@ func TestChunkTextForModel_NilCounterNeverExceedsConservativeEstimate(t *testing
 // caught and re-split by the real-count verification pass, so every final
 // chunk measures at or under the model's real token budget.
 func TestChunkTextForModel_ReSplitsChunkThatMeasuresOverLimit(t *testing.T) {
+	t.Parallel()
 	// tokensPerRune=0.5 (2 chars/token) is denser than codeCharsPerToken
 	// (2.5), so the initial size==budget*codeCharsPerToken pass alone would
 	// leave every chunk measuring ~1.25x over budget without the resplit.
@@ -257,6 +272,7 @@ func TestChunkTextForModel_ReSplitsChunkThatMeasuresOverLimit(t *testing.T) {
 // TokenCounter that never agrees a chunk is small enough -- it must return
 // rather than recurse forever or blow up memory.
 func TestChunkTextForModel_PathologicalCounterTerminates(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("y", 12)
 
 	done := make(chan []Chunk, 1)
@@ -279,6 +295,7 @@ func TestChunkTextForModel_PathologicalCounterTerminates(t *testing.T) {
 // counter never panics (estimateTokens falls back to the conservative
 // ratio) and that a non-nil counter is actually consulted.
 func TestChunkTextForModel_CounterConsultedOnlyWhenProvided(t *testing.T) {
+	t.Parallel()
 	text := "short text well under any budget"
 
 	assert.NotPanics(t, func() {

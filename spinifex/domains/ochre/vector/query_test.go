@@ -14,6 +14,7 @@ import (
 // k<=0 defaults to 10, k in range passes through, and any k above 100 is
 // silently clamped rather than erroring.
 func TestClampQueryK(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		k    int

@@ -92,6 +92,7 @@ func TestRDSApplianceLauncher_LaunchCreatesAndPollsToAvailable(t *testing.T) {
 // an identifier it already launched): a DBInstanceAlreadyExists response from
 // CreateDBInstance must not fail the launch, only the poll result matters.
 func TestRDSApplianceLauncher_LaunchIsIdempotentOnAlreadyExists(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	defer nc.Close()
 
@@ -132,6 +133,7 @@ func TestRDSApplianceLauncher_LaunchIsIdempotentOnAlreadyExists(t *testing.T) {
 // create failure unrelated to identifier collision (e.g. an invalid
 // parameter) is NOT swallowed the way DBInstanceAlreadyExists is.
 func TestRDSApplianceLauncher_LaunchPropagatesOtherCreateErrors(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	defer nc.Close()
 

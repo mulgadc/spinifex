@@ -31,6 +31,7 @@ func newDataSourceTestStore(t *testing.T) *DataSourceStore {
 }
 
 func TestKBStore_CreateGetListDelete(t *testing.T) {
+	t.Parallel()
 	store := newKBTestStore(t)
 	ctx := context.Background()
 
@@ -62,6 +63,7 @@ func TestKBStore_CreateGetListDelete(t *testing.T) {
 }
 
 func TestKBStore_CreateCollisionReturnsErrKBExists(t *testing.T) {
+	t.Parallel()
 	store := newKBTestStore(t)
 	ctx := context.Background()
 
@@ -73,6 +75,7 @@ func TestKBStore_CreateCollisionReturnsErrKBExists(t *testing.T) {
 }
 
 func TestKBStore_ListScopedPerAccount(t *testing.T) {
+	t.Parallel()
 	store := newKBTestStore(t)
 	ctx := context.Background()
 
@@ -90,6 +93,7 @@ func TestKBStore_ListScopedPerAccount(t *testing.T) {
 }
 
 func TestDataSourceStore_CreateGetListDelete(t *testing.T) {
+	t.Parallel()
 	store := newDataSourceTestStore(t)
 	ctx := context.Background()
 
@@ -111,6 +115,7 @@ func TestDataSourceStore_CreateGetListDelete(t *testing.T) {
 }
 
 func TestDataSourceStore_CreateCollisionReturnsErrDataSourceExists(t *testing.T) {
+	t.Parallel()
 	store := newDataSourceTestStore(t)
 	ctx := context.Background()
 
@@ -122,6 +127,7 @@ func TestDataSourceStore_CreateCollisionReturnsErrDataSourceExists(t *testing.T)
 }
 
 func TestKBStore_PurgeAll(t *testing.T) {
+	t.Parallel()
 	store := newKBTestStore(t)
 	ctx := context.Background()
 
@@ -142,6 +148,7 @@ func TestKBStore_PurgeAll(t *testing.T) {
 }
 
 func TestKBStore_NoJetStreamClientReturnsError(t *testing.T) {
+	t.Parallel()
 	store := NewKBStore(nil)
 	ctx := context.Background()
 
@@ -156,6 +163,7 @@ func TestKBStore_NoJetStreamClientReturnsError(t *testing.T) {
 }
 
 func TestDataSourceStore_PurgeAll(t *testing.T) {
+	t.Parallel()
 	store := newDataSourceTestStore(t)
 	ctx := context.Background()
 
@@ -173,6 +181,7 @@ func TestDataSourceStore_PurgeAll(t *testing.T) {
 }
 
 func TestDataSourceStore_NoJetStreamClientReturnsError(t *testing.T) {
+	t.Parallel()
 	store := NewDataSourceStore(nil)
 	ctx := context.Background()
 
@@ -187,6 +196,7 @@ func TestDataSourceStore_NoJetStreamClientReturnsError(t *testing.T) {
 }
 
 func TestDataSourceStore_ListByKnowledgeBase(t *testing.T) {
+	t.Parallel()
 	store := newDataSourceTestStore(t)
 	ctx := context.Background()
 

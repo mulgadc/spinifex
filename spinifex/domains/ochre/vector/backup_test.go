@@ -136,12 +136,14 @@ func gunzip(t *testing.T, data []byte) []byte {
 }
 
 func TestBackupObjectKey_ScopedUnderAccountPrefixAndTimestamped(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 8, 18, 12, 30, 0, 0, time.UTC)
 	key := backupObjectKey(backupTestAccount, at)
 	assert.Equal(t, backupTestAccount+"/"+backupTestAccount+"-20260818T123000Z.sql.gz", key)
 }
 
 func TestBackupService_Backup_UploadsGzippedDumpUnderAccountKey(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	dumper := &fakeDumper{dumpContent: []byte("-- pg_dump output for kb_" + backupTestAccount)}
@@ -166,6 +168,7 @@ func TestBackupService_Backup_UploadsGzippedDumpUnderAccountKey(t *testing.T) {
 }
 
 func TestBackupService_Backup_InvalidAccountIDRejected(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	dumper := &fakeDumper{}
 	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), dumper)
@@ -176,6 +179,7 @@ func TestBackupService_Backup_InvalidAccountIDRejected(t *testing.T) {
 }
 
 func TestBackupService_Backup_DumperErrorLeavesNoObjectUploaded(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	dumper := &fakeDumper{dumpErr: errors.New("pg_dump: connection refused")}
@@ -214,6 +218,7 @@ func (f *failingStore) PutObject(ctx context.Context, input *s3.PutObjectInput) 
 var _ objectstore.ObjectStore = (*failingStore)(nil)
 
 func TestBackupService_Backup_EnsureBucketErrorPropagates(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := &failingStore{
 		MemoryObjectStore: objectstore.NewMemoryObjectStore(),
@@ -228,6 +233,7 @@ func TestBackupService_Backup_EnsureBucketErrorPropagates(t *testing.T) {
 }
 
 func TestBackupService_Backup_PutObjectErrorPropagates(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := &failingStore{
 		MemoryObjectStore: objectstore.NewMemoryObjectStore(),
@@ -242,6 +248,7 @@ func TestBackupService_Backup_PutObjectErrorPropagates(t *testing.T) {
 }
 
 func TestBackupService_Backup_ApplianceNotAvailablePropagates(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
@@ -276,6 +283,7 @@ func seedBackupObject(t *testing.T, store *objectstore.MemoryObjectStore, accoun
 }
 
 func TestBackupService_Restore_RunsPsqlThenRegrantsAccount(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	key := seedBackupObject(t, store, backupTestAccount, "COPY kb_"+backupTestAccount+".idx_x FROM stdin;\n")
@@ -294,6 +302,7 @@ func TestBackupService_Restore_RunsPsqlThenRegrantsAccount(t *testing.T) {
 }
 
 func TestBackupService_Restore_RejectsMismatchedAccountPrefix(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	otherAccount := "000000000099"
@@ -310,6 +319,7 @@ func TestBackupService_Restore_RejectsMismatchedAccountPrefix(t *testing.T) {
 }
 
 func TestBackupService_Restore_MissingObjectKeyRejected(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), &fakeDumper{})
 
@@ -319,6 +329,7 @@ func TestBackupService_Restore_MissingObjectKeyRejected(t *testing.T) {
 }
 
 func TestBackupService_Restore_ObjectNotFoundPropagates(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), &fakeDumper{})
 
@@ -330,6 +341,7 @@ func TestBackupService_Restore_ObjectNotFoundPropagates(t *testing.T) {
 }
 
 func TestBackupService_Restore_PsqlErrorSkipsRegrant(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	key := seedBackupObject(t, store, backupTestAccount, "-- broken sql")
@@ -343,6 +355,7 @@ func TestBackupService_Restore_PsqlErrorSkipsRegrant(t *testing.T) {
 }
 
 func TestBackupService_Restore_InvalidAccountIDRejected(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	dumper := &fakeDumper{}
 	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), dumper)
@@ -353,6 +366,7 @@ func TestBackupService_Restore_InvalidAccountIDRejected(t *testing.T) {
 }
 
 func TestBackupService_Restore_ApplianceNotAvailablePropagates(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
 	require.NoError(t, err)
@@ -366,6 +380,7 @@ func TestBackupService_Restore_ApplianceNotAvailablePropagates(t *testing.T) {
 }
 
 func TestBackupService_Restore_CorruptGzipObjectRejected(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	require.NoError(t, store.EnsureBucket(context.Background(), backupBucket))
@@ -386,6 +401,7 @@ func TestBackupService_Restore_CorruptGzipObjectRejected(t *testing.T) {
 }
 
 func TestBackupService_Restore_EnsureAccountErrorPropagates(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	key := seedBackupObject(t, store, backupTestAccount, "-- sql")
@@ -400,6 +416,7 @@ func TestBackupService_Restore_EnsureAccountErrorPropagates(t *testing.T) {
 }
 
 func TestBackupService_Restore_RegrantAccountErrorPropagates(t *testing.T) {
+	t.Parallel()
 	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
 	store := objectstore.NewMemoryObjectStore()
 	key := seedBackupObject(t, store, backupTestAccount, "-- sql")

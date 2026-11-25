@@ -12,6 +12,7 @@ import (
 )
 
 func TestValidateAccountID(t *testing.T) {
+	t.Parallel()
 	assert.NoError(t, validateAccountID(awsidentifiers.GlobalAccountID))
 	assert.NoError(t, validateAccountID("123456789012"))
 
@@ -22,6 +23,7 @@ func TestValidateAccountID(t *testing.T) {
 }
 
 func TestValidateIndexID(t *testing.T) {
+	t.Parallel()
 	assert.NoError(t, validateIndexID("idx-0123456789abcdef1"))
 	assert.NoError(t, validateIndexID("a"))
 	assert.NoError(t, validateIndexID("my_index-1"))
@@ -34,16 +36,19 @@ func TestValidateIndexID(t *testing.T) {
 }
 
 func TestSchemaAndRoleNames(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "kb_"+awsidentifiers.GlobalAccountID, schemaName(awsidentifiers.GlobalAccountID))
 	assert.Equal(t, "kb_"+awsidentifiers.GlobalAccountID+"_role", roleName(awsidentifiers.GlobalAccountID))
 }
 
 func TestTableAndIndexNames(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "idx_myindex", tableName("myindex"))
 	assert.Equal(t, "idx_myindex_embedding_hnsw", hnswIndexName("myindex"))
 }
 
 func TestSanitizeIdent(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, `"kb_000000000000"`, sanitizeIdent("kb_000000000000"))
 	// A name containing a double quote is escaped by doubling it, pgx's own
 	// defense against an identifier that reaches Sanitize despite the

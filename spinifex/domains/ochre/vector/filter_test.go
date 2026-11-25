@@ -16,6 +16,7 @@ import (
 // compiles to its documented parameterized SQL shape, with args bound in
 // order and nextParam advancing by exactly the params consumed.
 func TestFilter_CompileEachOperator(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		filter     *Filter
@@ -129,6 +130,7 @@ func TestFilter_CompileEachOperator(t *testing.T) {
 // params from whatever startParam the caller passes -- the property Query
 // depends on to continue numbering after the query vector's $1.
 func TestFilter_CompileStartsAtArbitraryParam(t *testing.T) {
+	t.Parallel()
 	sql, args, next, err := Equals("status", "active").compile(5)
 	require.NoError(t, err)
 	assert.Equal(t, `metadata->>'status' = $5`, sql)
@@ -139,6 +141,7 @@ func TestFilter_CompileStartsAtArbitraryParam(t *testing.T) {
 // TestFilter_CompileAndAll proves andAll joins every child with AND,
 // parenthesized, and that param numbering stays contiguous across children.
 func TestFilter_CompileAndAll(t *testing.T) {
+	t.Parallel()
 	f := AndAll(
 		Equals("category", "handbook"),
 		GreaterThan("version", 2),
@@ -155,6 +158,7 @@ func TestFilter_CompileAndAll(t *testing.T) {
 
 // TestFilter_CompileOrAll proves orAll joins every child with OR.
 func TestFilter_CompileOrAll(t *testing.T) {
+	t.Parallel()
 	f := OrAll(Equals("category", "handbook"), Equals("category", "faq"))
 	sql, args, next, err := f.compile(1)
 	require.NoError(t, err)
@@ -167,6 +171,7 @@ func TestFilter_CompileOrAll(t *testing.T) {
 // another compiles correctly and keeps param numbering contiguous through
 // the nesting.
 func TestFilter_CompileNestedCombinators(t *testing.T) {
+	t.Parallel()
 	f := AndAll(
 		OrAll(Equals("category", "handbook"), Equals("category", "faq")),
 		LessThanOrEquals("version", 5),
@@ -184,6 +189,7 @@ func TestFilter_CompileNestedCombinators(t *testing.T) {
 // children is a compile error, not an always-true/always-false SQL
 // fragment (which could silently drop a filter caller intended).
 func TestFilter_CombinatorRequiresChildren(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := AndAll().compile(1)
 	require.Error(t, err)
 
@@ -195,12 +201,14 @@ func TestFilter_CombinatorRequiresChildren(t *testing.T) {
 // comparison with a non-numeric value is a compile error, not a query that
 // reaches Postgres and fails a ::numeric cast at execution time.
 func TestFilter_NumericOperatorsRejectNonNumericValue(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := GreaterThan("price", "not-a-number").compile(1)
 	require.Error(t, err)
 }
 
 // TestFilter_InRejectsEmptyList proves in/notIn reject an empty value list.
 func TestFilter_InRejectsEmptyList(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := In("tag", nil).compile(1)
 	require.Error(t, err)
 
@@ -211,6 +219,7 @@ func TestFilter_InRejectsEmptyList(t *testing.T) {
 // TestFilter_ListContainsRejectsNonStringValue proves listContains rejects
 // a non-string value rather than silently stringifying it.
 func TestFilter_ListContainsRejectsNonStringValue(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := (&Filter{Op: FilterListContains, Key: "owners", Value: 42}).compile(1)
 	require.Error(t, err)
 }
@@ -219,6 +228,7 @@ func TestFilter_ListContainsRejectsNonStringValue(t *testing.T) {
 // KB set is a compile error -- the filter grammar is closed, not
 // extensible to arbitrary SQL via a crafted Op string.
 func TestFilter_UnknownOperatorErrors(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := (&Filter{Op: "dropTable", Key: "k", Value: "v"}).compile(1)
 	require.Error(t, err)
 }
@@ -228,6 +238,7 @@ func TestFilter_UnknownOperatorErrors(t *testing.T) {
 // SQL text after passing filterKeyPattern. An injection payload as a key
 // must be rejected outright, for every operator that takes a key.
 func TestFilter_InjectionAttemptInKeyIsRejected(t *testing.T) {
+	t.Parallel()
 	maliciousKeys := []string{
 		"status'; DROP TABLE idx_one; --",
 		"status' OR '1'='1",
@@ -256,6 +267,7 @@ func TestFilter_InjectionAttemptInKeyIsRejected(t *testing.T) {
 // is never interpolated into the SQL string, no matter its content -- it
 // only ever appears as an element of the returned args slice.
 func TestFilter_MaliciousValueStaysBoundArg(t *testing.T) {
+	t.Parallel()
 	const payload = `'; DROP TABLE idx_one; --`
 
 	sql, args, _, err := Equals("status", payload).compile(1)

@@ -27,6 +27,7 @@ func newServiceTestSetup(t *testing.T) (*Service, *fakeBackend) {
 }
 
 func TestService_CreateIndex_HappyPath(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -46,6 +47,7 @@ func TestService_CreateIndex_HappyPath(t *testing.T) {
 }
 
 func TestService_CreateIndex_ReserveCollision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newServiceTestSetup(t)
 	ctx := context.Background()
 	params := CreateIndexParams{Name: "kb1", Dimension: 768}
@@ -65,6 +67,7 @@ func TestService_CreateIndex_ReserveCollision(t *testing.T) {
 }
 
 func TestService_CreateIndex_RollsBackOnBackendFailure(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 	backend.failCreateIndex = errFakeBackend
@@ -81,6 +84,7 @@ func TestService_CreateIndex_RollsBackOnBackendFailure(t *testing.T) {
 }
 
 func TestService_CreateIndex_RollsBackOnEnsureAccountFailure(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 	backend.failEnsureAccount = errFakeBackend
@@ -94,6 +98,7 @@ func TestService_CreateIndex_RollsBackOnEnsureAccountFailure(t *testing.T) {
 }
 
 func TestService_CreateIndex_RejectsNonPositiveDimension(t *testing.T) {
+	t.Parallel()
 	svc, _ := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -106,6 +111,7 @@ func TestService_CreateIndex_RejectsNonPositiveDimension(t *testing.T) {
 }
 
 func TestService_DeleteIndex_HappyPath(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -121,6 +127,7 @@ func TestService_DeleteIndex_HappyPath(t *testing.T) {
 }
 
 func TestService_DeleteIndex_AbsentIsNoop(t *testing.T) {
+	t.Parallel()
 	svc, _ := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -128,6 +135,7 @@ func TestService_DeleteIndex_AbsentIsNoop(t *testing.T) {
 }
 
 func TestService_ListIndexes_AccountScoped(t *testing.T) {
+	t.Parallel()
 	svc, _ := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -165,6 +173,7 @@ func seedStuckRecord(t *testing.T, svc *Service, accountID, indexID, state strin
 }
 
 func TestService_Reconcile_FinishesStuckCreating(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -182,6 +191,7 @@ func TestService_Reconcile_FinishesStuckCreating(t *testing.T) {
 }
 
 func TestService_Reconcile_FinishesStuckDeleting(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 
@@ -200,6 +210,7 @@ func TestService_Reconcile_FinishesStuckDeleting(t *testing.T) {
 }
 
 func TestService_Reconcile_LeavesFreshRecordsAlone(t *testing.T) {
+	t.Parallel()
 	svc, backend := newServiceTestSetup(t)
 	ctx := context.Background()
 

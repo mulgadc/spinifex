@@ -61,8 +61,8 @@ const SubjectTeardownAppliance = "ochre.appliance.teardown"
 const applianceStaleAfter = 5 * time.Minute
 
 // appliancePollInterval paces a loser's wait loop between staleness/state
-// re-checks while a winner is still provisioning.
-const appliancePollInterval = 2 * time.Second
+// re-checks while a winner is still provisioning. A var so tests can shorten it.
+var appliancePollInterval = 2 * time.Second
 
 // appliancePasswordLength and appliancePasswordAlphabet define the generated
 // master password: 32 characters from an alphanumeric-only alphabet, so the

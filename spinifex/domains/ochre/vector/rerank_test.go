@@ -87,6 +87,7 @@ func createRerankTestIndex(t *testing.T, s *apiTestSetup) {
 // reranker's own order wins over the backend's KNN order, and the returned
 // results are truncated to the caller's requested k.
 func TestVectorService_Query_RerankReordersCandidates(t *testing.T) {
+	t.Parallel()
 	reranker := &stubReranker{}
 	s := newAPITestSetupWithReranker(t, reranker)
 	createRerankTestIndex(t, s)
@@ -112,6 +113,7 @@ func TestVectorService_Query_RerankReordersCandidates(t *testing.T) {
 // the backend for more than k candidates when a reranker is configured, so
 // the reranker has real headroom to improve on the KNN order.
 func TestVectorService_Query_RerankOverFetchesFromBackend(t *testing.T) {
+	t.Parallel()
 	reranker := &stubReranker{}
 	s := newAPITestSetupWithReranker(t, reranker)
 	createRerankTestIndex(t, s)
@@ -133,6 +135,7 @@ func TestVectorService_Query_RerankOverFetchesFromBackend(t *testing.T) {
 // a rerank endpoint) leaves Query at the backend's own KNN order, and asks
 // the backend for exactly k, not an over-fetched count.
 func TestVectorService_Query_NoRerankerFallsBackToKNNOrder(t *testing.T) {
+	t.Parallel()
 	s := newAPITestSetup(t) // reranker is nil in the default setup.
 	createRerankTestIndex(t, s)
 
@@ -153,6 +156,7 @@ func TestVectorService_Query_NoRerankerFallsBackToKNNOrder(t *testing.T) {
 // that errors never fails the request: Query falls back to the backend's
 // own KNN top-k rather than propagating the rerank failure.
 func TestVectorService_Query_RerankErrorFallsBackToKNNOrder(t *testing.T) {
+	t.Parallel()
 	reranker := &stubReranker{failAll: true}
 	s := newAPITestSetupWithReranker(t, reranker)
 	createRerankTestIndex(t, s)
@@ -174,6 +178,7 @@ func TestVectorService_Query_RerankErrorFallsBackToKNNOrder(t *testing.T) {
 // chunk larger than rerankMaxDocRunes is truncated before being sent to the
 // reranker, bounding the /rerank request body regardless of chunk size.
 func TestVectorService_Query_RerankCapsCandidateDocLength(t *testing.T) {
+	t.Parallel()
 	reranker := &stubReranker{}
 	s := newAPITestSetupWithReranker(t, reranker)
 	createRerankTestIndex(t, s)
@@ -189,6 +194,7 @@ func TestVectorService_Query_RerankCapsCandidateDocLength(t *testing.T) {
 
 // TestRerankFetchK proves the over-fetch factor/cap arithmetic directly.
 func TestRerankFetchK(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		k    int
@@ -208,6 +214,7 @@ func TestRerankFetchK(t *testing.T) {
 // TestRerankTopK_NilRerankerReturnsKNNOrderTruncated proves the helper's own
 // nil-reranker fallback directly, independent of vectorService.Query.
 func TestRerankTopK_NilRerankerReturnsKNNOrderTruncated(t *testing.T) {
+	t.Parallel()
 	results := []QueryResult{{Chunk: "a"}, {Chunk: "b"}, {Chunk: "c"}}
 	got := rerankTopK(context.Background(), nil, "query", results, 2)
 	require.Len(t, got, 2)
@@ -220,6 +227,7 @@ func TestRerankTopK_NilRerankerReturnsKNNOrderTruncated(t *testing.T) {
 // same as a hard Rerank error: fall back rather than panic or silently drop
 // results.
 func TestRerankTopK_OutOfRangeIndexFallsBackToKNNOrder(t *testing.T) {
+	t.Parallel()
 	results := []QueryResult{{Chunk: "a"}, {Chunk: "b"}}
 	reranker := &stubReranker{order: func([]string) []int { return []int{5} }}
 	got := rerankTopK(context.Background(), reranker, "query", results, 2)

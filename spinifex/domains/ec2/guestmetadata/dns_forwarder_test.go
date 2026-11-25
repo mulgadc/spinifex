@@ -59,6 +59,7 @@ func markedResponse(marker byte) func(q []byte) []byte {
 func silent(_ []byte) []byte { return nil }
 
 func TestDNSForwarder_UDPRelaysToBackend(t *testing.T) {
+	t.Parallel()
 	backend := fakeUDPUpstream(t, markedResponse('X'))
 	f := newDNSForwarder([]string{backend})
 
@@ -74,6 +75,7 @@ func TestDNSForwarder_UDPRelaysToBackend(t *testing.T) {
 }
 
 func TestDNSForwarder_UDPFailsOverOnTimeout(t *testing.T) {
+	t.Parallel()
 	dead := fakeUDPUpstream(t, silent)
 	live := fakeUDPUpstream(t, markedResponse('Y'))
 	f := newDNSForwarder([]string{dead, live})
@@ -85,6 +87,7 @@ func TestDNSForwarder_UDPFailsOverOnTimeout(t *testing.T) {
 }
 
 func TestDNSForwarder_UDPServfailWhenAllBackendsDead(t *testing.T) {
+	t.Parallel()
 	dead := fakeUDPUpstream(t, silent)
 	f := newDNSForwarder([]string{dead})
 	f.timeout = 100 * time.Millisecond
@@ -117,6 +120,7 @@ func delayed(d time.Duration, respond func(q []byte) []byte) func(q []byte) []by
 // A lone backend that answers after its per-backend timeout is relayed, not
 // replaced with SERVFAIL, as long as it answers inside the overall bound.
 func TestDNSForwarder_UDPRelaysSlowAnswerFromOnlyBackend(t *testing.T) {
+	t.Parallel()
 	slow := fakeUDPUpstream(t, delayed(300*time.Millisecond, markedResponse('S')))
 	f := newDNSForwarder([]string{slow})
 	f.timeout = 100 * time.Millisecond
@@ -130,6 +134,7 @@ func TestDNSForwarder_UDPRelaysSlowAnswerFromOnlyBackend(t *testing.T) {
 // A slow first backend stays open while the next is tried, and its answer wins
 // when the next one never answers.
 func TestDNSForwarder_UDPKeepsSlowBackendOpenDuringFailover(t *testing.T) {
+	t.Parallel()
 	slow := fakeUDPUpstream(t, delayed(300*time.Millisecond, markedResponse('S')))
 	dead := fakeUDPUpstream(t, silent)
 	f := newDNSForwarder([]string{slow, dead})
@@ -143,6 +148,7 @@ func TestDNSForwarder_UDPKeepsSlowBackendOpenDuringFailover(t *testing.T) {
 
 // The overall bound is a boundary: just inside it is relayed, just past it fails.
 func TestDNSForwarder_UDPOverallDeadlineBoundary(t *testing.T) {
+	t.Parallel()
 	inside := fakeUDPUpstream(t, delayed(250*time.Millisecond, markedResponse('I')))
 	f := newDNSForwarder([]string{inside})
 	f.timeout = 100 * time.Millisecond
@@ -165,6 +171,7 @@ func TestDNSForwarder_UDPOverallDeadlineBoundary(t *testing.T) {
 // With more silent backends than the overall bound has hops for, the last one
 // still gets its own per-backend timeout, as sequential failover gave it.
 func TestDNSForwarder_UDPLastBackendReachableBehindSilentOnes(t *testing.T) {
+	t.Parallel()
 	targets := make([]string, 0, 5)
 	for range 4 {
 		targets = append(targets, fakeUDPUpstream(t, silent))
@@ -182,6 +189,7 @@ func TestDNSForwarder_UDPLastBackendReachableBehindSilentOnes(t *testing.T) {
 // Attempts that lost the race are closed when the exchange returns, so they do
 // not hold sockets past the query and escape the per-tap in-flight cap.
 func TestDNSForwarder_UDPClosesLosingAttempts(t *testing.T) {
+	t.Parallel()
 	dead := fakeUDPUpstream(t, silent)
 	live := fakeUDPUpstream(t, markedResponse('Y'))
 	f := newDNSForwarder([]string{dead, live})
@@ -197,6 +205,7 @@ func TestDNSForwarder_UDPClosesLosingAttempts(t *testing.T) {
 // Each tap's throttle is its own: one tap's suppressed failures leave another
 // tap's first Warn through, and each suppresses its own repeats in the window.
 func TestWarnThrottle_PerTapWindows(t *testing.T) {
+	t.Parallel()
 	base := time.Now()
 	now := func() time.Time { return base }
 	a := &warnThrottle{every: 10 * time.Second, now: now}
@@ -212,6 +221,7 @@ func TestWarnThrottle_PerTapWindows(t *testing.T) {
 }
 
 func TestDNSForwarder_TCPProxiesFramedSession(t *testing.T) {
+	t.Parallel()
 	// Echo backend: framed request bytes come back verbatim, proving the proxy
 	// relays the length-prefixed stream untouched in both directions.
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -251,6 +261,7 @@ func TestDNSForwarder_TCPProxiesFramedSession(t *testing.T) {
 }
 
 func TestServfail_RejectsRunt(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, servfail([]byte{0x01, 0x02}), "a message without a DNS header has nothing to answer")
 }
 
@@ -259,6 +270,7 @@ func TestServfail_RejectsRunt(t *testing.T) {
 // After a backend fails, it is deprioritised for the cooldown window so the next
 // query hits a healthy backend first instead of eating the dead one's timeout.
 func TestDNSForwarder_DownBackendDeprioritisedAfterFailure(t *testing.T) {
+	t.Parallel()
 	dead := fakeUDPUpstream(t, silent)
 	live := fakeUDPUpstream(t, markedResponse('Y'))
 	f := newDNSForwarder([]string{dead, live})
@@ -285,6 +297,7 @@ func TestDNSForwarder_DownBackendDeprioritisedAfterFailure(t *testing.T) {
 
 // A recovered backend is marked healthy again once it answers.
 func TestDNSForwarder_BackendRecovers(t *testing.T) {
+	t.Parallel()
 	b := &dnsBackend{addr: "10.0.0.1:53"}
 	now := time.Now()
 	b.markDown(now, 10*time.Second)
@@ -298,6 +311,7 @@ func TestDNSForwarder_BackendRecovers(t *testing.T) {
 
 // The token bucket admits a burst then sheds, and refills over elapsed time.
 func TestTokenBucket_ShedsBurstThenRefills(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	clock := func() time.Time { return now }
 	tb := newTokenBucket(100, 3, clock)
@@ -313,6 +327,7 @@ func TestTokenBucket_ShedsBurstThenRefills(t *testing.T) {
 
 // A non-positive rate disables limiting entirely.
 func TestTokenBucket_ZeroRateAllowsAll(t *testing.T) {
+	t.Parallel()
 	tb := newTokenBucket(0, 0, time.Now)
 	for range 1000 {
 		require.True(t, tb.allow())
@@ -322,6 +337,7 @@ func TestTokenBucket_ZeroRateAllowsAll(t *testing.T) {
 // A flood on one tap is shed to the burst size (H2): with the clock frozen so the
 // bucket never refills, only `burst` queries reach the backend and the rest drop.
 func TestDNSForwarder_UDPFloodShedToBurst(t *testing.T) {
+	t.Parallel()
 	var received atomic.Int32
 	backend := fakeUDPUpstream(t, func(q []byte) []byte {
 		received.Add(1)
@@ -396,6 +412,7 @@ func loopbackDNSListen(pairs *sync.Map) dnsListenFunc {
 // responder, serves queries end-to-end through the forwarder, and closes the
 // sockets when the tap goes away.
 func TestTapResponder_DNSFollowsTapLifecycle(t *testing.T) {
+	t.Parallel()
 	backend := fakeUDPUpstream(t, markedResponse('Z'))
 	table := map[string]*eniFacts{"eni-aaa11111": {eniID: "eni-aaa11111", instanceID: "i-aaaa1111"}}
 
@@ -422,6 +439,7 @@ func TestTapResponder_DNSFollowsTapLifecycle(t *testing.T) {
 // A DNS bind failure must not block IMDS serving, and the shim must come up on
 // a later reconcile once the bind succeeds — the retry-next-tick contract.
 func TestTapResponder_DNSBindFailureNeverBlocksIMDS(t *testing.T) {
+	t.Parallel()
 	table := map[string]*eniFacts{"eni-aaa11111": {eniID: "eni-aaa11111", instanceID: "i-aaaa1111"}}
 
 	var addrs, pairs sync.Map

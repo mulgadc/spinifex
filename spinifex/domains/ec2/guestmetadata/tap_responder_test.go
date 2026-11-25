@@ -36,6 +36,7 @@ func staticResolve(table map[string]*eniFacts) resolveENIFunc {
 }
 
 func TestTapResponder_ThreadsENIIdentity(t *testing.T) {
+	t.Parallel()
 	const (
 		eniID    = "eni-aaa11111"
 		endpoint = "ime-aaa11111"
@@ -83,6 +84,7 @@ func TestTapResponder_ThreadsENIIdentity(t *testing.T) {
 // from the tap's ENI — never the source IP. Two responders prove overlapping-CIDR
 // isolation (both guests dial from 127.0.0.1) and per-ENI token binding.
 func TestTapResponder_IMDSv2PerTapIdentity(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{}, &fakeIAM{}, &fakeAssumer{})
 	table := map[string]*eniFacts{
 		"eni-aaa11111": {eniID: "eni-aaa11111", instanceID: "i-aaaa1111"},
@@ -121,6 +123,7 @@ func TestTapResponder_IMDSv2PerTapIdentity(t *testing.T) {
 // responder for a newly attached tap, leaves an unchanged one alone, and stops a
 // responder whose tap has gone — the vpcd reconcile-from-taps contract.
 func TestTapResponder_ReconcileConvergesToLiveSet(t *testing.T) {
+	t.Parallel()
 	table := map[string]*eniFacts{
 		"eni-aaa11111": {eniID: "eni-aaa11111", instanceID: "i-aaaa1111"},
 		"eni-bbb22222": {eniID: "eni-bbb22222", instanceID: "i-bbbb2222"},
@@ -150,6 +153,7 @@ func TestTapResponder_ReconcileConvergesToLiveSet(t *testing.T) {
 // responder from the active set when its Serve goroutine exits unexpectedly:
 // otherwise the stale entry makes start a no-op and the tap never serves again.
 func TestTapResponder_UnexpectedServeExitAllowsRestart(t *testing.T) {
+	t.Parallel()
 	const (
 		eniID    = "eni-aaa11111"
 		endpoint = "ime-aaa11111"
@@ -202,6 +206,7 @@ func TestTapResponder_UnexpectedServeExitAllowsRestart(t *testing.T) {
 // SO_BINDTODEVICE and serves nothing, so start must detect the new ifindex and
 // rebind rather than no-op on the still-present eniID.
 func TestTapResponder_RebindsOnRecreatedEndpoint(t *testing.T) {
+	t.Parallel()
 	const (
 		eniID    = "eni-aaa11111"
 		endpoint = "ime-aaa11111"
@@ -238,6 +243,7 @@ func TestTapResponder_RebindsOnRecreatedEndpoint(t *testing.T) {
 }
 
 func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
+	t.Parallel()
 	var addrs sync.Map
 	listen := loopbackTapListen(&addrs)
 
@@ -255,6 +261,7 @@ func TestTapResponder_StartRejectsMissAndError(t *testing.T) {
 }
 
 func TestTapResponder_StartValidatesArgs(t *testing.T) {
+	t.Parallel()
 	m := newTapResponderManager(http.NewServeMux(), staticResolve(nil), loopbackTapListen(&sync.Map{}))
 	require.Error(t, m.start(context.Background(), "", "ime-x"))
 	require.Error(t, m.start(context.Background(), "eni-x", ""))
@@ -263,6 +270,7 @@ func TestTapResponder_StartValidatesArgs(t *testing.T) {
 // resolveCaller reads the per-tap ENI threaded into the request context as the
 // authoritative caller identity.
 func TestResolveCaller_PerTapENIWins(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eniErr: errors.New("must not be called")}, &fakeIAM{}, &fakeAssumer{})
 	want := &eniFacts{eniID: "eni-tap", instanceID: "i-tap"}
 
@@ -348,6 +356,7 @@ func tapGet(t *testing.T, addr, path, token string) tapResult {
 // every reconcile pass; once the tap leaves the live set the suspension clears so a
 // re-created ENI resumes retrying.
 func TestTapResponder_ReconcileSuspendsRetriesForGoneENI(t *testing.T) {
+	t.Parallel()
 	const (
 		eniID    = "eni-gone1234"
 		endpoint = "ime-gone1234"

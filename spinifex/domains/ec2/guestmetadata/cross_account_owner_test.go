@@ -11,6 +11,7 @@ import (
 // A same-account ENI leaves InstanceOwnerId empty, so iamAccountID falls back to
 // the ENI's own account — the common EC2 case where instance and ENI co-own.
 func TestIAMAccountID_FallsBackToENIAccount(t *testing.T) {
+	t.Parallel()
 	eni := &eniFacts{accountID: "111122223333"}
 	assert.Equal(t, "111122223333", eni.iamAccountID())
 }
@@ -19,6 +20,7 @@ func TestIAMAccountID_FallsBackToENIAccount(t *testing.T) {
 // from the account that owns the instance and its IAM role. iamAccountID returns
 // the instance-owner account so the role lookup hits the right tenant.
 func TestIAMAccountID_PrefersInstanceOwner(t *testing.T) {
+	t.Parallel()
 	eni := &eniFacts{accountID: "000000000001", instanceAccountID: "000000000000"}
 	assert.Equal(t, "000000000000", eni.iamAccountID())
 }
@@ -26,6 +28,7 @@ func TestIAMAccountID_PrefersInstanceOwner(t *testing.T) {
 // eniFactsFromRecord projects the persisted InstanceOwnerId onto the fact the
 // IAM/STS resolution keys off, so a cross-account attach survives the round-trip.
 func TestEniFactsFromRecord_CarriesInstanceOwner(t *testing.T) {
+	t.Parallel()
 	rec := &eniRecord{
 		NetworkInterfaceId: "eni-lb",
 		InstanceId:         "i-sysvm",
@@ -41,6 +44,7 @@ func TestEniFactsFromRecord_CarriesInstanceOwner(t *testing.T) {
 // ENI account — a system VM is invisible under the customer-account fan-out, so
 // keying the describe off the ENI account would resolve no instance at all.
 func TestResolveInstance_DescribesUnderInstanceOwner(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	lookup.facts = &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::000000000000:instance-profile/spinifex-lb-agent"}
 
@@ -54,6 +58,7 @@ func TestResolveInstance_DescribesUnderInstanceOwner(t *testing.T) {
 // Without an instance-owner stamp the describe routes to the ENI account, the
 // historical same-account behaviour the fallback preserves.
 func TestResolveInstance_FallsBackToENIAccount(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	lookup.facts = &instanceFacts{}
 

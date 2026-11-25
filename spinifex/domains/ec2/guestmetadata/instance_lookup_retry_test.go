@@ -12,6 +12,7 @@ import (
 // TestRetryGather_CancelledCtx checks the ctx.Done branch of retryBackoff: a
 // cancelled context returns fast after the first failure without exhausting retries.
 func TestRetryGather_CancelledCtx(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -30,6 +31,7 @@ func TestRetryGather_CancelledCtx(t *testing.T) {
 // TestRetryGather_SucceedsAfterRetries checks the retry-then-succeed path returns
 // the successful value and stops calling.
 func TestRetryGather_SucceedsAfterRetries(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	want := 42
 	out, err := retryGather(context.Background(), "test", "i-123", func() (*int, error) {
@@ -50,6 +52,7 @@ func TestRetryGather_SucceedsAfterRetries(t *testing.T) {
 // TestRetryGather_ExhaustsRetries checks a persistent error is returned after
 // exactly imdsLookupRetries attempts.
 func TestRetryGather_ExhaustsRetries(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	wantErr := errors.New("persistent")
 	out, err := retryGather(context.Background(), "test", "i-123", func() (*int, error) {

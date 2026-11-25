@@ -34,6 +34,7 @@ func v1Resolver(httpTokens string) *countingResolver {
 // An instance left at the default still 401s an untokened GET, so the IMDSv1
 // opt-in cannot leak to instances that never asked for it.
 func TestHTTP_TokenlessGETRejectedWhenTokensRequired(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(v1Resolver(ec2.HttpTokensStateRequired), &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -45,6 +46,7 @@ func TestHTTP_TokenlessGETRejectedWhenTokensRequired(t *testing.T) {
 // HttpTokens=optional is what lets an IMDSv1-only agent such as cloudbase-init
 // read metadata without performing the token handshake.
 func TestHTTP_TokenlessGETServedWhenTokensOptional(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(v1Resolver(ec2.HttpTokensStateOptional), &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -55,6 +57,7 @@ func TestHTTP_TokenlessGETServedWhenTokensOptional(t *testing.T) {
 
 // IMDSv2 keeps working unchanged on an instance that also permits v1.
 func TestHTTP_TokenedGETStillServedWhenTokensOptional(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(v1Resolver(ec2.HttpTokensStateOptional), &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -66,6 +69,7 @@ func TestHTTP_TokenedGETStillServedWhenTokensOptional(t *testing.T) {
 // A valid token short-circuits before the http-tokens lookup, so compliant
 // IMDSv2 clients never pay for the opt-in check.
 func TestIMDSv1_TokenedRequestSkipsLookup(t *testing.T) {
+	t.Parallel()
 	res := v1Resolver(ec2.HttpTokensStateRequired)
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -80,6 +84,7 @@ func TestIMDSv1_TokenedRequestSkipsLookup(t *testing.T) {
 // The untokened path is reachable without credentials, so repeated requests must
 // not each drive a DescribeInstances fan-out.
 func TestIMDSv1_LookupIsCached(t *testing.T) {
+	t.Parallel()
 	res := v1Resolver(ec2.HttpTokensStateOptional)
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -93,6 +98,7 @@ func TestIMDSv1_LookupIsCached(t *testing.T) {
 // A failed lookup denies and is cached too: without caching the failure, a guest
 // could replay a failing request to keep the fan-out running.
 func TestIMDSv1_LookupFailureDeniesAndCaches(t *testing.T) {
+	t.Parallel()
 	res := &countingResolver{fakeResolver: fakeResolver{
 		eni:     testENI(),
 		instErr: errors.New("gather timeout"),
@@ -108,6 +114,7 @@ func TestIMDSv1_LookupFailureDeniesAndCaches(t *testing.T) {
 
 // An ENI with no attached instance denies without attempting a lookup.
 func TestIMDSv1_UnattachedENIDenies(t *testing.T) {
+	t.Parallel()
 	res := v1Resolver(ec2.HttpTokensStateOptional)
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 

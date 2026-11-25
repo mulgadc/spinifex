@@ -63,6 +63,7 @@ func seedENIByID(t *testing.T, r *metadataResolver, accountID, eniID string, rec
 // The per-tap path resolves an ENI from its ID alone and recovers the owning
 // account from the bucket key, with no reverse-index lookup.
 func TestResolveENIByID_Hit(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
 		NetworkInterfaceId: "eni-aaa",
@@ -94,6 +95,7 @@ func TestResolveENIByID_Hit(t *testing.T) {
 // The tap identity is unambiguous even when two tenants share a CIDR and IP: the
 // ENI ID selects exactly one record, and its key supplies the right account.
 func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{
 		NetworkInterfaceId: "eni-aaa", VpcId: testVPC, PrivateIpAddress: testIP, InstanceId: "i-aaaa1111",
@@ -118,6 +120,7 @@ func TestResolveENIByID_RecoversAccountAcrossTenants(t *testing.T) {
 // An unknown ENI ID (or empty bucket) is a miss, not an error — the caller maps
 // it to a 404, matching the boot-time "not yet visible" posture.
 func TestResolveENIByID_MissIsNilNil(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	eni, err := r.resolveENIByID(context.Background(), "eni-nope")
 	require.NoError(t, err)
@@ -131,6 +134,7 @@ func TestResolveENIByID_MissIsNilNil(t *testing.T) {
 
 // An empty ENI ID short-circuits to a miss without scanning the bucket.
 func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	seedENIByID(t, r, "111122223333", "eni-aaa", eniRecord{NetworkInterfaceId: "eni-aaa"})
 	eni, err := r.resolveENIByID(context.Background(), "")
@@ -139,6 +143,7 @@ func TestResolveENIByID_EmptyIDIsNilNil(t *testing.T) {
 }
 
 func TestResolveENIByID_BadJSONErrors(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	_, err := r.eniKV.Put(t.Context(), "111122223333.eni-aaa", []byte("not json"))
 	require.NoError(t, err)
@@ -150,6 +155,7 @@ func TestResolveENIByID_BadJSONErrors(t *testing.T) {
 // End-to-end identity chain: tap-supplied ENI ID → ENI facts → instance facts,
 // surfacing the account and the IAM instance-profile ARN with no srcIP lookup.
 func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	lookup.facts = &instanceFacts{
 		iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile",
@@ -171,6 +177,7 @@ func TestResolveENIByID_ChainsToInstanceProfile(t *testing.T) {
 }
 
 func TestResolveInstance_NoAttachedInstance(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	inst, err := r.resolveInstance(context.Background(), &eniFacts{instanceID: ""})
 	require.NoError(t, err)
@@ -179,6 +186,7 @@ func TestResolveInstance_NoAttachedInstance(t *testing.T) {
 }
 
 func TestResolveInstance_DelegatesToLookup(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	lookup.facts = &instanceFacts{instanceType: "t3.micro", imageID: "ami-1"}
 
@@ -190,6 +198,7 @@ func TestResolveInstance_DelegatesToLookup(t *testing.T) {
 }
 
 func TestResolveInstance_LookupErrorPropagates(t *testing.T) {
+	t.Parallel()
 	r, lookup := newTestResolver(t)
 	lookup.err = errors.New("fan-out failed")
 	_, err := r.resolveInstance(context.Background(), &eniFacts{accountID: "111122223333", instanceID: "i-1"})
@@ -199,6 +208,7 @@ func TestResolveInstance_LookupErrorPropagates(t *testing.T) {
 // A nil SG bucket (not yet up at start) must degrade the endpoint to raw IDs
 // rather than failing the request.
 func TestResolveSGNames_NilBucketDegradesToIDs(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	r.sgKV = nil
 	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1", "sg-2"})
@@ -208,6 +218,7 @@ func TestResolveSGNames_NilBucketDegradesToIDs(t *testing.T) {
 // Names resolve where a record exists; a missing record or one with an empty
 // name falls back to the ID, and order is preserved throughout.
 func TestResolveSGNames_ResolvesAndFallsBack(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	putJSON(t, r.sgKV, "111122223333.sg-1", sgNameRecord{GroupName: "web-sg"})
 	putJSON(t, r.sgKV, "111122223333.sg-3", sgNameRecord{GroupName: ""}) // empty → ID
@@ -217,6 +228,7 @@ func TestResolveSGNames_ResolvesAndFallsBack(t *testing.T) {
 }
 
 func TestResolveSGNames_BadJSONFallsBackToID(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	_, err := r.sgKV.Put(t.Context(), "111122223333.sg-1", []byte("not json"))
 	require.NoError(t, err)
@@ -229,6 +241,7 @@ func TestResolveSGNames_BadJSONFallsBackToID(t *testing.T) {
 // must answer from the record as it is now: associating an Elastic IP restamps
 // the ENI, and IMDS public-ipv4 must follow it without a responder restart.
 func TestIMDS_PublicIPv4FollowsENIRecordAfterResponderStart(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	rec := eniRecord{
 		NetworkInterfaceId: "eni-aaa",
@@ -269,6 +282,7 @@ func TestIMDS_PublicIPv4FollowsENIRecordAfterResponderStart(t *testing.T) {
 }
 
 func TestRefreshENI_BadRecordIsError(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestResolver(t)
 	_, err := r.eniKV.Put(t.Context(), "111122223333.eni-aaa", []byte("not json"))
 	require.NoError(t, err)

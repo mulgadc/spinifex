@@ -205,6 +205,7 @@ func issueToken(t *testing.T, h http.Handler) string {
 // ----- token model ------------------------------------------------------
 
 func TestHTTP_TokenlessGETRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	rec := get(t, h, prefixMetaData+"instance-id", "")
@@ -213,6 +214,7 @@ func TestHTTP_TokenlessGETRejected(t *testing.T) {
 }
 
 func TestHTTP_TokenPUTValidation(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -229,6 +231,7 @@ func TestHTTP_TokenPUTValidation(t *testing.T) {
 }
 
 func TestHTTP_TokenGETMethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	req := httptest.NewRequest(http.MethodGet, "http://"+MetaDataServerIP+pathToken, nil)
@@ -242,6 +245,7 @@ func TestHTTP_TokenGETMethodNotAllowed(t *testing.T) {
 // carrying X-Forwarded-For is refused with 403 regardless of token or identity,
 // on both the read path and token issuance.
 func TestHTTP_ForwardedForRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -266,6 +270,7 @@ func TestHTTP_ForwardedForRejected(t *testing.T) {
 }
 
 func TestHTTP_ENIMissReturns404(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: nil}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), nil)
 
@@ -281,6 +286,7 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 // A failed re-read of the caller's ENI is a server fault: it must not be served
 // as a missing ENI, nor answered from the facts pinned when the tap came up.
 func TestHTTP_ENIRefreshErrorIs500(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI()}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -302,6 +308,7 @@ func TestHTTP_ENIRefreshErrorIs500(t *testing.T) {
 
 // GET / returns the advertised version list (token-gated, IMDSv2-only).
 func TestHTTP_RootVersionListing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -312,6 +319,7 @@ func TestHTTP_RootVersionListing(t *testing.T) {
 
 // Version discovery is not a tokenless side channel: GET / without a token is 401.
 func TestHTTP_RootVersionListingTokenless401(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	rec := get(t, h, "/", "")
@@ -321,6 +329,7 @@ func TestHTTP_RootVersionListingTokenless401(t *testing.T) {
 
 // GET /latest lists the top-level tree.
 func TestHTTP_LatestListing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -333,6 +342,7 @@ func TestHTTP_LatestListing(t *testing.T) {
 // cloud-init probes (2021-03-23) that we do not advertise — while a non-date
 // first segment is not rewritten and stays 404. The dated token PUT works too.
 func TestHTTP_DatedVersionAlias(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 
@@ -365,6 +375,7 @@ func TestHTTP_DatedVersionAlias(t *testing.T) {
 // /latest/dynamic lists instance-identity/; /latest/dynamic/instance-identity
 // advertises only document (the signed forms are deferred).
 func TestHTTP_DynamicListings(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -384,6 +395,7 @@ func TestHTTP_DynamicListings(t *testing.T) {
 // The unsigned identity document resolves every field from eni + instance facts;
 // fields Spinifex does not model (billingProducts, kernelId, ...) are JSON null.
 func TestHTTP_InstanceIdentityDocument(t *testing.T) {
+	t.Parallel()
 	pending := time.Date(2026, 6, 18, 1, 2, 3, 0, time.UTC)
 	res := &fakeResolver{
 		eni:  testENI(),
@@ -424,6 +436,7 @@ func TestHTTP_InstanceIdentityDocument(t *testing.T) {
 // An instance that is no longer visible (terminating/invisible) is a 404, not a
 // document with empty fields.
 func TestHTTP_InstanceIdentityDocumentInvisible404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: nil}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -435,6 +448,7 @@ func TestHTTP_InstanceIdentityDocumentInvisible404(t *testing.T) {
 // ----- metadata surface --------------------------------------------------
 
 func TestHTTP_MetadataPaths(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{
 		eni: testENI(),
 		inst: &instanceFacts{
@@ -487,6 +501,7 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 // override to genuine AWS. services/partition is unrelated and stays "aws"
 // unconditionally, matching AWS SDK partition tables.
 func TestHTTP_ServicesDomain(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -506,6 +521,7 @@ func TestHTTP_ServicesDomain(t *testing.T) {
 // failure mode this leaf exists to eliminate. LoadConfig guarantees a
 // non-empty value in production, so this only exercises the defensive branch.
 func TestHTTP_ServicesDomainEmpty404(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	svc.servicesDomain = ""
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -519,8 +535,10 @@ func TestHTTP_ServicesDomainEmpty404(t *testing.T) {
 // The region comes from the node's configuration, not the zone name, so a zone
 // named <region>-azN (no trailing letter) still reports the bare region.
 func TestHTTP_RegionFromNodeNotZoneName(t *testing.T) {
+	t.Parallel()
 	for _, az := range []string{"us-west-1a", "us-west-1-az2"} {
 		t.Run(az, func(t *testing.T) {
+			t.Parallel()
 			eni := testENI()
 			eni.availabilityZone = az
 			res := &fakeResolver{eni: eni, inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345"}}
@@ -556,6 +574,7 @@ func TestHTTP_RegionFromNodeNotZoneName(t *testing.T) {
 // An instance with no public IP has no public hostname or public IPv4: both leaves
 // 404, not an empty 200, matching real EC2 and the meta-data/ listing that omits them.
 func TestHTTP_PublicFieldsAbsent404(t *testing.T) {
+	t.Parallel()
 	eni := testENI()
 	eni.publicIP = ""
 	svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
@@ -571,6 +590,7 @@ func TestHTTP_PublicFieldsAbsent404(t *testing.T) {
 // "on-demand" for on-demand instances and — crucially — for a resolution miss or
 // error, since the leaf is advertised unconditionally and a 404 would break the crawl.
 func TestHTTP_InstanceLifecycle(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		res  *fakeResolver
@@ -583,6 +603,7 @@ func TestHTTP_InstanceLifecycle(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(c.res, &fakeIAM{}, &fakeAssumer{})
 			h := withTapENI(svc.httpHandler(), testENI())
 			token := issueToken(t, h)
@@ -597,6 +618,7 @@ func TestHTTP_InstanceLifecycle(t *testing.T) {
 // and spot/termination-time 404 (the dispatch default) — a 200 body would trigger
 // interruption handling in pollers like the AWS Node Termination Handler.
 func TestHTTP_SpotPathsReturn404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{lifecycleType: "spot"}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -611,6 +633,7 @@ func TestHTTP_SpotPathsReturn404(t *testing.T) {
 // no instance profile attached, iam/ is omitted entirely — real EC2 omits it so
 // cloud-init never descends into a subtree whose leaves would 404 and fail the crawl.
 func TestHTTP_DirectoryListing(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "e2e-key"}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -643,6 +666,7 @@ func TestHTTP_DirectoryListing(t *testing.T) {
 // With an instance profile attached, iam/ appears in the listing (between hostname
 // and instance-id) so cloud-init can fetch the role credentials.
 func TestHTTP_DirectoryListingWithProfile(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "e2e-key", iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -677,6 +701,7 @@ func TestHTTP_DirectoryListingWithProfile(t *testing.T) {
 // DataSourceNone — the regression that left private VMs keyless. public-keys/ stays:
 // it tracks the key pair, not the public IP.
 func TestHTTP_DirectoryListingNoPublicIP(t *testing.T) {
+	t.Parallel()
 	eni := testENI()
 	eni.publicIP = ""
 	res := &fakeResolver{eni: eni, inst: &instanceFacts{keyName: "e2e-key"}}
@@ -695,11 +720,13 @@ func TestHTTP_DirectoryListingNoPublicIP(t *testing.T) {
 // instead would drop public-keys/, which cloud-init reads as "no key pair" — it
 // writes no authorized_keys, and the guest boots keyless with nothing logged.
 func TestHTTP_DirectoryListingUnresolvedInstanceIs500(t *testing.T) {
+	t.Parallel()
 	for name, res := range map[string]*fakeResolver{
 		"backend error": {eni: testENI(), instErr: errors.New("jetstream: context deadline exceeded")},
 		"not found":     {eni: testENI(), inst: nil},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 			h := withTapENI(svc.httpHandler(), testENI())
 			token := issueToken(t, h)
@@ -715,6 +742,7 @@ func TestHTTP_DirectoryListingUnresolvedInstanceIs500(t *testing.T) {
 // iam/. The key pair is the field a guest cannot recover from losing; a missing
 // role surfaces through the credentials leaf, which reports the miss on its own.
 func TestHTTP_DirectoryListingProfileErrorKeepsTheListing(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
 		keyName:               "e2e-key",
 		iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile",
@@ -730,6 +758,7 @@ func TestHTTP_DirectoryListingProfileErrorKeepsTheListing(t *testing.T) {
 
 // An instance launched without a key pair omits public-keys/, whose leaf would 404.
 func TestHTTP_DirectoryListingNoKeyPair(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -740,6 +769,7 @@ func TestHTTP_DirectoryListingNoKeyPair(t *testing.T) {
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -749,6 +779,7 @@ func TestHTTP_UserDataAbsent404(t *testing.T) {
 }
 
 func TestHTTP_OutOfScopePaths404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -785,6 +816,7 @@ func macPath(mac, key string) string {
 
 // The intermediate directory listings walk down to the caller's single MAC.
 func TestHTTP_NetworkInterfacesListings(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -807,6 +839,7 @@ func TestHTTP_NetworkInterfacesListings(t *testing.T) {
 // macs/<mac> and macs/<mac>/ list exactly the leaves served — CIDR and public keys
 // included only when they resolve, so cloud-init's crawl never lists a key that 404s.
 func TestHTTP_NetworkInterfaceMacDirListing(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), subnetCIDR: testSubnetCIDR, vpcCIDR: testVPCCIDR}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -838,6 +871,7 @@ func TestHTTP_NetworkInterfaceMacDirListing(t *testing.T) {
 
 // Every served leaf resolves from eni + resolver facts.
 func TestHTTP_NetworkInterfaceLeaves(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{
 		eni:        testENI(),
 		sgNames:    map[string]string{"sg-1": "web-sg", "sg-2": "db-sg"},
@@ -876,12 +910,14 @@ func TestHTTP_NetworkInterfaceLeaves(t *testing.T) {
 // two must agree on both the AWS-shaped name and the fallback to the raw IP when no
 // base domain is configured.
 func TestHTTP_PublicHostnameLeavesAgree(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, baseDomain, want string }{
 		{"base domain configured", "spx3.net", "ec2-203-0-113-7.ap-southeast-2.compute.spx3.net"},
 		{"public DNS unconfigured", "", "203.0.113.7"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			eni := testENI()
 			svc, _ := newTestService(&fakeResolver{eni: eni}, &fakeIAM{}, &fakeAssumer{})
 			svc.baseDomain = c.baseDomain
@@ -899,6 +935,7 @@ func TestHTTP_PublicHostnameLeavesAgree(t *testing.T) {
 
 // With no public IP, public-ipv4s and public-hostname 404 and drop from the listing.
 func TestHTTP_NetworkInterfacePublicAbsent(t *testing.T) {
+	t.Parallel()
 	eni := testENI()
 	eni.publicIP = ""
 	res := &fakeResolver{eni: eni, subnetCIDR: testSubnetCIDR, vpcCIDR: testVPCCIDR}
@@ -920,6 +957,7 @@ func TestHTTP_NetworkInterfacePublicAbsent(t *testing.T) {
 // is a 500 on both the leaf and the listing, never an empty/dropped CIDR a guest
 // would mis-render into its network config.
 func TestHTTP_NetworkInterfaceCidrMiss(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI()} // no canned CIDRs → miss
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -948,6 +986,7 @@ func TestHTTP_NetworkInterfaceCidrMiss(t *testing.T) {
 
 // A MAC that is not the caller's is 404: the per-tap responder only serves its own ENI.
 func TestHTTP_NetworkInterfaceForeignMac404(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
@@ -958,6 +997,7 @@ func TestHTTP_NetworkInterfaceForeignMac404(t *testing.T) {
 // ----- public keys -------------------------------------------------------
 
 func TestHTTP_PublicKeys(t *testing.T) {
+	t.Parallel()
 	const material = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 	pk := &fakePublicKeys{material: material}
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
@@ -987,6 +1027,7 @@ func TestHTTP_PublicKeys(t *testing.T) {
 }
 
 func TestHTTP_PublicKeysNoKey404(t *testing.T) {
+	t.Parallel()
 	pk := &fakePublicKeys{}
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}} // no key pair bound
 	svc := newPubKeyTestService(res, pk)
@@ -1005,6 +1046,7 @@ func TestHTTP_PublicKeysNoKey404(t *testing.T) {
 }
 
 func TestHTTP_PublicKeysUnknownIndex404(t *testing.T) {
+	t.Parallel()
 	pk := &fakePublicKeys{material: "ssh-ed25519 AAAA"}
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
 	svc := newPubKeyTestService(res, pk)
@@ -1026,6 +1068,7 @@ func TestHTTP_PublicKeysUnknownIndex404(t *testing.T) {
 // instance has no key and it boots keyless without retry, so a transient fault
 // must never collapse to 404 (silent-lockout regression guard).
 func TestHTTP_PublicKeysMaterialDeleted404(t *testing.T) {
+	t.Parallel()
 	pk := &fakePublicKeys{err: errors.New(awserrors.ErrorInvalidKeyPairNotFound)}
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
 	svc := newPubKeyTestService(res, pk)
@@ -1036,6 +1079,7 @@ func TestHTTP_PublicKeysMaterialDeleted404(t *testing.T) {
 }
 
 func TestHTTP_PublicKeysMaterialBackendError500(t *testing.T) {
+	t.Parallel()
 	pk := &fakePublicKeys{err: errors.New("rpc timeout")}
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
 	svc := newPubKeyTestService(res, pk)
@@ -1048,6 +1092,7 @@ func TestHTTP_PublicKeysMaterialBackendError500(t *testing.T) {
 // A backend failure resolving the instance (which carries the key name) must be
 // 500 on the listing path too, not a 404 that masks the fault as "no key".
 func TestHTTP_PublicKeysInstanceBackendError500(t *testing.T) {
+	t.Parallel()
 	pk := &fakePublicKeys{}
 	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
 	svc := newPubKeyTestService(res, pk)
@@ -1070,6 +1115,7 @@ func profileFixture() *iamdomain.InstanceProfile {
 }
 
 func TestHTTP_IAMInfo(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1082,6 +1128,7 @@ func TestHTTP_IAMInfo(t *testing.T) {
 }
 
 func TestHTTP_IAMInfoNoProfile404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}} // no profile ARN
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1092,6 +1139,7 @@ func TestHTTP_IAMInfoNoProfile404(t *testing.T) {
 
 // With an instance profile attached, the iam/ directory lists its children.
 func TestHTTP_IAMDir(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1106,6 +1154,7 @@ func TestHTTP_IAMDir(t *testing.T) {
 // With no instance profile, the iam/ directory itself 404s — matching real EC2, so
 // cloud-init never descends and never trips on a 404ing iam/info that fails its crawl.
 func TestHTTP_IAMDirNoProfile404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}} // no profile ARN
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1117,6 +1166,7 @@ func TestHTTP_IAMDirNoProfile404(t *testing.T) {
 }
 
 func TestHTTP_SecurityCredentialsList(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture()}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1127,6 +1177,7 @@ func TestHTTP_SecurityCredentialsList(t *testing.T) {
 }
 
 func TestHTTP_SecurityCredentialsListNoRoleEmpty(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1140,6 +1191,7 @@ func TestHTTP_SecurityCredentialsListNoRoleEmpty(t *testing.T) {
 // 200 — otherwise a transient hiccup is indistinguishable from "instance has no
 // role" and the SDK silently proceeds unauthenticated.
 func TestHTTP_SecurityCredentialsListBackendError500(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1153,6 +1205,7 @@ func TestHTTP_SecurityCredentialsListBackendError500(t *testing.T) {
 // creds list is an empty 200, and the role path 404s — matching AWS. Only a
 // genuine backend error (TestHTTP_*BackendError500) is a 500.
 func TestHTTP_IAMInfoDeletedProfile404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
 	svc, _ := newTestService(res, &fakeIAM{profileErr: awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile gone cannot be found.")}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1162,6 +1215,7 @@ func TestHTTP_IAMInfoDeletedProfile404(t *testing.T) {
 }
 
 func TestHTTP_SecurityCredentialsListDeletedProfileEmpty(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
 	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1172,6 +1226,7 @@ func TestHTTP_SecurityCredentialsListDeletedProfileEmpty(t *testing.T) {
 }
 
 func TestHTTP_RoleCredentialsDeletedProfile404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
 	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1181,6 +1236,7 @@ func TestHTTP_RoleCredentialsDeletedProfile404(t *testing.T) {
 }
 
 func TestHTTP_IAMInfoBackendError500(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New("iam unavailable")}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1190,6 +1246,7 @@ func TestHTTP_IAMInfoBackendError500(t *testing.T) {
 }
 
 func TestHTTP_RoleCredentialsBackendError500(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1199,6 +1256,7 @@ func TestHTTP_RoleCredentialsBackendError500(t *testing.T) {
 }
 
 func TestHTTP_RoleCredentials(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	assumer := &fakeAssumer{out: &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
@@ -1218,6 +1276,7 @@ func TestHTTP_RoleCredentials(t *testing.T) {
 }
 
 func TestHTTP_RoleCredentialsMintRefusedYieldsFailedBody(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	assumer := &fakeAssumer{err: errors.New(awserrors.ErrorAccessDenied)}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture(), roleARN: "arn:aws:iam::111122223333:role/app-role"}, assumer)
@@ -1231,6 +1290,7 @@ func TestHTTP_RoleCredentialsMintRefusedYieldsFailedBody(t *testing.T) {
 }
 
 func TestHTTP_RoleCredentialsWrongRole404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture(), roleARN: "arn:aws:iam::111122223333:role/app-role"}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1247,6 +1307,7 @@ func TestHTTP_RoleCredentialsWrongRole404(t *testing.T) {
 // with no ebsN entries, in both the trailing-slash and bare forms the
 // aws-ebs-csi-driver's IMDS client requests.
 func TestHTTP_BlockDeviceMappingListing(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{blockDeviceNames: []string{"/dev/vda"}}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1262,6 +1323,7 @@ func TestHTTP_BlockDeviceMappingListing(t *testing.T) {
 // An instance with additional hot-plugged EBS volumes lists one ebsN per
 // attachment, numbered from 1 in attachment order after the root device.
 func TestHTTP_BlockDeviceMappingListing_MultipleVolumes(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
 		blockDeviceNames: []string{"/dev/vda", "/dev/vdb", "/dev/vdc"},
 	}}
@@ -1277,6 +1339,7 @@ func TestHTTP_BlockDeviceMappingListing_MultipleVolumes(t *testing.T) {
 // ami and root both answer the boot device; each ebsN answers the matching
 // attached volume's device name.
 func TestHTTP_BlockDeviceMappingLeaves(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
 		blockDeviceNames: []string{"/dev/vda", "/dev/vdb", "/dev/vdc"},
 	}}
@@ -1300,6 +1363,7 @@ func TestHTTP_BlockDeviceMappingLeaves(t *testing.T) {
 // An unknown key under block-device-mapping/ 404s, including an ebsN index
 // past the end of the attached volumes and ebs0 (AWS numbers from 1).
 func TestHTTP_BlockDeviceMappingUnknownKey404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
 		blockDeviceNames: []string{"/dev/vda", "/dev/vdb"},
 	}}
@@ -1317,6 +1381,7 @@ func TestHTTP_BlockDeviceMappingUnknownKey404(t *testing.T) {
 // listing and any leaf — a resolution edge case, since every real instance has
 // at least a root volume.
 func TestHTTP_BlockDeviceMappingNoDevices404(t *testing.T) {
+	t.Parallel()
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
@@ -1332,6 +1397,7 @@ func TestHTTP_BlockDeviceMappingNoDevices404(t *testing.T) {
 // instance's block devices resolve, the same conditional-advertisement
 // pattern as public-keys/ and iam/.
 func TestHTTP_DirectoryListingBlockDeviceMapping(t *testing.T) {
+	t.Parallel()
 	withDevices := &fakeResolver{eni: testENI(), inst: &instanceFacts{blockDeviceNames: []string{"/dev/vda"}}}
 	svc, _ := newTestService(withDevices, &fakeIAM{}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())

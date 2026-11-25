@@ -32,6 +32,7 @@ func newCATestService(t *testing.T, pem string) (http.Handler, string) {
 // the CA is public material, so a guest fetches it with a plain GET and no
 // IMDSv2 token handshake. Every other metadata path 401s under those conditions.
 func TestCACert_ServedWithoutToken(t *testing.T) {
+	t.Parallel()
 	h, _ := newCATestService(t, testCAPEM)
 
 	rec := get(t, h, pathSpinifexCACert, "")
@@ -44,6 +45,7 @@ func TestCACert_ServedWithoutToken(t *testing.T) {
 // TestCACert_MissingFileIs404 pins the fail-soft behaviour: a deployment with no
 // CA on disk serves a 404, never a 500, and vpcd still starts.
 func TestCACert_MissingFileIs404(t *testing.T) {
+	t.Parallel()
 	h, _ := newCATestService(t, "")
 
 	rec := get(t, h, pathSpinifexCACert, "")
@@ -54,6 +56,7 @@ func TestCACert_MissingFileIs404(t *testing.T) {
 // TestCACert_RotationServedWithoutRestart covers the reason the cache keys on
 // modtime+size: rotating the CA on disk must reach guests without restarting vpcd.
 func TestCACert_RotationServedWithoutRestart(t *testing.T) {
+	t.Parallel()
 	h, path := newCATestService(t, testCAPEM)
 
 	require.Equal(t, http.StatusOK, get(t, h, pathSpinifexCACert, "").Code)
@@ -71,6 +74,7 @@ func TestCACert_RotationServedWithoutRestart(t *testing.T) {
 // TestCACert_ForwardedRejected confirms the token-free route did not opt out of
 // the SSRF guard: rejectForwarded wraps the whole mux, this path included.
 func TestCACert_ForwardedRejected(t *testing.T) {
+	t.Parallel()
 	h, _ := newCATestService(t, testCAPEM)
 
 	req := httptest.NewRequest(http.MethodGet, "http://"+MetaDataServerIP+pathSpinifexCACert, nil)
@@ -85,6 +89,7 @@ func TestCACert_ForwardedRejected(t *testing.T) {
 
 // TestCACert_RejectsNonGET keeps the route read-only.
 func TestCACert_RejectsNonGET(t *testing.T) {
+	t.Parallel()
 	h, _ := newCATestService(t, testCAPEM)
 
 	req := httptest.NewRequest(http.MethodPost, "http://"+MetaDataServerIP+pathSpinifexCACert, nil)
@@ -100,6 +105,7 @@ func TestCACert_RejectsNonGET(t *testing.T) {
 // is a Spinifex extension outside /latest, so the AWS-compatible surface a guest
 // crawls is byte-identical to EC2's and cloud-init never descends into it.
 func TestCACert_AbsentFromAWSMetadataListing(t *testing.T) {
+	t.Parallel()
 	h, _ := newCATestService(t, testCAPEM)
 	token := issueToken(t, h)
 

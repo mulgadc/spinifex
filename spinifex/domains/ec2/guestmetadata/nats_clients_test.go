@@ -39,6 +39,7 @@ func serveCounted[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 }
 
 func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	var gotReq stsdomain.AssumeRoleForInstanceRequest
@@ -70,6 +71,7 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 }
 
 func TestNATSProfileLookup_CachesProfile(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	calls := serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
@@ -92,6 +94,7 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 }
 
 func TestNATSProfileLookup_CachesRole(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	calls := serveCounted(t, nc, iamdomain.SubjectGetRole,
@@ -112,6 +115,7 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 }
 
 func TestNATSProfileLookup_PropagatesError(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
@@ -129,6 +133,7 @@ const pubKeySubject = "imds.ec2.get_public_key"
 // Deleting a key pair and re-importing new material under the same name must
 // take effect on the next lookup, not after a cache expires.
 func TestNATSPublicKeyLookup_ServesReimportedMaterial(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	var stored atomic.Value
@@ -164,6 +169,7 @@ func TestNATSPublicKeyLookup_ServesReimportedMaterial(t *testing.T) {
 // An error result is never cached: the next call must re-issue the RPC so a
 // transient miss isn't pinned as a permanent absence.
 func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	calls := serveCounted(t, nc, pubKeySubject,
@@ -184,6 +190,7 @@ func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
 }
 
 func TestTTLCache_ExpiresEntries(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0)
 	c := newTTLCache[string](time.Minute)
 	c.now = func() time.Time { return now }
@@ -201,6 +208,7 @@ func TestTTLCache_ExpiresEntries(t *testing.T) {
 // sweep drops expired entries so the map cannot grow without bound across
 // instance churn.
 func TestTTLCache_SweepDropsExpired(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0)
 	c := newTTLCache[bool](time.Minute)
 	c.now = func() time.Time { return now }

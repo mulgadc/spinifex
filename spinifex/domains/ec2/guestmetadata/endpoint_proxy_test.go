@@ -216,6 +216,7 @@ func expectReset(t *testing.T, addr string) {
 }
 
 func TestEndpointProxy_RefusedConnectionsAreReset(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		prepare func(h *proxyHarness)
@@ -269,6 +270,7 @@ func TestEndpointProxy_RefusedConnectionsAreReset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			h := newProxyHarness(t, noDial(t))
 			tt.prepare(h)
 			expectReset(t, h.addr)
@@ -278,6 +280,7 @@ func TestEndpointProxy_RefusedConnectionsAreReset(t *testing.T) {
 }
 
 func TestEndpointProxy_ChannelFailureResetsWithoutFallback(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	h := newProxyHarness(t, func(*proxyHarness) EndpointDialFunc {
 		return func(_ context.Context, addr netip.Addr) (net.Conn, error) {
@@ -293,6 +296,7 @@ func TestEndpointProxy_ChannelFailureResetsWithoutFallback(t *testing.T) {
 }
 
 func TestEndpointProxy_AdmittedConnectionCarriesTheHeaderAndSplices(t *testing.T) {
+	t.Parallel()
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
 	h.p.Publish(testView())
@@ -329,6 +333,7 @@ func TestEndpointProxy_AdmittedConnectionCarriesTheHeaderAndSplices(t *testing.T
 }
 
 func TestEndpointProxy_SecurityGroupChangeAppliesToTheNextConnection(t *testing.T) {
+	t.Parallel()
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
 	h.p.Publish(testView())
@@ -357,6 +362,7 @@ func TestEndpointProxy_SecurityGroupChangeAppliesToTheNextConnection(t *testing.
 }
 
 func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		view  func() EndpointView
@@ -397,6 +403,7 @@ func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			up := startUpstream(t)
 			h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
 			h.p.Publish(testView())
@@ -424,6 +431,7 @@ func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) 
 // A connection counts from accept until its handler has closed both sockets,
 // so a dial still in progress when its endpoint is withdrawn holds a rollback.
 func TestEndpointProxy_PendingDialCountsUntilItFinishes(t *testing.T) {
+	t.Parallel()
 	up := startUpstream(t)
 	release := make(chan struct{})
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc {
@@ -452,6 +460,7 @@ func TestEndpointProxy_PendingDialCountsUntilItFinishes(t *testing.T) {
 }
 
 func TestEndpointProxy_ShutdownResetsSessionsAndRefusesNewOnes(t *testing.T) {
+	t.Parallel()
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
 	h.p.Publish(testView())
@@ -472,6 +481,7 @@ func TestEndpointProxy_ShutdownResetsSessionsAndRefusesNewOnes(t *testing.T) {
 }
 
 func TestTapResponder_StoppingATapResetsItsEndpointSessions(t *testing.T) {
+	t.Parallel()
 	const eniID, endpoint = "eni-0a1b2c3d", "ime-0a1b2c3d"
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
@@ -503,6 +513,7 @@ func TestTapResponder_StoppingATapResetsItsEndpointSessions(t *testing.T) {
 // The binder's socket options need CAP_NET_ADMIN; a refusal here is what a
 // vpcd without the capability would hit on every tap.
 func TestEndpointProxyBinder_AcceptsWithTheDialledLocalAddress(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() != 0 {
 		t.Skip("IP_TRANSPARENT needs CAP_NET_ADMIN; run as root")
 	}
@@ -526,6 +537,7 @@ func TestEndpointProxyBinder_AcceptsWithTheDialledLocalAddress(t *testing.T) {
 // A refusal by policy is told apart from an admission a failed read left
 // undecided, which is what an operator needs to see at the default level.
 func TestEndpointProxy_AdmitMarksOnlyPolicyRefusals(t *testing.T) {
+	t.Parallel()
 	h := newProxyHarness(t, noDial(t))
 	h.p.Publish(testView())
 	h.p.connAddrs = func(net.Conn) (netip.AddrPort, netip.AddrPort, error) {
@@ -555,6 +567,7 @@ func TestEndpointProxy_AdmitMarksOnlyPolicyRefusals(t *testing.T) {
 
 // One warning passes per interval, and the next reports how many were held back.
 func TestWarnLimiter_OnePerInterval(t *testing.T) {
+	t.Parallel()
 	var w warnLimiter
 	at := time.Unix(1_000_000, 0)
 	n, ok := w.allow(at)
@@ -582,6 +595,7 @@ const readOnlyPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","
 // A session carries its endpoint's custom policy and the generation it was
 // read at.
 func TestEndpointProxy_SessionCarriesItsCustomPolicy(t *testing.T) {
+	t.Parallel()
 	up := startUpstream(t)
 	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc { return up.dial(&h.dialed) })
 	v := testView()

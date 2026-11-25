@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
@@ -698,4 +699,37 @@ func TestEKSRequest_WebhookTokenReviewMalformedBody(t *testing.T) {
 		requireIndistinguishableDenial(t, rec, err)
 	}
 	f.requireNothingVerified(t)
+}
+
+// The daemon must act on the incarnation the policy check evaluated, so the
+// gateway forwards the stored ARN it read, or None for an absent group.
+func TestEKSRequest_NodegroupForwardsTheAuthorizedIncarnation(t *testing.T) {
+	gw, stored := storedNodegroupGateway(t, gwtest.Statement("Allow", "eks:*", "*"))
+	got := make(chan string, 4)
+	for _, subject := range []string{"eks.DescribeNodegroup", "eks.TagResource", "eks.CreateNodegroup"} {
+		sub, err := gw.nc.Subscribe(subject, func(m *nats.Msg) {
+			got <- m.Header.Get(incarnation.Header)
+			_ = m.Respond([]byte(`{}`))
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+	forwarded := func(method, path, body string) string {
+		t.Helper()
+		require.NoError(t, dispatchEKS(t, gw, method, path, body))
+		select {
+		case v := <-got:
+			return v
+		default:
+			t.Fatalf("%s %s reached no daemon subject", method, path)
+			return ""
+		}
+	}
+
+	assert.Equal(t, stored, forwarded(http.MethodGet, "/clusters/prod/node-groups/workers", ""))
+	assert.Equal(t, incarnation.None, forwarded(http.MethodGet, "/clusters/prod/node-groups/absent", ""))
+	stale := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers", uuid.NewV4().String())
+	assert.Equal(t, stored, forwarded(http.MethodPost, "/tags/"+url.PathEscape(stale), `{"tags":{"k":"v"}}`))
+	// A create names no existing incarnation, so nothing binds it.
+	assert.Empty(t, forwarded(http.MethodPost, "/clusters/prod/node-groups", `{"nodegroupName":"batch"}`))
 }

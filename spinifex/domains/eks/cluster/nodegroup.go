@@ -26,6 +26,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -958,6 +959,9 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 		}
 		return nil, err
 	}
+	if !incarnation.Permits(ctx, rec.Arn) {
+		return nil, resourceNotFound()
+	}
 	return &eks.DescribeNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
 }
 
@@ -1029,6 +1033,9 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 			}
 			return nil, err
 		}
+		if !incarnation.Permits(ctx, rec.Arn) {
+			return nil, resourceNotFound()
+		}
 		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusDeleteFailed {
 			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
@@ -1079,7 +1086,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 			} else if !ok {
 				continue
 			}
-			return s.launchWorkersCAS(ctx, acctKV, accountID, cluster, ng, meta, desired)
+			return s.launchWorkersCAS(ctx, acctKV, accountID, cluster, ng, rec.Arn, meta, desired)
 
 		default:
 			if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
@@ -1097,7 +1104,8 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 // worker at a time and CAS-appending its ID only while len(InstanceIDs) <
 // desired. A worker launched into an already-full record (a concurrent reconcile
 // got there first) is terminated, so the count never overshoots desired.
-func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
+// ngARN pins the incarnation, so no worker joins a same-name replacement.
+func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng, ngARN string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
 	token, err := s.decryptNodeToken(ctx, acctKV, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt node token: %w", err)
@@ -1105,6 +1113,9 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 	recForAMI, _, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 	if err != nil {
 		return nil, err
+	}
+	if recForAMI.Arn != ngARN {
+		return nil, resourceNotFound()
 	}
 	amiID, err := resolveWorkerAMI(ctx, s.deps.Image, accountID, recForAMI)
 	if err != nil {
@@ -1126,6 +1137,9 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 		if err != nil {
 			return nil, err
 		}
+		if rec.Arn != ngARN {
+			return nil, resourceNotFound()
+		}
 		target := int(rec.ScalingDesired)
 		if len(rec.InstanceIDs) >= target {
 			return rec, nil
@@ -1140,7 +1154,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 			}
 			return nil, fmt.Errorf("launch workers: %w", err)
 		}
-		if _, err := s.recordLaunchedWorker(ctx, acctKV, accountID, cluster, ng, id); err != nil {
+		if _, err := s.recordLaunchedWorker(ctx, acctKV, accountID, cluster, ng, ngARN, id); err != nil {
 			return nil, err
 		}
 	}
@@ -1150,11 +1164,18 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 // recordLaunchedWorker CAS-appends id while the record is below its live
 // ScalingDesired, or terminates the worker when a concurrent reconcile already
 // filled the gap (or lowered the target). Returns true when id was recorded.
-func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, ng, id string) (bool, error) {
+// A record of another incarnation than ngARN also terminates the worker.
+func (s *EKSServiceImpl) recordLaunchedWorker(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, ng, ngARN, id string) (bool, error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
 		if err != nil {
 			return false, err
+		}
+		if rec.Arn != ngARN {
+			if terr := s.deps.Worker.TerminateWorkerInstances(ctx, []string{id}, accountID); terr != nil {
+				return false, fmt.Errorf("terminate worker of a replaced nodegroup: %w", terr)
+			}
+			return false, resourceNotFound()
 		}
 		if slices.Contains(rec.InstanceIDs, id) {
 			return true, nil
@@ -1276,6 +1297,9 @@ func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream
 				return nil, false, resourceNotFound()
 			}
 			return nil, false, err
+		}
+		if !incarnation.Permits(ctx, rec.Arn) {
+			return nil, false, resourceNotFound()
 		}
 		if rec.Status == eks.NodegroupStatusDeleting {
 			return rec, false, nil

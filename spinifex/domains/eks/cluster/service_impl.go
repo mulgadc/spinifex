@@ -32,6 +32,7 @@ import (
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -2147,7 +2148,7 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 			}
 			return nil, err
 		}
-		if !namesIncarnation(arn, rec) {
+		if !namesIncarnation(arn, rec) || !incarnation.Permits(ctx, rec.Arn) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(rec.Tags)}, nil
@@ -2169,7 +2170,7 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
 		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
 	}, func(rec *NodegroupRecord) (bool, error) {
-		if !namesIncarnation(arn, rec) {
+		if !namesIncarnation(arn, rec) || !incarnation.Permits(ctx, rec.Arn) {
 			return false, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		tags, changed := mutate(rec.Tags)

@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
@@ -120,7 +121,7 @@ func (s *NATSEKSService) CreateNodegroup(ctx context.Context, input *eks.CreateN
 }
 
 func (s *NATSEKSService) DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
-	return natsmsg.NATSRequest[eks.DescribeNodegroupOutput](ctx, s.natsConn, "eks.DescribeNodegroup", input, requestTimeout("eks.DescribeNodegroup"), accountID)
+	return natsmsg.NATSRequest[eks.DescribeNodegroupOutput](ctx, s.natsConn, "eks.DescribeNodegroup", input, requestTimeout("eks.DescribeNodegroup"), accountID, incarnationHeaders(ctx)...)
 }
 
 func (s *NATSEKSService) ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
@@ -128,11 +129,11 @@ func (s *NATSEKSService) ListNodegroups(ctx context.Context, input *eks.ListNode
 }
 
 func (s *NATSEKSService) UpdateNodegroupConfig(ctx context.Context, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
-	return natsmsg.NATSRequest[eks.UpdateNodegroupConfigOutput](ctx, s.natsConn, "eks.UpdateNodegroupConfig", input, requestTimeout("eks.UpdateNodegroupConfig"), accountID)
+	return natsmsg.NATSRequest[eks.UpdateNodegroupConfigOutput](ctx, s.natsConn, "eks.UpdateNodegroupConfig", input, requestTimeout("eks.UpdateNodegroupConfig"), accountID, incarnationHeaders(ctx)...)
 }
 
 func (s *NATSEKSService) DeleteNodegroup(ctx context.Context, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
-	return natsmsg.NATSRequest[eks.DeleteNodegroupOutput](ctx, s.natsConn, "eks.DeleteNodegroup", input, requestTimeout("eks.DeleteNodegroup"), accountID)
+	return natsmsg.NATSRequest[eks.DeleteNodegroupOutput](ctx, s.natsConn, "eks.DeleteNodegroup", input, requestTimeout("eks.DeleteNodegroup"), accountID, incarnationHeaders(ctx)...)
 }
 
 // --- AccessEntry + AccessPolicy ---
@@ -222,13 +223,23 @@ func (s *NATSEKSService) RestoreSnapshot(ctx context.Context, input *RestoreSnap
 // --- Tags ---
 
 func (s *NATSEKSService) TagResource(ctx context.Context, input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error) {
-	return natsmsg.NATSRequest[eks.TagResourceOutput](ctx, s.natsConn, "eks.TagResource", input, requestTimeout("eks.TagResource"), accountID)
+	return natsmsg.NATSRequest[eks.TagResourceOutput](ctx, s.natsConn, "eks.TagResource", input, requestTimeout("eks.TagResource"), accountID, incarnationHeaders(ctx)...)
 }
 
 func (s *NATSEKSService) UntagResource(ctx context.Context, input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error) {
-	return natsmsg.NATSRequest[eks.UntagResourceOutput](ctx, s.natsConn, "eks.UntagResource", input, requestTimeout("eks.UntagResource"), accountID)
+	return natsmsg.NATSRequest[eks.UntagResourceOutput](ctx, s.natsConn, "eks.UntagResource", input, requestTimeout("eks.UntagResource"), accountID, incarnationHeaders(ctx)...)
 }
 
 func (s *NATSEKSService) ListTagsForResource(ctx context.Context, input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error) {
-	return natsmsg.NATSRequest[eks.ListTagsForResourceOutput](ctx, s.natsConn, "eks.ListTagsForResource", input, requestTimeout("eks.ListTagsForResource"), accountID)
+	return natsmsg.NATSRequest[eks.ListTagsForResourceOutput](ctx, s.natsConn, "eks.ListTagsForResource", input, requestTimeout("eks.ListTagsForResource"), accountID, incarnationHeaders(ctx)...)
+}
+
+// incarnationHeaders forwards the nodegroup incarnation the gateway's policy
+// check authorized, so the daemon acts on no same-name replacement.
+func incarnationHeaders(ctx context.Context) []natsmsg.NATSHeader {
+	v, ok := incarnation.FromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return []natsmsg.NATSHeader{{Key: incarnation.Header, Value: v}}
 }

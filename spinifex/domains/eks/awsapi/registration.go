@@ -10,6 +10,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
@@ -146,8 +147,8 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 
 	// After the body read: CreateCluster and the other create actions name their
 	// resource there rather than in the path.
-	resources, err := ResourceARNs(action, inv.Region, accountID, params, body,
-		storedNodegroupARNs(r.Context(), d.NATS, accountID))
+	bound := &boundNodegroup{lookup: storedNodegroupARNs(r.Context(), d.NATS, accountID)}
+	resources, err := ResourceARNs(action, inv.Region, accountID, params, body, bound.resolve)
 	if err != nil {
 		return err
 	}
@@ -169,7 +170,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		callerARN = ""
 	}
 
-	output, err := handler(r.Context(), d.NATS, accountID, callerARN, params, body)
+	output, err := handler(bound.context(r.Context()), d.NATS, accountID, callerARN, params, body)
 	if err != nil {
 		return err
 	}
@@ -228,4 +229,28 @@ func storedNodegroupARNs(ctx context.Context, natsConn *nats.Conn, accountID str
 		}
 		return rec.Arn, nil
 	}
+}
+
+// boundNodegroup remembers the record the policy check evaluated, so the
+// handler refuses a same-name replacement or a group created after the check.
+type boundNodegroup struct {
+	lookup NodegroupARNLookup
+	arn    string
+	looked bool
+}
+
+func (b *boundNodegroup) resolve(cluster, name string) (string, error) {
+	stored, err := b.lookup(cluster, name)
+	if err != nil {
+		return "", err
+	}
+	b.arn, b.looked = stored, true
+	return stored, nil
+}
+
+func (b *boundNodegroup) context(ctx context.Context) context.Context {
+	if !b.looked {
+		return ctx
+	}
+	return incarnation.With(ctx, b.arn)
 }

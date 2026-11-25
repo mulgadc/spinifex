@@ -1,6 +1,7 @@
 package elbv2
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -481,4 +482,91 @@ func TestTargetGroupsForLB(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tgs, 1)
 	assert.Equal(t, "tg001", tgs[0].TargetGroupID)
+}
+
+// A metadata edit through the CAS path must keep every retained field of a
+// stored record, and must not add a realization key to a record without one.
+func TestUpdateLoadBalancerPreservesRetainedRecord(t *testing.T) {
+	t.Parallel()
+
+	const legacyALB = `{"load_balancer_arn":"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/ret-alb/rtalb1",` +
+		`"load_balancer_id":"rtalb1","dns_name":"ret-alb-rtalb1.us-east-1.elb.spinifex.local","name":"ret-alb",` +
+		`"scheme":"internal","type":"application","state":"active","vpc_id":"vpc-ret1","security_groups":["sg-ret1"],` +
+		`"subnets":["subnet-ret1"],"availability_zones":[],"enis":["eni-alb1","eni-alb2"],"instance_id":"i-alb1",` +
+		`"vpc_ip":"10.10.1.20","last_heartbeat":"2026-01-02T03:04:05Z","node_id":"node-1","ip_address_type":"ipv4",` +
+		`"account_id":"123456789012","created_at":"2026-01-02T03:04:05Z"}`
+	const legacyNLB = `{"load_balancer_arn":"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/ret-nlb/rtnlb1",` +
+		`"load_balancer_id":"rtnlb1","dns_name":"ret-nlb-rtnlb1.us-east-1.elb.spinifex.local","name":"ret-nlb",` +
+		`"scheme":"internal","type":"network","state":"active","vpc_id":"vpc-ret2","security_groups":["sg-nlbmgd"],` +
+		`"nlb_managed_sg_id":"sg-nlbmgd","subnets":["subnet-ret2"],"availability_zones":[],"enis":["eni-nlb1"],` +
+		`"cross_account_enis":[{"eni_id":"eni-xacct1","eni_mac":"02:00:00:00:00:01","eni_ip":"10.20.1.5","subnet_id":"subnet-cust1","account_id":"210987654321"}],` +
+		`"instance_id":"i-nlb1","vpc_ip":"10.10.2.20","last_heartbeat":"2026-01-02T03:04:05Z","node_id":"node-2",` +
+		`"ip_address_type":"ipv4","account_id":"123456789012","created_at":"2026-01-02T03:04:05Z"}`
+	const transitionalNLB = `{"load_balancer_arn":"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/ret-ovn/rtovn1",` +
+		`"load_balancer_id":"rtovn1","dns_name":"ret-ovn-rtovn1.us-east-1.elb.spinifex.local","name":"ret-ovn",` +
+		`"scheme":"internal","type":"network","state":"active","vpc_id":"vpc-ret3","security_groups":["sg-ret3"],` +
+		`"subnets":["subnet-ret3"],"availability_zones":[],"enis":["eni-ovn1"],"last_heartbeat":"2026-01-02T03:04:05Z",` +
+		`"node_id":"","ip_address_type":"ipv4","account_id":"123456789012","created_at":"2026-01-02T03:04:05Z",` +
+		`"realization":"ovn"}`
+
+	retainedKeys := []string{
+		"load_balancer_arn", "load_balancer_id", "dns_name", "name", "scheme", "type",
+		"vpc_id", "security_groups", "nlb_managed_sg_id", "subnets", "enis", "cross_account_enis",
+		"instance_id", "vpc_ip", "node_id", "account_id", "created_at",
+	}
+
+	cases := []struct {
+		name            string
+		id              string
+		raw             string
+		wantType        string
+		wantRealization string
+	}{
+		{name: "legacy ALB", id: "rtalb1", raw: legacyALB, wantType: LoadBalancerTypeApplication},
+		{name: "legacy NLB", id: "rtnlb1", raw: legacyNLB, wantType: LoadBalancerTypeNetwork},
+		{name: "transitional OVN NLB", id: "rtovn1", raw: transitionalNLB, wantType: LoadBalancerTypeNetwork, wantRealization: "ovn"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := setupTestStore(t)
+			ctx := t.Context()
+
+			_, err := store.kv.Put(ctx, KeyPrefixLB+tc.id, []byte(tc.raw))
+			require.NoError(t, err)
+			var before map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.raw), &before))
+
+			got, err := store.GetLoadBalancer(ctx, tc.id)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, tc.id, got.LoadBalancerID)
+			assert.Equal(t, tc.wantType, got.Type)
+
+			_, err = store.UpdateLoadBalancer(ctx, tc.id, func(rec *LoadBalancerRecord) (bool, error) {
+				if rec.Tags == nil {
+					rec.Tags = map[string]string{}
+				}
+				rec.Tags["team"] = "edge"
+				return true, nil
+			})
+			require.NoError(t, err)
+
+			entry, err := store.kv.Get(ctx, KeyPrefixLB+tc.id)
+			require.NoError(t, err)
+			var after map[string]any
+			require.NoError(t, json.Unmarshal(entry.Value(), &after))
+
+			assert.Equal(t, map[string]any{"team": "edge"}, after["tags"])
+			for _, key := range retainedKeys {
+				assert.Equal(t, before[key], after[key], "retained key %q changed", key)
+			}
+			if tc.wantRealization == "" {
+				assert.NotContains(t, after, "realization")
+			} else {
+				assert.Equal(t, tc.wantRealization, after["realization"], "realization dropped by CAS rewrite")
+			}
+		})
+	}
 }

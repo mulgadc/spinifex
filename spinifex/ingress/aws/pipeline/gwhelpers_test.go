@@ -2005,7 +2005,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 		r.Use(env.Throttler.Middleware(gw.throttleKeyFuncs(), gw.writeThrottleError))
 	}
 	r.HandleFunc("/*", gw.Request)
-	return ec2PipelineApp{Handler: r, Daemon: daemon}
+	return ec2PipelineApp{Handler: r, Daemon: daemon, NC: nc}
 }
 
 // ec2PipelineEnv is what a case may change before the app is built.
@@ -2070,11 +2070,14 @@ func tagSpecBody(action, resourceType string) string {
 type ec2PipelineApp struct {
 	Handler http.Handler
 	Daemon  *ec2Daemon
+	// NC is the connection the gateway and the stub daemon share.
+	NC *nats.Conn
 }
 
 func newEC2Daemon(t *testing.T, nc *nats.Conn) *ec2Daemon {
 	t.Helper()
-	d := &ec2Daemon{calls: map[string]int{}, bodies: map[string][]byte{}, replies: map[string]string{}}
+	d := &ec2Daemon{calls: map[string]int{}, bodies: map[string][]byte{}, replies: map[string]string{},
+		handlers: map[string]func(*nats.Msg) []byte{}}
 	sub, err := nc.Subscribe("ec2.>", func(m *nats.Msg) {
 		d.mu.Lock()
 		d.calls[m.Subject]++
@@ -2090,9 +2093,13 @@ func newEC2Daemon(t *testing.T, nc *nats.Conn) *ec2Daemon {
 		if r, ok := d.replies[m.Subject]; ok {
 			reply = r
 		}
+		handler := d.handlers[m.Subject]
 		d.mu.Unlock()
 		out := nats.NewMsg(m.Reply)
 		out.Data = []byte(reply)
+		if handler != nil {
+			out.Data = handler(m)
+		}
 		out.Header.Set(natsmsg.NodeIDHeader, "node-1")
 		_ = m.RespondMsg(out)
 	})
@@ -2132,6 +2139,8 @@ type ec2Daemon struct {
 	eigw   int
 	// replies overrides the canned answer for a subject.
 	replies map[string]string
+	// handlers compute the answer for a subject, ahead of replies.
+	handlers map[string]func(*nats.Msg) []byte
 }
 
 func (d *ec2Daemon) body(subject string) []byte {
@@ -2144,6 +2153,14 @@ func (d *ec2Daemon) count(subject string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.calls[subject]
+}
+
+// handle answers subject with what fn returns, so a case can put a real node
+// service behind the gateway.
+func (d *ec2Daemon) handle(subject string, fn func(*nats.Msg) []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.handlers[subject] = fn
 }
 
 func (d *ec2Daemon) reply(subject, body string) {

@@ -65,6 +65,12 @@ func volumeHeldByInstance(reservations []*ec2.Reservation, volumeID string) stri
 // nodeIDs answered by identity, so a duplicate reply cannot stand in for a
 // silent node.
 func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *nats.Conn, nodeIDs []string, accountID string) (ec2.DeleteVolumeOutput, error) {
+	return deleteVolume(ctx, input, natsConn, nodeIDs, accountID)
+}
+
+// deleteVolume is DeleteVolume with describe options, so a test can shorten
+// the instance fan-out deadline it waits out for a silent node.
+func deleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *nats.Conn, nodeIDs []string, accountID string, opts ...ec2instanceapi.DescribeOption) (ec2.DeleteVolumeOutput, error) {
 	var output ec2.DeleteVolumeOutput
 
 	err := ValidateDeleteVolumeInput(input)
@@ -77,7 +83,7 @@ func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *n
 	// Every configured node and both instance buckets must answer, judged by
 	// responder identity, or the node owning the attachment could be the one
 	// missing. Refuse rather than delete against a partial view of the cluster.
-	listing, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, natsConn, nodeIDs, accountID)
+	listing, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, natsConn, nodeIDs, accountID, opts...)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteVolume: refusing delete without a complete instance view", "volumeId", volumeID, "err", err)
 		// An unanswered node is retryable once the cluster is whole again, so

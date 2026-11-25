@@ -30,6 +30,7 @@ const (
 // a predastore 500, as the blob layer gave when it was down.
 type amiGetFailingStore struct {
 	*objectstore.MemoryObjectStore
+
 	failKey string
 }
 

@@ -23,6 +23,7 @@ const lookupTestAMI = "ami-0123456789abcdef0"
 // client returns when predastore answers 500, as it did with its blob layer down.
 type amiReadFailingStore struct {
 	*objectstore.MemoryObjectStore
+
 	failKey string
 }
 
@@ -53,6 +54,7 @@ func amiLookupFixture(t *testing.T, doc amiDoc, failRead bool) *ec2image.ImageSe
 	key, err := ebsmetadata.AMIKey(lookupTestAMI)
 	require.NoError(t, err)
 	switch doc {
+	case amiAbsent:
 	case amiRegistered:
 		require.NoError(t, ebsmetadata.NewStore(memory, testRootBucket).PutAMI(ctx, ebsmetadata.AMI{
 			ImageID:         lookupTestAMI,

@@ -21,7 +21,7 @@ import (
 func shrinkPasswordDataTimeout(t *testing.T) {
 	t.Helper()
 	prev := getPasswordDataTimeout
-	getPasswordDataTimeout = 50 * time.Millisecond
+	getPasswordDataTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { getPasswordDataTimeout = prev })
 }
 

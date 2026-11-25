@@ -267,6 +267,7 @@ func TestAggregateResults_PartialSuccessMeetsMinCount(t *testing.T) {
 }
 
 func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	results := []nodeLaunchResult{
@@ -365,6 +366,7 @@ func TestAggregateResults_RealFailureOutranksNoResponders(t *testing.T) {
 // Short launch with no node errors (nodes returned fewer instances than assigned
 // without erroring) keeps the generic capacity code.
 func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	results := []nodeLaunchResult{
 		{
@@ -479,6 +481,7 @@ func TestAggregateResults_PropagatesClientError(t *testing.T) {
 // MinCount when one node cannot read the AMI. A client error from another node
 // still wins; a read failure is never reported as capacity or as not-found alone.
 func TestAggregateResults_AMIReadFailurePrecedence(t *testing.T) {
+	t.Parallel()
 	readFailed := func(node string) nodeLaunchResult {
 		return nodeLaunchResult{NodeID: node, Err: fmt.Errorf("launch on %s: %w", node, errors.New(awserrors.ErrorServerInternal))}
 	}
@@ -506,6 +509,7 @@ func TestAggregateResults_AMIReadFailurePrecedence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc := startTestNATSServer(t)
 			terminated := make(chan string, 1)
 			sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {

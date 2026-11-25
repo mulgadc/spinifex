@@ -24,7 +24,7 @@ const synthAccount = "123456789012"
 
 // synthSilentNodeWindow bounds a fan-out that must time out because an expected
 // node never identifies itself; the answering replies are local and immediate.
-const synthSilentNodeWindow = 500 * time.Millisecond
+const synthSilentNodeWindow = 200 * time.Millisecond
 
 // fakeRecords is a cache stand-in: a fixed record set plus a readiness flag,
 // so a test can assert the cold-cache case as well as the warm one.

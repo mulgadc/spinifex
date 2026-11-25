@@ -40,7 +40,7 @@ const strictAccount = "123456789012"
 
 // strictFanoutWindow is the collect window: strict mode always waits it out,
 // so it is short, yet still far above a loopback reply's round trip.
-const strictFanoutWindow = 500 * time.Millisecond
+const strictFanoutWindow = 200 * time.Millisecond
 
 func strictList(nc *nats.Conn, nodes ...string) (*ec2.DescribeInstancesOutput, error) {
 	return strictListWithin(nc, strictFanoutWindow, nodes...)
@@ -147,7 +147,7 @@ func TestDescribeAccountInstancesStrict_LateFrameFromUnconfiguredNodeFails(t *te
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
 	late := mustMarshalDescribeOutput(t, strictReservations(strictInstance("i-on-stray", "running")))
 	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		time.AfterFunc(250*time.Millisecond, func() {
+		time.AfterFunc(80*time.Millisecond, func() {
 			reply := nats.NewMsg(msg.Reply)
 			reply.Data = late
 			reply.Header.Set(natsmsg.NodeIDHeader, "node-stray")
@@ -157,7 +157,7 @@ func TestDescribeAccountInstancesStrict_LateFrameFromUnconfiguredNodeFails(t *te
 	require.NoError(t, err)
 	nc.Flush()
 
-	out, err := strictListWithin(nc, time.Second, "node-1")
+	out, err := strictListWithin(nc, 400*time.Millisecond, "node-1")
 
 	assertIncompleteListing(t, out, err)
 }

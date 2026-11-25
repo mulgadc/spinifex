@@ -250,6 +250,7 @@ func TestModifyInstanceAttribute_ValidationFailure(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_DisableApiTerminationRouting(t *testing.T) {
+	t.Parallel()
 	const id = "i-0123456789abcdef0"
 	_, nc := startTestNATSServer(t)
 

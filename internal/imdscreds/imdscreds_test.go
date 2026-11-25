@@ -10,7 +10,18 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 )
+
+// noBackoff keeps the SDK's standard retry attempts but drops the delay
+// between them, so a test that drives retries to exhaustion does not wait.
+func noBackoff(o *imds.Options) {
+	o.DisableDefaultMaxBackoff = true
+	o.Retryer = retry.NewStandard(func(so *retry.StandardOptions) {
+		so.Backoff = retry.BackoffDelayerFunc(func(int, error) (time.Duration, error) { return 0, nil })
+	})
+}
 
 // imdsStub serves the IMDSv2 token + role + credentials endpoints under the
 // real /latest prefix the SDK IMDS client always requests.
@@ -44,6 +55,7 @@ func imdsStub(t *testing.T, creds map[string]string, enforceV2 bool) *httptest.S
 }
 
 func TestFetch_OK(t *testing.T) {
+	t.Parallel()
 	// Kept under an hour: ec2rolecreds caps Expires to now+1h, so anything
 	// further out would not round-trip exactly.
 	exp := time.Now().Add(30 * time.Minute).UTC().Round(time.Second)
@@ -68,6 +80,7 @@ func TestFetch_OK(t *testing.T) {
 }
 
 func TestFetch_BaseWithoutLatestSuffix(t *testing.T) {
+	t.Parallel()
 	// base URLs without a /latest suffix must keep working too — the SDK
 	// endpoint is always the scheme+host root regardless.
 	exp := time.Now().Add(30 * time.Minute).UTC().Round(time.Second)
@@ -88,6 +101,7 @@ func TestFetch_BaseWithoutLatestSuffix(t *testing.T) {
 }
 
 func TestFetch_MissingKeys(t *testing.T) {
+	t.Parallel()
 	srv := imdsStub(t, map[string]string{"Code": "Success"}, false)
 	if _, err := Fetch(srv.Client(), srv.URL+"/latest"); err == nil {
 		t.Fatal("expected error when access/secret key absent")
@@ -95,6 +109,7 @@ func TestFetch_MissingKeys(t *testing.T) {
 }
 
 func TestFetch_CodeNotSuccessErrors(t *testing.T) {
+	t.Parallel()
 	// A non-Success Code (e.g. the role is mid-rotation) must fail the fetch
 	// rather than being silently ignored.
 	srv := imdsStub(t, map[string]string{
@@ -108,6 +123,7 @@ func TestFetch_CodeNotSuccessErrors(t *testing.T) {
 }
 
 func TestFetch_BadExpirationErrors(t *testing.T) {
+	t.Parallel()
 	// An unparseable Expiration must be a hard error, not silently treated as
 	// "never expires" — that was the defect in the hand-rolled implementation.
 	srv := imdsStub(t, map[string]string{
@@ -125,6 +141,7 @@ func TestFetch_BadExpirationErrors(t *testing.T) {
 // aws.CredentialsCache selects it by asserting on the dynamic type, so this
 // assertion is the property that keeps a failed refresh an error.
 func TestNewProvider_WithholdsExtendOnFailure(t *testing.T) {
+	t.Parallel()
 	p := NewProvider(nil, "http://169.254.169.254/latest")
 
 	if _, ok := p.(aws.HandleFailRefreshCredentialsCacheStrategy); ok {
@@ -139,6 +156,7 @@ func TestNewProvider_WithholdsExtendOnFailure(t *testing.T) {
 // against an expired credential must surface as an error rather than hand back
 // the dead key with a pushed-out expiry.
 func TestNewProvider_CachedFailedRefreshErrors(t *testing.T) {
+	t.Parallel()
 	var hits atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +182,7 @@ func TestNewProvider_CachedFailedRefreshErrors(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	cache := aws.NewCredentialsCache(NewProvider(srv.Client(), srv.URL+"/latest"))
+	cache := aws.NewCredentialsCache(NewProvider(srv.Client(), srv.URL+"/latest", noBackoff))
 	first, err := cache.Retrieve(context.Background())
 	if err != nil {
 		t.Fatalf("first Retrieve: %v", err)

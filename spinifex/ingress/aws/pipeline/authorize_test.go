@@ -41,7 +41,6 @@ func authorize(p pipeline.PolicyEvaluator, caller credential.Principal, authenti
 }
 
 func TestAuthorize_FailsClosed(t *testing.T) {
-	t.Parallel()
 	for name, tc := range map[string]struct {
 		p             pipeline.PolicyEvaluator
 		caller        credential.Principal

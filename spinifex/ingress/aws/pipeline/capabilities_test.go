@@ -71,7 +71,6 @@ func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
 }
 
 func TestCheckAccountActive_MapsAdmissionVerdicts(t *testing.T) {
-	t.Parallel()
 	src := authSource{}
 	cases := []struct {
 		name string

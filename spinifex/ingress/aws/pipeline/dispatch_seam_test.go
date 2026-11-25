@@ -253,7 +253,6 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 // --- c. Authorize denies or allows ------------------------------------------
 
 func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
-	t.Parallel()
 	const allowedResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/widget1"
 	const otherResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/other"
 
@@ -314,7 +313,6 @@ func TestDispatchSeam_ActorReturnsVerifiedCallerIgnoringBody(t *testing.T) {
 // --- e. dispatcher error renders in the registration's declared envelope ---
 
 func TestDispatchSeam_DispatcherErrorRendersInDeclaredEnvelope(t *testing.T) {
-	t.Parallel()
 	t.Run("JSON envelope service", func(t *testing.T) {
 		capt := &dispatchCapture{dispatchErr: errors.New(awserrors.ErrorInternalError)}
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
@@ -411,7 +409,6 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 // --- h. ValidateServices overlap guard --------------------------------------
 
 func TestValidateServices(t *testing.T) {
-	t.Parallel()
 	t.Run("nil registry passes", func(t *testing.T) {
 		gw := &Config{}
 		assert.NoError(t, gw.ValidateServices())

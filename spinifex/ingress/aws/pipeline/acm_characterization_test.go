@@ -29,7 +29,6 @@ import (
 // TestACMActionFromTarget_FormsAndTelemetryAgree pins how the ACM registration
 // resolves the X-Amz-Target header for dispatch and telemetry.
 func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name       string
 		target     string

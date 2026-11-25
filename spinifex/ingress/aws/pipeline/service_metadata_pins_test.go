@@ -24,7 +24,6 @@ import (
 // composes where there is one. EKS is a JSON registration, so it never takes
 // the XML arm.
 func TestWriteThrottleError_ByService(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		svc, code, contains string
 		status              int
@@ -74,7 +73,6 @@ func TestXMLErrorBody_EmptyServiceKeepsEC2Shape(t *testing.T) {
 // A global service accepts its own signing region and the gateway's, and
 // nothing else; a regional service accepts only the gateway's.
 func TestReqctxPipeline_GlobalSigningRegionRejectsOthers(t *testing.T) {
-	t.Parallel()
 	probe := func(w http.ResponseWriter, _ dispatch.Invocation) error {
 		w.WriteHeader(http.StatusOK)
 		return nil

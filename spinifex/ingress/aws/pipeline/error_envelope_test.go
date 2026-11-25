@@ -71,7 +71,6 @@ func throttleResponse(t *testing.T, regs ...dispatch.Registration) func(svc stri
 }
 
 func TestErrorEnvelope_Throttle(t *testing.T) {
-	t.Parallel()
 	c := &dispatchCapture{}
 	throttle := throttleResponse(t,
 		envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c, nil),
@@ -139,7 +138,6 @@ func TestErrorEnvelope_ThrottleOverride(t *testing.T) {
 }
 
 func TestErrorEnvelope_DispatcherError(t *testing.T) {
-	t.Parallel()
 	notFound := awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "bad value")
 
 	t.Run("REST-JSON uses the code as the type", func(t *testing.T) {
@@ -295,7 +293,6 @@ func TestErrorEnvelope_OversizeBody(t *testing.T) {
 }
 
 func TestCredentialScopeService(t *testing.T) {
-	t.Parallel()
 	for name, tc := range map[string]struct {
 		header, want string
 	}{
@@ -316,7 +313,6 @@ func TestCredentialScopeService(t *testing.T) {
 // A dispatcher error on every JSON protocol carries x-amzn-RequestId, and it is
 // the ID the request's access log line records.
 func TestJSONErrorRequestIDMatchesAudit(t *testing.T) {
-	t.Parallel()
 	for svc, env := range map[string]dispatch.ErrorEnvelope{
 		json11Service:   dispatch.ErrorEnvelopeJSON,
 		restJSONService: dispatch.ErrorEnvelopeRESTJSON,

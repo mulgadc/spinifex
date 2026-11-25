@@ -46,7 +46,6 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 }
 
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
-	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	for _, body := range []string{

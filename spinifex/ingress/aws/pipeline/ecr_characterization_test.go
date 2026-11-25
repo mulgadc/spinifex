@@ -22,7 +22,6 @@ import (
 // TestECRActionFromTarget_FormsAndTelemetryAgree pins how the ECR registration
 // resolves the X-Amz-Target header for dispatch, telemetry and throttle.
 func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name       string
 		target     string
@@ -48,7 +47,6 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 // that nothing intercepts ahead of the handler table, i.e. what the HTTP
 // pipeline actually answers 501 for today.
 func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
-	t.Parallel()
 	reachableStubs := dispatch.AWSOperationInventory(ecrRegistrationInventory())["ecr"].Stubbed
 	want := []string{
 		"ListRepositories", "BatchCheckLayerAvailability", "GetDownloadUrlForLayer",
@@ -72,7 +70,6 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 // unsupported scanning action answers OperationNotSupportedException (400),
 // not NotImplemented (501).
 func TestECRInventory_ScanningActionsReturnOperationNotSupported(t *testing.T) {
-	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	for _, action := range awsapi.UnsupportedActionNames() {
 		t.Run(action, func(t *testing.T) {

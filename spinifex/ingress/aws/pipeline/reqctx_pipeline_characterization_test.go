@@ -198,7 +198,6 @@ var reqctxServices = []struct {
 // the policy gate and the second by the throttle: the throttle spends its
 // token ahead of the policy gate.
 func TestReqctxPipeline_ThrottleRunsAheadOfPolicyGate(t *testing.T) {
-	t.Parallel()
 	for _, svc := range reqctxServices {
 		t.Run(svc.name, func(t *testing.T) {
 			app := reqctxGateway(t, reqctxGatewayEnv{NATS: natsUp, Throttler: newThrottler(t)}).SetupRoutes()
@@ -217,7 +216,6 @@ func TestReqctxPipeline_ThrottleRunsAheadOfPolicyGate(t *testing.T) {
 // refused by the second gate ahead of the policy gate. The repeat is refused by
 // the throttle, so the throttle runs ahead of the second gate.
 func TestReqctxPipeline_AbsentNATSIsCaughtByTheSecondGateAfterThrottle(t *testing.T) {
-	t.Parallel()
 	for _, svc := range reqctxServices {
 		t.Run(svc.name, func(t *testing.T) {
 			app := reqctxGateway(t, reqctxGatewayEnv{NATS: natsAbsent, Throttler: newThrottler(t)}).SetupRoutes()
@@ -235,7 +233,6 @@ func TestReqctxPipeline_AbsentNATSIsCaughtByTheSecondGateAfterThrottle(t *testin
 // A connection that reports not connected is refused by the SigV4 gate before
 // the throttle runs, so no token is spent and every repeat gets the same 503.
 func TestReqctxPipeline_ClosedNATSIsCaughtByTheFirstGateBeforeThrottle(t *testing.T) {
-	t.Parallel()
 	for _, svc := range reqctxServices {
 		t.Run(svc.name, func(t *testing.T) {
 			app := reqctxGateway(t, reqctxGatewayEnv{NATS: natsClosed, Throttler: newThrottler(t)}).SetupRoutes()
@@ -340,7 +337,6 @@ func auditedPipeline(t *testing.T, gw *Config) (http.Handler, func() *audit.Reco
 // Each error writer mints its own request id, so the id in the error body never
 // equals the id the audit record took from the edge's X-Request-ID.
 func TestReqctxPipeline_ErrorBodyRequestIDDiffersFromAuditRecord(t *testing.T) {
-	t.Parallel()
 	unsigned := func(*testing.T) *http.Request {
 		return httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetUser"))
 	}

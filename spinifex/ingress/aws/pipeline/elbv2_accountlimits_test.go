@@ -29,7 +29,6 @@ func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
 // A disabled quota means "not enforced", not "nothing permitted", so the entries
 // report the AWS default rather than the unconsulted configured value.
 func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
-	t.Parallel()
 	disabled := quota.New(quota.Limits{LoadBalancers: 0}, nil)
 
 	for name, gw := range map[string]*Config{

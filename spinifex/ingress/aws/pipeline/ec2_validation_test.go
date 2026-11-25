@@ -52,7 +52,6 @@ func TestEC2Request_MaxResultsInRange(t *testing.T) {
 
 // The refusals are AWS's own, captured by scripts/aws-compliance/aws-response-diff/scen_e.py.
 func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
-	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	cases := []struct {
@@ -100,7 +99,6 @@ func TestEC2Request_TagSpecificationAllowedTypes(t *testing.T) {
 }
 
 func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
-	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	cases := []struct {
@@ -127,7 +125,6 @@ func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
 // AWS reserves the aws: prefix in any case on every create call's
 // TagSpecifications, and refuses it even on a DryRun request.
 func TestEC2Request_TagSpecificationReservedKey(t *testing.T) {
-	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	reserved := func(action, rt, key string) string {

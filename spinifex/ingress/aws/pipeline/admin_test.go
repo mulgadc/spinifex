@@ -162,7 +162,6 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 // Each admin method is a separate grant. The signup Worker holds
 // spinifex:CreateAccount and must not reach deletion with it.
 func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
-	t.Parallel()
 	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: createAccountPolicy()})))
 
 	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {

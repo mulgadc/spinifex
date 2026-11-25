@@ -12,7 +12,6 @@ import (
 // The gateway has no NATS connection, so any request that reached its handler
 // would fail ServerInternal; DryRunOperation proves nothing was dispatched.
 func TestEC2Request_DryRunAnswersEveryAction(t *testing.T) {
-	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	actions := ec2awsapi.ActionNames()

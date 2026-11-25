@@ -17,7 +17,6 @@ import (
 // have caught the ECS agent regression: a role session whose underlying role
 // grants a non-sts action and nothing else must not be able to assume anything.
 func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
-	t.Parallel()
 	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
 	params := func(iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
 		return stsRequestParams{
@@ -82,7 +81,6 @@ func TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence(t *testing.T) 
 // The STS mock would happily mint credentials, so a denial can only come from
 // the policy check that now runs ahead of the role's trust policy.
 func TestSTSRequest_AssumeRole_IdentityPolicyGate(t *testing.T) {
-	t.Parallel()
 	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
 
 	t.Run("empty policy denied", func(t *testing.T) {
@@ -119,7 +117,6 @@ func TestSTSRequest_AssumeRole_IdentityPolicyGate(t *testing.T) {
 // ARN. An ARN that is not the stored one is refused by role resolution itself
 // — see TestResolveRoleByARN in domains/sts.
 func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
-	t.Parallel()
 	t.Run("stored ARN matching exactly is admitted", func(t *testing.T) {
 		svc := stsIdentityPolicy(
 			stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/app-*"),
@@ -150,7 +147,6 @@ func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
 // TestSTSRequest_AssumeRole_PolicyScopedToRole proves the gate evaluates the
 // target role ARN, not "*", so a grant on one role does not open another.
 func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
-	t.Parallel()
 	roles := map[string]string{
 		stsTestRoleName: stsTestRoleARN,
 		"other":         "arn:aws:iam::000000000000:role/other",

@@ -220,7 +220,6 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 }
 
 func TestQueryParseArgs_URLDecoding(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name     string
 		input    string
@@ -322,7 +321,6 @@ func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 // --- Clock Skew Boundary Tests ---
 
 func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
-	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
@@ -363,7 +361,6 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 // rejected on credential scope before any verb or path parsing. Every S3 verb
 // therefore takes one path, and all that varies below is the request shape.
 func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
-	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
@@ -582,7 +579,6 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 // --- Signature Edge Cases ---
 
 func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
-	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
@@ -691,7 +687,6 @@ func TestSigV4Auth_MultipartContentType(t *testing.T) {
 }
 
 func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
-	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
@@ -1584,7 +1579,6 @@ func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
 // or malformed underlying-role ARN fails closed with AccessDenied (403, not a
 // 500), and never reaches the role resolver.
 func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name              string
 		underlyingRoleARN string
@@ -1849,7 +1843,6 @@ func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
 // so before the fix ctxAction stayed empty and every such request shared the
 // throttle bucket "<account>:unknown", which no per-action limit can match.
 func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
-	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
@@ -1947,7 +1940,6 @@ func TestExpectedSigningRegion(t *testing.T) {
 // cross MaxFailures on distinct-attempt volume alone and be told to retry
 // later by a fleet that has nothing to retry with.
 func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name     string
 		err      error
@@ -2008,7 +2000,6 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 // envelope by exactly the path it did before the fallback was added — a
 // regression guard proving the fallback widened nothing for served scopes.
 func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
-	t.Parallel()
 	gw := &Config{DisableLogging: true}
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
@@ -2134,7 +2125,6 @@ func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
 // name with a different immutable ID, must not authenticate. InvalidClientTokenId
 // rather than ExpiredToken: the credential itself has not expired.
 func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -2214,7 +2204,6 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 }
 
 func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	t.Parallel()
 	gw := withEC2RealAuth(gwfix.WithDeps(&Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	testCases := []struct {

@@ -19,7 +19,6 @@ import (
 // a caller the policy would refuse, an action that does not exist and a
 // gateway-local action all get the same 503, so none of them reach dispatch.
 func TestEC2Labels_ClusterUnavailableGateOrder(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name string
 		deny bool
@@ -53,6 +52,7 @@ func TestEC2Labels_PolicyGateEvaluatesServiceAndAction(t *testing.T) {
 	t.Parallel()
 	for _, c := range ec2LabelCases {
 		t.Run(c.action, func(t *testing.T) {
+			t.Parallel()
 			app := ec2Pipeline(t, nil, statement("Allow", "ec2:"+c.action, "*"))
 			got := probeEC2(t, app.Handler, c.body)
 			assert.NotEqual(t, "UnauthorizedOperation", got.Code, got.Body)

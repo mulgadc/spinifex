@@ -17,7 +17,6 @@ import (
 // An empty or non-JSON body is InvalidRequest on every body-reading method
 // that parses one, and MissingParameter where a required field is absent.
 func TestOperatorAdmin_BodyErrors(t *testing.T) {
-	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *Config) {
 		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
@@ -46,7 +45,6 @@ func TestOperatorAdmin_BodyErrors(t *testing.T) {
 // Each gate denies with the same AccessDenied: wrong credential scope, wrong
 // account, and a super-admin user holding no spinifex:<Method> grant.
 func TestOperatorAdmin_EveryGateDeniesWithTheSameAnswer(t *testing.T) {
-	t.Parallel()
 	admin := awsidentifiers.DefaultAccountID()
 	tests := []struct {
 		name    string
@@ -161,7 +159,6 @@ func TestOperatorAdmin_UnknownMethodAndVerbBeforeAuthorization(t *testing.T) {
 // Every action named in spinifexAdminActions refuses a caller outside the
 // super-admin account, and refuses it with the same AccessDenied.
 func TestOperatorQuery_EveryAdminActionDeniesNonAdminAccount(t *testing.T) {
-	t.Parallel()
 	_, app := operatorPipelineApp(t, authzAccountID, allowAllOperatorDocs(), nil)
 
 	for action := range spinifexAdminActions {
@@ -227,7 +224,6 @@ func TestOperatorQuery_MalformedQueryString(t *testing.T) {
 // Without a grant store the model-access actions answer ServerInternal before
 // they look at their parameters.
 func TestOperatorQuery_ModelAccessWithoutStoreIsServerInternal(t *testing.T) {
-	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 
 	for _, action := range []string{"GrantModelAccess", "RevokeModelAccess", "ListModelAccess"} {
@@ -268,7 +264,6 @@ func TestOperatorQuery_NodeAndVMListingsWithNoNodes(t *testing.T) {
 // The policy gate runs first: a super-admin caller with no spinifex:<Action>
 // grant is denied, whatever the action.
 func TestOperatorQuery_PolicyDenialBeatsEverythingForTheAdminAccount(t *testing.T) {
-	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), nil, nil)
 
 	for _, action := range []string{"GetVersion", "PromoteImage", "NotAnAction"} {

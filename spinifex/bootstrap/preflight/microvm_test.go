@@ -35,6 +35,8 @@ func TestMain(m *testing.M) {
 	machineHelp = func(string) ([]byte, error) { return []byte(helpWithMicroVM), nil }
 	hostnetOVNRemote = func(context.Context) (string, error) { return "", nil }
 	unitActive = func(string) bool { return false }
+	systemdMainPIDFor = mainPIDFor
+	mainPIDFor = func(string) (int, error) { return 0, nil }
 	os.Exit(m.Run())
 }
 

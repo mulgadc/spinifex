@@ -11,6 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// systemdMainPIDFor is the real systemctl lookup, which TestMain replaces so
+// CheckHostAt does not run systemctl once per unit in every test.
+var systemdMainPIDFor func(string) (int, error)
+
 // fakeProc builds a root containing a binary and a /proc/<pid>/exe symlink to
 // it, standing in for the parts of procfs the check reads.
 func fakeProc(t *testing.T, pid int, binPath string, target string) string {
@@ -141,6 +145,17 @@ func TestCheckRunningBinaries(t *testing.T) {
 		assert.Equal(t, Missing, results[0].Status)
 		assert.Contains(t, results[0].Detail, "cannot read its executable")
 	})
+}
+
+// A unit the host has never loaded must not look like a running process,
+// or checkRunningBinaries would report it on every node that lacks it.
+func TestMainPIDForUnloadedUnit(t *testing.T) {
+	pid, err := systemdMainPIDFor("spinifex-preflight-test-absent.service")
+	if err != nil {
+		t.Logf("systemctl unavailable on this host: %v", err)
+		return
+	}
+	assert.Zero(t, pid)
 }
 
 // TestServiceUnitsAreServicesOnly guards the enumeration: a timer or the

@@ -72,6 +72,8 @@ func seedSnapshots(t *testing.T, store objectstore.ObjectStore, n int) *ec2snaps
 // 100ms each took 2.4s serially, which is enough to miss the caller's timeout
 // on an account that has done nothing wrong.
 func TestDescribeSnapshotsReadsMetadataConcurrently(t *testing.T) {
+	t.Parallel()
+
 	store := &slowMetadataStore{ObjectStore: objectstore.NewMemoryObjectStore(), delay: 100 * time.Millisecond}
 	svc := seedSnapshots(t, store, 24)
 
@@ -90,6 +92,8 @@ func TestDescribeSnapshotsReadsMetadataConcurrently(t *testing.T) {
 // visible in production: when the caller has already given up, every metadata
 // read fails, and an empty snapshot list would read as "this account has none".
 func TestDescribeSnapshotsReportsAnExpiredDeadline(t *testing.T) {
+	t.Parallel()
+
 	store := &slowMetadataStore{ObjectStore: objectstore.NewMemoryObjectStore(), delay: time.Second}
 	svc := seedSnapshots(t, store, 4)
 

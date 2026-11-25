@@ -63,6 +63,8 @@ func setupAttachedSnapshot(t *testing.T, volumeID string) (*SnapshotServiceImpl,
 // The provider drains a buffered volume inside its own CreateSnapshot, so the
 // domain must not dial the drain socket itself: that would drain twice.
 func TestCreateSnapshot_AttachedVolumeOpensNoDrainSocket(t *testing.T) {
+	t.Parallel()
+
 	svc, provider, _ := setupAttachedSnapshot(t, "vol-attached-local")
 	drains := testutil.StartDrainSocket(t, svc.config.DataDir, "vol-attached-local", "OK\n")
 
@@ -77,6 +79,8 @@ func TestCreateSnapshot_AttachedVolumeOpensNoDrainSocket(t *testing.T) {
 // With no drain socket on this node, an attached volume is snapshotted by the
 // provider without asking the instance's host for a drain.
 func TestCreateSnapshot_AttachedVolumeSendsItsHostNoDrain(t *testing.T) {
+	t.Parallel()
+
 	svc, provider, nc := setupAttachedSnapshot(t, "vol-attached-remote")
 	var commands atomic.Int32
 	sub, err := nc.Subscribe(ec2v1.InstanceCommandSubject(attachedInstanceID), func(msg *nats.Msg) {

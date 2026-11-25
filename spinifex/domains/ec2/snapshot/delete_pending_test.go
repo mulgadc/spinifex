@@ -56,6 +56,8 @@ func assertSnapshotNotFound(t *testing.T, err error, id string) {
 // DeleteSnapshot marks a pending or AmbiguousCreate snapshot and returns,
 // leaving the provider alone; any other is deleted as it always was.
 func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-markdelete0001"
 	cases := []struct {
 		name       string
@@ -71,6 +73,7 @@ func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			tc.doc.SnapshotID = id
@@ -101,6 +104,8 @@ func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
 
 // The InUse checks run first, unchanged, on a pending snapshot too.
 func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-markinuse00001"
 	cases := []struct {
 		name string
@@ -117,6 +122,7 @@ func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
@@ -135,6 +141,8 @@ func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
 // A claim another live node holds is retried three times and then answered
 // IncorrectState; one a stopped node holds is taken over.
 func TestDeleteSnapshot_ClaimContention(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-markheld000001"
 	cases := []struct {
 		name        string
@@ -148,6 +156,7 @@ func TestDeleteSnapshot_ClaimContention(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := fastClaims(f.node(nodeA))
 			refused := 0
@@ -179,6 +188,8 @@ func TestDeleteSnapshot_ClaimContention(t *testing.T) {
 // the provider settles it, never repeats one the provider does not hold, and
 // keeps a tombstone in place of a document that had an unanswered create.
 func TestPendingSnapshotReaper_MarkedColumn(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-markedrow00001"
 	cases := []struct {
 		name      string
@@ -216,6 +227,7 @@ func TestPendingSnapshotReaper_MarkedColumn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
@@ -258,6 +270,8 @@ func TestPendingSnapshotReaper_MarkedColumn(t *testing.T) {
 // removal and the document's removal leaves the marked document for the next
 // sweep, which finishes; no reference is ever left without its document.
 func TestPendingSnapshotReaper_CleanupInterrupted(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-cleanupstep001"
 	cases := []struct {
 		name      string
@@ -285,6 +299,7 @@ func TestPendingSnapshotReaper_CleanupInterrupted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
@@ -324,6 +339,8 @@ func TestPendingSnapshotReaper_CleanupInterrupted(t *testing.T) {
 // reread and its write, waits on the claim and ends with the snapshot deleted,
 // whether it runs on another node or on the reaper's own.
 func TestDeleteSnapshot_LandsBetweenTheReapersRereadAndWrite(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-deleteraced001"
 	for _, sameNode := range []bool{false, true} {
 		name := "another node"
@@ -331,6 +348,7 @@ func TestDeleteSnapshot_LandsBetweenTheReapersRereadAndWrite(t *testing.T) {
 			name = "the reaper's node"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := fastClaims(f.node(nodeB))
 			deleter := fastClaims(f.node(nodeA))
@@ -369,6 +387,8 @@ func TestDeleteSnapshot_LandsBetweenTheReapersRereadAndWrite(t *testing.T) {
 // A request whose provider call returns after its claim was taken over and the
 // snapshot marked leaves the document marked and pending, for the reaper.
 func TestCreateSnapshot_AnswerAfterTheMarkIsNotWritten(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	f.liveness.beat(nodeA, time.Now().Add(-2*clusterv1.LivenessWindow))
@@ -398,6 +418,8 @@ func TestCreateSnapshot_AnswerAfterTheMarkIsNotWritten(t *testing.T) {
 // cleared only by a definite answer to a document with no earlier call left
 // unanswered.
 func TestAmbiguousCreate_SetBeforeEveryCall(t *testing.T) {
+	t.Parallel()
+
 	const reaped = "snap-ambiguousreap1"
 	cases := []struct {
 		name string
@@ -425,6 +447,7 @@ func TestAmbiguousCreate_SetBeforeEveryCall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.mem.AnswerSnapshotsPending(tc.pending)
@@ -479,6 +502,8 @@ func firstFails(err error) func(int) error {
 // then deleted is accepted late: the snapshot it recreates is deleted under
 // the tombstone once it settles, and the tombstone is dropped after 7 days.
 func TestTombstone_DeletesALateAcceptedSnapshotAndExpires(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	reaper := f.node(nodeB)
@@ -533,6 +558,8 @@ func TestTombstone_DeletesALateAcceptedSnapshotAndExpires(t *testing.T) {
 
 // The AMI pass settles each pending AMI from its snapshot's document.
 func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
+	t.Parallel()
+
 	const snapID = "snap-amisettle00001"
 	cases := []struct {
 		name     string
@@ -548,6 +575,7 @@ func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			if tc.snap != nil {
 				tc.snap.SnapshotID = snapID
@@ -572,8 +600,11 @@ func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
 }
 
 func TestCopySnapshot_RefusesASourceThatIsNotCompleted(t *testing.T) {
+	t.Parallel()
+
 	for _, state := range []string{snapshotStatePending, "error"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := providerSnapshotService(t, "vol-copygate")
 			require.NoError(t, svc.MetadataStore().PutSnapshot(t.Context(), ebsmetadata.Snapshot{
 				SnapshotID: "snap-copygate00001", VolumeID: "vol-copygate", VolumeSize: 4, State: state, OwnerID: testAccountID,

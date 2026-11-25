@@ -378,6 +378,8 @@ func (f *pendingFixture) unreachableSync() kvsync.KVStore {
 }
 
 func TestCreateSnapshot_WritesThePendingDocumentBeforeCallingTheProvider(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	var seen ebsmetadata.Snapshot
@@ -403,6 +405,8 @@ func TestCreateSnapshot_WritesThePendingDocumentBeforeCallingTheProvider(t *test
 
 // Each provider answer to the request, and what the document is left as.
 func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name      string
 		setup     func(f *pendingFixture)
@@ -478,6 +482,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			if tc.setup != nil {
@@ -538,6 +543,8 @@ func scriptCalls(errs ...error) func(int, ebsprovider.CreateSnapshotRequest) (bo
 // Before the provider is called nothing exists that the provider could hold,
 // so each failure there refuses the request and leaves no document.
 func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name       string
 		build      func(f *pendingFixture) *SnapshotServiceImpl
@@ -558,6 +565,7 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := tc.build(f)
 
@@ -583,6 +591,8 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 // leaves its document marked for the reaper, which removes the reference and
 // then the document without repeating the create; no reference outlives it.
 func TestCreateSnapshot_RollbackInterrupted(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name    string
 		break_  func(f *pendingFixture, svc *SnapshotServiceImpl)
@@ -608,6 +618,7 @@ func TestCreateSnapshot_RollbackInterrupted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.provider.onCreate = refuseFrom(1, ebsprovider.ErrVolumeInUse)
@@ -652,6 +663,8 @@ func TestCreateSnapshot_RollbackInterrupted(t *testing.T) {
 // holds, or a document the reaper settles once the restarted node has released
 // its claims, with the volume reference a crash before it left missing.
 func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name    string
 		step    createStep
@@ -666,6 +679,7 @@ func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *tes
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			var id string
@@ -717,6 +731,8 @@ func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *tes
 // A provider that accepts the request's call after the request gave up, and
 // after the reaper or a refusal, ends with one completed snapshot.
 func TestCreateSnapshot_LateAcceptanceEndsWithOneCompletedSnapshot(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		// refusal is what the request's repeat is answered with.
@@ -730,6 +746,7 @@ func TestCreateSnapshot_LateAcceptanceEndsWithOneCompletedSnapshot(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			var late ebsprovider.CreateSnapshotRequest
@@ -773,6 +790,8 @@ func TestCreateSnapshot_LateAcceptanceEndsWithOneCompletedSnapshot(t *testing.T)
 // absent. A live request keeps its claim and is not overtaken; a request on a
 // node whose heartbeat stopped is, and its repeat meets the reaper's snapshot.
 func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name            string
 		requestNodeLive bool
@@ -783,6 +802,7 @@ func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			reaper := f.node(nodeB)
@@ -815,6 +835,8 @@ func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
 // answer still ends completed. The reaper may not write while the request
 // holds the claim, so it settles the document on the sweep after.
 func TestCreateSnapshot_CompletedBeforeTheRequestWritesItsHandle(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	reaper := f.node(nodeB)
@@ -842,6 +864,8 @@ func TestCreateSnapshot_CompletedBeforeTheRequestWritesItsHandle(t *testing.T) {
 // A DeleteSnapshot landing while the provider answers is not undone by the
 // request's write of that answer.
 func TestCreateSnapshot_DeletedWhileTheProviderAnswersIsNotRecreated(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	svc.crashAt = func(step createStep) bool {
@@ -861,6 +885,8 @@ func TestCreateSnapshot_DeletedWhileTheProviderAnswersIsNotRecreated(t *testing.
 
 // Each row of the reaper's table for a pending document.
 func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-reaperrow00001"
 	stale := time.Now().Add(-2 * clusterv1.LivenessWindow)
 	cases := []struct {
@@ -933,6 +959,7 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
@@ -970,6 +997,8 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 // a settle restores the reference a request that crashed after its document
 // left missing, removing it again when the document is deleted meanwhile.
 func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
+	t.Parallel()
+
 	const id = "snap-reaperhandle01"
 	volumeHandle := "memory://volume/" + pendingVolumeID
 	deleteVolumeDoc := func(f *pendingFixture) {
@@ -1007,6 +1036,7 @@ func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
@@ -1058,7 +1088,10 @@ func deleteDocFirst(f *pendingFixture, id string) func(ebsprovider.ListSnapshots
 }
 
 func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
+	t.Parallel()
+
 	t.Run("no provider settles nothing", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-noprovider0001"}, false)
 		svc := f.node(nodeB)
@@ -1068,6 +1101,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		assert.Zero(t, written)
 	})
 	t.Run("an unreadable document fails the sweep", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		_, err := f.store.PutObject(t.Context(), &s3.PutObjectInput{
 			Bucket: aws.String("test-bucket"), Key: aws.String(snapshotDocumentPrefix + testAccountID + "/snap-corrupt000001.json"),
@@ -1080,6 +1114,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		require.Error(t, err)
 	})
 	t.Run("a cancelled sweep stops", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-cancelled00001"}, false)
 		ctx, cancel := context.WithCancel(t.Context())
@@ -1088,6 +1123,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	})
 	t.Run("settled documents are counted and others skipped", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-counted000001"}, false)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-done000000001", State: ebsmetadata.SnapshotStateCompleted}, false)
@@ -1102,6 +1138,8 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 // state, and none a request of the new process holds; until it does, a live node's
 // claim holds the reaper off.
 func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartown0001"}, false)
 	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartother01"}, false)
@@ -1135,6 +1173,8 @@ func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 }
 
 func TestClaims_LocalExclusion(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
 	held, err := svc.claims.lock(t.Context(), "snap-localheld00001")
@@ -1173,6 +1213,8 @@ func TestClaims_LocalExclusion(t *testing.T) {
 // Two sweeps over every unmarked row, beside marked documents and a tombstone,
 // delete only the marked snapshots and their documents, and no volume or AMI.
 func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	const otherVolume = "vol-pendingother001"
 	_, err := f.mem.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
@@ -1287,6 +1329,8 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 // An AMI's claim left by this node's previous process holds the reaper off the
 // AMI while the node heartbeats, until the restarted daemon releases it.
 func TestReleaseNodeClaims_FreesARestartedNodesAMIClaims(t *testing.T) {
+	t.Parallel()
+
 	f := newPendingFixture(t)
 	const imageID = "ami-restartown00001"
 	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-amidone000001", State: ebsmetadata.SnapshotStateCompleted}, false)

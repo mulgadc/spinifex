@@ -15,6 +15,8 @@ import (
 // A volume still being prepared has no settled contents, so it cannot be
 // captured; once available the same volume snapshots normally.
 func TestCreateSnapshot_RefusesACreatingVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	ctx := context.Background()
 	seedProviderVolume(t, svc, "vol-preparing", 4)

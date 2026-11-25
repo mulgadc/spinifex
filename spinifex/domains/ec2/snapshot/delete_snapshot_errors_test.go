@@ -58,6 +58,8 @@ func requireSnapshotSurvives(t *testing.T, svc *SnapshotServiceImpl, snapshotID 
 // An unreadable volume record cannot be ruled out as a clone of the snapshot,
 // so the delete is refused, but with the record named rather than a bare code.
 func TestDeleteSnapshot_UnreadableOwnVolumeRecordIsNamed(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-corrupt")
@@ -74,6 +76,8 @@ func TestDeleteSnapshot_UnreadableOwnVolumeRecordIsNamed(t *testing.T) {
 // A tenant snapshot cannot be reached from another account, so another
 // account's unreadable volume record is not consulted and cannot block it.
 func TestDeleteSnapshot_ForeignUnreadableVolumeRecordDoesNotBlockATenantSnapshot(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
@@ -88,6 +92,8 @@ func TestDeleteSnapshot_ForeignUnreadableVolumeRecordDoesNotBlockATenantSnapshot
 // The incident's state is an unreadable volume record belonging to an unrelated
 // tenant, which must leave the inventory empty and the foreign record intact.
 func TestDeleteSnapshot_TeardownDrainsTheAccountDespiteAForeignUnreadableRecord(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	first := unreferencedSnapshot(t, svc, store)
 	second := unreferencedSnapshot(t, svc, store)
@@ -146,6 +152,8 @@ func promotedResidue(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.
 // the volume scan: breadth comes from the global document, so deregistering the
 // promoted AMI cannot narrow the scan while the residue and its clones remain.
 func TestDeleteSnapshot_PromotedResidueStillScansEveryAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := promotedResidue(t, svc, store)
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
@@ -164,6 +172,8 @@ func TestDeleteSnapshot_PromotedResidueStillScansEveryAccount(t *testing.T) {
 // Absence of the global document is what permits the narrow scan, so one that
 // failed to read has to widen it rather than read as absent.
 func TestDeleteSnapshot_UnreadableGlobalSnapshotDocumentScansEveryAccount(t *testing.T) {
+	t.Parallel()
+
 	memory := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, memory, nil)
@@ -194,6 +204,8 @@ func TestDeleteSnapshot_UnreadableGlobalSnapshotDocumentScansEveryAccount(t *tes
 // A system snapshot's clones routinely live in other accounts, so its own
 // delete still reads every prefix and still fails closed on an unreadable one.
 func TestDeleteSnapshot_SystemSnapshotStillScansEveryAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := promotedResidue(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
@@ -208,6 +220,8 @@ func TestDeleteSnapshot_SystemSnapshotStillScansEveryAccount(t *testing.T) {
 // A readable clone settles the answer whatever else failed to read, so the
 // caller gets the AWS refusal rather than an internal error.
 func TestDeleteSnapshot_ReadableCloneWinsOverUnreadableRecord(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-corrupt")
@@ -222,6 +236,8 @@ func TestDeleteSnapshot_ReadableCloneWinsOverUnreadableRecord(t *testing.T) {
 
 // An unreadable AMI record blocks the delete, and says so.
 func TestDeleteSnapshot_UnreadableAMIRecordIsReported(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.AMIKey("ami-corrupt")
@@ -237,6 +253,8 @@ func TestDeleteSnapshot_UnreadableAMIRecordIsReported(t *testing.T) {
 // A registered AMI naming the snapshot is still the AWS refusal when another
 // AMI record is unreadable.
 func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableAMI(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.AMIKey("ami-corrupt")
@@ -251,6 +269,8 @@ func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableAMI(t *testing.T) {
 // A registered AMI naming the snapshot is the AWS refusal even when the volume
 // scan, which runs first, could not read a record.
 func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-corrupt")
@@ -296,6 +316,8 @@ func (s *readFailingObjectStore) readKeys() []string {
 // not a document that parses badly, and the two reach the collector by
 // different paths. A teardown must drain past one belonging to another tenant.
 func TestDeleteSnapshot_TeardownDrainsPastAForeignUnreadableObject(t *testing.T) {
+	t.Parallel()
+
 	memory := objectstore.NewMemoryObjectStore()
 	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-0f1e2d3c4b5a69788")
 	require.NoError(t, err)
@@ -332,6 +354,8 @@ func (s *vanishingObjectStore) GetObject(ctx context.Context, input *s3.GetObjec
 // A record deleted between listing and read is absent, not unreadable, and
 // does not stop an unreferenced snapshot from being deleted.
 func TestDeleteSnapshot_RecordDeletedMidScanIsAbsent(t *testing.T) {
+	t.Parallel()
+
 	memory := objectstore.NewMemoryObjectStore()
 	volumeKey, err := ebsmetadata.VolumeKey(testAccountID, "vol-deleted")
 	require.NoError(t, err)
@@ -368,6 +392,8 @@ func (p *deleteRecordingProvider) DeleteSnapshot(ctx context.Context, req ebspro
 // runs before the document is removed, so a surviving document is not evidence
 // on its own that the data survived.
 func TestS7_RefusedDeleteDoesNotDestroyTheBlocks(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	recorder := &deleteRecordingProvider{EBSProvider: svc.provider}
@@ -390,6 +416,8 @@ func TestS7_RefusedDeleteDoesNotDestroyTheBlocks(t *testing.T) {
 // silence in the refusal case is the absence of a call rather than a test
 // watching the wrong provider.
 func TestS7_RecorderObservesAnUnobstructedDelete(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
 	recorder := &deleteRecordingProvider{EBSProvider: svc.provider}
@@ -413,6 +441,8 @@ func (p *deleteFailingProvider) DeleteSnapshot(context.Context, ebsprovider.Dele
 // A provider failure maps to a code the caller can act on, and leaves the
 // control-plane document so the delete can be retried.
 func TestDeleteSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		err      error
@@ -428,6 +458,7 @@ func TestDeleteSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, store := setupTestSnapshotService(t)
 			snapshotID := unreferencedSnapshot(t, svc, store)
 			svc.SetEBSProvider(&deleteFailingProvider{EBSProvider: svc.provider, err: tc.err})

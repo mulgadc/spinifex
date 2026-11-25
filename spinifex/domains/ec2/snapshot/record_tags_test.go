@@ -11,6 +11,8 @@ import (
 )
 
 func TestSnapshotRecordTagsMirror(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapID := createTestSnapshot(t, svc, store, "vol-tagmirror", 10, nil)
 
@@ -44,6 +46,8 @@ func TestSnapshotRecordTagsMirror(t *testing.T) {
 }
 
 func TestSnapshotRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapID := createTestSnapshot(t, svc, store, "vol-tenantguard", 10, map[string]string{"orig": "1"})
 
@@ -59,6 +63,8 @@ func TestSnapshotRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
 }
 
 func TestSnapshotRecordTagsMirror_UnownedNoError(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String("snap-missing"), aws.String("vol-other")},

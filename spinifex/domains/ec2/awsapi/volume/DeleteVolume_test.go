@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
@@ -198,6 +199,10 @@ func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, data []byte)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
+// silentNodeFanoutTimeout replaces the 3s production fan-out deadline for a
+// test that waits for a node that never answers. Local replies land in ms.
+const silentNodeFanoutTimeout = 300 * time.Millisecond
+
 // node-2 never answers and node-1 answers twice. Counting replies reads that
 // as every node heard from, so a volume a guest on node-2 maps would be
 // destroyed; the guard must see node-2 is missing and refuse.
@@ -218,8 +223,8 @@ func TestDeleteVolume_GuardRefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *t
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-0123456789abcdef0")},
-		nc, []string{"node-1", "node-2"}, "000000000042")
+	_, err = deleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-0123456789abcdef0")},
+		nc, []string{"node-1", "node-2"}, "000000000042", ec2instanceapi.WithFanoutTimeout(silentNodeFanoutTimeout))
 
 	require.Error(t, err)
 	code, ok := awserrors.ResolveErrorCode(err)

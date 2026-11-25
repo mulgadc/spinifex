@@ -100,7 +100,8 @@ func TestLiveRates(t *testing.T) {
 }
 
 // liveFixture is a sampler over fake procfs and sysfs whose clock the test can
-// move, with real NATS between it and the test.
+// move, with real NATS between it and the test. It ticks faster than in
+// production so a test sees several samples without waiting seconds.
 type liveFixture struct {
 	nc      *nats.Conn
 	sampler *liveSampler
@@ -125,6 +126,7 @@ func newLiveFixture(t *testing.T, account string) *liveFixture {
 	}
 	f.sampler = newLiveSampler(f.cfg, nc, func() telemetryv1.GuestTelemetryMeta { return meta })
 	f.sampler.threadIDs = func(telemetryv1.GuestTelemetryMeta) ([]int, error) { return []int{42}, nil }
+	f.sampler.period = 10 * time.Millisecond
 	f.sampler.now = func() time.Time {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -263,19 +265,21 @@ func TestLiveSamplerRePrimesAfterAThreadLookupFails(t *testing.T) {
 	select {
 	case <-live:
 		t.Fatal("published without vCPU threads")
-	case <-time.After(3 * livePeriod):
+	case <-time.After(10 * f.sampler.period):
 	}
 
 	mu.Lock()
 	failing = false
 	mu.Unlock()
+	deadline := time.After(5 * time.Second)
 	for n := uint64(1); ; n++ {
 		f.write(t, n*1000)
 		select {
 		case <-live:
 			return
-		case <-time.After(livePeriod):
+		case <-deadline:
+			t.Fatal("no live sample after QMP recovered")
+		case <-time.After(f.sampler.period):
 		}
-		require.Less(t, n, uint64(20), "no live sample after QMP recovered")
 	}
 }

@@ -44,6 +44,7 @@ type liveSampler struct {
 	meta      func() telemetryv1.GuestTelemetryMeta
 	threadIDs func(telemetryv1.GuestTelemetryMeta) ([]int, error)
 	now       func() time.Time
+	period    time.Duration
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -53,7 +54,7 @@ type liveSampler struct {
 }
 
 func newLiveSampler(cfg *Config, nc *nats.Conn, meta func() telemetryv1.GuestTelemetryMeta) *liveSampler {
-	return &liveSampler{cfg: cfg, nc: nc, meta: meta, threadIDs: qmpThreadIDs, now: time.Now}
+	return &liveSampler{cfg: cfg, nc: nc, meta: meta, threadIDs: qmpThreadIDs, now: time.Now, period: livePeriod}
 }
 
 // subscribe listens for watches on this instance's account-scoped subject.
@@ -144,7 +145,7 @@ func (l *liveSampler) stopped() {
 }
 
 func (l *liveSampler) run(ctx context.Context) {
-	ticker := time.NewTicker(livePeriod)
+	ticker := time.NewTicker(l.period)
 	defer ticker.Stop()
 
 	var (

@@ -15,6 +15,7 @@ import (
 )
 
 func TestCreate_RendersAWSGatewayShape(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	out, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
 		VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), RouteTableIds: aws.StringSlice([]string{rtbA2, rtbA1, rtbA1}),
@@ -46,6 +47,7 @@ func TestCreate_RendersAWSGatewayShape(t *testing.T) {
 }
 
 func TestCreate_TagsAndDnsOptions(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	out, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
 		VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service),
@@ -63,6 +65,7 @@ func TestCreate_TagsAndDnsOptions(t *testing.T) {
 }
 
 func TestCreate_Refusals(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		in        ec2.CreateVpcEndpointInput
@@ -117,6 +120,7 @@ func TestCreate_Refusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			_, err := f.svc.CreateVpcEndpoint(t.Context(), &tc.in, testAccount)
 			requireCode(t, err, tc.code, tc.msg)
@@ -128,6 +132,7 @@ func TestCreate_Refusals(t *testing.T) {
 // The Terraform provider sends PrivateDnsEnabled=false on every gateway create,
 // and AWS accepts it on create and modify; only true is refused.
 func TestGateway_PrivateDnsFalseIsAccepted(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	out, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
 		VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), RouteTableIds: aws.StringSlice([]string{rtbA1}),
@@ -147,6 +152,7 @@ func TestGateway_PrivateDnsFalseIsAccepted(t *testing.T) {
 }
 
 func TestCreate_DefaultPolicyGivenExplicitly(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	for _, doc := range []string{
 		DefaultPolicy,
@@ -161,6 +167,7 @@ func TestCreate_DefaultPolicyGivenExplicitly(t *testing.T) {
 }
 
 func TestCreate_InactiveServiceDoesNotExist(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.svc.SetActivation(nil, nil)
 	_, err := f.createIn(t, vpcA, rtbA1)
@@ -183,6 +190,7 @@ func TestCreate_InactiveServiceDoesNotExist(t *testing.T) {
 }
 
 func TestCreate_OneEndpointRoutePerTable(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	first := f.create(t, rtbA1)
 	_, err := f.createIn(t, vpcA, rtbA2, rtbA1)
@@ -195,6 +203,7 @@ func TestCreate_OneEndpointRoutePerTable(t *testing.T) {
 }
 
 func TestCreate_AccountLimit(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	for range accountLimit {
 		f.create(t)
@@ -209,6 +218,7 @@ func TestCreate_AccountLimit(t *testing.T) {
 }
 
 func TestModify_Tables(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	other := f.create(t, rtbA3)
@@ -268,6 +278,7 @@ func TestModify_Refusals(t *testing.T) {
 }
 
 func TestDelete_BatchShape(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 
@@ -289,6 +300,7 @@ func TestDelete_BatchShape(t *testing.T) {
 }
 
 func TestDelete_ImmediateReplacementOnTheSameTable(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	old := f.create(t, rtbA1)
 	f.del(t, old)
@@ -297,6 +309,7 @@ func TestDelete_ImmediateReplacementOnTheSameTable(t *testing.T) {
 }
 
 func TestDelete_ForeignEndpointIsNotOwned(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	out, err := f.svc.DeleteVpcEndpoints(t.Context(), &ec2.DeleteVpcEndpointsInput{VpcEndpointIds: aws.StringSlice([]string{id})}, otherAccount)
@@ -306,6 +319,7 @@ func TestDelete_ForeignEndpointIsNotOwned(t *testing.T) {
 }
 
 func TestDescribe_FiltersAndErrors(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	a := f.create(t, rtbA1)
 	e, err := f.createIn(t, vpcB, rtbB1)
@@ -344,6 +358,7 @@ func TestDescribe_FiltersAndErrors(t *testing.T) {
 }
 
 func TestDescribe_DeletedTableStopsRendering(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA2)
 	f.tables.drop(testAccount, rtbA2)
@@ -352,6 +367,7 @@ func TestDescribe_DeletedTableStopsRendering(t *testing.T) {
 }
 
 func TestDescribeServices_ListsTheGatewayService(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	out, err := f.svc.DescribeVpcEndpointServices(t.Context(), &ec2.DescribeVpcEndpointServicesInput{}, testAccount)
 	require.NoError(t, err)
@@ -386,6 +402,7 @@ func TestDescribeServices_ListsTheGatewayService(t *testing.T) {
 }
 
 func TestTags_MirrorAndRemove(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t)
 	require.NoError(t, f.svc.ApplyRecordTags(&ec2.CreateTagsInput{
@@ -404,6 +421,7 @@ func TestTags_MirrorAndRemove(t *testing.T) {
 }
 
 func TestVpcBlocksDeletion(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	blocked, err := f.svc.VpcBlocksDeletion(t.Context(), testAccount, vpcA)
 	require.NoError(t, err)
@@ -426,6 +444,7 @@ func TestVpcBlocksDeletion(t *testing.T) {
 // A create holds the feature-level admission until its record is written, so a
 // rollback waiting on in-flight work cannot pass while an endpoint is landing.
 func TestCreate_HoldsAdmissionUntilWritten(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	var keysAtRelease []string
 	f.gate.onDone = func() { keysAtRelease = f.keys(t) }
@@ -435,6 +454,7 @@ func TestCreate_HoldsAdmissionUntilWritten(t *testing.T) {
 }
 
 func TestCreate_AdmissionRefusals(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.gate.closed = true
 	_, err := f.createIn(t, vpcA, rtbA1)
@@ -450,6 +470,7 @@ func TestCreate_AdmissionRefusals(t *testing.T) {
 // With the level closed, as during a rollback, an endpoint cannot gain a route,
 // but can still lose one or change its policy, so customers can drain it.
 func TestModify_AddingATableNeedsAdmission(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA3)
 	f.gate.closed = true
@@ -474,6 +495,7 @@ func TestModify_AddingATableNeedsAdmission(t *testing.T) {
 // The rollback drain counts every account's available endpoints and creates
 // still in flight, and nothing a delete or an abandoned create left.
 func TestCountLive(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	count := func() int {
 		n, err := CountLive(t.Context(), f.js, f.clock.now())
@@ -500,6 +522,7 @@ const readOnly = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Princi
 // Once every node enforces endpoint policies, a custom policy is stored as
 // written and described back, and a reset returns the default.
 func TestPolicy_CustomPolicyIsStoredOnceEnforced(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	policies := f.gate
 
@@ -523,6 +546,7 @@ func TestPolicy_CustomPolicyIsStoredOnceEnforced(t *testing.T) {
 // A custom policy write holds the policy admission until the policy is stored,
 // so a rollback waiting on in-flight work cannot pass while one is landing.
 func TestPolicy_WriteHoldsAdmissionUntilStored(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	policies := f.gate
 	id := f.create(t, rtbA1)
@@ -543,6 +567,7 @@ func TestPolicy_WriteHoldsAdmissionUntilStored(t *testing.T) {
 // While a rollback below the level is written, a custom policy is refused on
 // modify and nothing is stored; a create is refused before it as for any.
 func TestPolicy_RefusedUntilEveryNodeEnforces(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	policies := f.gate
@@ -566,6 +591,7 @@ func TestPolicy_RefusedUntilEveryNodeEnforces(t *testing.T) {
 // A policy the S3 gate would not enforce as written is refused at write, so no
 // stored policy silently fails closed there.
 func TestPolicy_RefusesWhatTheGateWouldNotEnforce(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	unreadable := `{"Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"},` +

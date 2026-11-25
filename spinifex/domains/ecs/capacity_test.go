@@ -92,6 +92,7 @@ func ecsNodeImage() []*ec2.Image {
 }
 
 func TestProvisionCapacity_BuildsRunInstancesInput(t *testing.T) {
+	t.Parallel()
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		GatewayBaseURL: "https://10.0.0.1:9999",
@@ -133,6 +134,7 @@ func TestProvisionCapacity_BuildsRunInstancesInput(t *testing.T) {
 }
 
 func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
+	t.Parallel()
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
@@ -164,6 +166,7 @@ func TestProvisionCapacity_DefaultsAndCount(t *testing.T) {
 
 // An explicit DiskSize must win over the default.
 func TestProvisionCapacity_ExplicitDiskSize(t *testing.T) {
+	t.Parallel()
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
@@ -187,6 +190,7 @@ func TestProvisionCapacity_ExplicitDiskSize(t *testing.T) {
 }
 
 func TestProvisionCapacity_MissingRequired(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM: newStubIAM(), Images: &stubImages{images: ecsNodeImage()},
 		RunInstances: func(context.Context, *ec2.RunInstancesInput, string) (*ec2.Reservation, error) { return nil, nil },
@@ -208,6 +212,7 @@ func ecsGPUNodeImage(id, created string) *ec2.Image {
 }
 
 func TestLookupECSGPUNodeAMI_SelectsGPUTaggedAMI(t *testing.T) {
+	t.Parallel()
 	images := &stubImages{images: []*ec2.Image{ecsGPUNodeImage("ami-ecs-gpu", "2026-06-01T00:00:00.000Z")}}
 
 	got, err := lookupECSGPUNodeAMI(context.Background(), images, testAccountID, tags.GPUVendorNVIDIA)
@@ -216,6 +221,7 @@ func TestLookupECSGPUNodeAMI_SelectsGPUTaggedAMI(t *testing.T) {
 }
 
 func TestLookupECSGPUNodeAMI_NoGPUAMINoFallback(t *testing.T) {
+	t.Parallel()
 	images := &stubImages{images: nil}
 
 	_, err := lookupECSGPUNodeAMI(context.Background(), images, testAccountID, tags.GPUVendorNVIDIA)
@@ -224,6 +230,7 @@ func TestLookupECSGPUNodeAMI_NoGPUAMINoFallback(t *testing.T) {
 }
 
 func TestLookupECSGPUNodeAMI_NewestCreationDateWins(t *testing.T) {
+	t.Parallel()
 	images := &stubImages{images: []*ec2.Image{
 		ecsGPUNodeImage("ami-ecs-gpu-old", "2026-01-01T00:00:00.000Z"),
 		ecsGPUNodeImage("ami-ecs-gpu-new", "2026-06-01T00:00:00.000Z"),
@@ -235,6 +242,7 @@ func TestLookupECSGPUNodeAMI_NewestCreationDateWins(t *testing.T) {
 }
 
 func TestLookupECSNodeAMI_ExcludesGPUTaggedAMI(t *testing.T) {
+	t.Parallel()
 	// The GPU node AMI also carries managed-by=ecs, so a managed-by DescribeImages
 	// returns it too (stubImages ignores filters, mirroring that). Even when it is
 	// newer, the plain lookup must skip it so ordinary container instances do not
@@ -250,6 +258,7 @@ func TestLookupECSNodeAMI_ExcludesGPUTaggedAMI(t *testing.T) {
 }
 
 func TestProvisionCapacity_GPUInstanceTypeUsesGPUAMI(t *testing.T) {
+	t.Parallel()
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
@@ -272,6 +281,7 @@ func TestProvisionCapacity_GPUInstanceTypeUsesGPUAMI(t *testing.T) {
 }
 
 func TestProvisionCapacity_NonGPUInstanceTypeUsesPlainAMI(t *testing.T) {
+	t.Parallel()
 	var captured *ec2.RunInstancesInput
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
@@ -297,6 +307,7 @@ func TestProvisionCapacity_NonGPUInstanceTypeUsesPlainAMI(t *testing.T) {
 // the plain AMI resolvable, the gpu-vendor filter matches nothing and the GPU
 // lookup must fail rather than silently reuse the driverless image.
 func TestProvisionCapacity_GPUInstanceTypeNoGPUAMIErrors(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
 		Images: &filteringStubImages{images: ecsNodeImage()}, // only the plain (non-GPU) AMI resolves
@@ -317,6 +328,7 @@ func TestProvisionCapacity_GPUInstanceTypeNoGPUAMIErrors(t *testing.T) {
 }
 
 func TestProvisionCapacity_AMINotFound(t *testing.T) {
+	t.Parallel()
 	svc := NewService(nil, testRegion, "internal").WithDeps(Deps{
 		IAM:    newStubIAM(),
 		Images: &stubImages{images: nil},

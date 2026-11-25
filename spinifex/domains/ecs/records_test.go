@@ -19,6 +19,7 @@ import (
 // decodes cleanly: every KV entry written by an older daemon build must stay
 // readable without a migration.
 func TestTaskDefRecord_DecodesPreExistingJSON(t *testing.T) {
+	t.Parallel()
 	legacy := `{
 		"family": "app",
 		"revision": 1,
@@ -49,6 +50,7 @@ func TestTaskDefRecord_DecodesPreExistingJSON(t *testing.T) {
 // persisted before enableEcsManagedTags existed still decodes cleanly, and
 // defaults the new field to false rather than failing to unmarshal.
 func TestServiceRecord_DecodesPreExistingJSON(t *testing.T) {
+	t.Parallel()
 	legacy := `{
 		"name": "web",
 		"arn": "arn:aws:ecs:ap-southeast-2:123456789012:service/web/web",
@@ -67,6 +69,7 @@ func TestServiceRecord_DecodesPreExistingJSON(t *testing.T) {
 // a caller (and the DescribeServices projection) can read the ring newest
 // first without a separate sort or reverse step.
 func TestAppendServiceEvent_NewestFirst(t *testing.T) {
+	t.Parallel()
 	var rec ServiceRecord
 	appendServiceEvent(&rec, "first")
 	appendServiceEvent(&rec, "second")
@@ -81,6 +84,7 @@ func TestAppendServiceEvent_NewestFirst(t *testing.T) {
 // the ring is capped at serviceEventRingCap, discarding the oldest entries
 // first, mirroring AWS's own roughly-100-event retention.
 func TestAppendServiceEvent_CapsRingAndDropsOldest(t *testing.T) {
+	t.Parallel()
 	var rec ServiceRecord
 	for i := range serviceEventRingCap + 5 {
 		appendServiceEvent(&rec, fmt.Sprintf("event %d", i))

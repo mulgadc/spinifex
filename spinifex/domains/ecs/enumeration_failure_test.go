@@ -25,7 +25,8 @@ func dropRevisit(pass func(context.Context) (time.Duration, error)) func(context
 // terminal error would read an unreachable JetStream as an empty fleet and
 // report a clean tick while every account went unswept — instances never
 // drained, services never relaunched, stopped tasks never pruned.
-func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) {
+func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) { //nolint:tparallel // subtests run in order: the connection closes between the reachable and unreachable groups
+	t.Parallel()
 	svc, nc := newTestService(t)
 	sc := testScheduler(t, nc, svc, "test-holder")
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	now := time.Now().UTC()
 
@@ -48,6 +49,7 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 }
 
 func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -78,6 +80,7 @@ func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
 }
 
 func TestSweepStoppedBucket_RetryFails_BacksOff(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eni := &stubENI{releaseErr: errors.New("nats timeout")}
 	svc.eni = eni
@@ -106,6 +109,7 @@ func TestSweepStoppedBucket_RetryFails_BacksOff(t *testing.T) {
 }
 
 func TestSweepStoppedBucket_RetryNotDueYet_Skipped(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -129,6 +133,7 @@ func TestSweepStoppedBucket_RetryNotDueYet_Skipped(t *testing.T) {
 }
 
 func TestSweepStoppedBucket_HonoursPerPassCap(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eni := &stubENI{releaseErr: errors.New("nats timeout")}
 	svc.eni = eni
@@ -160,6 +165,7 @@ func TestSweepStoppedBucket_HonoursPerPassCap(t *testing.T) {
 // capped-out branch: every retry this pass succeeds (so none re-arms its own
 // backoff), leaving the overflow records as the only source of a deadline.
 func TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -188,6 +194,7 @@ func TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval(t *testing.T) {
 // released ENI is no longer "owed" and is pruned like any other stale STOPPED
 // record, while an unreleased one is refused however far past retention it is.
 func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	now := time.Now().UTC()
 
@@ -222,6 +229,7 @@ func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
 }
 
 func TestEniReleaseBackoff_DoublesThenCaps(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, eniReleaseBackoffBase, eniReleaseBackoff(1))
 	assert.Equal(t, 2*eniReleaseBackoffBase, eniReleaseBackoff(2))
 	assert.Equal(t, 4*eniReleaseBackoffBase, eniReleaseBackoff(3))

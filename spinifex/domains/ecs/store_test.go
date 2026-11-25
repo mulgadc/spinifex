@@ -11,15 +11,18 @@ import (
 const testAccountID = "123456789012"
 
 func TestAccountBucketName(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "ecs-account-123456789012", AccountBucketName(testAccountID))
 }
 
 func TestNewStore_NilConn(t *testing.T) {
+	t.Parallel()
 	_, err := NewStore(nil)
 	require.Error(t, err)
 }
 
 func TestNewStore_Valid(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	s, err := NewStore(nc)
 	require.NoError(t, err)
@@ -27,6 +30,7 @@ func TestNewStore_Valid(t *testing.T) {
 }
 
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -45,6 +49,7 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 // Key-path helpers must produce the ecs-v1.md Q2 layout exactly: prefixes are
 // what the List* enumerations watch, so a drift here silently breaks listing.
 func TestKeyPaths(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "clusters/web/meta", ClusterMetaKey("web"))
 
 	assert.Equal(t, "clusters/web/instances/", InstancesPrefix("web"))
@@ -60,6 +65,7 @@ func TestKeyPaths(t *testing.T) {
 // Prefix helpers must be a true prefix of their per-record key so a KV
 // prefix-watch over the prefix sees the record key.
 func TestPrefixContainment(t *testing.T) {
+	t.Parallel()
 	assert.Contains(t, InstanceKey("c", "x"), InstancesPrefix("c"))
 	assert.Contains(t, TaskKey("c", "x"), TasksPrefix("c"))
 	assert.Contains(t, ServiceKey("c", "x"), ServicesPrefix("c"))

@@ -13,6 +13,7 @@ import (
 )
 
 func TestService_DeleteCluster_CascadesAndSweeps(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -34,6 +35,7 @@ func TestService_DeleteCluster_CascadesAndSweeps(t *testing.T) {
 }
 
 func TestService_DeleteCluster_Unknown(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.DeleteCluster(context.Background(), &ecs.DeleteClusterInput{Cluster: aws.String("ghost")}, testAccountID)
 	require.Error(t, err)
@@ -42,6 +44,7 @@ func TestService_DeleteCluster_Unknown(t *testing.T) {
 // cluster is required on DeleteCluster: omitting it must not resolve to, and
 // delete, the default cluster.
 func TestService_DeleteCluster_ClusterOmitted(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{}, testAccountID)
 	require.NoError(t, err)
@@ -59,6 +62,7 @@ func TestService_DeleteCluster_ClusterOmitted(t *testing.T) {
 }
 
 func TestService_DeregisterTaskDefinition_InactivatesRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 128, 256)
 
@@ -75,6 +79,7 @@ func TestService_DeregisterTaskDefinition_InactivatesRevision(t *testing.T) {
 }
 
 func TestService_DeregisterTaskDefinition_RequiresRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 128, 256)
 	// Bare family (no revision) is rejected, matching AWS.
@@ -83,6 +88,7 @@ func TestService_DeregisterTaskDefinition_RequiresRevision(t *testing.T) {
 }
 
 func TestService_DeregisterContainerInstance_ForceStopsAndRemoves(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
 		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
@@ -120,6 +126,7 @@ func TestService_DeregisterContainerInstance_ForceStopsAndRemoves(t *testing.T) 
 }
 
 func TestService_UpdateContainerInstancesState_DrainsServiceTasks(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -143,6 +150,7 @@ func TestService_UpdateContainerInstancesState_DrainsServiceTasks(t *testing.T) 
 }
 
 func TestService_UpdateContainerInstancesState_RejectsBadStatusAndUnknown(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.UpdateContainerInstancesState(context.Background(), &ecs.UpdateContainerInstancesStateInput{
 		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},

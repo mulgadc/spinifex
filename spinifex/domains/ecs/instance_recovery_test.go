@@ -38,6 +38,7 @@ func instanceStatus(t *testing.T, svc *Service, cluster, id string) InstanceReco
 // re-registers, so a control-plane restart that briefly reaps live instances
 // self-heals instead of stranding them in DRAINING.
 func TestRegister_RestoresReapedInstanceToActive(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -66,6 +67,7 @@ func TestRegister_RestoresReapedInstanceToActive(t *testing.T) {
 // DRAINING->ACTIVE flip on agent re-register (involuntary reap recovery) never
 // carries stale ReservedCPU/Memory or PlacedTasks into the re-activated instance.
 func TestReaper_ReleasesCapacityAndRecoversClean(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -115,6 +117,7 @@ func TestReaper_ReleasesCapacityAndRecoversClean(t *testing.T) {
 // An operator UpdateContainerInstancesState=DRAINING is intentional and must
 // persist even though the live agent keeps re-registering.
 func TestRegister_DoesNotUndoOperatorDrain(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -143,6 +146,7 @@ func TestRegister_DoesNotUndoOperatorDrain(t *testing.T) {
 // drained involuntarily and the scheduler stops placing tasks it could only
 // fail to start.
 func TestRegister_NoCapacityDrainsTheInstance(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -181,6 +185,7 @@ func TestRegister_NoCapacityDrainsTheInstance(t *testing.T) {
 // The runtime coming back is a registration carrying real capacity again, which
 // clears the drain without the agent or the instance being restarted.
 func TestRegister_CapacityReturningClearsTheDrain(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -207,6 +212,7 @@ func TestRegister_CapacityReturningClearsTheDrain(t *testing.T) {
 // An operator drain is deliberate, so a capacity-carrying registration must not
 // undo it. Only the involuntary drain this path sets is cleared by a register.
 func TestRegister_DoesNotClearAnOperatorDrain(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)

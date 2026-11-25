@@ -15,6 +15,7 @@ import (
 // ReportTaskGPU merges the agent-reported device UUIDs onto the matching
 // container(s) of an existing task record, by container name.
 func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -49,6 +50,7 @@ func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
 // An unknown task is a silent no-op (still acknowledged) — the state-report
 // path already owns the task's lifecycle.
 func TestReportTaskGPU_UnknownTaskNoop(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	out, err := svc.ReportTaskGPU(context.Background(), &ReportTaskGPUInput{
 		Cluster: "web", Task: "t-missing",
@@ -61,6 +63,7 @@ func TestReportTaskGPU_UnknownTaskNoop(t *testing.T) {
 // DescribeTasks surfaces the reported UUIDs as the real AWS Container.gpuIds
 // field, once ReportTaskGPU has merged them onto the task record.
 func TestDescribeTasks_GPUIDsPopulatedFromReport(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -83,6 +86,7 @@ func TestDescribeTasks_GPUIDsPopulatedFromReport(t *testing.T) {
 // task carries no GPUIDs, and DescribeTasks must still surface the UUIDs the
 // RUNNING report (or ReportTaskGPU) previously set.
 func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -135,6 +139,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 // A state-change report that DOES carry GPUIDs still overwrites/replaces the
 // pinned set normally (e.g. a corrected report, or GPUs reassigned on a retry).
 func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -161,6 +166,7 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 // A non-GPU container's GPUIDs stay empty across state transitions — there is
 // nothing to preserve, and the fallback must not fabricate a value.
 func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)

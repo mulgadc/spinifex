@@ -16,6 +16,7 @@ import (
 // TestRegisterTaskDefinition_RejectsSecrets verifies that a container secrets[]
 // is hard-rejected rather than silently dropped.
 func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -33,6 +34,7 @@ func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
 // non-json-file driver is accepted for parity (warned, not rejected) and the
 // driver round-trips through DescribeTaskDefinition.
 func TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -62,6 +64,7 @@ func TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver(t *testing.T) {
 // list to a client that sent ["EC2"] reads as drift, and Terraform treats it as
 // a forced replacement on every plan.
 func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:                  aws.String("app"),
@@ -83,6 +86,7 @@ func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
 // (nothing selects capacity by CPU architecture or OS family in v1), but the
 // same drift trap as RequiresCompatibilities applies if it is not echoed back.
 func TestRegisterTaskDefinition_EchoesRuntimePlatform(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -109,6 +113,7 @@ func TestRegisterTaskDefinition_EchoesRuntimePlatform(t *testing.T) {
 // task definition registered without runtimePlatform describes with a nil
 // RuntimePlatform rather than an invented empty struct.
 func TestRegisterTaskDefinition_RuntimePlatformOmittedWhenUnset(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -128,6 +133,7 @@ func TestRegisterTaskDefinition_RuntimePlatformOmittedWhenUnset(t *testing.T) {
 // TestRunTask_AssignCarriesExecutionRoleAndLogDriver verifies that execution
 // role plumbed to the agent) and the log driver reaches the assign.
 func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -164,6 +170,7 @@ func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
 // The persisted port mappings and sysctls are translated field by field onto
 // the assign payload the agent polls for.
 func TestRunTask_AssignCarriesPortMappingsAndSystemControls(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -201,6 +208,7 @@ func TestRunTask_AssignCarriesPortMappingsAndSystemControls(t *testing.T) {
 // conv -> taskdefinition.Container -> task-level aggregate (TaskRecord.GPU) -> the
 // AssignContainer the agent polls for.
 func TestRunTask_AssignCarriesGPU(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -249,6 +257,7 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 // The enforced container-runtime fields read back exactly as submitted: the
 // read-back is the fix, not just acceptance at register time.
 func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -306,6 +315,7 @@ func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
 // A task definition registered without any of the new fields reads back
 // byte-identical to before, so an existing revision does not churn.
 func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -343,6 +353,7 @@ func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
 // different, so omitting one forces a task-definition replacement on a plan
 // taken straight after a clean apply.
 func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -381,6 +392,7 @@ func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
 // defaults: cpu 0, empty environment/mountPoints/volumesFrom/systemControls, and on each
 // port mapping protocol tcp and, under awsvpc, hostPort equal to containerPort.
 func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:      aws.String("app"),
@@ -415,6 +427,7 @@ func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
 // Outside awsvpc an omitted hostPort stays omitted, and a sent protocol is
 // echoed rather than defaulted.
 func TestRegisterTaskDefinition_BridgeLeavesHostPortUnset(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	out, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:      aws.String("app"),
@@ -431,6 +444,7 @@ func TestRegisterTaskDefinition_BridgeLeavesHostPortUnset(t *testing.T) {
 }
 
 func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -451,6 +465,7 @@ func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
 // mountPoints is refused at registration rather than silently dropped: there
 // is no task volume model to honor it against.
 func TestRegisterTaskDefinition_RejectsMountPoints(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -472,6 +487,7 @@ func TestRegisterTaskDefinition_RejectsMountPoints(t *testing.T) {
 // TestRegisterTaskDefinition_RejectsVolumesFrom mirrors RejectsMountPoints for
 // volumesFrom: no task volume model, no way to honor it.
 func TestRegisterTaskDefinition_RejectsVolumesFrom(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -490,6 +506,7 @@ func TestRegisterTaskDefinition_RejectsVolumesFrom(t *testing.T) {
 // TestRegisterTaskDefinition_RejectsLinuxParametersDevices verifies device
 // injection is refused rather than silently dropped.
 func TestRegisterTaskDefinition_RejectsLinuxParametersDevices(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -510,6 +527,7 @@ func TestRegisterTaskDefinition_RejectsLinuxParametersDevices(t *testing.T) {
 // TestRegisterTaskDefinition_RejectsInitProcessEnabled verifies
 // initProcessEnabled=true is refused: there is no init shim to honor it.
 func TestRegisterTaskDefinition_RejectsInitProcessEnabled(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
@@ -529,6 +547,7 @@ func TestRegisterTaskDefinition_RejectsInitProcessEnabled(t *testing.T) {
 // sharedMemorySize and tmpfs are refused: both need mounts this agent does
 // not model.
 func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("shm"),
@@ -561,6 +580,7 @@ func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
 // reach ecsv1.AssignContainer, the daemon-to-agent wire contract — the third of
 // the four drop points this fix closes (stored, sent, applied, returned).
 func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -612,6 +632,7 @@ func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
 // AWS rejects a container with no image before checking its memory, and
 // without task-level memory requires memory or memoryReservation per container.
 func TestRegisterTaskDefinition_RequiresImageAndMemory(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		taskMemory *string
@@ -631,6 +652,7 @@ func TestRegisterTaskDefinition_RequiresImageAndMemory(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(t)
 			_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 				Family: aws.String("app"), Memory: tc.taskMemory,

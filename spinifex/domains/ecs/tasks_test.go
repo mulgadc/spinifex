@@ -8,6 +8,7 @@ import (
 )
 
 func TestTaskToAWS_LifecycleTimestamps(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	created := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	started := created.Add(30 * time.Second)
@@ -24,6 +25,7 @@ func TestTaskToAWS_LifecycleTimestamps(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			task := svc.taskToAWS(testAccountID, &tc.rec, nil)
 			assert.Equal(t, &created, task.CreatedAt)
 			assert.Equal(t, tc.started, task.StartedAt)

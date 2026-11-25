@@ -36,6 +36,7 @@ func registerTypedInstance(t *testing.T, svc *Service, cluster, id, instanceType
 }
 
 func TestRegisterContainerInstance_RecordsInstanceTypeAttribute(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -51,6 +52,7 @@ func TestRegisterContainerInstance_RecordsInstanceTypeAttribute(t *testing.T) {
 }
 
 func TestInstanceRecord_ENICapacityComesFromInstanceType(t *testing.T) {
+	t.Parallel()
 	// A t3 carries three ENIs, one of which is the instance's own, so two task
 	// ENIs fit.
 	r := InstanceRecord{Status: InstanceStatusActive, InstanceType: "t3.micro", TotalCPU: 1024, TotalMemoryMiB: 2048}
@@ -66,11 +68,13 @@ func TestInstanceRecord_ENICapacityComesFromInstanceType(t *testing.T) {
 // An agent too old to report its type must not have every awsvpc placement
 // refused; that would turn a mixed-version cluster into an outage.
 func TestInstanceRecord_UnknownInstanceTypeIsNotENIGated(t *testing.T) {
+	t.Parallel()
 	r := InstanceRecord{Status: InstanceStatusActive, TotalCPU: 1024, TotalMemoryMiB: 2048, ReservedENIs: 99}
 	assert.True(t, r.fits(0, 0, 0, 1))
 }
 
 func TestPlaceTask_ENIExhaustionIsItsOwnRefusal(t *testing.T) {
+	t.Parallel()
 	full := InstanceRecord{
 		InstanceID: "i-1", Status: InstanceStatusActive, InstanceType: "t3.micro",
 		TotalCPU: 1024, TotalMemoryMiB: 2048, ReservedENIs: 2,
@@ -86,6 +90,7 @@ func TestPlaceTask_ENIExhaustionIsItsOwnRefusal(t *testing.T) {
 }
 
 func TestRunTask_Awsvpc_ThirdTaskDeclinedAtPlacement(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -120,6 +125,7 @@ func TestRunTask_Awsvpc_ThirdTaskDeclinedAtPlacement(t *testing.T) {
 }
 
 func TestStartTask_Awsvpc_DeclinedWhenInstanceHasNoSlot(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	svc.eni = &stubENI{}
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -154,6 +160,7 @@ func TestStartTask_Awsvpc_DeclinedWhenInstanceHasNoSlot(t *testing.T) {
 // A stopped task hands its slot back, or an instance would take exactly as many
 // awsvpc tasks as it has slots for its whole life.
 func TestTaskStop_ReleasesENIReservation(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	svc.eni = &stubENI{}
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -187,6 +194,7 @@ func TestTaskStop_ReleasesENIReservation(t *testing.T) {
 // The attach path stays as a backstop for a failure the reservation cannot
 // predict, and it too keeps the server's own error out of the caller's reach.
 func TestProvisionTaskENI_AttachFailureDetailIsNotTheServerError(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	svc.eni = &stubENI{attachErr: errors.New("ServerInternal")}
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)

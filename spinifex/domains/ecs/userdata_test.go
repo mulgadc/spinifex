@@ -7,6 +7,7 @@ import (
 )
 
 func TestBuildContainerInstanceUserData(t *testing.T) {
+	t.Parallel()
 	const caPEM = "-----BEGIN CERTIFICATE-----\nMIIBfakefakefake\n-----END CERTIFICATE-----"
 	udata := buildContainerInstanceUserData(containerInstanceUserDataInput{
 		GatewayURL:    "https://10.0.0.1:9999",

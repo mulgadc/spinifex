@@ -82,6 +82,7 @@ func (b *fakeEIPBackend) register(t *testing.T, nc *nats.Conn) {
 }
 
 func TestNATSEIPManager_AllocateAndAssociate(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	backend := &fakeEIPBackend{}
 	backend.register(t, nc)
@@ -97,6 +98,7 @@ func TestNATSEIPManager_AllocateAndAssociate(t *testing.T) {
 
 // A failed AssociateAddress must release the orphaned allocation so nothing leaks.
 func TestNATSEIPManager_AssociateFailureReleasesAllocation(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	backend := &fakeEIPBackend{associateFails: true}
 	backend.register(t, nc)
@@ -109,6 +111,7 @@ func TestNATSEIPManager_AssociateFailureReleasesAllocation(t *testing.T) {
 }
 
 func TestNATSEIPManager_ReleaseDisassociatesThenReleases(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	backend := &fakeEIPBackend{}
 	backend.register(t, nc)

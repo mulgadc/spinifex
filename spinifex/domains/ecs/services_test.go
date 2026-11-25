@@ -53,6 +53,7 @@ func serviceTestRig(t *testing.T) (*Service, *stubRegistrar, jetstream.KeyValue)
 }
 
 func TestService_CreateService_LaunchesReplicas(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 
 	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
@@ -76,6 +77,7 @@ func TestService_CreateService_LaunchesReplicas(t *testing.T) {
 }
 
 func TestService_CreateService_RejectsDaemonAndRegistries(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
@@ -97,6 +99,7 @@ func TestService_CreateService_RejectsDaemonAndRegistries(t *testing.T) {
 }
 
 func TestService_CreateService_UnknownCluster(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 1, 1)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
@@ -108,6 +111,7 @@ func TestService_CreateService_UnknownCluster(t *testing.T) {
 
 // Reconcile relaunches the desired count after a task STOPs.
 func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -137,6 +141,7 @@ func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
 
 // UpdateService desiredCount=1 stops the surplus task.
 func TestService_UpdateService_ScalesIn(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -158,6 +163,7 @@ func TestService_UpdateService_ScalesIn(t *testing.T) {
 }
 
 func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -200,6 +206,7 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 // A deleted service is still known, so UpdateService answers not-active;
 // only a name that never existed answers not-found.
 func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -226,6 +233,7 @@ func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
 // stops none of the customer's tasks, as AWS refuses it.
 // Verifies: ADR-0003:S7.
 func TestS7_DeleteServiceWithoutForceLeavesAScaledServiceRunning(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -273,6 +281,7 @@ func taskIDs(tasks []TaskRecord) []string {
 }
 
 func TestService_DescribeAndList(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	for _, name := range []string{"a", "b"} {
 		_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
@@ -300,6 +309,7 @@ func TestService_DescribeAndList(t *testing.T) {
 // this asserts on the bytes the SDK's own jsonutil marshaler produces, the
 // same marshaler the gateway uses to write the HTTP response body.
 func TestService_DescribeServices_EventsIsListNotNull(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	// DesiredCount>0 with no task driven to RUNNING: the rollout stays
 	// IN_PROGRESS, so no steady-state event has fired yet and Events is empty.
@@ -329,6 +339,7 @@ func TestService_DescribeServices_EventsIsListNotNull(t *testing.T) {
 // nothing — the one field a caller needs to tell a stale record from a fresh
 // one apart.
 func TestService_DescribeServices_ProjectsCreatedAt(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	before := time.Now().UTC()
 	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
@@ -359,6 +370,7 @@ func TestService_DescribeServices_ProjectsCreatedAt(t *testing.T) {
 // 1970-01-01 epoch, which is worse than the omission it replaces — it reads
 // as a real (wrong) timestamp instead of "unknown".
 func TestService_ServiceToAWS_ZeroTimeProjectsAsAbsentKey(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rec := &ServiceRecord{
 		Name:               "legacy",
@@ -387,6 +399,7 @@ func TestService_ServiceToAWS_ZeroTimeProjectsAsAbsentKey(t *testing.T) {
 // TestService_ListServices_EmptyIsPresentNotAbsent covers the ARN-list D-fix
 // for ListServices: the key must marshal as an empty list, not vanish.
 func TestService_ListServices_EmptyIsPresentNotAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	out, err := svc.ListServices(context.Background(), &ecs.ListServicesInput{Cluster: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -399,6 +412,7 @@ func TestService_ListServices_EmptyIsPresentNotAbsent(t *testing.T) {
 // stored and used internally to place tasks, but serviceToAWS never echoed
 // it; enableECSManagedTags was not stored at all.
 func TestService_CreateService_ProjectsNetworkConfigurationAndManagedTags(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -438,6 +452,7 @@ func TestService_CreateService_ProjectsNetworkConfigurationAndManagedTags(t *tes
 // UpdateService must actually persist a changed value, or a caller changing
 // subnets would see a diff no apply could ever converge.
 func TestService_UpdateService_ChangesNetworkConfiguration(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -499,6 +514,7 @@ func TestService_UpdateService_ChangesNetworkConfiguration(t *testing.T) {
 
 // StartTask places one task per named container instance and assigns it.
 func TestService_StartTask_PlacesPerInstance(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 
 	out, err := svc.StartTask(context.Background(), &ecs.StartTaskInput{
@@ -524,6 +540,7 @@ func TestService_StartTask_PlacesPerInstance(t *testing.T) {
 // StartTask onto an unknown / too-small instance returns a placement Failure,
 // not a hard error, and onto an unknown cluster a ClusterNotFound error.
 func TestService_StartTask_Failures(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 
 	out, err := svc.StartTask(context.Background(), &ecs.StartTaskInput{
@@ -544,6 +561,7 @@ func TestService_StartTask_Failures(t *testing.T) {
 // StopTask transitions a running service task to STOPPED, releases its
 // reservation, and deregisters its ELBv2 targets.
 func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
+	t.Parallel()
 	svc, reg, kv := serviceTestRig(t)
 	const tgARN = "arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:targetgroup/web/abc"
 
@@ -601,6 +619,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 // both agent reports: the exit-wait report carrying the exit code and the stop
 // reap's report that carries none.
 func TestService_StopTask_RecordsStopFieldsAndExitCode(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	task := &TaskRecord{
 		TaskID: "t-5", Cluster: "web", ContainerInstanceID: "i-1",
@@ -651,6 +670,7 @@ func TestService_StopTask_RecordsStopFieldsAndExitCode(t *testing.T) {
 }
 
 func TestService_StopTask_NotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
 	assert.EqualError(t, err, "The referenced task was not found.: InvalidParameterException")
@@ -659,6 +679,7 @@ func TestService_StopTask_NotFound(t *testing.T) {
 // StopTask on a never-placed task (no container instance) force-stops it directly:
 // no agent can reap it, so the control plane transitions it to STOPPED immediately.
 func TestService_StopTask_UnplacedForceStops(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	task := &TaskRecord{
 		TaskID: "t-np", Cluster: "web",
@@ -678,6 +699,7 @@ func TestService_StopTask_UnplacedForceStops(t *testing.T) {
 // A service with a target group registers each task's ENI IP on RUNNING and
 // deregisters it on STOPPED (ecs-v1.md Q8, single-writer).
 func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) {
+	t.Parallel()
 	svc, reg, kv := serviceTestRig(t)
 	const tgARN = "arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:targetgroup/web/abc"
 
@@ -715,6 +737,7 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 }
 
 func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(*ecs.CreateServiceInput){
 		"desiredCount":   func(in *ecs.CreateServiceInput) { in.DesiredCount = aws.Int64(3) },
 		"taskDefinition": func(in *ecs.CreateServiceInput) { in.TaskDefinition = aws.String("other") },
@@ -722,6 +745,7 @@ func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			svc, _, kv := serviceTestRig(t)
 			registerTaskDef(t, svc, "other", 128, 256)
 			input := func() *ecs.CreateServiceInput {
@@ -751,6 +775,7 @@ func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T
 }
 
 func TestService_CreateService_SameTokenAndParametersReplays(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	input := &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),

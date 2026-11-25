@@ -41,6 +41,7 @@ func assertAWSTaskMembers(t *testing.T, task *ecs.Task, containerARN string) {
 }
 
 func TestRunTaskAndDescribeTasks_ReportTaskAndContainerMembers(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -88,6 +89,7 @@ func TestRunTaskAndDescribeTasks_ReportTaskAndContainerMembers(t *testing.T) {
 }
 
 func TestTaskToAWS_ProjectsRecordAndTaskDefinition(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rec := &TaskRecord{
 		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),

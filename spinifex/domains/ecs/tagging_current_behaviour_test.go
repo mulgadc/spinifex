@@ -38,6 +38,7 @@ func (k *interleavingKV) Get(ctx context.Context, key string) (jetstream.KeyValu
 // A tag write re-puts the whole record it read without a revision check, so a
 // record change committed between its read and its write is reverted.
 func TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -85,6 +86,7 @@ func TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite(t *te
 // resource segment is resolved in the caller's own bucket, so a foreign ARN
 // tags the caller's same-named cluster.
 func TestCurrentBehaviour_Tagging_ECSForeignAccountARNTagsCallerResource(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -107,6 +109,7 @@ func TestCurrentBehaviour_Tagging_ECSForeignAccountARNTagsCallerResource(t *test
 
 // TagResource applies no aws: prefix rule: the reserved key below is stored.
 func TestCurrentBehaviour_Tagging_ECSTagResourceAcceptsAWSPrefix(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 

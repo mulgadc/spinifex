@@ -99,6 +99,7 @@ func awsvpcRunInput() *ecs.RunTaskInput {
 }
 
 func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -136,6 +137,7 @@ func TestRunTask_Awsvpc_AllocatesAttachesAssigns(t *testing.T) {
 }
 
 func TestRunTask_Awsvpc_NoSubnets_Errors(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -153,6 +155,7 @@ func TestRunTask_Awsvpc_NoSubnets_Errors(t *testing.T) {
 }
 
 func TestRunTask_Awsvpc_AttachFailure_RollsBack(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{attachErr: errors.New("hot-plug timeout")}
 	svc.eni = eni
@@ -203,6 +206,7 @@ func singleTaskRecord(t *testing.T, svc *Service, cluster string) (TaskRecord, b
 }
 
 func TestReclaimTaskENI_ReleaseSucceeds_MarksReleased(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -221,6 +225,7 @@ func TestReclaimTaskENI_ReleaseSucceeds_MarksReleased(t *testing.T) {
 }
 
 func TestReclaimTaskENI_ReleaseFails_LeavesIdentity(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{releaseErr: errors.New("nats timeout")}
 	svc.eni = eni
@@ -235,6 +240,7 @@ func TestReclaimTaskENI_ReleaseFails_LeavesIdentity(t *testing.T) {
 }
 
 func TestRunTask_Awsvpc_AttachFailure_ReleaseSucceeds_NoRecordPersisted(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{attachErr: errors.New("hot-plug timeout")}
 	svc.eni = eni
@@ -252,6 +258,7 @@ func TestRunTask_Awsvpc_AttachFailure_ReleaseSucceeds_NoRecordPersisted(t *testi
 }
 
 func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{attachErr: errors.New("hot-plug timeout"), attachedID: "eni-attach-stub", releaseErr: errors.New("release timeout")}
 	svc.eni = eni
@@ -282,6 +289,7 @@ func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *test
 }
 
 func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -306,6 +314,7 @@ func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
 }
 
 func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -332,6 +341,7 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 }
 
 func TestRunTask_BridgeMode_NoENI(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -354,6 +364,7 @@ func TestRunTask_BridgeMode_NoENI(t *testing.T) {
 // released must still carry its ElasticNetworkInterface attachment, with
 // Status DELETED rather than an empty attachments list.
 func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rec := &TaskRecord{
 		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
@@ -377,6 +388,7 @@ func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing
 
 // The task ENI attachment follows the ENI's own progress, not the task's status.
 func TestTaskENIAttachmentStatus(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name string
@@ -391,12 +403,14 @@ func TestTaskENIAttachmentStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, taskENIAttachmentStatus(&tc.rec))
 		})
 	}
 }
 
 func TestResolveNetworkMode(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "awsvpc"}))
 	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "AWSVPC"}))
 	assert.Equal(t, NetworkModeHost, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "host"}))
@@ -405,6 +419,7 @@ func TestResolveNetworkMode(t *testing.T) {
 }
 
 func TestParseAwsvpcConfig(t *testing.T) {
+	t.Parallel()
 	in := awsvpcRunInput()
 	cfg, err := parseAwsvpcConfig(in, NetworkModeAwsvpc)
 	require.NoError(t, err)
@@ -434,6 +449,7 @@ func respond(t *testing.T, nc *nats.Conn, subject string, fn func([]byte) any) {
 }
 
 func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	c := newNATSENIController(nc)
 
@@ -484,6 +500,7 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 }
 
 func TestNATSENIController_Release_NotFoundIsSuccess(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	c := newNATSENIController(nc)
 
@@ -501,6 +518,7 @@ func TestNATSENIController_Release_NotFoundIsSuccess(t *testing.T) {
 }
 
 func TestNATSENIController_Release_NoENINoop(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	c := newNATSENIController(nc)
 	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{})) // no ENIID
@@ -508,6 +526,7 @@ func TestNATSENIController_Release_NoENINoop(t *testing.T) {
 }
 
 func TestIsENINotFound(t *testing.T) {
+	t.Parallel()
 	assert.True(t, isENINotFound(errors.New("InvalidNetworkInterfaceID.NotFound")))
 	assert.True(t, isENINotFound(errors.New("delete: InvalidAttachmentID.NotFound")))
 	assert.False(t, isENINotFound(errors.New("ServerInternal")))

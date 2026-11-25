@@ -15,6 +15,7 @@ import (
 // and acking their IDs on a follow-up poll deletes the inbox entries so nothing is
 // re-delivered. Empty ack IDs are skipped.
 func TestPollAssignments_DrainsStopsAndAcks(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 
 	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, AssignmentKey("web", "i-1", "t-1"),

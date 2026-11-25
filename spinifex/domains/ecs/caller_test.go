@@ -39,6 +39,7 @@ func serveWithCaller[I, O any](t *testing.T, nc *nats.Conn, subject string, fn f
 // AWS records the creating IAM role as a service's createdBy and the creating
 // session as a task definition's registeredBy, and returns both on describe.
 func TestCallerARN_RecordedAsCreatedByAndRegisteredBy(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	serveWithCaller(t, nc, "ecs.RegisterTaskDefinition", svc.RegisterTaskDefinition)
 	serveWithCaller(t, nc, "ecs.CreateService", svc.CreateService)

@@ -1,8 +1,6 @@
 package invariants
 
 import (
-	"encoding/json"
-	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -31,24 +29,12 @@ func TestS8_IPSecOVNNativeOnly(t *testing.T) {
 		"openswan",
 	}
 
-	cmd := exec.Command("go", "list", "-json", "./...")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
-
 	type hit struct {
 		pkg string
 		imp string
 	}
 	var hits []hit
-	dec := json.NewDecoder(strings.NewReader(string(out)))
-	for dec.More() {
-		var p goListPackage
-		if err := dec.Decode(&p); err != nil {
-			t.Fatalf("decode go list: %v", err)
-		}
+	for _, p := range goListNetwork(t) {
 		if !strings.HasPrefix(p.ImportPath, networkRoot) {
 			continue
 		}

@@ -2,8 +2,6 @@ package invariants
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -56,8 +54,7 @@ func TestS3_NATModeInitTimeConstant(t *testing.T) {
 			if isS3Exempt(path) {
 				return nil
 			}
-			fset := token.NewFileSet()
-			file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			fset, file, perr := parseGoFile(path)
 			if perr != nil {
 				t.Fatalf("parse %s: %v", path, perr)
 			}

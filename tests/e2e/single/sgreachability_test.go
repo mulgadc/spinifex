@@ -174,6 +174,12 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 		}
 	})
 
+	// UpstreamFailover puts a silent and a refusing forwarder ahead of the
+	// node's own and times guest lookups; northstar is restored in cleanup.
+	t.Run("UpstreamFailover", func(t *testing.T) {
+		runUpstreamFailover(t, fix, tgt, privIP)
+	})
+
 	// The egress round-trip below flips this scenario's own dedicated SG's
 	// allow-all egress rule and verifies vpcd programs OVN ACLs that actually
 	// drop traffic. Egress is tested because in dev_networking mode ingress SSH

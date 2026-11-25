@@ -3,8 +3,11 @@ package vpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,35 +25,47 @@ import (
 // time. Between tests every stream is emptied or deleted, so each test sees
 // the same state a fresh server plus the service's own buckets would give.
 type pooledJetStream struct {
-	ns       *server.Server
-	storeDir string
+	ns *server.Server
 	// buckets holds the config of each stream the service created on its
 	// first start. Only these streams are kept between tests.
 	buckets map[string]jetstream.StreamConfig
 }
 
+// jsPool outlives every test, so its stores live under root, which TestMain
+// creates and removes, rather than under a per-test temp dir.
 var jsPool struct {
 	mu   sync.Mutex
+	root string
+	dirs int
 	free []*pooledJetStream
 	all  []*pooledJetStream
 }
 
 func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "vpc-js-pool-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create JetStream pool dir:", err)
+		os.Exit(1)
+	}
+	jsPool.root = root
 	code := m.Run()
 	jsPool.mu.Lock()
 	for _, p := range jsPool.all {
 		p.ns.Shutdown()
 		p.ns.WaitForShutdown()
-		_ = os.RemoveAll(p.storeDir)
 	}
 	jsPool.mu.Unlock()
+	_ = os.RemoveAll(root)
 	os.Exit(code)
 }
 
 func newPooledJetStream(t *testing.T) *pooledJetStream {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "vpc-js-pool-")
-	require.NoError(t, err)
+	jsPool.mu.Lock()
+	jsPool.dirs++
+	dir := filepath.Join(jsPool.root, strconv.Itoa(jsPool.dirs))
+	jsPool.mu.Unlock()
+	require.NoError(t, os.Mkdir(dir, 0o700))
 	ns, err := server.NewServer(&server.Options{
 		DontListen: true,
 		JetStream:  true,
@@ -62,10 +77,9 @@ func newPooledJetStream(t *testing.T) *pooledJetStream {
 	ns.Start()
 	if !ns.ReadyForConnections(5 * time.Second) {
 		ns.Shutdown()
-		_ = os.RemoveAll(dir)
 		t.Fatal("embedded NATS server not ready for connections within 5s")
 	}
-	p := &pooledJetStream{ns: ns, storeDir: dir}
+	p := &pooledJetStream{ns: ns}
 	jsPool.mu.Lock()
 	jsPool.all = append(jsPool.all, p)
 	jsPool.mu.Unlock()

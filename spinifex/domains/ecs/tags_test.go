@@ -29,6 +29,7 @@ func TestParseResourceARN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			kind, cluster, id, _, err := parseResourceARN(tc.arn)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantKind, kind)
@@ -53,6 +54,7 @@ func TestParseResourceARN_Invalid(t *testing.T) {
 	}
 	for _, arnStr := range cases {
 		t.Run(arnStr, func(t *testing.T) {
+			t.Parallel()
 			_, _, _, _, err := parseResourceARN(arnStr)
 			assert.EqualError(t, err, "InvalidParameterException")
 		})
@@ -298,6 +300,7 @@ func TestService_CreateCluster_RefusesTagBreaks(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range tagBreaks {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tc.tags}, testAccountID)
 			require.Error(t, err)
 			assert.Equal(t, tc.want, err.Error())
@@ -325,6 +328,7 @@ func TestService_TagResource_RefusesTagBreaks(t *testing.T) {
 	arn := created.Cluster.ClusterArn
 	for _, tc := range tagBreaks {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.TagResource(ctx, &ecs.TagResourceInput{ResourceArn: arn, Tags: tc.tags}, testAccountID)
 			require.Error(t, err)
 			assert.Equal(t, tc.want, err.Error())
@@ -365,6 +369,7 @@ func TestService_UntagResource_RefusesBadKey(t *testing.T) {
 	require.NoError(t, err)
 	for _, tc := range tagBreaks[:3] {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.UntagResource(ctx, &ecs.UntagResourceInput{
 				ResourceArn: created.Cluster.ClusterArn,
 				TagKeys:     []*string{aws.String("k0"), tc.tags[0].Key},
@@ -416,6 +421,7 @@ func TestService_TaggedCreates_RefuseTagBreaks(t *testing.T) {
 	}
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			err := call()
 			require.Error(t, err)
 			assert.Equal(t, tagBreaks[2].want, err.Error())

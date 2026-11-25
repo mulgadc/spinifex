@@ -403,6 +403,7 @@ func TestTaskENIAttachmentStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, taskENIAttachmentStatus(&tc.rec))
 		})
 	}

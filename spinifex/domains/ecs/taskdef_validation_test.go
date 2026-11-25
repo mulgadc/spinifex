@@ -652,6 +652,7 @@ func TestRegisterTaskDefinition_RequiresImageAndMemory(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(t)
 			_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 				Family: aws.String("app"), Memory: tc.taskMemory,

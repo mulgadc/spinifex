@@ -745,6 +745,7 @@ func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			svc, _, kv := serviceTestRig(t)
 			registerTaskDef(t, svc, "other", 128, 256)
 			input := func() *ecs.CreateServiceInput {

@@ -49,6 +49,7 @@ func TestLaunch_RefusalsMatchAWS(t *testing.T) {
 				continue
 			}
 			t.Run(action+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				svc, _ := newTestService(t)
 				_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 				require.NoError(t, err)

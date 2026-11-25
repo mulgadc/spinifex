@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,9 @@ const otherAccount = "210987654321"
 // per request; ingress authentication itself is not under test here.
 type sdkApp struct {
 	url string
+	// skew moves the owners' clock ahead of the wall clock, so visibility
+	// can expire without the test waiting it out.
+	skew atomic.Int64
 
 	mu      sync.Mutex
 	account string
@@ -55,6 +59,7 @@ func newSDKApp(t *testing.T) *sdkApp {
 	require.NoError(t, err)
 
 	a := &sdkApp{account: testAccount, denied: map[string]bool{}}
+	now := func() time.Time { return time.Now().Add(time.Duration(a.skew.Load())) }
 	var reg dispatch.Registration
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
@@ -72,14 +77,17 @@ func newSDKApp(t *testing.T) *sdkApp {
 	t.Cleanup(srv.Close)
 	a.url = srv.URL
 	reg = awsapi.NewRegistration(awsapi.Deps{
-		Queues: qs, Messages: &message.Sender{Store: ms, Queues: qs},
-		Receives:   &message.Receiver{Store: ms, Queues: qs, Keys: keys},
+		Queues: qs, Messages: &message.Sender{Store: ms, Queues: qs, Now: now},
+		Receives:   &message.Receiver{Store: ms, Queues: qs, Keys: keys, Now: now},
 		Deletes:    &message.Deleter{Store: ms, Queues: qs, Keys: keys},
-		Visibility: &message.VisibilityChanger{Store: ms, Queues: qs, Keys: keys},
+		Visibility: &message.VisibilityChanger{Store: ms, Queues: qs, Keys: keys, Now: now},
 		Endpoint:   srv.URL,
 	})
 	return a
 }
+
+// advance moves the owners' clock forward by d.
+func (a *sdkApp) advance(d time.Duration) { a.skew.Add(int64(d)) }
 
 func (a *sdkApp) authorize(_, action string, resources []string, _ iampolicy.ConditionKeys) error {
 	a.mu.Lock()
@@ -139,6 +147,7 @@ func apiCode(t *testing.T, err error) string {
 // TestSDK_LambdaPollerPath drives the calls an event source mapping makes, in
 // order, through the registration and the real queue and message owners.
 func TestSDK_LambdaPollerPath(t *testing.T) {
+	t.Parallel()
 	a := newSDKApp(t)
 	c := a.client()
 	ctx := context.Background()
@@ -205,16 +214,17 @@ func TestSDK_LambdaPollerPath(t *testing.T) {
 	require.NoError(t, err)
 
 	start := time.Now()
-	empty, err := c.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{QueueUrl: aws.String(u), WaitTimeSeconds: 2})
+	empty, err := c.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{QueueUrl: aws.String(u), WaitTimeSeconds: 1})
 	require.NoError(t, err)
 	assert.Empty(t, empty.Messages)
-	assert.GreaterOrEqual(t, time.Since(start), 2*time.Second, "an empty long poll waits its full time")
+	assert.GreaterOrEqual(t, time.Since(start), time.Second, "an empty long poll waits its full time")
 }
 
 // TestSDK_AuthorizationAndIsolation checks that each call is authorized on the
 // queue ARN, that a denial changes nothing, and that one account cannot reach
 // another account's queue by URL.
 func TestSDK_AuthorizationAndIsolation(t *testing.T) {
+	t.Parallel()
 	a := newSDKApp(t)
 	c := a.client()
 	ctx := context.Background()
@@ -246,6 +256,7 @@ func TestSDK_AuthorizationAndIsolation(t *testing.T) {
 // TestSDK_DeleteBatchReportsEachEntry checks that a batch with a valid and a
 // tampered handle deletes the valid one and reports the other as failed.
 func TestSDK_DeleteBatchReportsEachEntry(t *testing.T) {
+	t.Parallel()
 	a := newSDKApp(t)
 	c := a.client()
 	ctx := context.Background()
@@ -284,6 +295,7 @@ func TestSDK_DeleteBatchReportsEachEntry(t *testing.T) {
 	assert.Contains(t, aws.ToString(dr.Failed[0].Code), "ReceiptHandleIsInvalid")
 	assert.NotContains(t, aws.ToString(dr.Failed[0].Message), tampered, "a handle is never echoed")
 
+	a.advance(2 * time.Second)
 	again, err := c.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{QueueUrl: aws.String(u), MaxNumberOfMessages: 10, WaitTimeSeconds: 3})
 	require.NoError(t, err)
 	require.Len(t, again.Messages, 1, "only the entry that failed to delete returns")

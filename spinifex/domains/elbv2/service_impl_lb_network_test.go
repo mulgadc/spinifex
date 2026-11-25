@@ -626,6 +626,57 @@ func TestSetSubnets_CrossAccount(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
 }
 
+// A record with a non-appliance realization has no appliance ENIs or VM, so the
+// appliance subnet path must refuse it before it creates an ENI or launches a VM.
+func TestSetSubnets_RetainedOVNRecordRefusesApplianceChange(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.40.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.41.0/24", "us-east-1b")
+
+	lb := newTestLB("ovnsubnets00001", "ovn-subnets")
+	lb.LoadBalancerArn = "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/net/ovn-subnets/ovnsubnets00001"
+	lb.Type = LoadBalancerTypeNetwork
+	lb.Realization = "ovn"
+	lb.VpcId = vid
+	lb.SecurityGroups = nil
+	lb.Subnets = []string{sub1}
+	lb.AvailZones = []AvailZoneInfo{{ZoneName: "us-east-1a", SubnetId: sub1}}
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	_, err := svc.SetSubnets(t.Context(), &elbv2.SetSubnetsInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+		Subnets:         []*string{aws.String(sub1)},
+	}, "999999999999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
+
+	for _, desired := range [][]string{{sub1}, {sub1, sub2}} {
+		_, err := svc.SetSubnets(t.Context(), &elbv2.SetSubnetsInput{
+			LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+			Subnets:         aws.StringSlice(desired),
+		}, testAccountID)
+		assert.Error(t, err, "subnets %v", desired)
+		code, _ := awserrors.ResolveErrorCode(err)
+		assert.Equal(t, awserrors.ErrorELBv2InvalidConfigurationRequest, code, "subnets %v", desired)
+	}
+
+	svc.WaitLaunches()
+	assert.Zero(t, countManagedENIs(t, vpcSvc), "no appliance ENI may be created")
+	mock.mu.Lock()
+	assert.Empty(t, mock.launchCalls, "no appliance VM may be launched")
+	assert.Empty(t, mock.terminateCalls, "no appliance VM may be terminated")
+	mock.mu.Unlock()
+
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ovn", got.Realization)
+	assert.Equal(t, []string{sub1}, got.Subnets)
+	assert.Empty(t, got.ENIs)
+}
+
 func subnetIDsOfLB(lb *elbv2.LoadBalancer) []string {
 	out := make([]string, 0, len(lb.AvailabilityZones))
 	for _, az := range lb.AvailabilityZones {

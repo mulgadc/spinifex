@@ -139,6 +139,12 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 	if lb == nil || lb.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
+	// Subnet changes rebuild appliance ENIs and the LB VM, which only the
+	// appliance realization has.
+	if lb.Realization != "" {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2InvalidConfigurationRequest,
+			"SetSubnets is not supported for load balancer %s with realization %q.", lb.LoadBalancerID, lb.Realization)
+	}
 
 	current := subnetENIMap(lb)
 	desiredSet := make(map[string]bool, len(desired))

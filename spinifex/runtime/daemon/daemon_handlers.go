@@ -21,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/incarnation"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -144,7 +143,6 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 		// Carried in ctx rather than the service signature so only the handlers
 		// that must deduplicate a retry have to look for it.
 		ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
-		ctx = incarnation.FromMsg(ctx, msg)
 		input := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))

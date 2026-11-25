@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -101,35 +102,66 @@ func TestEKSRequest_ScopedAllowGrants(t *testing.T) {
 	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
 }
 
-// The bypass this work closes. A tenant pastes the ARN out of DescribeNodegroup
-// and fences it; before the discriminator was derived the gate evaluated a
-// wildcarded spelling that this exact-ARN pattern could not match, so the fence
-// was inert and the delete went through.
-func TestEKSRequest_NodegroupScopeMatchesExactStoredARN(t *testing.T) {
-	stored := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers",
-		arn.EKSNodegroupDiscriminator(gwtest.AccountID, "prod", "workers"))
-
-	gw := scopedEKS(
-		gwtest.Statement("Allow", "eks:*", "*"),
-		gwtest.Statement("Deny", "eks:DeleteNodegroup", stored),
-	)
-
-	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
-	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
-	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+// storedNodegroupGateway serves a gateway whose store holds prod/workers under
+// a random UUID, as CreateNodegroup records it, and returns that ARN.
+func storedNodegroupGateway(t *testing.T, statements ...iamdomain.Statement) (*eksGateway, string) {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket: ekscluster.AccountBucketName(gwtest.AccountID),
+	})
+	require.NoError(t, err)
+	stored := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers", uuid.NewV4().String())
+	require.NoError(t, ekscluster.PutNodegroupRecord(t.Context(), kv, &ekscluster.NodegroupRecord{
+		ClusterName: "prod", Name: "workers", Arn: stored,
+	}))
+	gw := scopedEKS(statements...)
+	gw.nc = nc
+	return gw, stored
 }
 
-// The AWS-documented policy spelling wildcards the discriminator, and was the
-// only spelling that worked before. It must keep working.
-func TestEKSRequest_NodegroupScopeMatchesWildcardUUID(t *testing.T) {
-	gw := scopedEKS(
+// A tenant pastes the ARN out of DescribeNodegroup and fences it. Only the
+// record knows that ARN's UUID, so the gate has to read it for the fence to
+// fire; a wildcarded spelling would leave it inert.
+func TestEKSRequest_NodegroupScopeMatchesExactStoredARN(t *testing.T) {
+	gw, stored := storedNodegroupGateway(t, gwtest.Statement("Allow", "eks:*", "*"))
+	gw.Harness = gwtest.Scoped(
 		gwtest.Statement("Allow", "eks:*", "*"),
-		gwtest.Statement("Deny", "eks:DeleteNodegroup", "arn:aws:eks:*:*:nodegroup/prod/workers/*"),
+		gwtest.Statement("Deny", "eks:DeleteNodegroup", stored),
+		gwtest.Statement("Deny", "eks:TagResource", stored),
 	)
 
 	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
-	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
-	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+	// The gate evaluates a tag request against the stored group's ARN.
+	stale := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers", uuid.NewV4().String())
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodPost, "/tags/"+url.PathEscape(stale), `{"tags":{"k":"v"}}`))
+	assertNotDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
+	assertNotDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+}
+
+// The AWS-documented policy spelling wildcards the UUID. It must match a stored
+// group and one that does not exist yet.
+func TestEKSRequest_NodegroupScopeMatchesWildcardUUID(t *testing.T) {
+	gw, _ := storedNodegroupGateway(t,
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:DeleteNodegroup", "arn:aws:eks:*:*:nodegroup/prod/workers/*"),
+		gwtest.Statement("Deny", "eks:DescribeNodegroup", "arn:aws:eks:*:*:nodegroup/prod/*"),
+	)
+
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/node-groups/absent", ""))
+	assertNotDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
+	assertNotDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+}
+
+// With no store to read, a nodegroup request fails closed rather than being
+// evaluated against an ARN an exact-ARN Deny cannot match.
+func TestEKSRequest_NodegroupScopeUnreadableStoreFailsClosed(t *testing.T) {
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	err := dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.False(t, gw.GateCalled, "the policy gate must not run against an unresolved nodegroup ARN")
 }
 
 // CreateCluster names its cluster in the body, so the body read has to happen
@@ -191,7 +223,8 @@ func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	for _, action := range eksawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
 			resources, err := eksawsapi.ResourceARNs(action, gwtest.Region, gwtest.AccountID,
-				[]string{"prod", "workers", "extra"}, []byte(`{"name":"prod","nodegroupName":"workers","addonName":"coredns","principalArn":"arn:aws:iam::123456789012:role/app"}`))
+				[]string{"prod", "workers", "extra"}, []byte(`{"name":"prod","nodegroupName":"workers","addonName":"coredns","principalArn":"arn:aws:iam::123456789012:role/app"}`),
+				func(string, string) (string, error) { return "", nil })
 			require.NoError(t, err)
 			assert.NoError(t, pipeline.Authorize(gw.Policy, req, caller, true, "eks", action, resources, nil))
 		})

@@ -143,6 +143,7 @@ func TestBedrockPipeline_ConverseStreamRefusesTargetBeforeGuardrail(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			endpoints := &countingEndpoints{}
 			recorder := &capturingRecorder{}
 			var target string

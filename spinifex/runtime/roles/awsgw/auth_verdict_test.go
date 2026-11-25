@@ -54,6 +54,7 @@ func TestSigV4Auth_MalformedHeader(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
 			req.Header.Set("Authorization", tc.authHeader)
@@ -323,6 +324,7 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
 			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)

@@ -128,6 +128,7 @@ func TestPassedToService_EC2(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
+			t.Parallel()
 			assertNotUnauthorized(t, passRoleToGateway(t,
 				gwtest.Statement("Allow", "ec2:*", "*"),
 				gwtest.PassRoleTo("Allow", iampolicy.OpStringEquals, "ec2.amazonaws.com"),

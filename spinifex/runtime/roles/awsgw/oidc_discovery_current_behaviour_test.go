@@ -106,6 +106,7 @@ func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
 		{name: "jwks_without_meta", withJWKS: true, wantDisc: 404, wantKeys: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newDiscoveryEnv(t)
 			if tc.withMeta {
 				e.putMeta(t, tc.status, tc.issuer)
@@ -146,6 +147,7 @@ func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
 func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 	t.Parallel()
 	t.Run("closed_connection", func(t *testing.T) {
+		t.Parallel()
 		e := newDiscoveryEnv(t)
 		e.putMeta(t, ekscluster.ClusterStatusActive, testDiscIssuer)
 		e.putJWKS(t, `{"keys":[]}`)
@@ -157,6 +159,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("no_connection", func(t *testing.T) {
+		t.Parallel()
 		h := (withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil, nil)}, gwfix.Deps{IAM: allowAllIAMService()}))).SetupRoutes()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
 			rec := getOIDC(t, h, p)
@@ -165,6 +168,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("account_bucket_missing", func(t *testing.T) {
+		t.Parallel()
 		e := newDiscoveryEnv(t)
 		for _, p := range []string{
 			"/oidc/eks/ap-southeast-2/999999999999/" + testDiscCluster + "/.well-known/openid-configuration",

@@ -130,6 +130,7 @@ func TestECSEKSPipeline_Outcomes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got := probeContainer(t, c.app, c.req)
 			require.Equal(t, c.status, got.Status)
 			require.Equal(t, c.typ, got.Type)

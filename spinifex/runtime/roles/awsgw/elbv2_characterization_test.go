@@ -103,6 +103,7 @@ func TestELBv2Pipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 			resp := doRequest(app, signELBv2Request(t, tc.body))
 

@@ -98,6 +98,7 @@ func TestRDSPipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 			resp := doRequest(app, signRDSRequest(t, tc.body))
 
@@ -203,6 +204,7 @@ func TestRDSPipeline_Authz_InternalActionDeniedToAdmin(t *testing.T) {
 	gw, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	for _, action := range rdsinstance.InternalAgentActions {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds."+action, `{}`)
 			resp := doRequest(app, signRDSRequest(t, "Action="+action))
 

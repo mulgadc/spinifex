@@ -58,6 +58,7 @@ func TestParseBedrockEndpoints(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, parseBedrockEndpoints(tc.raw))
 		})
 	}
@@ -80,6 +81,7 @@ func TestParseColdStartWait(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, parseColdStartWait(tt.raw))
 		})
 	}

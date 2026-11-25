@@ -35,7 +35,6 @@ import (
 // Pins CURRENT behaviour: wire outcomes for invalid long-lived credentials, and
 // that key status changes apply to the very next request (no credential cache).
 func TestCurrentBehaviour_Auth_LongLivedRejections(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	gci := cbForm("GetCallerIdentity")
 
@@ -89,6 +88,7 @@ func TestCurrentBehaviour_Session_AssumeRoleCredentials(t *testing.T) {
 	other := e.assumeRole(t, roleARN, "s2")
 
 	t.Run("valid_session", func(t *testing.T) {
+		t.Parallel()
 		rec := e.callerIdentity(t, s)
 		require.Equalf(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 		body := rec.Body.String()
@@ -105,6 +105,7 @@ func TestCurrentBehaviour_Session_AssumeRoleCredentials(t *testing.T) {
 		"unknown_session_akid": {akid: cbUnknownSes, secret: s.secret, token: s.token},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, invalid, cbOutcomeOf(e.callerIdentity(t, c)))
 		})
 	}
@@ -112,12 +113,14 @@ func TestCurrentBehaviour_Session_AssumeRoleCredentials(t *testing.T) {
 	// CURRENT: an AKIA key ignores X-Amz-Security-Token entirely; the header is
 	// only signed, never checked, so a long-lived key plus any token succeeds.
 	t.Run("long_lived_with_session_token", func(t *testing.T) {
+		t.Parallel()
 		rec := e.callerIdentity(t, cbCreds{akid: e.alice.akid, secret: e.alice.secret, token: s.token})
 		require.Equalf(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 		assert.Equal(t, "arn:aws:iam::"+e.accountID+":user/alice", cbXML(rec.Body.String(), "Arn"))
 	})
 
 	t.Run("valid_token_wrong_secret", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.callerIdentity(t, cbCreds{akid: s.akid, secret: cbBadSecret, token: s.token}))
 		assert.Equal(t, cbRegistry(awserrors.ErrorSignatureDoesNotMatch), got)
 	})
@@ -144,6 +147,7 @@ func TestCurrentBehaviour_Session_Expired(t *testing.T) {
 		"wrong_token": {akid: s.akid, secret: cbBadSecret, token: tamper(s.token)},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, expired, cbOutcomeOf(e.callerIdentity(t, c)))
 		})
 	}
@@ -249,6 +253,7 @@ func TestCurrentBehaviour_Revocation_UserDeletedAndRecreated(t *testing.T) {
 		{name: "revocation_missed", noRevoker: true, storedAfter: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newCBEnv(t, cbEnvOpts{noRevoker: tc.noRevoker})
 			oldKey, oldID := e.newUser(t, "bob")
 			session := e.getSessionToken(t, oldKey)
@@ -290,6 +295,7 @@ func TestCurrentBehaviour_Revocation_RoleDeletedAndRecreated(t *testing.T) {
 		{name: "revocation_missed", noRevoker: true, storedAfter: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newCBEnv(t, cbEnvOpts{noRevoker: tc.noRevoker})
 			roleARN, oldRoleID := e.createAssumableRole(t, "app")
 			s := e.assumeRole(t, roleARN, "s1")
@@ -357,17 +363,20 @@ func TestCurrentBehaviour_Auth_MissingCredentials(t *testing.T) {
 		cbForm("AssumeRole", "RoleArn", "arn:aws:iam::"+e.accountID+":role/x", "RoleSessionName", "s"),
 	} {
 		t.Run(f.Get("Action"), func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, missing, cbOutcomeOf(e.request(t, e.h, cbCreds{}, "", f)))
 		})
 	}
 
 	// Session token alone, with no Authorization header.
 	t.Run("token_without_signature", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, missing, cbOutcomeOf(e.request(t, e.h, cbCreds{token: "anything"}, "", cbForm("GetCallerIdentity"))))
 	})
 
 	// The anonymous path reaches STS itself: its verdict, not the door's.
 	t.Run("AssumeRoleWithWebIdentity", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, cbCreds{}, "", cbForm("AssumeRoleWithWebIdentity",
 			"RoleArn", "arn:aws:iam::"+e.accountID+":role/x", "RoleSessionName", "s1", "WebIdentityToken", "not-a-jwt")))
 		assert.Equal(t, http.StatusBadRequest, got.status)
@@ -378,7 +387,6 @@ func TestCurrentBehaviour_Auth_MissingCredentials(t *testing.T) {
 // Pins CURRENT behaviour: which credential failures a caller can tell apart on
 // the wire, and whether the door decrypted a secret before answering.
 func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	bobKey, _ := e.newUser(t, "bob")
 	_, err := e.iam.UpdateAccessKey(e.accountID, &iam.UpdateAccessKeyInput{
@@ -433,6 +441,7 @@ func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
 
 	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
+			t.Parallel()
 			e := newCBEnv(t, cbEnvOpts{})
 			// The fixture tenant holds the protected admin ID, which IAM will not move
 			// off ACTIVE, so the account that changes status is a second one.

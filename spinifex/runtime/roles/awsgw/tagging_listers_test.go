@@ -141,6 +141,7 @@ func TestEC2IndexLister_TypeFilters(t *testing.T) {
 		{map[string]bool{"ec2:instance": true}, []string{}},
 	} {
 		t.Run(fmt.Sprint(tc.filters), func(t *testing.T) {
+			t.Parallel()
 			got, err := lister.ListTagged(t.Context(), listerAccount, tc.filters)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, sortedARNs(got))
@@ -298,7 +299,6 @@ func TestELBv2Lister_ListsCallerLoadBalancersAndTargetGroupsTaggedOrNot(t *testi
 }
 
 func TestELBv2Lister_TypeFilters(t *testing.T) {
-	t.Parallel()
 	f := newELBv2Fixture(t)
 	lb := f.putLB(t, listerAccount, "lb", "00000000000000a1", map[string]string{"env": "prod"})
 	tg := f.putTG(t, listerAccount, "tg", "00000000000000b1", map[string]string{"env": "prod"})
@@ -347,6 +347,7 @@ func TestELBv2Lister_PropagatesOwnerErrors(t *testing.T) {
 	t.Parallel()
 	for _, subject := range []string{"elbv2.DescribeLoadBalancers", "elbv2.DescribeTargetGroups", "elbv2.DescribeTags"} {
 		t.Run(subject, func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			ok := func(out any) func(*nats.Msg) {
 				return func(msg *nats.Msg) {

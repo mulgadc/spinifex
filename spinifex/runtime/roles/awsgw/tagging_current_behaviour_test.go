@@ -218,6 +218,7 @@ func TestCurrentBehaviour_Tagging_GetResourcesAggregatesOnlyEC2AndELBv2(t *testi
 
 	for _, filter := range []string{"rds", "ecs:cluster", "eks:cluster", "ecr:repository", "acm:certificate", "iam:role", "elasticloadbalancing:listener"} {
 		t.Run(filter, func(t *testing.T) {
+			t.Parallel()
 			page, err := getResources(t, agg, `{"ResourceTypeFilters":["`+filter+`"]}`)
 			require.NoError(t, err)
 			assert.Empty(t, page.ResourceTagMappingList)

@@ -215,6 +215,7 @@ func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	t.Parallel()
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			gw := withACM(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)

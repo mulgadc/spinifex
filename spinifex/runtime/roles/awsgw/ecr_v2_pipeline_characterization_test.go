@@ -175,6 +175,7 @@ func TestV2Pipeline_TokenRejections(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w := e.do(http.MethodGet, "/v2/", tt.host, tt.authz...)
 
 			assert.Equal(t, tt.wantStatus, w.Code)
@@ -266,6 +267,7 @@ func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := newV2Env(t, v2Options{})
 			tt.mutate(e)
 
@@ -334,6 +336,7 @@ func TestV2Pipeline_TokenOutlivesItsRoleSession(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := newV2Env(t, v2Options{})
 			tt.mutate(e)
 
@@ -383,6 +386,7 @@ func TestV2Pipeline_OperationAuthorization(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := newV2Env(t, v2Options{policies: tt.policies})
 
 			w := e.do(tt.method, tt.path, v2Host, basic(e.userToken(t)))
@@ -409,6 +413,7 @@ func TestV2Pipeline_PolicyOutageFailsClosed(t *testing.T) {
 func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	t.Parallel()
 	t.Run("exchange mints a fresh token for the same principal", func(t *testing.T) {
+		t.Parallel()
 		e := newV2Env(t, v2Options{})
 		old := e.userToken(t)
 
@@ -436,6 +441,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	})
 
 	t.Run("no credential is a 401 with no challenge", func(t *testing.T) {
+		t.Parallel()
 		w := newV2Env(t, v2Options{}).do(http.MethodGet, "/v2/token", v2Host)
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
@@ -444,6 +450,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	})
 
 	t.Run("invalid credential is a 401 with no challenge", func(t *testing.T) {
+		t.Parallel()
 		w := newV2Env(t, v2Options{}).do(http.MethodGet, "/v2/token", v2Host, "Bearer not.a.token")
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
@@ -451,12 +458,14 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	})
 
 	t.Run("two authorization headers", func(t *testing.T) {
+		t.Parallel()
 		w := newV2Env(t, v2Options{}).do(http.MethodGet, "/v2/token", v2Host, "Bearer a.b.c", "Bearer d.e.f")
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	t.Run("token for another account than the host", func(t *testing.T) {
+		t.Parallel()
 		e := newV2Env(t, v2Options{})
 		other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", gwfix.PrincipalTypeUser, v2AKID)
 
@@ -467,6 +476,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	})
 
 	t.Run("a revoked identity is not refreshed", func(t *testing.T) {
+		t.Parallel()
 		e := newV2Env(t, v2Options{})
 		token := e.userToken(t)
 		e.iam.accessKeys[v2AKID].Status = iamdomain.AccessKeyStatusInactive
@@ -478,6 +488,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 	})
 
 	t.Run("a dependency outage is a 503", func(t *testing.T) {
+		t.Parallel()
 		e := newV2Env(t, v2Options{})
 		token := e.userToken(t)
 		e.iam.genericErr = errors.New("nats: timeout")

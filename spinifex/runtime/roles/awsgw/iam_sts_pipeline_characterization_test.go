@@ -63,14 +63,17 @@ func TestIAMSTSPipeline_ErrorEnvelopes(t *testing.T) {
 
 	for _, service := range []string{"iam", "sts"} {
 		t.Run(service+"_missing_action", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.request(t, e.h, e.alice, service, url.Values{"Version": {"2011-06-15"}}))
 			assert.Equal(t, cbRegistry(awserrors.ErrorMissingAction), got)
 		})
 		t.Run(service+"_unknown_action", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.request(t, e.h, e.alice, service, cbForm("NoSuchAction")))
 			assert.Equal(t, cbRegistry(awserrors.ErrorInvalidAction), got)
 		})
 		t.Run(service+"_malformed_query", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.rawRequest(t, e.alice, service, "Action=%zz"))
 			assert.Equal(t, cbRegistry(awserrors.ErrorMalformedQueryString), got)
 		})
@@ -84,11 +87,13 @@ func TestIAMSTSPipeline_AuthorizationAndMissingParameterOrder(t *testing.T) {
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("iam_create_user_without_name_and_no_policy_is_denied", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, e.alice, "iam", cbForm("CreateUser")))
 		assert.Equal(t, cbDenied("iam"), got)
 	})
 
 	t.Run("sts_assume_role_without_role_arn", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, e.alice, "sts", cbForm("AssumeRole", "RoleSessionName", "s")))
 		assert.Equal(t, cbRegistry(awserrors.ErrorMissingParameter), got)
 	})
@@ -97,7 +102,6 @@ func TestIAMSTSPipeline_AuthorizationAndMissingParameterOrder(t *testing.T) {
 // CURRENT: GetUser without UserName describes the caller, and that default is
 // applied before authorization so the policy is evaluated against the user.
 func TestIAMSTSPipeline_GetUserWithoutUserName(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	getUser := cbForm("GetUser")
 
@@ -138,7 +142,6 @@ func TestIAMSTSPipeline_GetUserWithoutUserName(t *testing.T) {
 // CURRENT: AssumeRole is gated twice. The caller's identity policy is checked
 // first, then the role's trust policy.
 func TestIAMSTSPipeline_AssumeRoleGates(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	roleARN, _ := e.createAssumableRole(t, "app")
 
@@ -167,7 +170,6 @@ func TestIAMSTSPipeline_AssumeRoleGates(t *testing.T) {
 // CURRENT: GetSessionToken carries no identity-policy gate, and a role session
 // cannot mint one.
 func TestIAMSTSPipeline_GetSessionToken(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("user_without_policy_mints", func(t *testing.T) {
@@ -187,7 +189,6 @@ func TestIAMSTSPipeline_GetSessionToken(t *testing.T) {
 // CURRENT: AddRoleToInstanceProfile requires iam:PassRole on the role, checked
 // after the iam:AddRoleToInstanceProfile gate and before the binding runs.
 func TestIAMSTSPipeline_AddRoleToInstanceProfileRequiresPassRole(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	_, err := e.iam.CreateRole(e.accountID, &iam.CreateRoleInput{
 		RoleName:                 aws.String("r"),
@@ -226,6 +227,7 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("unsigned_web_identity_reaches_the_handler", func(t *testing.T) {
+		t.Parallel()
 		rec := e.request(t, e.h, cbCreds{}, "sts", cbForm("AssumeRoleWithWebIdentity",
 			"RoleArn", "arn:aws:iam::"+e.accountID+":role/none", "RoleSessionName", "s", "WebIdentityToken", "not-a-jwt"))
 		got := cbOutcomeOf(rec)
@@ -233,6 +235,7 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 	})
 
 	t.Run("unsigned_get_caller_identity_is_stopped_by_sigv4", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, cbCreds{}, "sts", cbForm("GetCallerIdentity")))
 		assert.Equal(t, cbRegistry(awserrors.ErrorMissingAuthenticationToken), got)
 	})
@@ -241,7 +244,6 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 // A success names its request in both the x-amzn-RequestId header and the
 // body's ResponseMetadata, as AWS Query services do, so an SDK can report it.
 func TestIAMSTSPipeline_SuccessCarriesRequestID(t *testing.T) {
-	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	e.putUserPolicy(t, "alice", cbAllowAll)
 	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`

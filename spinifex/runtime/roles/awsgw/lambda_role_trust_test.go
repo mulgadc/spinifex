@@ -13,7 +13,6 @@ import (
 // The trust decision is the stored role's real trust policy evaluated for
 // lambda.amazonaws.com, so only a role Lambda could assume is accepted.
 func TestLambdaRoleTrusts_EvaluatesTheStoredTrustPolicy(t *testing.T) {
-	t.Parallel()
 	iamSvc, _ := newCodeStoreIAM(t)
 	acct := identifiers.GlobalAccountID
 	trusts := lambdaRoleTrusts(iamSvc)

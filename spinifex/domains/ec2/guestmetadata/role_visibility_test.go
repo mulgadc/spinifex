@@ -20,6 +20,7 @@ import (
 // Each absent-role case must be distinguishable. Before this the three collapsed
 // into one nil and the credential path failed with nothing in the logs.
 func TestProfileForReportsWhyTheRoleIsMissing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		res  *fakeResolver
@@ -54,6 +55,7 @@ func TestProfileForReportsWhyTheRoleIsMissing(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(tc.res, tc.iam, &fakeAssumer{})
 
 			profile, miss, err := svc.profileFor(context.Background(), testENI())
@@ -68,6 +70,7 @@ func TestProfileForReportsWhyTheRoleIsMissing(t *testing.T) {
 // A backend failure is an error, not a miss: it 500s rather than answering an
 // empty role list, so attributing it to the guest would be wrong.
 func TestProfileForKeepsBackendFailuresAsErrors(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(&fakeResolver{eni: testENI(), instErr: errors.New("nats timeout")}, &fakeIAM{}, &fakeAssumer{})
 
 	profile, miss, err := svc.profileFor(context.Background(), testENI())
@@ -80,6 +83,7 @@ func TestProfileForKeepsBackendFailuresAsErrors(t *testing.T) {
 // One stuck guest produced 42,517 role-list requests over five days, so the
 // warning has to survive that volume without burying itself.
 func TestRoleMissLoggerThrottlesPerInstanceAndReason(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	l := newRoleMissLogger(func() time.Time { return now })
 	eni := testENI()
@@ -98,6 +102,7 @@ func TestRoleMissLoggerThrottlesPerInstanceAndReason(t *testing.T) {
 
 // roleMissNone is the resolved case and must never produce a line.
 func TestRoleMissLoggerIgnoresResolvedRoles(t *testing.T) {
+	t.Parallel()
 	l := newRoleMissLogger(time.Now)
 	assert.False(t, l.warn(context.Background(), testENI(), roleMissNone))
 }
@@ -105,6 +110,7 @@ func TestRoleMissLoggerIgnoresResolvedRoles(t *testing.T) {
 // The map is keyed by instance, so without a sweep a long-lived vpcd would
 // accumulate an entry for every instance that ever missed.
 func TestRoleMissLoggerSweepBoundsTheMap(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	l := newRoleMissLogger(func() time.Time { return now })
 

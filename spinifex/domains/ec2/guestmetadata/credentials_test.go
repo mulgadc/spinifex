@@ -37,6 +37,7 @@ func assumeOutput(akid string, exp time.Time) *sts.AssumeRoleOutput {
 }
 
 func TestCredCache_MintsAndRendersAWSShape(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	exp := now.Add(time.Hour)
 	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", exp)}
@@ -58,6 +59,7 @@ func TestCredCache_MintsAndRendersAWSShape(t *testing.T) {
 }
 
 func TestCredCache_ServesCachedUntilRefreshWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	exp := now.Add(time.Hour)
 	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", exp)}
@@ -73,6 +75,7 @@ func TestCredCache_ServesCachedUntilRefreshWindow(t *testing.T) {
 }
 
 func TestCredCache_RemintsInsideRefreshWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	exp := now.Add(time.Hour)
 	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", exp)}
@@ -89,6 +92,7 @@ func TestCredCache_RemintsInsideRefreshWindow(t *testing.T) {
 }
 
 func TestCredCache_PropagatesAssumeError(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	assumer := &fakeAssumer{err: errors.New("AccessDenied")}
 	cache := newCredCache(assumer)
@@ -99,6 +103,7 @@ func TestCredCache_PropagatesAssumeError(t *testing.T) {
 }
 
 func TestCredCache_SweepEvictsExpiredOnly(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", now.Add(time.Hour))}
 	cache := newCredCache(assumer)
@@ -127,6 +132,7 @@ func TestCredCache_SweepEvictsExpiredOnly(t *testing.T) {
 }
 
 func TestCredCache_PerENIPerRoleKeying(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	exp := now.Add(time.Hour)
 	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", exp)}

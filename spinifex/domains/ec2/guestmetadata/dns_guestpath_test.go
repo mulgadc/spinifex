@@ -2,8 +2,10 @@ package guestmetadata
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -84,17 +86,26 @@ func startSilentUpstream(t *testing.T) *countingUpstream {
 // returns the shim's address, the one a guest knows as 169.254.169.253.
 func startGuestPath(t *testing.T, upstreams ...string) string {
 	t.Helper()
-	nsAddr := freeUDPAddr(t)
-	srv, err := nsserver.NewServer(nsconfig.ServerConfig{
-		Listen:  nsAddr,
-		ZoneDir: t.TempDir(),
-		Upstream: nsconfig.UpstreamConfig{
-			Nameservers:        upstreams,
-			AllowRecursionFrom: []string{"127.0.0.1/32"},
-		},
-	})
+	var nsAddr string
+	var srv *nsserver.Server
+	var err error
+	// The free UDP port's TCP twin can be taken before northstar binds it.
+	for range 5 {
+		nsAddr = freeUDPAddr(t)
+		srv, err = nsserver.NewServer(nsconfig.ServerConfig{
+			Listen:  nsAddr,
+			ZoneDir: t.TempDir(),
+			Upstream: nsconfig.UpstreamConfig{
+				Nameservers:        upstreams,
+				AllowRecursionFrom: []string{"127.0.0.1/32"},
+			},
+		})
+		require.NoError(t, err)
+		if err = srv.Start(t.Context()); !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
 	require.NoError(t, err)
-	require.NoError(t, srv.Start(t.Context()))
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -130,6 +141,7 @@ func guestResolve(t *testing.T, shim, name string, within time.Duration) {
 
 // Cell 26's `i/o timeout`: the first upstream is dead and the second is healthy.
 func TestGuestPath_DeadFirstUpstream_GuestResolves(t *testing.T) {
+	t.Parallel()
 	dead := startSilentUpstream(t)
 	ok := startAnsweringUpstream(t)
 	shim := startGuestPath(t, dead.addr, ok.addr)
@@ -140,6 +152,7 @@ func TestGuestPath_DeadFirstUpstream_GuestResolves(t *testing.T) {
 
 // Cell 26's `server misbehaving`: the first upstream answers SERVFAIL.
 func TestGuestPath_ServfailFirstUpstream_GuestResolves(t *testing.T) {
+	t.Parallel()
 	bad := startRcodeUpstream(t, dns.RcodeServerFailure)
 	ok := startAnsweringUpstream(t)
 	shim := startGuestPath(t, bad.addr, ok.addr)

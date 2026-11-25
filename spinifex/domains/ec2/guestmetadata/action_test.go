@@ -6,6 +6,7 @@ import (
 )
 
 func TestIMDSActionNamesKnownEndpoints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		method string
@@ -30,6 +31,7 @@ func TestIMDSActionNamesKnownEndpoints(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := imdsAction(tc.method, tc.path); got != tc.want {
 				t.Errorf("imdsAction(%q, %q) = %q, want %q", tc.method, tc.path, got, tc.want)
 			}
@@ -41,6 +43,7 @@ func TestIMDSActionNamesKnownEndpoints(t *testing.T) {
 // controls these path segments, so any of them reaching the metric dimension
 // would produce one series per role, per MAC or per invented path.
 func TestIMDSActionStripsResourceIdentifiers(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		path string
@@ -63,6 +66,7 @@ func TestIMDSActionStripsResourceIdentifiers(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := imdsAction(http.MethodGet, tc.path); got != tc.want {
 				t.Errorf("imdsAction(GET, %q) = %q, want %q", tc.path, got, tc.want)
 			}

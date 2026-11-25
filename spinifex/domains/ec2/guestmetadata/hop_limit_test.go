@@ -45,6 +45,7 @@ func putToken(t *testing.T, res eniResolver) (*httptest.ResponseRecorder, int) {
 }
 
 func TestHTTP_TokenPUTSetsHopLimitTTL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		res  *fakeResolver
@@ -60,6 +61,7 @@ func TestHTTP_TokenPUTSetsHopLimitTTL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec, ttl := putToken(t, tc.res)
 			require.Equal(t, http.StatusOK, rec.Code)
 			assert.NotEmpty(t, rec.Body.String())
@@ -72,6 +74,7 @@ func TestHTTP_TokenPUTSetsHopLimitTTL(t *testing.T) {
 
 // ModifyInstanceMetadataOptions on a running instance applies to the next PUT.
 func TestHTTP_TokenPUTFollowsModifiedHopLimit(t *testing.T) {
+	t.Parallel()
 	res := &hopLimitResolver{fakeResolver: fakeResolver{eni: testENI()}}
 	res.hopLimit.Store(1)
 	_, ttl := putToken(t, res)
@@ -84,6 +87,7 @@ func TestHTTP_TokenPUTFollowsModifiedHopLimit(t *testing.T) {
 
 // Without a TTL in place, the token must not be sent at all.
 func TestHTTP_TokenPUTFailsClosedWithoutTTL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		setTTL connTTLSetter
@@ -93,6 +97,7 @@ func TestHTTP_TokenPUTFailsClosedWithoutTTL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
 			h := withTapConn(svc.httpHandler(), testENI(), tc.setTTL)
 			req := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+pathToken, nil)
@@ -166,6 +171,7 @@ func awaitTTL(t *testing.T, closed <-chan int) int {
 // The token connection's server-side IP_TTL follows HttpPutResponseHopLimit
 // through the production responder; metadata GETs keep the kernel default.
 func TestTapResponder_TokenResponseTTLIsHopLimit(t *testing.T) {
+	t.Parallel()
 	const (
 		eniID    = "eni-aaa"
 		endpoint = "ime-aaa"
@@ -213,6 +219,7 @@ func TestTapResponder_TokenResponseTTLIsHopLimit(t *testing.T) {
 }
 
 func TestLimitListener_CapsReleasesAndExposesSocket(t *testing.T) {
+	t.Parallel()
 	inner, err := net.Listen("tcp4", "127.0.0.1:0")
 	require.NoError(t, err)
 	l := newLimitListener(inner, 1)
@@ -259,6 +266,7 @@ func TestLimitListener_CapsReleasesAndExposesSocket(t *testing.T) {
 }
 
 func TestLimitListener_CloseUnblocksAccept(t *testing.T) {
+	t.Parallel()
 	inner, err := net.Listen("tcp4", "127.0.0.1:0")
 	require.NoError(t, err)
 	l := newLimitListener(inner, 1)

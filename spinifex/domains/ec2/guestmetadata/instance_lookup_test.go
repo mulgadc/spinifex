@@ -76,6 +76,7 @@ func testVM(id string) *vm.VM {
 }
 
 func TestDescribe_LocalHit_ResolvesWithoutRecordSpace(t *testing.T) {
+	t.Parallel()
 	l := &localInstanceLookup{
 		local:   fakeLocalStateReader{vms: map[string]*vm.VM{"i-local": testVM("i-local")}},
 		records: noCallRecordLoader{t: t},
@@ -103,6 +104,7 @@ func TestDescribe_LocalHit_ResolvesWithoutRecordSpace(t *testing.T) {
 // root volume first and AttachVolume appends afterward — and skips nil
 // entries and mappings with no device name, which IMDS has nothing to key by.
 func TestBlockDeviceNames_MultipleVolumesOrderedAfterRoot(t *testing.T) {
+	t.Parallel()
 	mappings := []*ec2.InstanceBlockDeviceMapping{
 		{DeviceName: aws.String("/dev/vda")},
 		nil,
@@ -114,10 +116,12 @@ func TestBlockDeviceNames_MultipleVolumesOrderedAfterRoot(t *testing.T) {
 }
 
 func TestBlockDeviceNames_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, blockDeviceNames(nil))
 }
 
 func TestDescribe_LocalMiss_FallsBackToRecordSpace(t *testing.T) {
+	t.Parallel()
 	fallbackVM := testVM("i-remote")
 
 	l := &localInstanceLookup{
@@ -132,6 +136,7 @@ func TestDescribe_LocalMiss_FallsBackToRecordSpace(t *testing.T) {
 }
 
 func TestDescribe_RecordSpaceMiss_ReturnsMiss(t *testing.T) {
+	t.Parallel()
 	l := &localInstanceLookup{
 		local:   fakeLocalStateReader{vms: map[string]*vm.VM{}},
 		records: fakeRecordLoader{record: nil},
@@ -142,6 +147,7 @@ func TestDescribe_RecordSpaceMiss_ReturnsMiss(t *testing.T) {
 }
 
 func TestDescribe_NoLocalReaderOrRecordLoader_IsAMiss(t *testing.T) {
+	t.Parallel()
 	l := &localInstanceLookup{} // both left nil, as when neither adapter is available
 	facts, err := l.describe(context.Background(), "111111111111", "i-nowhere")
 	require.NoError(t, err)
@@ -152,6 +158,7 @@ func TestDescribe_NoLocalReaderOrRecordLoader_IsAMiss(t *testing.T) {
 // read failure does not error the whole lookup or leave IMDS stuck: it falls
 // through to the record space like a genuine local miss.
 func TestDescribe_LocalReadError_FallsBackToRecordSpace(t *testing.T) {
+	t.Parallel()
 	l := &localInstanceLookup{
 		local:   fakeLocalStateReader{err: errors.New("state file corrupt")},
 		records: fakeRecordLoader{record: testVM("i-a").Record()},
@@ -162,6 +169,7 @@ func TestDescribe_LocalReadError_FallsBackToRecordSpace(t *testing.T) {
 }
 
 func TestDescribe_ManagedByHidesFromNonGlobalAccount(t *testing.T) {
+	t.Parallel()
 	managed := testVM("i-managed")
 	managed.ManagedBy = "eks"
 
@@ -175,6 +183,7 @@ func TestDescribe_ManagedByHidesFromNonGlobalAccount(t *testing.T) {
 }
 
 func TestDescribe_WrongAccount_IsAMiss(t *testing.T) {
+	t.Parallel()
 	l := &localInstanceLookup{
 		local:   fakeLocalStateReader{vms: map[string]*vm.VM{"i-local": testVM("i-local")}},
 		records: noCallRecordLoader{t: t},
@@ -188,6 +197,7 @@ func TestDescribe_WrongAccount_IsAMiss(t *testing.T) {
 // the type level: localInstanceLookup carries only the narrow local-state and
 // record-space interfaces, no NATS connection to fan a request out over.
 func TestLocalInstanceLookupHasNoNATSSurface(t *testing.T) {
+	t.Parallel()
 	l := localInstanceLookup{}
 	var _ instanceLookup = &l
 }

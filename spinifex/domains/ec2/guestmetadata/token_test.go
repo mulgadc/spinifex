@@ -9,6 +9,7 @@ import (
 )
 
 func TestTokenStore_IssueAndValidate(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 
@@ -21,6 +22,7 @@ func TestTokenStore_IssueAndValidate(t *testing.T) {
 }
 
 func TestTokenStore_WrongENIRejected(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 	token, err := s.issue("eni-aaa", 60*time.Second, now)
@@ -32,6 +34,7 @@ func TestTokenStore_WrongENIRejected(t *testing.T) {
 }
 
 func TestTokenStore_ExpiredRejectedAndEvicted(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 	token, err := s.issue("eni-aaa", 1*time.Second, now)
@@ -44,6 +47,7 @@ func TestTokenStore_ExpiredRejectedAndEvicted(t *testing.T) {
 }
 
 func TestTokenStore_UnknownAndEmptyRejected(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 	assert.False(t, s.validate("", "eni-aaa", now))
@@ -51,6 +55,7 @@ func TestTokenStore_UnknownAndEmptyRejected(t *testing.T) {
 }
 
 func TestTokenStore_Sweep(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 	live, _ := s.issue("eni-live", 3600*time.Second, now)
@@ -63,6 +68,7 @@ func TestTokenStore_Sweep(t *testing.T) {
 }
 
 func TestTokenStore_IssueUnique(t *testing.T) {
+	t.Parallel()
 	s := newTokenStore()
 	now := time.Unix(1_700_000_000, 0)
 	a, _ := s.issue("eni-aaa", 60*time.Second, now)
@@ -71,6 +77,7 @@ func TestTokenStore_IssueUnique(t *testing.T) {
 }
 
 func TestParseTokenTTL(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		ok   bool

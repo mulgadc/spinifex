@@ -72,6 +72,7 @@ func TestSigV4Auth_MalformedEnvelopeIsLogged(t *testing.T) {
 // signingTime must prefer the header, fall back to the presigned query arg, and
 // tolerate a request carrying neither rather than panicking on a nil URL query.
 func TestSigningTime_Sources(t *testing.T) {
+	t.Parallel()
 	hdr := httptest.NewRequest(http.MethodGet, "/", nil)
 	hdr.Header.Set("X-Amz-Date", "20260729T165540Z")
 	require.Equal(t, "20260729T165540Z", signingTime(hdr))

@@ -297,6 +297,7 @@ func TestCurrentBehaviour_Auth_LongLivedKeyResolvesPrincipal(t *testing.T) {
 // Pins CURRENT behaviour: a long-lived key is bound to a user by name only, so
 // a key record orphaned from its user authenticates as a same-name replacement.
 func TestCurrentBehaviour_Revocation_OrphanedKeyAuthenticatesAsRecreatedUser(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	key, oldID := e.newUser(t, "erin")
 
@@ -381,10 +382,12 @@ func TestCurrentBehaviour_Policy_IdentityPolicyOutcomes(t *testing.T) {
 // Pins CURRENT behaviour: credential lookup outcomes when IAM or STS backing
 // state cannot be read.
 func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
+	t.Parallel()
 	gci := cbForm("GetCallerIdentity")
 	internal := cbRegistry(awserrors.ErrorInternalError)
 
 	t.Run("gateway_connection_closed", func(t *testing.T) {
+		t.Parallel()
 		e := newCBEnv(t, cbEnvOpts{})
 		roleARN, _ := e.createAssumableRole(t, "app")
 		s := e.assumeRole(t, roleARN, "s1")
@@ -396,6 +399,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 	})
 
 	t.Run("iam_connection_closed", func(t *testing.T) {
+		t.Parallel()
 		e := newCBEnv(t, cbEnvOpts{separateIAMConn: true})
 		roleARN, _ := e.createAssumableRole(t, "app")
 		s := e.assumeRole(t, roleARN, "s1")
@@ -406,6 +410,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 	})
 
 	t.Run("access_key_bucket_deleted", func(t *testing.T) {
+		t.Parallel()
 		e := newCBEnv(t, cbEnvOpts{})
 		require.NoError(t, e.js.DeleteKeyValue(t.Context(), iamdomain.KVBucketAccessKeys))
 		for name, c := range map[string]cbCreds{"known": e.alice, "unknown": {akid: cbUnknownKey, secret: cbBadSecret}} {
@@ -414,6 +419,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 	})
 
 	t.Run("session_bucket_deleted", func(t *testing.T) {
+		t.Parallel()
 		e := newCBEnv(t, cbEnvOpts{})
 		roleARN, _ := e.createAssumableRole(t, "app")
 		s := e.assumeRole(t, roleARN, "s1")
@@ -422,6 +428,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 	})
 
 	t.Run("accounts_bucket_deleted", func(t *testing.T) {
+		t.Parallel()
 		e := newCBEnv(t, cbEnvOpts{})
 		require.NoError(t, e.js.DeleteKeyValue(t.Context(), iamdomain.KVBucketAccounts))
 		// Fails closed only once the signature holds; a bad one still reads as such.

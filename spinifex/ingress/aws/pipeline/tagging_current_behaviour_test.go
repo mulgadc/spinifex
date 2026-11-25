@@ -13,6 +13,7 @@ import (
 // value-length limit: 51 tags, a 129-character key and a 257-character value
 // are all stored.
 func TestCurrentBehaviour_Tagging_EC2CreateTagsAppliesNoLengthOrCountLimits(t *testing.T) {
+	t.Parallel()
 	gw, svc := newTaggingCBGateway(t)
 	const sg = "sg-0a1b2c3d4e5f60718"
 

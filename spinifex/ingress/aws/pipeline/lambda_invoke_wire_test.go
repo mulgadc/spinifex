@@ -107,6 +107,7 @@ func lambdaInvokeApp(t *testing.T) (http.Handler, *countingExec) {
 }
 
 func TestLambdaInvokeWire_PayloadSizeLimit(t *testing.T) {
+	t.Parallel()
 	app, ex := lambdaInvokeApp(t)
 
 	resp := signedInvoke(t, app, paddedJSON(6291456))
@@ -126,6 +127,7 @@ func TestLambdaInvokeWire_PayloadSizeLimit(t *testing.T) {
 }
 
 func TestLambdaInvokeWire_MalformedPayload(t *testing.T) {
+	t.Parallel()
 	app, ex := lambdaInvokeApp(t)
 
 	resp := signedInvoke(t, app, []byte("not json"))

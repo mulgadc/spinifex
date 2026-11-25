@@ -63,6 +63,7 @@ func TestWriteThrottleError_ByService(t *testing.T) {
 
 // An unparsed signature leaves no service, and the rejection keeps EC2's shape.
 func TestXMLErrorBody_EmptyServiceKeepsEC2Shape(t *testing.T) {
+	t.Parallel()
 	body := (&Config{}).xmlErrorBody("", "AccessDenied", "denied", "req-1", "/")
 
 	assert.Equal(t, "Response", xmlRootName(t, body))
@@ -99,6 +100,7 @@ func TestReqctxPipeline_GlobalSigningRegionRejectsOthers(t *testing.T) {
 // The anonymous exchange runs ahead of authentication, so an oversize body is
 // handed back unread to the signed chain instead of being dispatched.
 func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
+	t.Parallel()
 	gw := &Config{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	big := "Action=AssumeRoleWithWebIdentity&WebIdentityToken=" + strings.Repeat("a", int(sigv4.MaxPayloadLen)+1)
 
@@ -114,6 +116,7 @@ func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
 
 // With no anonymous capability composed, the action fails closed.
 func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
+	t.Parallel()
 	gw := &Config{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=AssumeRoleWithWebIdentity&WebIdentityToken=x"))
 	rec := httptest.NewRecorder()
@@ -129,6 +132,7 @@ func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
 // A pre-authentication request is served before SigV4 and before the
 // throttle, so an exhausted bucket never reaches it.
 func TestPreAuth_RunsAheadOfSigV4AndThrottle(t *testing.T) {
+	t.Parallel()
 	served := 0
 	gw := withIAM(withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,

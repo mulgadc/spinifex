@@ -71,6 +71,7 @@ func TestOperatorAdmin_EveryGateDeniesWithTheSameAnswer(t *testing.T) {
 }
 
 func TestOperatorAdmin_GetAccountQuota_DefaultsComeFromConfig(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *Config) {
 		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
@@ -87,6 +88,7 @@ func TestOperatorAdmin_GetAccountQuota_DefaultsComeFromConfig(t *testing.T) {
 }
 
 func TestOperatorAdmin_ListAccounts_JSONSuccess(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := adminCall(t, app, http.MethodPost, "ListAccounts", "spinifex", `{}`)
 
@@ -102,6 +104,7 @@ func TestOperatorAdmin_ListAccounts_JSONSuccess(t *testing.T) {
 // Unlike the Query surface, /admin authorizes first and only then checks the
 // cluster, so NATS down is visible only to an authorized caller.
 func TestOperatorAdmin_NATSDownAnswers503OnlyAfterAuthorization(t *testing.T) {
+	t.Parallel()
 	down := func(gw *Config) { gwfix.DepsOf(gw).NATS = nil }
 
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), down)
@@ -117,6 +120,7 @@ func TestOperatorAdmin_NATSDownAnswers503OnlyAfterAuthorization(t *testing.T) {
 }
 
 func TestOperatorAdmin_OversizedBodyIsInvalidRequest(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := adminCall(t, app, http.MethodPost, "ListAccounts", "spinifex", strings.Repeat("a", 9000))
 
@@ -128,6 +132,7 @@ func TestOperatorAdmin_OversizedBodyIsInvalidRequest(t *testing.T) {
 
 // Every request, success or failure, gets its own request ID.
 func TestOperatorAdmin_RequestIDIsUniquePerRequest(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 
 	first := adminCall(t, app, http.MethodPost, "ListAccounts", "spinifex", `{}`).Header.Get("X-Amzn-Requestid")
@@ -139,6 +144,7 @@ func TestOperatorAdmin_RequestIDIsUniquePerRequest(t *testing.T) {
 // The method is checked before authorization, so an unknown name and a
 // non-POST verb answer the same way for a caller with no grant at all.
 func TestOperatorAdmin_UnknownMethodAndVerbBeforeAuthorization(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, authzAccountID, nil, nil)
 
 	resp := adminCall(t, app, http.MethodPost, "PurgeEverything", "spinifex", `{}`)
@@ -167,6 +173,7 @@ func TestOperatorQuery_EveryAdminActionDeniesNonAdminAccount(t *testing.T) {
 // A storage-config request nobody answers surfaces as the unmapped-error
 // InternalError, not a distinct unavailable code.
 func TestOperatorQuery_GetStorageStatusWithNoResponder(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := doRequest(app, spinifexQuery(t, "GetStorageStatus", nil))
 
@@ -178,6 +185,7 @@ func TestOperatorQuery_GetStorageStatusWithNoResponder(t *testing.T) {
 // Successes are JSON with application/json even though the service is a
 // Query-protocol one, and no request ID header is set on this surface.
 func TestOperatorQuery_GetVersion_JSONSuccess(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := doRequest(app, spinifexQuery(t, "GetVersion", nil))
 
@@ -190,6 +198,7 @@ func TestOperatorQuery_GetVersion_JSONSuccess(t *testing.T) {
 }
 
 func TestOperatorQuery_ListOchreCatalog_ReturnsEntries(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := doRequest(app, spinifexQuery(t, "ListOchreCatalog", nil))
 
@@ -204,6 +213,7 @@ func TestOperatorQuery_ListOchreCatalog_ReturnsEntries(t *testing.T) {
 }
 
 func TestOperatorQuery_MalformedQueryString(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 	resp := doRequest(app, signOperatorRequest(t, http.MethodPost, "/", "spinifex", []byte("Action=%zz")))
 
@@ -228,6 +238,7 @@ func TestOperatorQuery_ModelAccessWithoutStoreIsServerInternal(t *testing.T) {
 // The cluster-unavailable check is in the shared Request path, ahead of
 // authorization, so even a caller with no grant sees 503 when NATS is down.
 func TestOperatorQuery_NATSDownAnswers503BeforeAuthorization(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, authzAccountID, nil, func(gw *Config) { gwfix.DepsOf(gw).NATS = nil })
 	resp := doRequest(app, spinifexQuery(t, "GetVersion", nil))
 
@@ -238,6 +249,7 @@ func TestOperatorQuery_NATSDownAnswers503BeforeAuthorization(t *testing.T) {
 // With no node answering, discovery falls back to the expected-node count and
 // the listings are empty rather than an error.
 func TestOperatorQuery_NodeAndVMListingsWithNoNodes(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 
 	resp := doRequest(app, spinifexQuery(t, "GetNodes", nil))
@@ -264,6 +276,7 @@ func TestOperatorQuery_PolicyDenialBeatsEverythingForTheAdminAccount(t *testing.
 }
 
 func TestOperatorQuery_RequiredParameters(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), nil)
 
 	resp := doRequest(app, spinifexQuery(t, "PromoteImage", nil))
@@ -274,6 +287,7 @@ func TestOperatorQuery_RequiredParameters(t *testing.T) {
 // An action outside the admin set is not account-gated, so a non-admin caller
 // holding the policy gets the unknown-action answer, not a denial.
 func TestOperatorQuery_UnknownActionAndMissingAction(t *testing.T) {
+	t.Parallel()
 	_, app := operatorPipelineApp(t, authzAccountID, allowAllOperatorDocs(), nil)
 
 	resp := doRequest(app, spinifexQuery(t, "NotAnAction", nil))

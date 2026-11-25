@@ -11,6 +11,7 @@ import (
 // Captured from AWS: the combination is refused even when MaxResults is also
 // out of range.
 func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	for _, n := range []string{"2", "5"} {
@@ -23,11 +24,13 @@ func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
 
 // AWS answers DryRun ahead of a MaxResults out of range.
 func TestEC2Request_MaxResultsAfterDryRun(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 	assertDryRun(t, dispatchEC2(t, gw, "Action=DescribeLaunchTemplates&MaxResults=0&DryRun=true"))
 }
 
 func TestEC2Request_MaxResultsInRange(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	for _, body := range []string{
@@ -86,6 +89,7 @@ func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
 // Each of an action's own types reaches the handler, which fails only on the
 // absent NATS connection.
 func TestEC2Request_TagSpecificationAllowedTypes(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	for _, rt := range []string{"instance", "volume", "network-interface", "spot-instances-request"} {

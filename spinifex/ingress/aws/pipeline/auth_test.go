@@ -105,6 +105,7 @@ func userIDApp(t *testing.T, svc *gwfix.IAM) (http.Handler, *string) {
 // aws:userid is resolved once, by the middleware, so every policy check in the
 // request evaluates the same value rather than re-reading the user record.
 func TestSigV4Auth_StashesUserID(t *testing.T) {
+	t.Parallel()
 	handler, seen := userIDApp(t, &gwfix.IAM{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -120,6 +121,7 @@ func TestSigV4Auth_StashesUserID(t *testing.T) {
 // An IAM fault must fail the request, not authorize it against a context missing
 // aws:userid: that silently narrows an Allow and widens a Deny to everything.
 func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
+	t.Parallel()
 	handler, _ := userIDApp(t, &gwfix.IAM{
 		GetUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
 			return nil, errors.New("nats: no responders available for request")
@@ -138,6 +140,7 @@ func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignature(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -153,6 +156,7 @@ func TestSigV4Auth_ValidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignatureWithBody(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	body := []byte("Action=DescribeInstances&Version=2016-11-15")
@@ -170,6 +174,7 @@ func TestSigV4Auth_ValidSignatureWithBody(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	queryString := "Action=DescribeInstances&Version=2016-11-15"
@@ -186,6 +191,7 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 }
 
 func TestSigV4Auth_NilIAMService(t *testing.T) {
+	t.Parallel()
 	gw := withEC2(withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
@@ -246,6 +252,7 @@ func TestQueryParseArgs_URLDecoding(t *testing.T) {
 }
 
 func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversizedBody := []byte(strings.Repeat("x", sigv4.MaxPayloadLen+1))
@@ -269,6 +276,7 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 // A body the gateway cannot read is a transport failure: it answers InternalError
 // and leaves the lockout alone, so a flaky link cannot lock out its own IP.
 func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	for range authlimit.MaxFailures + 1 {
@@ -294,6 +302,7 @@ func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 // --- Clock Skew / Replay Protection Tests ---
 
 func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	recent := time.Now().UTC().Add(-14 * time.Minute) // within the 15-minute window
@@ -399,6 +408,7 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 // --- Context Propagation Tests ---
 
 func TestSigV4Auth_ContextPropagation(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -467,6 +477,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 }
 
 func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -536,6 +547,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 // --- LookupAccessKey Error Variants ---
 
 func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
+	t.Parallel()
 	// A non-NoSuchEntity error from LookupAccessKey should yield 500 InternalError.
 	gw := withEC2RealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
@@ -595,6 +607,7 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 }
 
 func TestSigV4Auth_SignedContentType(t *testing.T) {
+	t.Parallel()
 	// Verify signature works when content-type is included in signed headers.
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
@@ -639,6 +652,7 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 }
 
 func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	// POST with empty body — payload hash is hash of ""
@@ -655,6 +669,7 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 }
 
 func TestSigV4Auth_MultipartContentType(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	body := []byte("Action=DescribeInstances")
@@ -716,6 +731,7 @@ func setupPolicyTestHandler(gw *Config) http.Handler {
 }
 
 func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -764,6 +780,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -818,6 +835,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -882,6 +900,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -937,6 +956,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 }
 
 func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -978,6 +998,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 }
 
 func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -1023,6 +1044,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 // TestSigV4Auth_NATSDisconnectedShortCircuit: with nil IAMService a post-lookup
 // failure would be 500; a 503 here proves the NATS short-circuit fired first.
 func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
+	t.Parallel()
 	ns, _ := testutil.StartTestNATS(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	if err != nil {
@@ -1135,6 +1157,7 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 }
 
 func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
+	t.Parallel()
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1153,6 +1176,7 @@ func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
+	t.Parallel()
 	// GetSessionToken session (PrincipalType "user") must resolve back to the IAM
 	// user with no assumed-role fields, so buildCallerARN yields arn:aws:iam::A:user/N.
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
@@ -1186,6 +1210,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
+	t.Parallel()
 	// Pre-PrincipalType records have an empty value and must still resolve as assumed-role.
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -1222,6 +1247,7 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 // A fault is not a verdict: an IAM outage must surface as InternalError so the
 // client retries rather than discarding a credential that is still good.
 func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
+	t.Parallel()
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 	stsMock.PrincipalErr = errors.New("jetstream unavailable")
 
@@ -1238,6 +1264,7 @@ func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
 
 // The other half of the ordering pin: a good signature does reach the check.
 func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
+	t.Parallel()
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1253,6 +1280,7 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 
 // A long-lived credential has no session record to check, so the door skips it.
 func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
+	t.Parallel()
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1264,6 +1292,7 @@ func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
 }
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
+	t.Parallel()
 	// Long-lived AKIA path must seal principalType=user for correct policy gating.
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -1302,6 +1331,7 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
+	t.Parallel()
 	// Session AKID with nil STSService is a misconfiguration — must fail with InternalError.
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -1335,6 +1365,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 // that grants nothing. The enforcement path must resolve the underlying role —
 // never the SessionName — so the request is denied and GetUserPolicies is never called.
 func TestCheckPolicy_SessionNameCollision(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
@@ -1458,6 +1489,7 @@ func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *ht
 // policy grants the action, so the session is allowed — the symmetric twin of
 // predastore's assumed-role S3 enforcement.
 func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 		require.Equal(t, "app-role", roleName)
@@ -1472,6 +1504,7 @@ func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ImplicitDeny: the role policy matches neither the
 // action nor an explicit Deny, so the default deny applies.
 func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return gwfix.AllowPolicy("ec2:DescribeInstances"), nil // does not cover RunInstances
@@ -1486,6 +1519,7 @@ func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ExplicitDeny: an explicit Deny in the role policy
 // overrides any Allow.
 func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return []iamdomain.PolicyDocument{{
@@ -1507,6 +1541,7 @@ func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
 // has no attached policies can do nothing — assumability does not imply
 // permissions.
 func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, nil // role exists, zero attached policies
@@ -1523,6 +1558,7 @@ func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 // user-branch root short-circuit; it is evaluated against its role like any
 // other session.
 func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("root",
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/sneaky-role", awsidentifiers.GlobalAccountID)
 	var roleResolved bool
@@ -1571,6 +1607,7 @@ func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ResolveError_InternalError: a non-transient role
 // resolve error fails closed — never an allow-on-error.
 func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
+	t.Parallel()
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity) // role deleted after mint
@@ -1604,6 +1641,7 @@ func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 // iam:PassRole resource match: the role's policy scopes PassRole to the exact
 // target role ARN, so passing that role is allowed.
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T) {
+	t.Parallel()
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
@@ -1619,6 +1657,7 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T
 // TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied: PassRole scoped
 // to a different role ARN must not authorise passing the target role.
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) {
+	t.Parallel()
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
@@ -1636,6 +1675,7 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) 
 // granting iam:PassRole on "*" authorises passing any role ARN — the classic
 // wildcard PassRole grant. Locks the wildcard branch of the resource match.
 func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T) {
+	t.Parallel()
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
@@ -1649,6 +1689,7 @@ func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T)
 }
 
 func TestMismatchAction_RecoversActionAndRewindsBody(t *testing.T) {
+	t.Parallel()
 	body := []byte("Action=ImportKeyPair&Version=2016-11-15&KeyName=demo&PublicKeyMaterial=c3NoLXJzYQ%3D%3D")
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1663,6 +1704,7 @@ func TestMismatchAction_RecoversActionAndRewindsBody(t *testing.T) {
 }
 
 func TestMismatchAction_SkipsS3AndPrefersQueryString(t *testing.T) {
+	t.Parallel()
 	// An S3 body is object data, so it must never be parsed as query args.
 	s3req := httptest.NewRequest(http.MethodPut, "/bucket/key", bytes.NewReader([]byte("Action=NotReally")))
 	gw := withServices(&Config{})
@@ -1673,6 +1715,7 @@ func TestMismatchAction_SkipsS3AndPrefersQueryString(t *testing.T) {
 }
 
 func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
+	t.Parallel()
 	const token = "SUPERSECRETSESSIONTOKEN"
 	body := []byte("Action=DescribeInstances")
 	req := httptest.NewRequest(http.MethodPost, "http://gw.local/", bytes.NewReader(body))
@@ -1700,6 +1743,7 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 // envelope rather than the EC2 query shape a non-query client cannot
 // deserialize.
 func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1733,6 +1777,7 @@ func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 // for a scope the gateway does not serve, so without the request-derived
 // fallback this always fell through to XML the client's SDK cannot parse.
 func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1754,6 +1799,7 @@ func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
 // The same, driven by Content-Type rather than X-Amz-Target: some JSON
 // clients (dynamodb) identify themselves this way instead.
 func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1774,6 +1820,7 @@ func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) 
 // An unserved scope whose request carries neither tell (a REST-XML client
 // such as cloudfront's) must keep the XML envelope, which is correct for it.
 func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1870,6 +1917,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 // default endpoint and for the configured region against an override. Every
 // other service stays pinned to the gateway's region.
 func TestExpectedSigningRegion(t *testing.T) {
+	t.Parallel()
 	gw := withServices(&Config{Region: "ap-southeast-2"}, route53awsapi.NewRegistration(route53awsapi.Deps{}))
 	for _, tc := range []struct {
 		service, claimed, want string
@@ -1979,6 +2027,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 }
 
 func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
+	t.Parallel()
 	// A user named "root" but on a non-global account should still have
 	// policies evaluated (only root + GlobalAccountID bypasses).
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
@@ -2026,6 +2075,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
+	t.Parallel()
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2040,6 +2090,7 @@ func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_Expired(t *testing.T) {
+	t.Parallel()
 	// Past expiry but within janitor grace window: must reject as ExpiredToken.
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(-time.Minute))
 
@@ -2055,6 +2106,7 @@ func TestSigV4Auth_Session_Expired(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
+	t.Parallel()
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2103,6 +2155,7 @@ func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
 // an AKID travels in the Authorization header in cleartext. It must stay behind
 // sig.Verify, so a bad signature is answered without the check running at all.
 func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
+	t.Parallel()
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 	stsMock.PrincipalErr = stsdomain.ErrSessionPrincipalReplaced
 
@@ -2119,6 +2172,7 @@ func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
+	t.Parallel()
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2133,6 +2187,7 @@ func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
 }
 
 func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
+	t.Parallel()
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2200,6 +2255,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
+	t.Parallel()
 	gw := withEC2RealAuth(gwfix.WithDeps(&Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	w := httptest.NewRecorder()

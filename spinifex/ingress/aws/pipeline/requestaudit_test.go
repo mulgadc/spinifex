@@ -78,6 +78,7 @@ func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 // The lockout that answers 503 is the case that motivated this: without the
 // record, the response carries no client address and no reason at all.
 func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	// Distinct key ids: one key id repeated is one fault and never locks out.
@@ -101,6 +102,7 @@ func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
 // edge's word only on a loopback connection; from anywhere else both it and
 // X-Forwarded-For are ignored.
 func TestRequestAuditClientIPIgnoresSpoofedHeadersFromNonLoopback(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, nil)
 
 	for _, remote := range []string{"203.0.113.9:5555", "10.2.0.3:5555", "[2001:db8::9]:5555"} {
@@ -120,6 +122,7 @@ func TestRequestAuditClientIPIgnoresSpoofedHeadersFromNonLoopback(t *testing.T) 
 // Through the edge (or the console proxy) the connection is loopback, and the
 // edge's X-Real-IP is the real client.
 func TestRequestAuditClientIPTrustsRealIPFromLoopback(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -135,6 +138,7 @@ func TestRequestAuditClientIPTrustsRealIPFromLoopback(t *testing.T) {
 // The edge's request ID joins an awsgw line to its access-log line; a value that
 // does not look like an ID is dropped rather than written into the log.
 func TestRequestAuditRecordsRequestID(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, nil)
 
 	cases := map[string]string{
@@ -172,6 +176,7 @@ func auditField(rec *audit.Record, key string) string {
 // A rejected caller is identifiable: the key it presented is recorded even
 // though authentication failed on it.
 func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	w := httptest.NewRecorder()
@@ -186,6 +191,7 @@ func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
 // A request that never presented credentials is still attributable to where it
 // came from, and carries the verdict it was answered with.
 func TestRequestAuditRecordsUnauthenticatedRejection(t *testing.T) {
+	t.Parallel()
 	handler, record := auditRouter(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

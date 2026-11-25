@@ -21,6 +21,7 @@ import (
 // rdsinstance.Service, and the resulting error through ErrorHandler's HTTP/XML rendering. AWS
 // returns 400 InvalidParameterValue for a create with no MasterUserPassword.
 func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := rdsinstance.NewService(nc, "ap-southeast-2")
 	sub, err := nc.Subscribe(rdsinstance.SubjectCreateDBInstance, func(msg *nats.Msg) {

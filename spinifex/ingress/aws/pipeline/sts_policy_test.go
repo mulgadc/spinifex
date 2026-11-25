@@ -52,6 +52,7 @@ func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
 // detailed denial message safe to return: it must read identically whether or
 // not the role exists, which a lookup added ahead of the gate would break.
 func TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence(t *testing.T) {
+	t.Parallel()
 	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
 
 	existing := assertSTSAccessDenied(t, stsPolicyRequest(t, stsIdentityPolicy(), nil, body))
@@ -169,6 +170,7 @@ func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
 // TestSTSRequest_GetCallerIdentity_NotGated pins the AWS contract: the action
 // requires no permission and cannot be denied by policy.
 func TestSTSRequest_GetCallerIdentity_NotGated(t *testing.T) {
+	t.Parallel()
 	svc := stsIdentityPolicy(stsStatement("Deny", "sts:*", "*"))
 	resp := stsPolicyRequest(t, svc, &flexMockSTSService{}, "Action=GetCallerIdentity")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -181,6 +183,7 @@ func TestSTSRequest_GetCallerIdentity_NotGated(t *testing.T) {
 // authentication operation requiring no permission, so an explicit Deny on the
 // identity policy does not stop it reaching the handler.
 func TestSTSRequest_GetSessionToken_NotGated(t *testing.T) {
+	t.Parallel()
 	svc := stsIdentityPolicy(stsStatement("Deny", "sts:*", "*"))
 
 	called := false

@@ -123,6 +123,7 @@ func TestErrorEnvelope_Throttle(t *testing.T) {
 }
 
 func TestErrorEnvelope_ThrottleOverride(t *testing.T) {
+	t.Parallel()
 	c := &dispatchCapture{}
 	throttle := throttleResponse(t, envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c,
 		func(r *dispatch.Registration) {
@@ -235,6 +236,7 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 }
 
 func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
+	t.Parallel()
 	c := &dispatchCapture{}
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c, nil)))
@@ -264,6 +266,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 }
 
 func TestErrorEnvelope_OversizeBody(t *testing.T) {
+	t.Parallel()
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 	send := func(t *testing.T, app http.Handler, service string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))

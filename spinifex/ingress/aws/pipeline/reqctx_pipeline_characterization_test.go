@@ -271,6 +271,7 @@ func signSpinifexQuery(t *testing.T, action string) *http.Request {
 // same unknown method is dispatched and answered 400 in the admin JSON, where the
 // identical call on "/" is refused 503 by the gate.
 func TestReqctxPipeline_AdminBypassesTheSecondGate(t *testing.T) {
+	t.Parallel()
 	app := reqctxGateway(t, reqctxGatewayEnv{NATS: natsAbsent}).SetupRoutes()
 
 	viaAdmin := probeAny(app, signAdmin(t, operatoradmin.ServiceName, "PurgeEverything"))
@@ -287,6 +288,7 @@ func TestReqctxPipeline_AdminBypassesTheSecondGate(t *testing.T) {
 // service: a call signed for IAM reaches the same dispatcher and answers in
 // the admin JSON, not IAM's XML.
 func TestReqctxPipeline_AdminIgnoresTheSignedService(t *testing.T) {
+	t.Parallel()
 	app := reqctxGateway(t, reqctxGatewayEnv{NATS: natsUp}).SetupRoutes()
 
 	signedSpinifex := probeAny(app, signAdmin(t, operatoradmin.ServiceName, "PurgeEverything"))
@@ -380,6 +382,7 @@ func TestReqctxPipeline_ErrorBodyRequestIDDiffersFromAuditRecord(t *testing.T) {
 // The admin response carries the id it minted in a header as well, and that id
 // is the one in the body, not the audit record's.
 func TestReqctxPipeline_AdminHeaderRequestIDMatchesBody(t *testing.T) {
+	t.Parallel()
 	app, record := auditedPipeline(t, reqctxGateway(t, reqctxGatewayEnv{NATS: natsUp}))
 	req := signAdmin(t, operatoradmin.ServiceName, "PurgeEverything")
 	req.Header.Set("X-Request-ID", edgeRequestID)

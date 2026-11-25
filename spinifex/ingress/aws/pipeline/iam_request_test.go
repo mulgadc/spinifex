@@ -20,6 +20,7 @@ import (
 )
 
 func TestIAMRequest_CreateUser_Success(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockIAMService{
 		createUserFn: func(_ string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 			return &iam.CreateUserOutput{
@@ -47,6 +48,7 @@ func TestIAMRequest_CreateUser_Success(t *testing.T) {
 }
 
 func TestIAMRequest_UnitOutputOmitsResult(t *testing.T) {
+	t.Parallel()
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DeleteUser&UserName=alice"))
@@ -64,6 +66,7 @@ func TestIAMRequest_UnitOutputOmitsResult(t *testing.T) {
 }
 
 func TestIAMRequest_EmptyAction(t *testing.T) {
+	t.Parallel()
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("UserName=alice"))
@@ -81,6 +84,7 @@ func TestIAMRequest_EmptyAction(t *testing.T) {
 // stdlib encoding/xml path cannot marshal a map, so this guards the xmlutil
 // builder wiring end to end.
 func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockIAMService{
 		getAccountSummaryFn: func(_ string, _ *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
 			return &iam.GetAccountSummaryOutput{
@@ -108,6 +112,7 @@ func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
 // AWS answers GetRole for a never-used role with an empty <RoleLastUsed/>
 // element; a nil-field struct must still marshal to that element, not vanish.
 func TestIAMRequest_GetRole_EmptyRoleLastUsed(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockIAMService{
 		getRoleFn: func(_ string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
 			return &iam.GetRoleOutput{Role: &iam.Role{
@@ -132,6 +137,7 @@ func TestIAMRequest_GetRole_EmptyRoleLastUsed(t *testing.T) {
 // AWS answers an account with no alias with an empty AccountAliases list and
 // IsTruncated false, and no Marker.
 func TestIAMRequest_ListAccountAliases_Empty(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(setupIAMRequestHandler(&realAliasesIAMService{}))
 	defer server.Close()
 	client := iam.New(session.Must(session.NewSession(&aws.Config{
@@ -154,6 +160,7 @@ func TestIAMRequest_ListAccountAliases_Empty(t *testing.T) {
 }
 
 func TestIAMRequest_ListUsers_Success(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockIAMService{
 		listUsersFn: func(_ string, _ *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
 			return &iam.ListUsersOutput{
@@ -181,6 +188,7 @@ func TestIAMRequest_ListUsers_Success(t *testing.T) {
 }
 
 func TestIAMRequest_MissingAccountID(t *testing.T) {
+	t.Parallel()
 	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(&flexMockIAMService{}, nil),
@@ -204,6 +212,7 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestIAMRequest_NilService(t *testing.T) {
+	t.Parallel()
 	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(nil, nil),
@@ -231,6 +240,7 @@ func TestIAMRequest_NilService(t *testing.T) {
 }
 
 func TestIAMRequest_ServiceError(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockIAMService{
 		createUserFn: func(_ string, _ *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
@@ -251,6 +261,7 @@ func TestIAMRequest_ServiceError(t *testing.T) {
 }
 
 func TestIAMRequest_UnknownAction(t *testing.T) {
+	t.Parallel()
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DoesNotExist"))
@@ -264,6 +275,7 @@ func TestIAMRequest_UnknownAction(t *testing.T) {
 }
 
 func TestIAMRequest_ValidationError(t *testing.T) {
+	t.Parallel()
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser"))

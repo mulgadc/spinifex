@@ -85,6 +85,7 @@ func TestEC2Pipeline_ErrorEnvelopes(t *testing.T) {
 // action: a replay returns the first result, changed parameters are refused,
 // and no token means no deduplication.
 func TestEC2Pipeline_IdempotentCreate(t *testing.T) {
+	t.Parallel()
 	app := ec2Pipeline(t, nil, allowEC2())
 	const subject = "ec2.CreateEgressOnlyInternetGateway"
 	create := func(vpc, token string) ec2Outcome {

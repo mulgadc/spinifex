@@ -16,6 +16,7 @@ import (
 )
 
 func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
+	t.Parallel()
 	iss, _ := newECRAuth(t)
 	gw := withECR(withVerifier(gwfix.WithDeps(&Config{
 		Region:         ecrTestRegion,
@@ -30,6 +31,7 @@ func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
+	t.Parallel()
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(gwfix.WithDeps(&Config{
@@ -76,6 +78,7 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_MissingComposition(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
 	err := gw.serveECR(httptest.NewRecorder(), req)
@@ -84,6 +87,7 @@ func TestGetAuthorizationToken_MissingComposition(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
+	t.Parallel()
 	gw := withECR(withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{})})
@@ -97,6 +101,7 @@ func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
 // The mint and verify halves agree on a pathed user: the token is minted for the
 // stored ARN the middleware resolved, and verifies against the same record.
 func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
+	t.Parallel()
 	iamSvc := newECRMockIAMService()
 	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
@@ -140,6 +145,7 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
+	t.Parallel()
 	iss, _ := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix, RegistryPort: "9999"}
 	gw := withECR(withVerifier(gwfix.WithDeps(&Config{

@@ -16,6 +16,7 @@ import (
 )
 
 func TestIAMExamplesContract(t *testing.T) {
+	t.Parallel()
 	examples := loadIAMExamples(t)
 	covered := 0
 
@@ -31,6 +32,7 @@ func TestIAMExamplesContract(t *testing.T) {
 			}
 
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				svc := &echoIAMService{}
 				server := httptest.NewServer(setupIAMRequestHandler(svc))
 				defer server.Close()

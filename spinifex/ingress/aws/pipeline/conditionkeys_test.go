@@ -22,6 +22,7 @@ import (
 )
 
 func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.TLS = &tls.ConnectionState{}
 	r.RemoteAddr = "10.4.1.9:52344"
@@ -56,6 +57,7 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 // Every principal type this door recognizes maps to the canonical AWS spelling,
 // and an unrecognized one omits the key rather than supplying an empty string.
 func TestRequestConditionKeys_PrincipalType(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
 	tests := []struct {
@@ -83,6 +85,7 @@ func TestRequestConditionKeys_PrincipalType(t *testing.T) {
 // A role session's aws:userid is the ID STS minted for it. Both halves come from
 // the resolved role, so unlike aws:username it can carry a decision.
 func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
@@ -100,6 +103,7 @@ func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
 // An ID the door could not resolve is omitted, not set empty: a policy naming it
 // then selects nothing on an Allow rather than selecting the empty-string path.
 func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
@@ -112,6 +116,7 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 // stay absent for a role session — otherwise anyone permitted to assume the
 // role satisfies an aws:username condition just by naming their session.
 func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	principal := credential.Principal{
 		Identity:       "alice",
@@ -129,6 +134,7 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 // s3:prefix has no meaning on the AWS API path, so a policy conditioned on it
 // must not fire here even though the same document works at predastore's door.
 func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "alice",
@@ -142,6 +148,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 // An empty value would compare as a real value that matches nothing, which on a
 // Deny widens access instead of narrowing it. Absent is the only safe reading.
 func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.RemoteAddr = ""
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: gwfix.PrincipalTypeUser})
@@ -155,6 +162,7 @@ func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
 // must come from the request itself or every aws:SourceIp condition is inert
 // on that door while working on the AWS API door.
 func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest(http.MethodPost, "/v2/app/blobs/uploads/", nil)
 	r.RemoteAddr = "10.4.1.9:52344"
 

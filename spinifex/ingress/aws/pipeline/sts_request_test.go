@@ -21,6 +21,7 @@ import (
 )
 
 func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockSTSService{
 		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 			t.Fatal("AssumeRole should not be called when required params missing")
@@ -52,6 +53,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 // same fail-closed answer checkPolicyResources gives: the target-role lookup
 // runs ahead of it, so an absent IAM service must not reach a nil interface.
 func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
+	t.Parallel()
 	svc := &flexMockSTSService{
 		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 			t.Fatal("handler reached: an unavailable IAM service must fail closed")
@@ -82,6 +84,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 }
 
 func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T) {
+	t.Parallel()
 	// AccessDenied from the handler (trust-policy denial) must reach the wire as IAM ErrorResponse + 403.
 	svc := &flexMockSTSService{
 		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
@@ -109,6 +112,7 @@ func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T)
 }
 
 func TestSTSRequest_AssumeRole_Success(t *testing.T) {
+	t.Parallel()
 	var seenCallerARN string
 	svc := &flexMockSTSService{
 		assumeRoleFn: func(accountID, callerARN, identity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
@@ -150,6 +154,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 }
 
 func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
+	t.Parallel()
 	// AssumedRoleID comes from the resolved SessionCredential; the dispatcher must not re-lookup it.
 	svc := &flexMockSTSService{
 		lookupSessionFn: func(string) (*stsdomain.SessionCredential, error) {
@@ -183,6 +188,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 // A user at a non-root path is reported with its stored ARN, as AWS does,
 // resolved by the SigV4 middleware rather than reformatted at "/".
 func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) {
+	t.Parallel()
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -221,6 +227,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 }
 
 func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
+	t.Parallel()
 	// Root short-circuits IAM lookup — flexMockIAMService.GetUser would cause InternalError otherwise.
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
@@ -243,6 +250,7 @@ func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
 }
 
 func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
+	t.Parallel()
 	// User principal triggers IAMService.GetUser to resolve UserId.
 	iamSvc := &flexMockIAMService{
 		getUserFn: func(_ string, _ *iam.GetUserInput) (*iam.GetUserOutput, error) {
@@ -271,6 +279,7 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 }
 
 func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
+	t.Parallel()
 	var got struct {
 		accountID     string
 		userName      string
@@ -323,6 +332,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 }
 
 func TestSTSRequest_MissingAction(t *testing.T) {
+	t.Parallel()
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
@@ -341,6 +351,7 @@ func TestSTSRequest_MissingAction(t *testing.T) {
 }
 
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
+	t.Parallel()
 	gw := withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{STS: nil, IAM: &flexMockIAMService{}}))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "sts")
@@ -364,6 +375,7 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 }
 
 func TestSTSRequest_UnknownAction(t *testing.T) {
+	t.Parallel()
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",

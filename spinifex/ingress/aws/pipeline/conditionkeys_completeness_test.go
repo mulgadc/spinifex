@@ -144,6 +144,7 @@ func emittedKeys(t *testing.T) map[string]string {
 // A key this door supplies that no policy can name is carried to the evaluator
 // and dropped there — the silent half of the write-path/evaluator disagreement.
 func TestRequestConditionKeys_EveryEmittedKeyIsUsableInAPolicy(t *testing.T) {
+	t.Parallel()
 	for key, principal := range emittedKeys(t) {
 		supported := false
 		for op := range operatorValues {
@@ -162,6 +163,7 @@ func TestRequestConditionKeys_EveryEmittedKeyIsUsableInAPolicy(t *testing.T) {
 // The door's key set as a whole, so a key gained or lost here is a deliberate
 // change made at both doors rather than a drift between them.
 func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
+	t.Parallel()
 	emitted := slices.Collect(maps.Keys(emittedKeys(t)))
 	assert.ElementsMatch(t, gatewayDoorKeys, emitted,
 		"the AWS gateway door key set changed: update predastore's mirror in "+
@@ -178,6 +180,7 @@ func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
 // inert restriction, and one it rejects that the evaluator does enforce is a
 // policy an operator cannot write.
 func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.T) {
+	t.Parallel()
 	for _, key := range allConditionKeys {
 		for op, value := range withIfExists(operatorValues) {
 			doc := conditionDocument(t, op, key, value)
@@ -201,6 +204,7 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.
 // Allow and everything it names on a Deny; one it rejects that the evaluator does
 // resolve is a policy an operator cannot write.
 func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testing.T) {
+	t.Parallel()
 	for _, key := range append(allConditionKeys, "aws:bogus") {
 		reference := iampolicy.VariablePrefix + key + "}"
 		_, unresolvable := iampolicy.UnsupportedVariable(reference)
@@ -225,6 +229,7 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testi
 
 // A malformed reference resolves nowhere and is rejected on every path.
 func TestValidatePolicyDocument_RejectsUnterminatedVariable(t *testing.T) {
+	t.Parallel()
 	_, err := iamdomain.ValidatePolicyDocument(
 		resourceDocument(t, "arn:aws:s3:::reports/"+iampolicy.VariablePrefix+iampolicy.KeyUsername))
 	assert.ErrorContains(t, err, "unterminated policy variable reference")

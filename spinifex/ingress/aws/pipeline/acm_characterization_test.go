@@ -88,6 +88,7 @@ func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 // An absent certificate through the signed gateway, against the real ACM service,
 // answers 400 with ResourceNotFoundException in the JSON 1.1 envelope.
 func TestACMPipeline_DescribeAbsentCertificate_Is400ResourceNotFoundException(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)

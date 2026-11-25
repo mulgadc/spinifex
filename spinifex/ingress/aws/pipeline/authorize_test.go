@@ -61,6 +61,7 @@ func TestAuthorize_FailsClosed(t *testing.T) {
 }
 
 func TestAuthorize_LayersActionKeysOverRequestKeysAndNamesTheIAMAction(t *testing.T) {
+	t.Parallel()
 	p := &fakePolicy{requestKeys: iampolicy.ConditionKeys{"k": "request", "only": "request"}}
 
 	require.NoError(t, authorize(p, alice, true))
@@ -71,6 +72,7 @@ func TestAuthorize_LayersActionKeysOverRequestKeysAndNamesTheIAMAction(t *testin
 }
 
 func TestAuthorize_ReturnsTheVerdict(t *testing.T) {
+	t.Parallel()
 	denied := errors.New(awserrors.ErrorAccessDenied)
 	assert.Equal(t, denied, authorize(&fakePolicy{verdict: denied, requestKeys: iampolicy.ConditionKeys{}}, alice, true))
 }

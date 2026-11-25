@@ -16,6 +16,7 @@ import (
 // A refused CreateFunction leaves the real ingress in the REST-JSON shape the
 // Lambda SDK decodes: the code in X-Amzn-Errortype, Type and message in the body.
 func TestLambdaCreateFunctionErrorUsesRESTJSONEnvelope(t *testing.T) {
+	t.Parallel()
 	_, app := dispatchSeamApp(t, allowAllECRDocs(), lambdaawsapi.NewRegistration(lambdaawsapi.Deps{}))
 
 	body := []byte(`{"FunctionName":"hello","TenancyConfig":{}}`)

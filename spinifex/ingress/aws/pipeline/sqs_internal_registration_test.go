@@ -79,6 +79,7 @@ func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*Config, *rdsPo
 // The worker's session, signed for spinifex-sqs, reaches the internal surface
 // and is evaluated against its role policy under the spinifex-sqs prefix.
 func TestSQSInternal_RoutedBySigningServiceAndRolePolicy(t *testing.T) {
+	t.Parallel()
 	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("spinifex-sqs:ClaimReceiptKey"))
 	rec := httptest.NewRecorder()
 	require.NoError(t, serveSigned(gw, rec, sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimReceiptKey", sqsWorkerInstance)))
@@ -90,6 +91,7 @@ func TestSQSInternal_RoutedBySigningServiceAndRolePolicy(t *testing.T) {
 // The role policy is real: a worker session whose policy grants another
 // service's action is denied before any identity is consulted.
 func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
+	t.Parallel()
 	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("sqs:ClaimReceiptKey"))
 	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimReceiptKey", sqsWorkerInstance))
 	assertDenied(t, err)
@@ -99,6 +101,7 @@ func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
 
 // A customer administrator holding every action is refused by the class gate.
 func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
+	t.Parallel()
 	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
 	req := setupRDSUserRequest("Action=ClaimReceiptKey", rdsTestAccountID)
 	req = req.WithContext(reqctx.WithService(req.Context(), sqsworkerapi.ServiceName))
@@ -110,6 +113,7 @@ func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
 // Public SQS is untouched: nothing serves the sqs signing service, and the
 // internal actions do not answer under RDS's name either.
 func TestSQSInternal_PublicSQSUnchanged(t *testing.T) {
+	t.Parallel()
 	gw, _, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
 	_, ok := gw.registered("sqs")
 	assert.False(t, ok, "the sqs signing service must stay unserved")

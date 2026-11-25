@@ -66,6 +66,7 @@ func newISCSIAdm(r *scriptedRunner, stat func(string) (os.FileInfo, error)) *oci
 }
 
 func TestLoginWritesTheNodeRecordBeforeLoggingIn(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		replies map[string]reply
@@ -75,6 +76,7 @@ func TestLoginWritesTheNodeRecordBeforeLoggingIn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := &scriptedRunner{replies: tc.replies}
 			var statted string
 			device, err := newISCSIAdm(r, func(path string) (os.FileInfo, error) { statted = path; return nil, nil }).Login(context.Background(), target)
@@ -92,6 +94,7 @@ func TestLoginWritesTheNodeRecordBeforeLoggingIn(t *testing.T) {
 }
 
 func TestLoginFailures(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		replies   map[string]reply
@@ -132,6 +135,7 @@ func TestLoginFailures(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := &scriptedRunner{replies: tc.replies}
 			stat := tc.stat
 			if stat == nil {
@@ -145,6 +149,7 @@ func TestLoginFailures(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		replies map[string]reply
@@ -178,6 +183,7 @@ func TestLogout(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := &scriptedRunner{replies: tc.replies}
 			err := newISCSIAdm(r, present).Logout(context.Background(), target)
 			if tc.want != "" {
@@ -194,6 +200,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestSessions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		rep  reply
@@ -224,6 +231,7 @@ func TestSessions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := &scriptedRunner{replies: map[string]reply{"-m session": tc.rep}}
 			got, err := newISCSIAdm(r, present).Sessions(context.Background())
 			if tc.err != "" {
@@ -238,6 +246,7 @@ func TestSessions(t *testing.T) {
 }
 
 func TestExecRunnerKeepsTheExitCode(t *testing.T) {
+	t.Parallel()
 	_, err := ocibsd.ExecRunner{}.Run(context.Background(), "false")
 	var coded interface{ ExitCode() int }
 	require.ErrorAs(t, err, &coded)

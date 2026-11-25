@@ -18,6 +18,7 @@ import (
 )
 
 func TestNewRefusesANodeOutsideTheClustersAD(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig("node-1", oci.NewBlockFake(), ocibsd.NewFakeInitiator())
 	cfg.InstanceAvailabilityDomain = "Uocm:US-ASHBURN-AD-2"
 	_, err := ocibsd.New(cfg)
@@ -30,6 +31,7 @@ func TestNewRefusesANodeOutsideTheClustersAD(t *testing.T) {
 }
 
 func TestCapabilities(t *testing.T) {
+	t.Parallel()
 	p := newCluster(t).nodes["node-1"]
 	resp, err := p.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: latest})
 	require.NoError(t, err)
@@ -48,6 +50,7 @@ func TestCapabilities(t *testing.T) {
 }
 
 func TestCreateVolumeSizesAtTheFloorAndReportsTheRequest(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		capacity int64
@@ -58,6 +61,7 @@ func TestCreateVolumeSizesAtTheFloorAndReportsTheRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := newCluster(t)
 			p := c.router()
 			v := createVolume(t, p, "vol-size", tc.capacity)
@@ -76,6 +80,7 @@ func TestCreateVolumeSizesAtTheFloorAndReportsTheRequest(t *testing.T) {
 }
 
 func TestCreateVolumeIsPlacedInTheClustersAD(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	ctx := context.Background()
 
@@ -94,9 +99,11 @@ func TestCreateVolumeIsPlacedInTheClustersAD(t *testing.T) {
 }
 
 func TestCreateVolumeMapsTheVolumeTypeToVPUs(t *testing.T) {
+	t.Parallel()
 	cases := map[string]int64{"": 10, "gp2": 10, "gp3": 10, "st1": 10, "sc1": 10, "io1": 20, "io2": 20}
 	for volumeType, vpus := range cases {
 		t.Run(fmt.Sprintf("%q", volumeType), func(t *testing.T) {
+			t.Parallel()
 			c := newCluster(t)
 			v, err := c.router().CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: latest, VolumeID: "vol-tier", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -124,6 +131,7 @@ func TestCreateVolumeMapsTheVolumeTypeToVPUs(t *testing.T) {
 }
 
 func TestCreateVolumeAfterALostReplyReturnsTheFirstVolume(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -141,6 +149,7 @@ func TestCreateVolumeAfterALostReplyReturnsTheFirstVolume(t *testing.T) {
 }
 
 func TestCreateVolumeRefusesARetryTokenReplayOfADeletedVolume(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -152,6 +161,7 @@ func TestCreateVolumeRefusesARetryTokenReplayOfADeletedVolume(t *testing.T) {
 }
 
 func TestCreateVolumeFromASnapshot(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -188,6 +198,7 @@ func TestCreateVolumeFromASnapshot(t *testing.T) {
 }
 
 func TestCreateVolumeFromAFailedSnapshotIsRefused(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -204,6 +215,7 @@ func TestCreateVolumeFromAFailedSnapshotIsRefused(t *testing.T) {
 }
 
 func TestAVolumeOfAnotherClusterIsNotFound(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	theirs := newNode(t, fake, ocibsd.NewFakeInitiator(), func(cfg *ocibsd.Config) { cfg.ClusterID = "cluster-2" })
 	v := createVolume(t, theirs, "vol-shared-name", 1<<30)
@@ -219,6 +231,7 @@ func TestAVolumeOfAnotherClusterIsNotFound(t *testing.T) {
 }
 
 func TestExpandVolume(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -260,6 +273,7 @@ func (r *raceClient) UpdateVolume(ctx context.Context, volumeID string, in oci.U
 }
 
 func TestConcurrentExpansionsNeverShrinkTheVolume(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	other := newClusterOver(t, fake, nil).router()
 	rc := &raceClient{BlockClient: fake}
@@ -282,6 +296,7 @@ func TestConcurrentExpansionsNeverShrinkTheVolume(t *testing.T) {
 }
 
 func TestExpansionGivesUpWhileTheVolumeKeepsChanging(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	rc := &raceClient{BlockClient: fake}
 	p := newClusterOver(t, fake, rc).router()
@@ -298,6 +313,7 @@ func TestExpansionGivesUpWhileTheVolumeKeepsChanging(t *testing.T) {
 }
 
 func TestDeleteVolumeWhileABackupIsTakenIsInUse(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -311,6 +327,7 @@ func TestDeleteVolumeWhileABackupIsTakenIsInUse(t *testing.T) {
 }
 
 func TestSnapshots(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -363,6 +380,7 @@ func TestSnapshots(t *testing.T) {
 }
 
 func TestPublishRepublishesOnlyInTheSameAccessMode(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -390,6 +408,7 @@ func TestPublishRepublishesOnlyInTheSameAccessMode(t *testing.T) {
 }
 
 func TestPublishIsRefusedWhileAnotherInstanceHoldsTheVolume(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -401,6 +420,7 @@ func TestPublishIsRefusedWhileAnotherInstanceHoldsTheVolume(t *testing.T) {
 }
 
 func TestPublishBelowTheDescriptorVersionIsRefusedWithoutAttaching(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -422,6 +442,7 @@ func (r racingClient) AttachVolume(ctx context.Context, in oci.AttachVolumeInput
 }
 
 func TestPublishThatLosesAnAttachRaceIsHeldElsewhere(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	c := newClusterOver(t, fake, racingClient{fake})
 	createVolume(t, c.router(), "vol-raced", 1<<30)
@@ -431,6 +452,7 @@ func TestPublishThatLosesAnAttachRaceIsHeldElsewhere(t *testing.T) {
 }
 
 func TestPublishRetryLaterRefusals(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -455,6 +477,7 @@ func TestPublishRetryLaterRefusals(t *testing.T) {
 }
 
 func TestPublishOfADetachingAttachmentIsRetryLater(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	v := createVolume(t, p, "vol-detaching", 1<<30)
@@ -467,6 +490,7 @@ func TestPublishOfADetachingAttachmentIsRetryLater(t *testing.T) {
 // A publish that outlasts its own bound is retry-later, and the retry reuses
 // the attachment it left rather than attaching the volume again.
 func TestPublishPastItsBoundIsRetryLaterAndTheRetryReusesTheAttachment(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	fake.AttachAfter = 50
 	p := newNode(t, fake, ocibsd.NewFakeInitiator(), func(cfg *ocibsd.Config) {
@@ -498,6 +522,7 @@ func TestPublishPastItsBoundIsRetryLaterAndTheRetryReusesTheAttachment(t *testin
 }
 
 func TestPerNodeVerbsRefuseAnotherNode(t *testing.T) {
+	t.Parallel()
 	p := newCluster(t).nodes["node-1"]
 	ctx := context.Background()
 	_, err := p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-x", NodeID: "node-2"})
@@ -507,6 +532,7 @@ func TestPerNodeVerbsRefuseAnotherNode(t *testing.T) {
 }
 
 func TestUnpublish(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	ctx := context.Background()
@@ -536,6 +562,7 @@ func TestUnpublish(t *testing.T) {
 }
 
 func TestUnpublishFinishesADetachAlreadyUnderWay(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	p := c.router()
 	v := createVolume(t, p, "vol-half", 1<<30)
@@ -547,6 +574,7 @@ func TestUnpublishFinishesADetachAlreadyUnderWay(t *testing.T) {
 }
 
 func TestHoldsUnsealedWritesAnswersNone(t *testing.T) {
+	t.Parallel()
 	p := newCluster(t).nodes["node-1"]
 	held, err := p.HoldsUnsealedWrites(context.Background(), "node-1", []string{"vol-a"})
 	require.NoError(t, err)
@@ -574,6 +602,7 @@ func (p provisioningClient) GetVolume(ctx context.Context, volumeID string) (oci
 }
 
 func TestCreateVolumeWaitsForAvailable(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	reads := 0
 	c := newClusterOver(t, fake, provisioningClient{BlockFake: fake, reads: &reads, state: oci.VolumeProvisioning})
@@ -597,6 +626,7 @@ func TestCreateVolumeWaitsForAvailable(t *testing.T) {
 }
 
 func TestOCIQuotaRefusalsAreRetryLater(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.fake.FailOp("CreateVolume", fmt.Errorf("staged: %w", oci.ErrLimitExceeded))
 	_, err := c.router().CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{Versioned: latest, VolumeID: "vol-quota", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -604,7 +634,10 @@ func TestOCIQuotaRefusalsAreRetryLater(t *testing.T) {
 }
 
 func TestAttachmentsThatDoNotSettleAreRetryLater(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newCluster(t, func(cfg *ocibsd.Config) {
+		cfg.AttachTimeout, cfg.DetachTimeout = 20*time.Millisecond, 20*time.Millisecond
+	})
 	p := c.router()
 	ctx := context.Background()
 	createVolume(t, p, "vol-stuck", 1<<30)

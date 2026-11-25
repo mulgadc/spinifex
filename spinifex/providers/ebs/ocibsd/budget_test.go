@@ -12,6 +12,7 @@ import (
 // bound inside the client's, or a slow attach reaches the caller as a timeout
 // that leaves unknown whether the volume was exported.
 func TestPublishWaitsFitTheClientsPublishBudget(t *testing.T) {
+	t.Parallel()
 	waits := defaultAttachTimeout + defaultPollInterval + defaultDeviceTimeout
 	assert.Less(t, waits, defaultPublishTimeout, "the attach and device waits must fit the publish bound")
 	assert.Less(t, defaultPublishTimeout, ebsprovider.PublishTimeout, "the publish bound must answer before the client gives up")

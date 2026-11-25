@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-const (
-	imdsWait       = time.Second
-	imdsRetryTicks = 6
-)
+const imdsRetryTicks = 6
+
+// imdsWait bounds one instance ID lookup (a variable so tests can shorten it).
+var imdsWait = time.Second
 
 // imdsBase is the in-VM metadata endpoint (a variable so tests can point it at a fake).
 var imdsBase = "http://169.254.169.254/latest"

@@ -57,14 +57,14 @@ func onNode(nodeID string) func(*ocibsd.Config) {
 	return func(cfg *ocibsd.Config) { cfg.NodeID, cfg.InstanceID = nodeID, instanceOf(nodeID) }
 }
 
-func newCluster(t *testing.T) *cluster {
+func newCluster(t *testing.T, opts ...func(*ocibsd.Config)) *cluster {
 	t.Helper()
-	return newClusterOver(t, oci.NewBlockFake(), nil)
+	return newClusterOver(t, oci.NewBlockFake(), nil, opts...)
 }
 
 // newClusterOver builds the cluster over fake, reached through client when
 // one is given, so a test can interpose on the OCI calls.
-func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient) *cluster {
+func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient, opts ...func(*ocibsd.Config)) *cluster {
 	t.Helper()
 	if client == nil {
 		client = fake
@@ -72,7 +72,7 @@ func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient) *
 	c := &cluster{fake: fake, nodes: map[string]*ocibsd.Provider{}, initiators: map[string]*ocibsd.FakeInitiator{}}
 	for _, node := range []string{"node-1", "node-2"} {
 		initiator := ocibsd.NewFakeInitiator()
-		p := newNode(t, client, initiator, onNode(node))
+		p := newNode(t, client, initiator, append(opts, onNode(node))...)
 		require.NoError(t, p.Start(context.Background()))
 		c.nodes[node], c.initiators[node] = p, initiator
 	}

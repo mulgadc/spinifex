@@ -35,6 +35,7 @@ func seedAttachment(fake *oci.BlockFake, id, instance, volume string, state oci.
 }
 
 func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		arrange   func(t *testing.T, fake *oci.BlockFake, target ocibsd.Target)
@@ -96,6 +97,7 @@ func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fake := oci.NewBlockFake()
 			tc.arrange(t, fake, tc.target)
 			initiator := ocibsd.NewFakeInitiator()
@@ -117,6 +119,7 @@ func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
 // An OCI bare-metal host boots from a boot volume over iSCSI, so its session
 // is open before the provider starts and must survive every stale-session pass.
 func TestStartKeepsTheBareMetalBootSessionBesideAStaleOne(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	stale := ociTarget("detached")
 	seedAttachment(fake, "att-old", instanceOf("node-1"), seedVolume(t, fake, testCluster), oci.AttachmentDetached, stale)
@@ -132,6 +135,7 @@ func TestStartKeepsTheBareMetalBootSessionBesideAStaleOne(t *testing.T) {
 }
 
 func TestPublishWaitsForTheStaleSessionLogout(t *testing.T) {
+	t.Parallel()
 	fake := oci.NewBlockFake()
 	stale := ociTarget("stale")
 	seedAttachment(fake, "att-old", instanceOf("node-1"), seedVolume(t, fake, testCluster), oci.AttachmentDetached, stale)
@@ -156,6 +160,7 @@ func TestPublishWaitsForTheStaleSessionLogout(t *testing.T) {
 }
 
 func TestStartFailures(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		arrange func(fake *oci.BlockFake, initiator *ocibsd.FakeInitiator)
@@ -186,6 +191,7 @@ func TestStartFailures(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fake := oci.NewBlockFake()
 			initiator := ocibsd.NewFakeInitiator()
 			tc.arrange(fake, initiator)

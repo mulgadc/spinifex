@@ -13,6 +13,7 @@ import (
 )
 
 func TestConformanceInProcess(t *testing.T) {
+	t.Parallel()
 	conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		c := newCluster(t)
@@ -23,6 +24,7 @@ func TestConformanceInProcess(t *testing.T) {
 // Each node serves its own per-node subjects and joins the shared queue, as
 // the per-node service role does.
 func TestConformanceOverNATS(t *testing.T) {
+	t.Parallel()
 	conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		c := newCluster(t)

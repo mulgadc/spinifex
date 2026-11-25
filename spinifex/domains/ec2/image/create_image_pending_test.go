@@ -213,8 +213,6 @@ func (s *putHookStore) PutObject(ctx context.Context, input *s3.PutObjectInput) 
 // and its write either waits the write out or is refused retryably; one that
 // succeeds is never undone by the reaper writing the settled AMI back.
 func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
-	// Each waits out the claim retries for real; overlap the two waits.
-	t.Parallel()
 	f := newPendingImageFixture(t)
 	f.mem.AnswerSnapshotsPending(true)
 	out, err := f.createImage(t)
@@ -272,8 +270,6 @@ func assertDeregistrationStaysDeleted(t *testing.T, f *pendingImageFixture, imag
 // A DeregisterImage that lands between CreateImage's reread of its pending AMI
 // and the write making it available is refused retryably, never undone.
 func TestDeregisterImage_DuringCreateImagesAMIWriteStaysDeleted(t *testing.T) {
-	// Each waits out the claim retries for real; overlap the two waits.
-	t.Parallel()
 	f := newPendingImageFixture(t)
 	sample, err := ebsmetadata.AMIKey("ami-0")
 	require.NoError(t, err)

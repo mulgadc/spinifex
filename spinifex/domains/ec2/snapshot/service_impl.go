@@ -61,7 +61,7 @@ type SnapshotServiceImpl struct {
 	reapAt func(step reapStep, snapshotID string) bool
 	// now is the reaper's clock for tombstones; nil is time.Now. Tests only.
 	now func() time.Time
-	// claimRetryDelay overrides the wait between claim attempts. Tests only.
+	// claimRetryDelay is the wait between claim attempts; zero is ClaimRetryDelay.
 	claimRetryDelay time.Duration
 	// claimRefused observes each refused claim attempt of a writer. Tests only.
 	claimRefused func(snapshotID string)
@@ -130,6 +130,8 @@ func NewSnapshotServiceImplWithNATS(ctx context.Context, cfg *config.Config, nat
 		snapRefs: refs,
 		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 		claims:   localClaims(),
+
+		claimRetryDelay: ClaimRetryDelay,
 	}, kv, nil
 }
 
@@ -142,6 +144,8 @@ func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.Objec
 		natsConn: natsConn,
 		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
 		claims:   localClaims(),
+
+		claimRetryDelay: ClaimRetryDelay,
 	}
 	if len(snapshotKV) > 0 {
 		svc.snapRefs = kvstore.Over[[]string](nil, snapshotKV[0], snapshotRefsConfig())
@@ -1041,10 +1045,11 @@ func (s *SnapshotServiceImpl) requestDelete(ctx context.Context, doc ebsmetadata
 }
 
 // Contention on a snapshot's claim is bounded: three retries over two seconds.
-const (
-	claimRetries    = 3
-	claimRetryDelay = 2 * time.Second / claimRetries
-)
+const claimRetries = 3
+
+// ClaimRetryDelay is the wait between claim attempts that a new service takes.
+// Tests may lower it before they build a service.
+var ClaimRetryDelay = 2 * time.Second / claimRetries
 
 // writeUnderClaim rereads snapshotID's document under its claim and writes it
 // when mutate asks to, so no write lands between another writer's reread and
@@ -1075,7 +1080,7 @@ func (s *SnapshotServiceImpl) writeUnderClaim(ctx context.Context, accountID, sn
 // reaper does, retrying a holder that is live; one still held after the
 // retries is IncorrectState, which the caller retries.
 func (s *SnapshotServiceImpl) takeClaimWithRetry(ctx context.Context, kind, id string) (*heldClaim, error) {
-	delay := claimRetryDelay
+	delay := ClaimRetryDelay
 	if s.claimRetryDelay > 0 {
 		delay = s.claimRetryDelay
 	}

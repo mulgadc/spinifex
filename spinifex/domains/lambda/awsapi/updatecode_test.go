@@ -88,6 +88,7 @@ func requireUnchanged(t *testing.T, e *env, before function.Record, beforeRev ui
 }
 
 func TestUpdateFunctionCode_SwapsTheCodeAndKeepsEverythingElse(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 
@@ -136,6 +137,7 @@ func TestUpdateFunctionCode_SwapsTheCodeAndKeepsEverythingElse(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(map[string]any){
 		"S3 bucket":           func(b map[string]any) { delete(b, "ZipFile"); b["S3Bucket"] = "code" },
 		"S3 key":              func(b map[string]any) { b["S3Key"] = "fn.zip" },
@@ -174,6 +176,7 @@ func TestUpdateFunctionCode_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_MissingOrInactiveFunction(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPut, updatePath, updateBody(nil))
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
@@ -189,8 +192,10 @@ func TestUpdateFunctionCode_MissingOrInactiveFunction(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	t.Run("denied on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t, gwtest.Statement("Allow", "*", "*"), gwtest.Statement("Deny", "lambda:UpdateFunctionCode", arn))
 		before, beforeRev := e.record(t, "hello")
 		_, err := e.do(http.MethodPut, updatePath, updateBody(nil))
@@ -199,12 +204,14 @@ func TestUpdateFunctionCode_Authorization(t *testing.T) {
 		assert.Equal(t, 1, e.store.count())
 	})
 	t.Run("another function's grant does not reach it", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t, gwtest.Statement("Allow", "lambda:CreateFunction", "*"), gwtest.Statement("Allow", "iam:PassRole", "*"),
 			gwtest.Statement("Allow", "lambda:UpdateFunctionCode", arn+"-other"))
 		_, err := e.do(http.MethodPut, updatePath, updateBody(nil))
 		gwtest.AssertDenied(t, err)
 	})
 	t.Run("allowed on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t, gwtest.Statement("Allow", "lambda:CreateFunction", "*"), gwtest.Statement("Allow", "iam:PassRole", "*"),
 			gwtest.Statement("Allow", "lambda:UpdateFunctionCode", arn))
 		_, err := e.do(http.MethodPut, updatePath, updateBody(nil))
@@ -213,6 +220,7 @@ func TestUpdateFunctionCode_Authorization(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_DryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	rec, err := e.do(http.MethodPut, updatePath, updateBody(func(b map[string]any) { b["DryRun"] = true }))
@@ -230,6 +238,7 @@ func TestUpdateFunctionCode_DryRunWritesNothing(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_StaleRevisionIDIsAPreconditionFailure(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	_, err := e.do(http.MethodPut, updatePath, updateBody(func(b map[string]any) {
@@ -242,6 +251,7 @@ func TestUpdateFunctionCode_StaleRevisionIDIsAPreconditionFailure(t *testing.T) 
 }
 
 func TestUpdateFunctionCode_FailedCopyLeavesTheFunctionOnItsOldCode(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	e.store.putErr = errors.New("predastore: unavailable")
@@ -261,6 +271,7 @@ func TestUpdateFunctionCode_FailedCopyLeavesTheFunctionOnItsOldCode(t *testing.T
 }
 
 func TestUpdateFunctionCode_OwnerWithoutTheSubjectIsRetryableAndChangesNothing(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	e.meta.beginErr = fmt.Errorf("NATS request to %s: %w", function.SubjectCodeUpdateBegin, nats.ErrNoResponders)
@@ -273,6 +284,7 @@ func TestUpdateFunctionCode_OwnerWithoutTheSubjectIsRetryableAndChangesNothing(t
 }
 
 func TestUpdateFunctionCode_CompetingUpdatesCommitOnce(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	other := buildZip("hello, competing version")
 	// The second update starts and completes while the first is writing its copy.
@@ -300,6 +312,7 @@ func TestUpdateFunctionCode_CompetingUpdatesCommitOnce(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_LostCommitReplyIsAnErrorButTheUpdateStands(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, _ := e.record(t, "hello")
 	e.meta.loseUpdatedReply = true
@@ -319,6 +332,7 @@ func TestUpdateFunctionCode_LostCommitReplyIsAnErrorButTheUpdateStands(t *testin
 }
 
 func TestUpdateFunctionCode_AnInvocationInFlightKeepsItsOldCopy(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	ex := &fakeExec{result: okResult, started: make(chan struct{}), release: make(chan struct{})}
 	e.deps.Exec = ex

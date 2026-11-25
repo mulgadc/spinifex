@@ -82,6 +82,7 @@ func (e *env) invoke(ctx context.Context, path string, header http.Header, paylo
 const invokePath = "/2015-03-31/functions/hello/invocations"
 
 func TestInvoke_ReturnsTheExecutorPayloadAndHeaders(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	payload := []byte(`{"a":40,"b":2,"note":"caf\u00e9"}`)
 	rec, err := e.invoke(t.Context(), invokePath, nil, payload)
@@ -104,6 +105,7 @@ func TestInvoke_ReturnsTheExecutorPayloadAndHeaders(t *testing.T) {
 }
 
 func TestInvoke_FunctionErrorHeaderComesFromTheExecutor(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	ex.result = awsapi.SyncResult{Payload: []byte(`{"errorType":"x"}`), FunctionError: "Unhandled", ExecutedVersion: "$LATEST"}
 	rec, err := e.invoke(t.Context(), invokePath, nil, nil)
@@ -114,6 +116,7 @@ func TestInvoke_FunctionErrorHeaderComesFromTheExecutor(t *testing.T) {
 }
 
 func TestInvoke_PendingFunctionIsAConflictAndNeverDispatches(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	e.meta.forceActive = false
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
@@ -122,6 +125,7 @@ func TestInvoke_PendingFunctionIsAConflictAndNeverDispatches(t *testing.T) {
 }
 
 func TestInvoke_FailsClosedWithoutAnExecutor(t *testing.T) {
+	t.Parallel()
 	e, _ := newInvokeEnv(t)
 	e.deps.Exec = nil
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
@@ -129,6 +133,7 @@ func TestInvoke_FailsClosedWithoutAnExecutor(t *testing.T) {
 }
 
 func TestInvoke_DoesNotNeedTheCodeStore(t *testing.T) {
+	t.Parallel()
 	e, _ := newInvokeEnv(t)
 	e.deps.Codes = func(context.Context) (awsapi.CodeStore, error) { return nil, errors.New("code store down") }
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
@@ -139,6 +144,7 @@ func TestInvoke_DoesNotNeedTheCodeStore(t *testing.T) {
 }
 
 func TestInvoke_RefusalBeforeDispatchIsKeptApartFromAnUnknownOutcome(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 
 	ex.err = &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorThrottling, "Rate exceeded")}
@@ -166,6 +172,7 @@ func errMessage(err error) string {
 }
 
 func TestInvoke_RefusesOptionsItDoesNotImplement(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	for _, h := range []http.Header{
 		{"X-Amz-Invocation-Type": {"Event"}},
@@ -196,6 +203,7 @@ func jsonOfSize(n int) []byte {
 }
 
 func TestInvoke_PayloadLimit(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	_, err := e.invoke(t.Context(), invokePath, nil, jsonOfSize(6*1024*1024))
 	require.NoError(t, err)
@@ -205,6 +213,7 @@ func TestInvoke_PayloadLimit(t *testing.T) {
 }
 
 func TestInvoke_PayloadMustBeJSONUnlessEmpty(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	for _, bad := range []string{"not json", `{"a":`, "{} {}", "\x00"} {
 		_, err := e.invoke(t.Context(), invokePath, nil, []byte(bad))
@@ -222,6 +231,7 @@ func TestInvoke_PayloadMustBeJSONUnlessEmpty(t *testing.T) {
 }
 
 func TestInvoke_MissingAndUnsupportedFunctions(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	_, err := e.invoke(t.Context(), "/2015-03-31/functions/ghost/invocations", nil, nil)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
@@ -235,6 +245,7 @@ func TestInvoke_MissingAndUnsupportedFunctions(t *testing.T) {
 // Each form follows its own documented Invoke pattern; a documented value this
 // prototype does not serve passes validation and fails closed at lookup.
 func TestInvoke_QualifierFormsAndLengths(t *testing.T) {
+	t.Parallel()
 	fn := "/2015-03-31/functions/"
 	long := func(n int) string { return strings.Repeat("a", n) }
 	cases := []struct {
@@ -255,6 +266,7 @@ func TestInvoke_QualifierFormsAndLengths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e, ex := newInvokeEnv(t)
 			_, err := e.invoke(t.Context(), tc.path, nil, nil)
 			testutil.RequireAWSCode(t, err, tc.code)
@@ -264,6 +276,7 @@ func TestInvoke_QualifierFormsAndLengths(t *testing.T) {
 }
 
 func TestInvoke_CancelledBeforeDispatchNeverReachesTheExecutor(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -273,6 +286,7 @@ func TestInvoke_CancelledBeforeDispatchNeverReachesTheExecutor(t *testing.T) {
 }
 
 func TestInvoke_CallerDisconnectDoesNotCancelAnAcceptedAttempt(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	ex.started, ex.release = make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -300,16 +314,19 @@ func TestInvoke_CallerDisconnectDoesNotCancelAnAcceptedAttempt(t *testing.T) {
 }
 
 func TestInvoke_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	run := func(t *testing.T, statements ...iamdomain.Statement) (*fakeExec, error) {
 		return runPath(t, invokePath, statements...)
 	}
 	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		t.Parallel()
 		ex, err := run(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))
 		gwtest.AssertDenied(t, err)
 		assert.Equal(t, 0, ex.count())
 	})
 	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		t.Parallel()
 		ex, err := run(t,
 			gwtest.Statement("Allow", "lambda:*", "*"),
 			gwtest.Statement("Deny", "lambda:InvokeFunction", arn))
@@ -317,24 +334,29 @@ func TestInvoke_Authorization(t *testing.T) {
 		assert.Equal(t, 0, ex.count())
 	})
 	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		t.Parallel()
 		_, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+"-other"))
 		gwtest.AssertDenied(t, err)
 	})
 	t.Run("an allow of lambda:InvokeFunction on the function ARN passes", func(t *testing.T) {
+		t.Parallel()
 		ex, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn))
 		require.NoError(t, err)
 		assert.Equal(t, 1, ex.count())
 	})
 	t.Run("an unqualified call does not match a qualified-only allow", func(t *testing.T) {
+		t.Parallel()
 		ex, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"))
 		gwtest.AssertDenied(t, err)
 		assert.Equal(t, 0, ex.count())
 	})
 	t.Run("an unqualified call does not match an allow on any qualified ARN", func(t *testing.T) {
+		t.Parallel()
 		_, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":*"))
 		gwtest.AssertDenied(t, err)
 	})
 	t.Run("an unqualified call matches a wildcard allow", func(t *testing.T) {
+		t.Parallel()
 		ex, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+"*"))
 		require.NoError(t, err)
 		assert.Equal(t, 1, ex.count())
@@ -348,12 +370,15 @@ func TestInvoke_Authorization(t *testing.T) {
 	}
 	for form, path := range qualified {
 		t.Run(form, func(t *testing.T) {
+			t.Parallel()
 			t.Run("a qualified allow passes", func(t *testing.T) {
+				t.Parallel()
 				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"))
 				require.NoError(t, err)
 				assert.Equal(t, 1, ex.count())
 			})
 			t.Run("an explicit qualified deny overrides the matching qualified allow", func(t *testing.T) {
+				t.Parallel()
 				ex, err := runPath(t, path,
 					gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"),
 					gwtest.Statement("Deny", "lambda:InvokeFunction", arn+":$LATEST"))
@@ -361,16 +386,19 @@ func TestInvoke_Authorization(t *testing.T) {
 				assert.Equal(t, 0, ex.count())
 			})
 			t.Run("an unqualified-only allow does not match", func(t *testing.T) {
+				t.Parallel()
 				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn))
 				gwtest.AssertDenied(t, err)
 				assert.Equal(t, 0, ex.count())
 			})
 			t.Run("an allow on any qualified ARN passes", func(t *testing.T) {
+				t.Parallel()
 				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":*"))
 				require.NoError(t, err)
 				assert.Equal(t, 1, ex.count())
 			})
 			t.Run("a wildcard allow passes", func(t *testing.T) {
+				t.Parallel()
 				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+"*"))
 				require.NoError(t, err)
 				assert.Equal(t, 1, ex.count())
@@ -414,6 +442,7 @@ func (m *countingMeta) Get(ctx context.Context, account, region, name string) (f
 // store nor the executor is reached. Whether AWS orders these the same way
 // is not verified.
 func TestInvoke_ValidationPrecedesAuthorization(t *testing.T) {
+	t.Parallel()
 	big := append([]byte(`"`), bytes.Repeat([]byte("a"), 6*1024*1024)...)
 	cases := []struct {
 		name    string
@@ -436,6 +465,7 @@ func TestInvoke_ValidationPrecedesAuthorization(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			for access, statement := range map[string]iamdomain.Statement{
 				"denied":  gwtest.Statement("Allow", "lambda:GetFunction", "*"),
 				"allowed": gwtest.Statement("Allow", "lambda:InvokeFunction", "*"),

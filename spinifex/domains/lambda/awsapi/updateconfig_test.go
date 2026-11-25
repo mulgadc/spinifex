@@ -38,6 +38,7 @@ func requireConfigUnchanged(t *testing.T, e *env, before function.Record, before
 }
 
 func TestUpdateFunctionConfiguration_ChangesEachSettingAndKeepsTheFunction(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	before, beforeRev := e.record(t, "hello")
 
@@ -78,6 +79,7 @@ func TestUpdateFunctionConfiguration_ChangesEachSettingAndKeepsTheFunction(t *te
 }
 
 func TestUpdateFunctionConfiguration_OmittedMembersKeepTheirValues(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	before, _ := e.record(t, "hello")
 
@@ -94,6 +96,7 @@ func TestUpdateFunctionConfiguration_OmittedMembersKeepTheirValues(t *testing.T)
 }
 
 func TestUpdateFunctionConfiguration_EmptyVariablesClearTheEnvironment(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	rec, err := e.do(http.MethodPut, configPath, map[string]any{"Environment": map[string]any{"Variables": map[string]string{}}})
 	require.NoError(t, err)
@@ -104,6 +107,7 @@ func TestUpdateFunctionConfiguration_EmptyVariablesClearTheEnvironment(t *testin
 
 // The limit is on the variables as a JSON object: {"KK":"<escaped value>"}.
 func TestUpdateFunctionConfiguration_EnvironmentSizeCountsTheSerializedObject(t *testing.T) {
+	t.Parallel()
 	quotes := strings.Repeat(`"`, 2043)
 	for name, tc := range map[string]struct {
 		value string
@@ -114,6 +118,7 @@ func TestUpdateFunctionConfiguration_EnvironmentSizeCountsTheSerializedObject(t 
 		"raw bytes under": {value: quotes + "\t", ok: false},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newConfigEnv(t)
 			before, beforeRev := e.record(t, "hello")
 			_, err := e.do(http.MethodPut, configPath, map[string]any{"Environment": map[string]any{"Variables": map[string]string{"KK": tc.value}}})
@@ -130,6 +135,7 @@ func TestUpdateFunctionConfiguration_EnvironmentSizeCountsTheSerializedObject(t 
 }
 
 func TestUpdateFunctionConfiguration_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
+	t.Parallel()
 	for field, value := range map[string]any{
 		"Layers":            []string{"arn:aws:lambda:us-east-1:000000000000:layer:x:1"},
 		"VpcConfig":         map[string]any{"SubnetIds": []string{"subnet-1"}},
@@ -145,6 +151,7 @@ func TestUpdateFunctionConfiguration_RefusesWhatThisBuildDoesNotImplement(t *tes
 		"Unmodelled":        true,
 	} {
 		t.Run(field, func(t *testing.T) {
+			t.Parallel()
 			e := newConfigEnv(t)
 			before, beforeRev := e.record(t, "hello")
 			_, err := e.do(http.MethodPut, configPath, map[string]any{field: value})
@@ -155,6 +162,7 @@ func TestUpdateFunctionConfiguration_RefusesWhatThisBuildDoesNotImplement(t *tes
 }
 
 func TestUpdateFunctionConfiguration_ParameterValidation(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		body map[string]any
 		code string
@@ -178,6 +186,7 @@ func TestUpdateFunctionConfiguration_ParameterValidation(t *testing.T) {
 		"handler at 128 is new": {map[string]any{"Handler": strings.Repeat("h", 128)}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newConfigEnv(t)
 			before, beforeRev := e.record(t, "hello")
 			path := configPath
@@ -198,6 +207,7 @@ func TestUpdateFunctionConfiguration_ParameterValidation(t *testing.T) {
 }
 
 func TestUpdateFunctionConfiguration_MissingOrInactiveFunction(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPut, configPath, map[string]any{"Description": "x"})
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
@@ -212,9 +222,11 @@ func TestUpdateFunctionConfiguration_MissingOrInactiveFunction(t *testing.T) {
 }
 
 func TestUpdateFunctionConfiguration_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	allowAll := gwtest.Statement("Allow", "*", "*")
 	t.Run("denied on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newConfigEnv(t)
 		e.h = gwtest.Scoped(allowAll, gwtest.Statement("Deny", "lambda:UpdateFunctionConfiguration", arn))
 		before, beforeRev := e.record(t, "hello")
@@ -223,12 +235,14 @@ func TestUpdateFunctionConfiguration_Authorization(t *testing.T) {
 		requireConfigUnchanged(t, e, before, beforeRev)
 	})
 	t.Run("another function's grant does not reach it", func(t *testing.T) {
+		t.Parallel()
 		e := newConfigEnv(t)
 		e.h = gwtest.Scoped(gwtest.Statement("Allow", "lambda:UpdateFunctionConfiguration", arn+"-other"))
 		_, err := e.do(http.MethodPut, configPath, map[string]any{"Description": "x"})
 		gwtest.AssertDenied(t, err)
 	})
 	t.Run("a new role needs PassRole on it", func(t *testing.T) {
+		t.Parallel()
 		e := newConfigEnv(t)
 		e.h = gwtest.Scoped(allowAll, gwtest.Statement("Deny", "iam:PassRole", otherRoleARN))
 		before, beforeRev := e.record(t, "hello")
@@ -240,6 +254,7 @@ func TestUpdateFunctionConfiguration_Authorization(t *testing.T) {
 		require.NoError(t, err, "an update that keeps the role passes no role")
 	})
 	t.Run("allowed on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newConfigEnv(t)
 		e.h = gwtest.Scoped(gwtest.Statement("Allow", "lambda:UpdateFunctionConfiguration", arn), gwtest.Statement("Allow", "iam:PassRole", otherRoleARN))
 		_, err := e.do(http.MethodPut, configPath, map[string]any{"Role": otherRoleARN})
@@ -248,6 +263,7 @@ func TestUpdateFunctionConfiguration_Authorization(t *testing.T) {
 }
 
 func TestUpdateFunctionConfiguration_RefusesARoleLambdaCannotAssume(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		role   string
 		trusts bool
@@ -258,6 +274,7 @@ func TestUpdateFunctionConfiguration_RefusesARoleLambdaCannotAssume(t *testing.T
 		"malformed":       {"not-a-role", true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newConfigEnv(t)
 			e.deps.Trusts = func(string, string) (bool, error) { return tc.trusts, nil }
 			before, beforeRev := e.record(t, "hello")
@@ -270,6 +287,7 @@ func TestUpdateFunctionConfiguration_RefusesARoleLambdaCannotAssume(t *testing.T
 }
 
 func TestUpdateFunctionConfiguration_CompetingUpdatesCommitOnce(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	// The second update starts and completes between the first one's read and its commit.
 	e.meta.beforeCommit = func() {
@@ -284,6 +302,7 @@ func TestUpdateFunctionConfiguration_CompetingUpdatesCommitOnce(t *testing.T) {
 }
 
 func TestUpdateFunctionConfiguration_LostReplyIsAnErrorButTheUpdateStands(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	e.meta.loseUpdatedReply = true
 	_, err := e.do(http.MethodPut, configPath, map[string]any{"Handler": "handler.two"})
@@ -294,6 +313,7 @@ func TestUpdateFunctionConfiguration_LostReplyIsAnErrorButTheUpdateStands(t *tes
 }
 
 func TestUpdateFunctionConfiguration_OwnerWithoutTheSubjectIsRetryableAndChangesNothing(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	e.meta.configErr = fmt.Errorf("NATS request to %s: %w", function.SubjectConfigurationUpdated, nats.ErrNoResponders)
@@ -304,6 +324,7 @@ func TestUpdateFunctionConfiguration_OwnerWithoutTheSubjectIsRetryableAndChanges
 }
 
 func TestUpdateFunctionConfiguration_UnreadableEnvironmentWritesNothing(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	e.deps.AEAD = nil

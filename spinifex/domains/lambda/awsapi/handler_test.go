@@ -408,6 +408,7 @@ func createBody(name string, mutate func(map[string]any)) map[string]any {
 }
 
 func TestCreateFunction_Success(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	code := testZip
 	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
@@ -455,6 +456,7 @@ func TestCreateFunction_Success(t *testing.T) {
 }
 
 func TestCreateFunction_RendersTheStoredTimestamps(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.meta.passOwnerClock = true
 	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -471,6 +473,7 @@ func TestCreateFunction_RendersTheStoredTimestamps(t *testing.T) {
 }
 
 func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -492,6 +495,7 @@ func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {
 }
 
 func TestCreateFunction_CodePutFailureFreesTheName(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.store.putErr = errors.New("predastore down")
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -513,6 +517,7 @@ func TestCreateFunction_CodePutFailureFreesTheName(t *testing.T) {
 }
 
 func TestCreateFunction_CodeStoredFailureRollsBackOnce(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.meta.failCodeStored = true
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -530,6 +535,7 @@ func TestCreateFunction_CodeStoredFailureRollsBackOnce(t *testing.T) {
 // The first create's write stalls past its claim, a second create takes the
 // name over, then the first write lands and its completion is refused.
 func TestCreateFunction_LateWriterAfterTakeoverStaysTracked(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	key := function.KVFunctionKey(gwtest.Region, "hello")
 	e.store.beforePut = func() {
@@ -569,6 +575,7 @@ func TestCreateFunction_LateWriterAfterTakeoverStaysTracked(t *testing.T) {
 }
 
 func TestCreateFunction_RefusesUnsupportedInput(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(map[string]any){
 		"Code.S3Bucket":        func(b map[string]any) { b["Code"] = map[string]any{"S3Bucket": "b", "S3Key": "k"} },
 		"Code.S3Key":           func(b map[string]any) { b["Code"] = map[string]any{"ZipFile": []byte("x"), "S3Key": "k"} },
@@ -595,6 +602,7 @@ func TestCreateFunction_RefusesUnsupportedInput(t *testing.T) {
 	}
 	for field, mutate := range cases {
 		t.Run(field, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", mutate))
 			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
@@ -606,6 +614,7 @@ func TestCreateFunction_RefusesUnsupportedInput(t *testing.T) {
 }
 
 func TestCreateFunction_AcceptsDefaultsEquivalentToAbsent(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Architectures"] = []string{"x86_64"}
@@ -622,6 +631,7 @@ func TestCreateFunction_AcceptsDefaultsEquivalentToAbsent(t *testing.T) {
 }
 
 func TestCreateFunction_RefusesNonDefaultLoggingConfig(t *testing.T) {
+	t.Parallel()
 	for _, cfg := range []map[string]any{
 		{"LogGroup": "/custom/group"},
 		{"LogFormat": "Text", "LogGroup": "/aws/lambda/other"},
@@ -637,6 +647,7 @@ func TestCreateFunction_RefusesNonDefaultLoggingConfig(t *testing.T) {
 }
 
 func TestFunctionResponses_CarryTheDefaultLoggingConfig(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -653,6 +664,7 @@ func TestFunctionResponses_CarryTheDefaultLoggingConfig(t *testing.T) {
 }
 
 func TestCreateFunction_ParameterValidation(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(map[string]any){
 		"bad name":        func(b map[string]any) { b["FunctionName"] = "has space" },
 		"arn name":        func(b map[string]any) { b["FunctionName"] = "arn:aws:lambda:r:1:function:x" },
@@ -676,6 +688,7 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", mutate))
 			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
@@ -685,6 +698,7 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 }
 
 func TestCreateFunction_EnvironmentValidation(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		vars map[string]string
 		code string
@@ -698,6 +712,7 @@ func TestCreateFunction_EnvironmentValidation(t *testing.T) {
 		"too large":            {map[string]string{"VALUE": strings.Repeat("x", 4092)}, awserrors.ErrorInvalidParameterValueException},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 				b["Environment"] = map[string]any{"Variables": tc.vars}
@@ -710,6 +725,7 @@ func TestCreateFunction_EnvironmentValidation(t *testing.T) {
 }
 
 func TestCreateFunction_RoleErrorsDoNotLeakAcrossAccounts(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["Role"] = foreignRoleARN }))
 	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
@@ -717,6 +733,7 @@ func TestCreateFunction_RoleErrorsDoNotLeakAcrossAccounts(t *testing.T) {
 }
 
 func TestCreateFunction_RefusesBytesThatAreNotAZip(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Code"] = map[string]any{"ZipFile": []byte("PK\x03\x04 not really a zip")}
@@ -729,6 +746,7 @@ func TestCreateFunction_RefusesBytesThatAreNotAZip(t *testing.T) {
 }
 
 func TestCreateFunction_RoleLambdaCannotAssumeRecordsNothing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	e.deps.Trusts = func(string, string) (bool, error) { return false, nil }
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -740,11 +758,13 @@ func TestCreateFunction_RoleLambdaCannotAssumeRecordsNothing(t *testing.T) {
 }
 
 func TestCreateFunction_MissingRoleCheckFailsClosed(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(*awsapi.Deps){
 		"no resolver":      func(d *awsapi.Deps) { d.Roles = nil },
 		"no trust checker": func(d *awsapi.Deps) { d.Trusts = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			mutate(&e.deps)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -756,6 +776,7 @@ func TestCreateFunction_MissingRoleCheckFailsClosed(t *testing.T) {
 }
 
 func TestGetFunction_DecryptsEnvAndLocatesStoredCode(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
@@ -781,6 +802,7 @@ func TestGetFunction_DecryptsEnvAndLocatesStoredCode(t *testing.T) {
 }
 
 func TestGetFunction_AcceptsSameAccountARNForms(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -818,6 +840,7 @@ func TestGetFunction_AcceptsSameAccountARNForms(t *testing.T) {
 }
 
 func TestGetFunction_NoLocationUntilCodeIsStored(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
 		FunctionID: "f1", FunctionName: "pending", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
@@ -835,6 +858,7 @@ func TestGetFunction_NoLocationUntilCodeIsStored(t *testing.T) {
 }
 
 func TestGetFunction_FailsWithoutAnOffHostCodeURL(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -846,6 +870,7 @@ func TestGetFunction_FailsWithoutAnOffHostCodeURL(t *testing.T) {
 }
 
 func TestGetFunction_NotFoundNamesTheARN(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
@@ -853,6 +878,7 @@ func TestGetFunction_NotFoundNamesTheARN(t *testing.T) {
 }
 
 func TestGetFunction_FunctionsAreRegional(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -862,6 +888,7 @@ func TestGetFunction_FunctionsAreRegional(t *testing.T) {
 }
 
 func TestAuthorization(t *testing.T) {
+	t.Parallel()
 	create := func(e *env) error {
 		_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 		return err
@@ -872,16 +899,19 @@ func TestAuthorization(t *testing.T) {
 	}
 
 	t.Run("create needs lambda:CreateFunction", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"), gwtest.Statement("Allow", "iam:PassRole", "*"))
 		gwtest.AssertDenied(t, create(e))
 		assert.Zero(t, e.store.count())
 	})
 	t.Run("create needs iam:PassRole", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t, gwtest.Statement("Allow", "lambda:*", "*"))
 		gwtest.AssertDenied(t, create(e))
 		assert.Zero(t, e.store.count())
 	})
 	t.Run("create is scoped to the function ARN", func(t *testing.T) {
+		t.Parallel()
 		arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 		e := newEnv(t,
 			gwtest.Statement("Allow", "lambda:*", "*"),
@@ -890,14 +920,17 @@ func TestAuthorization(t *testing.T) {
 		gwtest.AssertDenied(t, create(e))
 	})
 	t.Run("create passes with both grants", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t, gwtest.Statement("Allow", "lambda:CreateFunction", "*"), gwtest.Statement("Allow", "iam:PassRole", "*"))
 		require.NoError(t, create(e))
 	})
 	t.Run("get needs lambda:GetFunction", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t, gwtest.Statement("Allow", "lambda:CreateFunction", "*"))
 		gwtest.AssertDenied(t, get(e))
 	})
 	t.Run("a denied caller does not learn a role is absent", func(t *testing.T) {
+		t.Parallel()
 		e := newEnv(t, gwtest.Statement("Allow", "lambda:*", "*"))
 		_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 			b["Role"] = "arn:aws:iam::" + gwtest.AccountID + ":role/ghost"
@@ -907,6 +940,7 @@ func TestAuthorization(t *testing.T) {
 }
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
+	t.Parallel()
 	reg := awsapi.NewRegistration(awsapi.Deps{})
 	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "DeleteFunction", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListFunctions", "ListVersionsByFunction", "UpdateFunctionCode", "UpdateFunctionConfiguration"}, reg.Inventory.Registered)
 	assert.Equal(t, "UpdateFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodPut, "/2015-03-31/functions/x/configuration", nil)))
@@ -924,6 +958,7 @@ func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 }
 
 func TestGetFunctionConfiguration_ReturnsTheSameConfigurationAsGetFunction(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
@@ -957,6 +992,7 @@ func TestGetFunctionConfiguration_ReturnsTheSameConfigurationAsGetFunction(t *te
 }
 
 func TestGetFunctionConfiguration_MissingAndUnsupportedMatchGetFunction(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -987,11 +1023,13 @@ func TestGetFunctionConfiguration_MissingAndUnsupportedMatchGetFunction(t *testi
 }
 
 func TestGetFunctionConfiguration_DoesNotNeedTheCodeStore(t *testing.T) {
+	t.Parallel()
 	for name, codes := range map[string]awsapi.CodeStoreFunc{
 		"store outage": func(context.Context) (awsapi.CodeStore, error) { return nil, errors.New("code store down") },
 		"no store":     nil,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 			require.NoError(t, err)
@@ -1011,6 +1049,7 @@ func TestGetFunctionConfiguration_DoesNotNeedTheCodeStore(t *testing.T) {
 }
 
 func TestGetFunctionConfiguration_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
 		e := newEnv(t, statements...)
@@ -1027,17 +1066,21 @@ func TestGetFunctionConfiguration_Authorization(t *testing.T) {
 	}
 
 	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
 	})
 	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t,
 			gwtest.Statement("Allow", "lambda:*", "*"),
 			gwtest.Statement("Deny", "lambda:GetFunctionConfiguration", arn))))
 	})
 	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionConfiguration", arn+"-other"))))
 	})
 	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		t.Parallel()
 		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionConfiguration", arn))))
 	})
 }
@@ -1045,6 +1088,7 @@ func TestGetFunctionConfiguration_Authorization(t *testing.T) {
 // Lambda matches a qualified read only against a qualified policy resource,
 // whether the qualifier comes in the function name or the Qualifier query.
 func TestGetFunctionFamily_QualifiedAuthorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	actions := []struct {
 		action, path, suffix string
@@ -1073,13 +1117,17 @@ func TestGetFunctionFamily_QualifiedAuthorization(t *testing.T) {
 			}
 			action := "lambda:" + a.action
 			t.Run(a.action+" "+form, func(t *testing.T) {
+				t.Parallel()
 				t.Run("a qualified allow passes", func(t *testing.T) {
+					t.Parallel()
 					require.NoError(t, run(t, gwtest.Statement("Allow", action, arn+":$LATEST")))
 				})
 				t.Run("an unqualified-only allow does not match", func(t *testing.T) {
+					t.Parallel()
 					gwtest.AssertDenied(t, run(t, gwtest.Statement("Allow", action, arn)))
 				})
 				t.Run("a qualified deny overrides an allow on the function", func(t *testing.T) {
+					t.Parallel()
 					gwtest.AssertDenied(t, run(t,
 						gwtest.Statement("Allow", action, arn+"*"),
 						gwtest.Statement("Deny", action, arn+":$LATEST")))
@@ -1090,6 +1138,7 @@ func TestGetFunctionFamily_QualifiedAuthorization(t *testing.T) {
 }
 
 func TestGetFunctionCodeSigningConfig_ExistingFunctionHasExplicitNulls(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -1105,6 +1154,7 @@ func TestGetFunctionCodeSigningConfig_ExistingFunctionHasExplicitNulls(t *testin
 }
 
 func TestGetFunctionCodeSigningConfig_MissingFunctionIsNotFound(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -1120,6 +1170,7 @@ func TestGetFunctionCodeSigningConfig_MissingFunctionIsNotFound(t *testing.T) {
 }
 
 func TestGetFunctionCodeSigningConfig_NeedsNeitherCodeStoreNorDecryption(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
@@ -1140,6 +1191,7 @@ func TestGetFunctionCodeSigningConfig_NeedsNeitherCodeStoreNorDecryption(t *test
 }
 
 func TestGetFunctionCodeSigningConfig_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
 		e := newEnv(t, statements...)
@@ -1156,22 +1208,27 @@ func TestGetFunctionCodeSigningConfig_Authorization(t *testing.T) {
 	}
 
 	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
 	})
 	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t,
 			gwtest.Statement("Allow", "lambda:*", "*"),
 			gwtest.Statement("Deny", "lambda:GetFunctionCodeSigningConfig", arn))))
 	})
 	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionCodeSigningConfig", arn+"-other"))))
 	})
 	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		t.Parallel()
 		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionCodeSigningConfig", arn))))
 	})
 }
 
 func TestListVersionsByFunction_ListsOnlyLatest(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
@@ -1206,6 +1263,7 @@ func TestListVersionsByFunction_ListsOnlyLatest(t *testing.T) {
 }
 
 func TestListVersionsByFunction_RefusesBadMaxItemsAndAnyMarker(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -1217,6 +1275,7 @@ func TestListVersionsByFunction_RefusesBadMaxItemsAndAnyMarker(t *testing.T) {
 }
 
 func TestListVersionsByFunction_MissingFunctionIsNotFound(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -1232,6 +1291,7 @@ func TestListVersionsByFunction_MissingFunctionIsNotFound(t *testing.T) {
 }
 
 func TestListVersionsByFunction_DoesNotNeedTheCodeStore(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -1244,6 +1304,7 @@ func TestListVersionsByFunction_DoesNotNeedTheCodeStore(t *testing.T) {
 }
 
 func TestListVersionsByFunction_Authorization(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
 		e := newEnv(t, statements...)
@@ -1260,17 +1321,21 @@ func TestListVersionsByFunction_Authorization(t *testing.T) {
 	}
 
 	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, list(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
 	})
 	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, list(setup(t,
 			gwtest.Statement("Allow", "lambda:*", "*"),
 			gwtest.Statement("Deny", "lambda:ListVersionsByFunction", arn))))
 	})
 	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		t.Parallel()
 		gwtest.AssertDenied(t, list(setup(t, gwtest.Statement("Allow", "lambda:ListVersionsByFunction", arn+"-other"))))
 	})
 	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		t.Parallel()
 		require.NoError(t, list(setup(t, gwtest.Statement("Allow", "lambda:ListVersionsByFunction", arn))))
 	})
 }

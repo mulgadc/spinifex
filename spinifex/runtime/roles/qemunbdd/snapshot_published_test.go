@@ -68,6 +68,7 @@ func (c *attachedClient) detach() {
 // leaving the guest's connection intact. Once the volume is unpublished it
 // snapshots, holding what the guest wrote.
 func TestQEMUNBDSnapshotOfAttachedVolumeIsRefused(t *testing.T) {
+	t.Parallel()
 	requireQEMUTools(t)
 	provider := newQEMUProvider(t)
 	ctx := t.Context()

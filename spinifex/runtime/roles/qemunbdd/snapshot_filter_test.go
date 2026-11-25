@@ -14,6 +14,7 @@ import (
 // A filtered read is answered from the snapshot's file, so an ID that is not a
 // single path element must name nothing rather than a file elsewhere on disk.
 func TestListSnapshotsFilterOnlyNamesSnapshotFiles(t *testing.T) {
+	t.Parallel()
 	baseDir := shortTempDir(t)
 	provider, err := qemunbdd.NewProvider(baseDir)
 	require.NoError(t, err)
@@ -29,6 +30,7 @@ func TestListSnapshotsFilterOnlyNamesSnapshotFiles(t *testing.T) {
 		{snapshotID: "../volumes/vol-1"},
 	} {
 		t.Run(tt.snapshotID, func(t *testing.T) {
+			t.Parallel()
 			resp, err := provider.ListSnapshots(t.Context(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: tt.snapshotID})
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, resp.Snapshots)

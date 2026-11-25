@@ -77,6 +77,7 @@ func killQEMUExport(t *testing.T, published *ebsprovider.PublishedVolume) {
 }
 
 func TestQEMUNBDProviderConformance(t *testing.T) {
+	t.Parallel()
 	requireQEMUTools(t)
 	conformance.RunSuiteWithConfig(t, newQEMUProvider, conformance.SuiteConfig{KillExport: killQEMUExport})
 }
@@ -85,6 +86,7 @@ func TestQEMUNBDProviderConformance(t *testing.T) {
 // client can never check: whether the export we publish is usable by an NBD
 // client that knows nothing about this codebase.
 func TestQEMUNBDExternalNBDClient(t *testing.T) {
+	t.Parallel()
 	requireQEMUTools(t)
 	conformance.RunNBDClientSuite(t, newQEMUProvider)
 }
@@ -93,6 +95,7 @@ func TestQEMUNBDExternalNBDClient(t *testing.T) {
 // same wire contract, the same neutral server, a provider with no viperblock
 // in it, and a client that cannot tell the difference.
 func TestQEMUNBDProviderNATSConformance(t *testing.T) {
+	t.Parallel()
 	requireQEMUTools(t)
 	conformance.RunSuiteWithConfig(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()

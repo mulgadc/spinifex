@@ -91,6 +91,7 @@ func newTestProvider(t *testing.T) (*Provider, *fakeRunner) {
 }
 
 func TestNewProvider_CreatesDirectories(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, err := newProvider(dir, newFakeRunner())
 	require.NoError(t, err)
@@ -102,6 +103,7 @@ func TestNewProvider_CreatesDirectories(t *testing.T) {
 }
 
 func TestNewProvider_RequiresBaseDir(t *testing.T) {
+	t.Parallel()
 	_, err := newProvider("", newFakeRunner())
 	require.Error(t, err)
 }
@@ -109,6 +111,7 @@ func TestNewProvider_RequiresBaseDir(t *testing.T) {
 func versioned() ebsprovider.Versioned { return ebsprovider.NewVersioned() }
 
 func TestCreateVolume_DefaultArgv(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 
@@ -131,6 +134,7 @@ func TestCreateVolume_DefaultArgv(t *testing.T) {
 }
 
 func TestCreateVolume_FromSnapshotArgv(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 
@@ -156,6 +160,7 @@ func TestCreateVolume_FromSnapshotArgv(t *testing.T) {
 }
 
 func TestCreateVolume_FromMissingSnapshotNotFound(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned:              versioned(),
@@ -171,6 +176,7 @@ func TestCreateVolume_FromMissingSnapshotNotFound(t *testing.T) {
 // that a snapshot source must name the volume it was taken from, so a provider
 // needing it to resolve blocks gets it rather than guessing.
 func TestCreateVolume_SnapshotSourceRequiresOriginVolume(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned:        versioned(),
@@ -182,6 +188,7 @@ func TestCreateVolume_SnapshotSourceRequiresOriginVolume(t *testing.T) {
 }
 
 func TestCreateVolume_IdempotentRepeatSameParameters(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 	req := ebsprovider.CreateVolumeRequest{
@@ -205,6 +212,7 @@ func TestCreateVolume_IdempotentRepeatSameParameters(t *testing.T) {
 }
 
 func TestCreateVolume_ConflictingCapacityIsAlreadyExists(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 	req := ebsprovider.CreateVolumeRequest{
@@ -223,6 +231,7 @@ func TestCreateVolume_ConflictingCapacityIsAlreadyExists(t *testing.T) {
 }
 
 func TestCreateVolume_InvalidArgumentOnEmptyID(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned: versioned(), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -231,6 +240,7 @@ func TestCreateVolume_InvalidArgumentOnEmptyID(t *testing.T) {
 }
 
 func TestCreateVolume_UnsupportedVersion(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		VolumeID: "vol-noversion", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -239,6 +249,7 @@ func TestCreateVolume_UnsupportedVersion(t *testing.T) {
 }
 
 func TestCreateVolume_SeedDataWritesViaQemuIO(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 	seed := []byte("firmware-vars-template")
@@ -265,6 +276,7 @@ func TestCreateVolume_SeedDataWritesViaQemuIO(t *testing.T) {
 }
 
 func TestCreateVolume_SeedDataExceedsMax(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned:     versioned(),
@@ -276,6 +288,7 @@ func TestCreateVolume_SeedDataExceedsMax(t *testing.T) {
 }
 
 func TestCreateVolume_SeedDataExceedsCapacity(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned:     versioned(),
@@ -287,6 +300,7 @@ func TestCreateVolume_SeedDataExceedsCapacity(t *testing.T) {
 }
 
 func TestGetVolume_Success(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-get")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -299,18 +313,21 @@ func TestGetVolume_Success(t *testing.T) {
 }
 
 func TestGetVolume_NotFound(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed"})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 }
 
 func TestGetVolume_InvalidArgumentOnEmptyID(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: versioned()})
 	require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 }
 
 func TestExpandVolume_Argv(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-expand")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -328,6 +345,7 @@ func TestExpandVolume_Argv(t *testing.T) {
 }
 
 func TestExpandVolume_ShrinkIsInvalidArgument(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-shrink")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -340,6 +358,7 @@ func TestExpandVolume_ShrinkIsInvalidArgument(t *testing.T) {
 }
 
 func TestExpandVolume_PublishedRefusesOnlineExpansion(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-expand-inuse")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -355,6 +374,7 @@ func TestExpandVolume_PublishedRefusesOnlineExpansion(t *testing.T) {
 }
 
 func TestExpandVolume_NotFound(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.ExpandVolume(context.Background(), ebsprovider.ExpandVolumeRequest{
 		Versioned: versioned(), VolumeID: "vol-never-existed", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -363,6 +383,7 @@ func TestExpandVolume_NotFound(t *testing.T) {
 }
 
 func TestDeleteVolume_Success(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-del")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -373,6 +394,7 @@ func TestDeleteVolume_Success(t *testing.T) {
 }
 
 func TestDeleteVolume_AbsentIsIdempotent(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	require.NoError(t, p.DeleteVolume(context.Background(), ebsprovider.DeleteVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed"}))
 	// A second delete of the same, already-absent target must also succeed.
@@ -380,6 +402,7 @@ func TestDeleteVolume_AbsentIsIdempotent(t *testing.T) {
 }
 
 func TestDeleteVolume_PublishedRefuses(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-del-inuse")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -393,6 +416,7 @@ func TestDeleteVolume_PublishedRefuses(t *testing.T) {
 }
 
 func TestCreateSnapshot_Argv(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-snap-src")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -440,6 +464,7 @@ func assertNoSnapshot(t *testing.T, p *Provider, snapshotID string) {
 // A copy that fails part way leaves no snapshot and no partial file, and the
 // same create then succeeds.
 func TestCreateSnapshot_FailedCopyIsNeverASnapshot(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	require.NoError(t, os.WriteFile(p.volumePath("vol-snap-src"), nil, 0o640))
 	p.run = partialConvert{fakeRunner: fr}
@@ -460,6 +485,7 @@ func TestCreateSnapshot_FailedCopyIsNeverASnapshot(t *testing.T) {
 // A provider killed mid-copy leaves its partial file. After the restart it is
 // no snapshot, and the reaper's repeat of the create replaces it.
 func TestCreateSnapshot_CopyKilledMidwayIsNeverASnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	killed, err := newProvider(dir, newFakeRunner())
 	require.NoError(t, err)
@@ -482,6 +508,7 @@ func TestCreateSnapshot_CopyKilledMidwayIsNeverASnapshot(t *testing.T) {
 // A published volume is refused before qemu-img runs, and an unpublished one
 // snapshots again from its file.
 func TestCreateSnapshot_PublishedVolumeIsRefused(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	ctx := context.Background()
 	volPath := p.volumePath("vol-snap-pub")
@@ -504,12 +531,14 @@ func TestCreateSnapshot_PublishedVolumeIsRefused(t *testing.T) {
 }
 
 func TestCreateSnapshot_NotFoundSourceVolume(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-orphan", VolumeID: "vol-never-existed"})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 }
 
 func TestCreateSnapshot_IdempotentSameVolume(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-snap-idem")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -522,6 +551,7 @@ func TestCreateSnapshot_IdempotentSameVolume(t *testing.T) {
 }
 
 func TestCreateSnapshot_RepeatAfterARestartAnswersTheSnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	first, err := newProvider(dir, newFakeRunner())
 	require.NoError(t, err)
@@ -543,6 +573,7 @@ func TestCreateSnapshot_RepeatAfterARestartAnswersTheSnapshot(t *testing.T) {
 }
 
 func TestCreateSnapshot_ConflictingSourceVolumeIsAlreadyExists(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volA := p.volumePath("vol-snap-a")
 	volB := p.volumePath("vol-snap-b")
@@ -556,6 +587,7 @@ func TestCreateSnapshot_ConflictingSourceVolumeIsAlreadyExists(t *testing.T) {
 }
 
 func TestDeleteSnapshot_Success(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-delsnap-src")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -568,12 +600,14 @@ func TestDeleteSnapshot_Success(t *testing.T) {
 }
 
 func TestDeleteSnapshot_AbsentIsIdempotent(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	require.NoError(t, p.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-never-existed"}))
 	require.NoError(t, p.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-never-existed"}))
 }
 
 func TestDeleteSnapshot_RefusedWhenBackingFileInUse(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	snapPath := p.snapshotPath("snap-backing")
 	require.NoError(t, os.WriteFile(snapPath, nil, 0o640))
@@ -591,6 +625,7 @@ func TestDeleteSnapshot_RefusedWhenBackingFileInUse(t *testing.T) {
 }
 
 func TestCopySnapshot_Success(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-copysnap-src")
 	require.NoError(t, os.WriteFile(volPath, []byte("volume-bytes"), 0o640))
@@ -612,6 +647,7 @@ func TestCopySnapshot_Success(t *testing.T) {
 }
 
 func TestCopySnapshot_NotFoundSource(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
 		Versioned: versioned(), SourceSnapshotID: "snap-missing", DestinationSnapshotID: "snap-dst", VolumeID: "vol-a",
@@ -620,6 +656,7 @@ func TestCopySnapshot_NotFoundSource(t *testing.T) {
 }
 
 func TestCopySnapshot_AlreadyExistsDestination(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-copysnap-conflict")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -635,6 +672,7 @@ func TestCopySnapshot_AlreadyExistsDestination(t *testing.T) {
 }
 
 func TestCopySnapshot_InvalidArgumentWhenIDsMatch(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
 		Versioned: versioned(), SourceSnapshotID: "snap-same", DestinationSnapshotID: "snap-same", VolumeID: "vol-a",
@@ -643,6 +681,7 @@ func TestCopySnapshot_InvalidArgumentWhenIDsMatch(t *testing.T) {
 }
 
 func TestCopySnapshot_InvalidArgumentWrongOwner(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-owner")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -656,6 +695,7 @@ func TestCopySnapshot_InvalidArgumentWrongOwner(t *testing.T) {
 }
 
 func TestPublishVolume_ArgvReadWrite(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-pub")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -682,6 +722,7 @@ func TestPublishVolume_ArgvReadWrite(t *testing.T) {
 }
 
 func TestPublishVolume_ReadOnlyAddsFlag(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-pub-ro")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -697,6 +738,7 @@ func TestPublishVolume_ReadOnlyAddsFlag(t *testing.T) {
 }
 
 func TestPublishVolume_IdempotentRepublishSameNode(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-pub-idem")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -712,6 +754,7 @@ func TestPublishVolume_IdempotentRepublishSameNode(t *testing.T) {
 }
 
 func TestPublishVolume_ConflictDifferentNode(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-pub-conflict")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -723,12 +766,14 @@ func TestPublishVolume_ConflictDifferentNode(t *testing.T) {
 }
 
 func TestPublishVolume_NotFound(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed", NodeID: "node-1"})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 }
 
 func TestUnpublishVolume_Success(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	volPath := p.volumePath("vol-unpub")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -741,11 +786,13 @@ func TestUnpublishVolume_Success(t *testing.T) {
 }
 
 func TestUnpublishVolume_AbsentIsIdempotent(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	require.NoError(t, unpublishErr(p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed", NodeID: "node-1"})))
 }
 
 func TestUnpublishVolume_RepeatIsIdempotent(t *testing.T) {
+	t.Parallel()
 	p, fr := newTestProvider(t)
 	volPath := p.volumePath("vol-unpub-repeat")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
@@ -769,6 +816,7 @@ func TestUnpublishVolume_RepeatIsIdempotent(t *testing.T) {
 }
 
 func TestGetCapabilities_Fixed(t *testing.T) {
+	t.Parallel()
 	p, _ := newTestProvider(t)
 	resp, err := p.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: versioned()})
 	require.NoError(t, err)

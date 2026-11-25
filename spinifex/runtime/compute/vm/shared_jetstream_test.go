@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -41,11 +42,21 @@ func sharedJetStreamServer(t *testing.T) *server.Server {
 	t.Helper()
 	sharedJS.mu.Lock()
 	defer sharedJS.mu.Unlock()
-	if sharedJS.srv != nil {
-		return sharedJS.srv
+	if sharedJS.srv == nil {
+		srv, dir, err := startJetStreamServer()
+		require.NoError(t, err)
+		sharedJS.srv, sharedJS.storeDir = srv, dir
 	}
+	return sharedJS.srv
+}
+
+// startJetStreamServer starts a JetStream server with no listener. Its store
+// outlives any one test, so it is not under t.TempDir.
+func startJetStreamServer() (*server.Server, string, error) {
 	dir, err := os.MkdirTemp("", "vm-jetstream-")
-	require.NoError(t, err)
+	if err != nil {
+		return nil, "", err
+	}
 	auth := &accountPerUser{}
 	srv, err := server.NewServer(&server.Options{
 		JetStream: true, StoreDir: dir, DontListen: true, NoLog: true, NoSigs: true,
@@ -53,17 +64,16 @@ func sharedJetStreamServer(t *testing.T) *server.Server {
 	})
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		require.NoError(t, err)
+		return nil, "", err
 	}
 	auth.srv = srv
 	srv.Start()
 	if !srv.ReadyForConnections(5 * time.Second) {
 		srv.Shutdown()
 		_ = os.RemoveAll(dir)
-		t.Fatal("embedded NATS server not ready for connections within 5s")
+		return nil, "", errors.New("embedded NATS server not ready for connections within 5s")
 	}
-	sharedJS.srv, sharedJS.storeDir = srv, dir
-	return srv
+	return srv, dir, nil
 }
 
 // stopSharedJetStream shuts the shared server down and waits for its

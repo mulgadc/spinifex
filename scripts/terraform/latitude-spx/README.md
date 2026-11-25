@@ -2,11 +2,12 @@
 
 Builds a Spinifex deployment on latitude.sh bare metal from your laptop with `deploy-latitude.sh`.
 The commands, flags, step markers and state layout follow `vultr-spx`.
+The customer guide is [`docs/latitude-integration/README.md`](../../../docs/latitude-integration/README.md).
 
-**Status: not yet run end to end.**
-The script was written from the plan doc findings (`docs/development/feature/latitude-bm.md`, L1 to L26) and from the provider schema.
-No latitude.sh API call or host run was made while building it, so treat the first `up` as the test.
-One node has been the only shape run live, and only in part (see Unverified). The three-node flow, including the floating pool, has not been run: Ben takes that over.
+**Status: one node is proven end to end on v1.25.0; three nodes are only partly proven.**
+One node: `up`, `status`, `credentials`, a guest on the Elastic IP through the `nginx-webserver` workbook, and `destroy`.
+Three nodes formed (Terraform, VLAN, cluster, pool, guests on two nodes, and the Elastic IP `PATCH` move to another server).
+Unproven: guest traffic after an Elastic IP moves to another guest, and failover by `stop`.
 
 ## What it creates
 
@@ -16,12 +17,12 @@ One node has been the only shape run live, and only in part (see Unverified). Th
 | SSH key | `spinifex-<name>`, account scoped |
 | User data | `spinifex-<name>`, host preparation only (no `{{ }}`, latitude.sh substitutes them) |
 | Servers | `m4-metal-medium`, site `DAL`, Ubuntu 26.04, hourly billing, hostnames `spx-<name>-nodeN` |
-| Elastic IP | one by default (`elastic_ip_count` in `variables.tf`, 1 to 5; set `TF_VAR_elastic_ip_count` to change it). With one node it is a static pool address and the count must stay 1, because a second pool is never tried when the first is full; with three nodes the addresses form the `latitude` floating pool, which Spinifex moves between servers. `nginx-webserver` needs one address and runs on one node; `nginx-alb` needs two public addresses and is a three-node workbook |
+| Elastic IP | one by default (`elastic_ip_count` in `variables.tf`, 0 to 5; set `TF_VAR_elastic_ip_count` to change it, and see [Reuse an Elastic IP](#reuse-an-elastic-ip-with-the-operator-collection) for 0). With one node it is a static pool address and the count must stay 1, because a second pool is never tried when the first is full; with three nodes the addresses form the `latitude` floating pool, which Spinifex moves between servers. `nginx-webserver` needs one address and runs on one node; `nginx-alb` needs two public addresses and is a three-node workbook |
 | Virtual network | three nodes only: `spinifex-<name>`, one VLAN assignment per server |
 
 ## Requirements
 
-OpenTofu (or Terraform) 1.5 or later, `aws` CLI, `python3`, `curl`, `ssh`, an SSH key pair.
+bash 3.2 or later, OpenTofu (or Terraform) 1.5 or later, `aws` CLI, `python3`, `curl`, `ssh`, an SSH key pair.
 
 | Variable | When | Meaning |
 |---|---|---|
@@ -36,11 +37,15 @@ Nodes are reached as `ubuntu` with the deployment's SSH key, and remote commands
 
 ## Usage
 
+`read -rs` takes the token without echoing it, so it stays out of your shell history.
+
 ```
-export LATITUDESH_AUTH_TOKEN=...        # from the latitude.sh dashboard
+read -rs LATITUDESH_AUTH_TOKEN          # paste the token from the latitude.sh dashboard, then Enter
+export LATITUDESH_AUTH_TOKEN
 ./deploy-latitude.sh up --name demo     # one node
 
-export LATITUDESH_NODE_TOKEN=...        # a second, writable key
+read -rs LATITUDESH_NODE_TOKEN          # a second, writable key
+export LATITUDESH_NODE_TOKEN
 ./deploy-latitude.sh up --name demo3 --nodes 3
 ./deploy-latitude.sh status --name demo
 ./deploy-latitude.sh ssh --name demo node1 'systemctl status spinifex.target'
@@ -51,7 +56,7 @@ export LATITUDESH_NODE_TOKEN=...        # a second, writable key
 ```
 
 Options: `--name`, `--site` (alias `--region`), `--plan`, `--os`, `--project ID|SLUG`, `--distro TARBALL`, `--channel`, `--spx-region`, `--spx-az`, `--ssh-key`, `--image`, `--data-disk-id`, `--vpc-subnet` (the VLAN's /24, three nodes), `--nodes 1|3`, `--yes`.
-`./deploy-latitude.sh --help` lists them with defaults.
+`./deploy-latitude.sh up --help` lists them with defaults.
 
 Three nodes need `--distro` with a tarball built from this branch (`make distro-amd64`) until a release carries the latitude provider.
 A released spx rejects `source="latitude"` and its daemon restarts in a loop, so `up --nodes 3` without `--distro` stops in preflight.
@@ -106,32 +111,52 @@ Elastic IP release is asynchronous and only works once the address is active or 
 Because the Elastic IP list ignores pagination, `destroy` ends by asking you to check the dashboard for leftovers and type `checked`.
 An `up` that failed while creating can leave an object nothing recorded, such as an Elastic IP; that dashboard check is the only thing that finds it.
 
+## Reuse an Elastic IP with the operator collection
+
+latitude.sh bills an Elastic IP 4 USD a month up front with no refund, and `destroy` deletes the addresses `up` bought.
+To keep one address across deployments, buy it once outside Terraform, provision the servers with `elastic_ip_count = 0`, and give the address to the operator collection.
+This path is for Terraform on its own; `deploy-latitude.sh` refuses a count of 0, because it buys and records its own addresses.
+
+Buy the address in the project the servers use, in the same site as the servers, as a routed IPv4 `/32`, the only shape the Spinifex floating pool accepts.
+latitude.sh assigns an address to a server when it is bought, so the first purchase is made while the first deployment's servers exist.
+
+1. Use an existing project and an empty state directory.
+   Set `project`, `project_id`, `node_count = 3` and `elastic_ip_count = 0` for the deployment.
+   The operator collection forms a cluster of three nodes with a private network, and `node_count = 3` is what creates it.
+   A count of 0 without both project settings fails the plan, because a project Terraform creates is deleted on destroy with everything in it.
+2. Read `tofu plan` before applying.
+   On a deployment that already has state, setting `project` plans the deletion of the project Terraform created, with every address in it, and setting `elastic_ip_count = 0` plans the deletion of the addresses it bought.
+   Terraform cannot read its prior state in an expression, so the plan review is the guard: stop on any `latitudesh_project` or `latitudesh_elastic_ip` destroy.
+3. Put the address ID in the collection's `latitude_elastic_ip_ids`.
+   `docs/examples/latitude-cluster.yml` in spinifex-ansible shows the inventory.
+   Terraform did not buy the address, so its state does not hold it and `destroy` has nothing to delete.
+   The collection never creates or deletes an address either.
+   The address bills monthly until you release it by hand in the dashboard.
+
+Not yet seen live: that the address is still in the dashboard after its server is deleted, and that a second deployment accepts it and a guest answers on it again.
+
 ## Unverified
 
-Nothing in the three-node flow has run against real servers. For one node, only the parts the person ran have been exercised, and the script has changed since.
+Not yet seen on real servers:
 
-- The OS slug `ubuntu_26_04_x64_lts` (the `latitudesh_operating_system` data source fails the plan if it is wrong).
-- That the deploy key is on `ubuntu` and `sudo -n` works for it, and that `sudo` resets nothing the script needs (the SSH peer address is read before `sudo` for that reason).
-- The power action request (`POST /servers/{id}/actions` with `power_off` and `power_on`).
 - Resolving `--project` as a slug through `GET /projects/{slug}`, and the `in_stock` shape of `GET /plans` used by the stock check, which only warns when it cannot read it.
-- The `GET` and `DELETE` paths for `/user_data/{id}` and `/virtual_networks/{id}`.
-- That the Spinifex API certificate names the node's public address, which the profile check needs.
-- That the private NIC is `eno2`, its tagging and MTU (the script uses 1500), and that the networkd files persist the VLAN across a reboot.
 - `GET /auth/api_keys` and its `token_last_slice` and `read_only` fields, which the node key check relies on; and that a key with `allowed_ips` set to the nodes' addresses still works from them.
-- The Elastic IP move itself: `PATCH /elastic_ips/{id}` with `server_id`, its 202 then `active`, the error codes, and how long a move takes; the client waits up to its move timeout and makes one write per call.
-- That the daemon reads the node token and logs "floating pool ready", then fails over when a node stops (`stop node1`) and the address lands on another node.
-- `install-node.sh` as `--user ubuntu` on latitude.sh servers.
+- The Elastic IP move's error codes and how long a move takes; the client waits up to its move timeout and makes one write per call.
+- That the daemon fails over when a node stops (`stop node1`) and the address lands on another node.
+- The `GET` and `DELETE` paths for `/user_data/{id}` and `/virtual_networks/{id}`, which only the fallback deletes use and never ran live.
+- The VLAN's MTU (the script uses 1500), and that the networkd files persist the VLAN across a reboot.
 
 ## Not exercised
 
-Any real API call from the three-node flow, `destroy`, `host-data-disk.sh` on a host and the VLAN step on a server.
-Guest launch, public reachability of the Elastic IP, the Terraform workbooks and failover are not part of `up`; prove them by hand.
-`e2e-latitude.sh` and removing the old `install-node.sh` in this directory are not done.
+Failover, `e2e-latitude.sh`, and removing the old `install-node.sh` in this directory are not done.
+Guest launch, public reachability of the Elastic IP and the Terraform workbooks are not part of `up`; prove them by hand.
 
 ## Tests
 
 `sh node-scripts_test.sh` checks the node token install (install, unchanged, rotation, modes, an older install converging, symlinks and owners refused; run it as root too, with `sudo sh node-scripts_test.sh`, to check that only the daemon's user can read the file) and the readiness check (old success then current failure) with stand-in tools.
 `bash deploy-argv_test.sh` checks that neither API token, nor the five characters used to find the node key, is an argument of any external command in the node token paths, and that the SSH peer address comes from the same connection after sudo's environment reset.
 `scripts/install-node_test.sh` (part of `make preflight`) checks that the join token reaches `spx admin join` only on stdin, so sudo's log never holds it.
-The first two are not part of `make preflight`.
+`tofu init -backend=false && tofu test` plans the module against a mocked provider and checks the default count, a count of 0 with an existing project, the refusal without one, and the upper bound.
+`deploy-argv_test.sh` also checks that an effective count of 0, including one in `terraform.tfvars`, or a set `TF_CLI_ARGS` stops `preflight` before anything is applied.
+The first two and the `tofu test` run are not part of `make preflight`.
 The Go side: `cd spinifex && GOWORK=off go test ./providers/cloud/latitude/ ./domains/network/external/floating/ ./bootstrap/config/ ./runtime/daemon/`.

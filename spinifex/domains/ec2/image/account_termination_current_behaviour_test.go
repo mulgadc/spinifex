@@ -109,7 +109,7 @@ func TestCurrentBehaviour_AccountTermination_CreateImageSnapshotDoesNotPinSource
 	s.seedVolume(t, "vol-snapshotted")
 	_, err := s.snapshots.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-snapshotted")}, ctAccountID)
 	require.NoError(t, err)
-	assert.EqualError(t, s.deleteVolume("vol-snapshotted"), awserrors.ErrorVolumeInUse,
+	assert.True(t, awserrors.IsErrorCode(s.deleteVolume("vol-snapshotted"), awserrors.ErrorVolumeInUse),
 		"a CreateSnapshot snapshot blocks deleting its source volume")
 
 	s.seedVolume(t, "vol-imaged")
@@ -156,7 +156,8 @@ func TestAccountTermination_DeleteSnapshotRefusesARegisteredImage(t *testing.T) 
 	require.NoError(t, err)
 
 	_, err = s.snapshots.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, ctAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse, "the snapshot refuses to delete while an image is registered on it")
+	assert.EqualError(t, err, "The snapshot "+snapshotID+" is currently in use by "+aws.StringValue(registered.ImageId)+": "+awserrors.ErrorInvalidSnapshotInUse,
+		"the snapshot refuses to delete while an image is registered on it")
 
 	_, err = s.metadata.GetSnapshot(ctx, ctAccountID, snapshotID)
 	assert.NoError(t, err, "the snapshot document is still present")

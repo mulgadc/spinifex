@@ -365,7 +365,7 @@ func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing
 		ENIReleased:     true,
 	}
 
-	task := svc.taskToAWS(testAccountID, rec)
+	task := svc.taskToAWS(testAccountID, rec, nil)
 
 	require.Len(t, task.Attachments, 1, "a released ENI must still be reported, not dropped")
 	att := task.Attachments[0]
@@ -373,6 +373,27 @@ func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing
 	assert.Equal(t, "eni-1", detailValue(att, "networkInterfaceId"))
 	assert.Equal(t, "172.31.0.50", detailValue(att, "privateIPv4Address"))
 	assert.Equal(t, "DELETED", aws.StringValue(att.Status))
+}
+
+// The task ENI attachment follows the ENI's own progress, not the task's status.
+func TestTaskENIAttachmentStatus(t *testing.T) {
+	started := time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		rec  TaskRecord
+		want string
+	}{
+		{"pending before the agent plumbs it", TaskRecord{LastStatus: TaskStatusPending, ENIAttachmentID: "att-1"}, "PRECREATED"},
+		{"running", TaskRecord{LastStatus: TaskStatusRunning, ENIAttachmentID: "att-1", StartedAt: started}, "ATTACHED"},
+		{"stop requested, still running", TaskRecord{LastStatus: TaskStatusRunning, DesiredStatus: TaskStatusStopped, ENIAttachmentID: "att-1", StartedAt: started}, "ATTACHED"},
+		{"stopped, release owed", TaskRecord{LastStatus: TaskStatusStopped, ENIAttachmentID: "att-1", StartedAt: started}, "DETACHING"},
+		{"stopped, released", TaskRecord{LastStatus: TaskStatusStopped, ENIAttachmentID: "att-1", StartedAt: started, ENIReleased: true}, "DELETED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, taskENIAttachmentStatus(&tc.rec))
+		})
+	}
 }
 
 func TestResolveNetworkMode(t *testing.T) {

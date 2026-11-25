@@ -114,6 +114,19 @@ func TestClassifyQEMUOrphans(t *testing.T) {
 		assert.False(t, byPID[333].hasPidFile)
 	})
 
+	t.Run("live pidfile pid hidden from the scan refuses to classify", func(t *testing.T) {
+		procRoot, runtimeDir := t.TempDir(), t.TempDir()
+		fakeProcEntry(t, procRoot, 222, "bash")
+		// The scan sees no QEMU, but this live test process is named by a pidfile.
+		require.NoError(t, os.WriteFile(filepath.Join(runtimeDir, "i-hidden.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600))
+
+		orphans, err := classifyQEMUOrphans(procRoot, runtimeDir, map[string]bool{"i-hidden": true})
+
+		require.Error(t, err, "a partial process view must not be classified")
+		assert.Contains(t, err.Error(), "i-hidden")
+		assert.Nil(t, orphans)
+	})
+
 	t.Run("no live qemu-system processes returns no orphans", func(t *testing.T) {
 		procRoot, runtimeDir := t.TempDir(), t.TempDir()
 		fakeProcEntry(t, procRoot, 444, "bash")

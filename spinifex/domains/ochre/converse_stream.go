@@ -117,11 +117,23 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}
 
-	// Resolved here too (Router.ConverseStream below resolves it again for
-	// routing) purely so entry's Provider tag reflects a PT ARN's target
-	// model, not the raw ARN, for the InvocationRecord's Backend field.
-	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
-	entry, _ := lookupCatalogEntry(recordModelID) // Router.ConverseStream below re-validates; only its Provider tag is needed here.
+	// Resolved, authorized, then checked for support here, ahead of the input
+	// guardrail, which could otherwise answer for or start an endpoint behind
+	// a target this operation refuses. Router.ConverseStream repeats them.
+	ptAccountID, recordModelID, err := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
+	if err != nil {
+		return err
+	}
+	entry, err := grantedCatalogEntry(ctx, accountID, recordModelID, access)
+	if err != nil {
+		return err
+	}
+	if err := refuseSystemEmbeddingCommitment(ptAccountID, recordModelID); err != nil {
+		return err
+	}
+	if err := refuseEmbeddingOperation(entry); err != nil {
+		return err
+	}
 
 	inputJSON, jerr := json.Marshal(input)
 	if jerr != nil {

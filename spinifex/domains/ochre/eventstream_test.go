@@ -54,12 +54,12 @@ func TestFrameWriter_WriteException_RoundTripsThroughDecoder(t *testing.T) {
 	fw, err := newFrameWriter(rec)
 	require.NoError(t, err)
 
-	require.NoError(t, fw.writeException(excModelStreamErrorException, exceptionPayload(errors.New("upstream broke"))))
+	require.NoError(t, fw.writeException(excModelStreamErrorException, exceptionPayload(newStreamFault(errors.New("upstream broke")))))
 
 	msg := decodeFrame(t, rec.Body.Bytes())
 	assert.Equal(t, "exception", headerString(t, msg, ":message-type"))
 	assert.Equal(t, excModelStreamErrorException, headerString(t, msg, ":exception-type"))
-	assert.JSONEq(t, `{"message":"upstream broke"}`, string(msg.Payload))
+	assert.JSONEq(t, `{"message":"The model stream ended with an error."}`, string(msg.Payload))
 }
 
 func TestFrameWriter_WriteChunk_Base64EncodesPayload(t *testing.T) {

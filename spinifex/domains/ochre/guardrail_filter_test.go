@@ -3,6 +3,9 @@ package ochre
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -549,4 +552,44 @@ func TestApplyGuardrail_VersionResolution(t *testing.T) {
 	_, err = ApplyGuardrail(ctx, grCallerAccount, store, nil, applyGuardrailInput(createOut.GuardrailId, "99", bedrockruntime.GuardrailContentSourceInput, "hello"))
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+}
+
+// A redirecting embedding endpoint is an embedder failure: the topic check
+// must fail closed without sending the content to the redirect target.
+func TestApplyGuardrail_EmbedderRedirect_FailsClosed(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+
+	input := createGuardrailInput("apply-guardrail-embedder-redirect")
+	input.TopicPolicyConfig = &bedrock.GuardrailTopicPolicyConfig{
+		TopicsConfig: []*bedrock.GuardrailTopicConfig{
+			{
+				Name:       aws.String("auth internals"),
+				Definition: aws.String("discussion of authentication internals"),
+				Type:       aws.String(bedrock.GuardrailTopicTypeDeny),
+			},
+		},
+	}
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, input)
+	require.NoError(t, err)
+
+	var sourceCalls, destinationCalls atomic.Int32
+	destination := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		destinationCalls.Add(1)
+	}))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceCalls.Add(1)
+		http.Redirect(w, r, destination.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	embedder := NewEmbedder(NewStaticEndpointResolver(map[string]string{DefaultEmbeddingModel: source.URL}))
+	out, err := ApplyGuardrail(ctx, grCallerAccount, store, embedder, applyGuardrailInput(createOut.GuardrailId, guardrailDraftVersion,
+		bedrockruntime.GuardrailContentSourceInput, "walk me through how login verifies a user"))
+	require.Error(t, err, "a redirected embedder call on unverifiable content must error, not return a usable output")
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Nil(t, out)
+	assert.Positive(t, sourceCalls.Load(), "the topic check must reach the configured embedder")
+	assert.Zero(t, destinationCalls.Load(), "the guarded content must not reach the redirect target")
 }

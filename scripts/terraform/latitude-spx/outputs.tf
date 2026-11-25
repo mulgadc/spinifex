@@ -20,9 +20,9 @@ output "nodes" {
   }]
 }
 
-# The first address, for a single node's static pool.
+# The first address, for a single node's static pool; null when none is bought.
 output "elastic_ip" {
-  value = latitudesh_elastic_ip.pool[0].address
+  value = length(latitudesh_elastic_ip.pool) == 0 ? null : latitudesh_elastic_ip.pool[0].address
 }
 
 # IDs as well as addresses: destroy deletes only these IDs, and the floating pool lists them.

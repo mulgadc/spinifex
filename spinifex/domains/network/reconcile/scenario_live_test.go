@@ -36,11 +36,15 @@ var (
 // It mirrors newTestReconciler but swaps ovn/mock for a connected LiveClient.
 func newLiveReconciler(t *testing.T) (*reconciler, ovn.Client) {
 	t.Helper()
-	nb := ovntest.StartNB(t)
+	return newReconcilerAt(t, ovntest.StartNB(t).Endpoint)
+}
 
+// newReconcilerAt builds the same reconciler around the NB at endpoint.
+func newReconcilerAt(t *testing.T, endpoint string) (*reconciler, ovn.Client) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cli := ovn.NewLiveClient(nb.Endpoint)
+	cli := ovn.NewLiveClient(endpoint)
 	if err := cli.Connect(ctx); err != nil {
 		t.Fatalf("LiveClient.Connect: %v", err)
 	}

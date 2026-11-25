@@ -288,7 +288,8 @@ func TestAnthropicConverseStreamSource_ErrorEventSurfacesAsStreamFault(t *testin
 	require.Error(t, err)
 	var fault *streamFaultError
 	assert.ErrorAs(t, err, &fault)
-	assert.Contains(t, err.Error(), "overloaded")
+	assert.ErrorIs(t, err, errUpstreamErrorEvent)
+	assert.NotContains(t, err.Error(), "overloaded", "the provider's error text must not be carried")
 }
 
 func TestAnthropicProvider_ConverseStream_401ReturnsAccessDenied(t *testing.T) {

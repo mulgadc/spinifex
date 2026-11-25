@@ -51,6 +51,10 @@ type NBDKitConfig struct {
 	// this nbdkit process constructs. Default false, matching ShardWAL.
 	GCEnabled bool `json:"gc_enabled"`
 
+	// LeaseEpoch is this launch's lease epoch, forwarded as lease_epoch so a
+	// format-2 volume's heads order above every earlier launch's. 0 omits it.
+	LeaseEpoch uint64 `json:"lease_epoch"`
+
 	// ReadOnly serves the export read-only via nbdkit -r, which both sets the
 	// NBD read-only transmission flag and passes readonly=true to the plugin's
 	// Open. The plugin refuses writes on that flag.
@@ -132,6 +136,9 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 	}
 	if cfg.WALBaseDir != "" {
 		pluginArgs = append(pluginArgs, fmt.Sprintf("wal_base_dir=%s", cfg.WALBaseDir))
+	}
+	if cfg.LeaseEpoch != 0 {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("lease_epoch=%d", cfg.LeaseEpoch))
 	}
 
 	// Only forward the key when configured; an empty value would explicitly

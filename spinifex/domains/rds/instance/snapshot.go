@@ -6,6 +6,7 @@ import (
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -328,6 +329,37 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 	// AWS answers with the snapshot as it last stood, the way a delete of a DB
 	// instance answers with the record it just removed.
 	return &rds.DeleteDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(rec)}, nil
+}
+
+// DescribeDBSnapshotAttributes reports the restore attribute of a manual snapshot. Snapshots are
+// never shared with another account, so its value list is always empty; an automated snapshot
+// is not addressable here and answers as not found.
+func (s *Service) DescribeDBSnapshotAttributes(ctx context.Context, input *rds.DescribeDBSnapshotAttributesInput, accountID string) (*rds.DescribeDBSnapshotAttributesOutput, error) {
+	if input == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
+	}
+	id := aws.StringValue(input.DBSnapshotIdentifier)
+	if err := validateDBSnapshotReference(id); err != nil {
+		return nil, err
+	}
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	rec, _, err := s.getDBSnapshot(ctx, kv, id)
+	if err != nil {
+		return nil, err
+	}
+	if rec.SnapshotType != SnapshotTypeManual {
+		return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotNotFound, "DBSnapshot not found: %s", id)
+	}
+	return &rds.DescribeDBSnapshotAttributesOutput{DBSnapshotAttributesResult: &rds.DBSnapshotAttributesResult{
+		DBSnapshotIdentifier: aws.String(id),
+		DBSnapshotAttributes: []*rds.DBSnapshotAttribute{{
+			AttributeName:   aws.String("restore"),
+			AttributeValues: []*string{},
+		}},
+	}}, nil
 }
 
 // Removes a DB snapshot, its EC2 data and — when this was the last reference — the
@@ -663,6 +695,11 @@ func (s *Service) newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, r
 		Tags:                    req.Tags,
 		CreatedAt:               time.Now().UTC(),
 	}
+	// Tags named on the request win; without them AWS copies the instance's
+	// tags only when CopyTagsToSnapshot is set.
+	if len(record.Tags) == 0 && rec.CopyTagsToSnapshot {
+		record.Tags = maps.Clone(rec.Tags)
+	}
 	// The zone the data volume was created in, which is where the instance runs.
 	if s.deps.Launch.Config != nil {
 		record.AvailabilityZone = s.deps.Launch.Config.AZ
@@ -791,7 +828,7 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 		ProcessorFeatures:                []*rds.ProcessorFeature{},
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
-		TagList: tagsToAWS(rec.Tags),
+		TagList: append([]*rds.Tag{}, tagsToAWS(rec.Tags)...),
 	}
 	if rec.VpcID != "" {
 		out.VpcId = aws.String(rec.VpcID)

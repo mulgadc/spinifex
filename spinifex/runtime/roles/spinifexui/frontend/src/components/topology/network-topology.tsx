@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
 import {
+  ArrowLeftRight,
   Cloud,
   Database,
   Ellipsis,
@@ -11,6 +12,7 @@ import {
   type LucideIcon,
   MapPin,
   Network,
+  Plug,
   Router,
   Server,
   Waypoints,
@@ -44,6 +46,8 @@ const ICONS: Record<MapKind, LucideIcon> = {
   internet: Cloud,
   igw: Globe,
   nat: Router,
+  pcx: ArrowLeftRight,
+  vpce: Plug,
   eip: MapPin,
   vpc: Network,
   rds: Database,
@@ -57,6 +61,8 @@ const ICONS: Record<MapKind, LucideIcon> = {
 const LISTS = {
   igw: "/ec2/describe-internet-gateways",
   nat: "/ec2/describe-nat-gateways",
+  pcx: "/ec2/describe-vpc-peering-connections",
+  vpce: "/ec2/describe-vpc-endpoints",
   eip: "/ec2/describe-addresses",
   vpc: "/ec2/describe-vpcs",
   rds: "/rds/describe-db-instances",
@@ -74,6 +80,8 @@ function isListed(kind: MapKind): kind is ListedKind {
 const NAMES: Record<ListedKind, string> = {
   igw: "internet gateways",
   nat: "NAT gateways",
+  pcx: "peering connections",
+  vpce: "endpoints",
   eip: "Elastic IPs",
   vpc: "VPCs",
   rds: "databases",
@@ -87,6 +95,8 @@ const RESOURCE_NAMES: Record<MapResource, string> = {
   routeTables: "route tables",
   internetGateways: "internet gateways",
   natGateways: "NAT gateways",
+  peeringConnections: "peering connections",
+  vpcEndpoints: "endpoints",
   addresses: "Elastic IPs",
   instances: "instances",
   loadBalancers: "load balancers",

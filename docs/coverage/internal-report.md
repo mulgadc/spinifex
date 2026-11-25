@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 127 of 811 modelled operations implemented (15.7%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 161 of 811 modelled operations implemented (19.9%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -59,7 +59,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `AcceptTransitGatewayPeeringAttachment`
 - `AcceptTransitGatewayVpcAttachment`
 - `AcceptVpcEndpointConnections`
-- `AcceptVpcPeeringConnection`
 - `AdvertiseByoipCidr`
 - `AllocateHosts`
 - `AllocateIpamPoolCidr`
@@ -131,7 +130,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateTrafficMirrorFilterRule`
 - `CreateTrafficMirrorSession`
 - `CreateTrafficMirrorTarget`
-- `CreateTransitGateway`
 - `CreateTransitGatewayConnect`
 - `CreateTransitGatewayConnectPeer`
 - `CreateTransitGatewayMulticastDomain`
@@ -141,15 +139,12 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateTransitGatewayRoute`
 - `CreateTransitGatewayRouteTable`
 - `CreateTransitGatewayRouteTableAnnouncement`
-- `CreateTransitGatewayVpcAttachment`
 - `CreateVerifiedAccessEndpoint`
 - `CreateVerifiedAccessGroup`
 - `CreateVerifiedAccessInstance`
 - `CreateVerifiedAccessTrustProvider`
-- `CreateVpcEndpoint`
 - `CreateVpcEndpointConnectionNotification`
 - `CreateVpcEndpointServiceConfiguration`
-- `CreateVpcPeeringConnection`
 - `CreateVpnConnection`
 - `CreateVpnConnectionRoute`
 - `CreateVpnGateway`
@@ -188,7 +183,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteTrafficMirrorFilterRule`
 - `DeleteTrafficMirrorSession`
 - `DeleteTrafficMirrorTarget`
-- `DeleteTransitGateway`
 - `DeleteTransitGatewayConnect`
 - `DeleteTransitGatewayConnectPeer`
 - `DeleteTransitGatewayMulticastDomain`
@@ -198,15 +192,12 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteTransitGatewayRoute`
 - `DeleteTransitGatewayRouteTable`
 - `DeleteTransitGatewayRouteTableAnnouncement`
-- `DeleteTransitGatewayVpcAttachment`
 - `DeleteVerifiedAccessEndpoint`
 - `DeleteVerifiedAccessGroup`
 - `DeleteVerifiedAccessInstance`
 - `DeleteVerifiedAccessTrustProvider`
 - `DeleteVpcEndpointConnectionNotifications`
 - `DeleteVpcEndpointServiceConfigurations`
-- `DeleteVpcEndpoints`
-- `DeleteVpcPeeringConnection`
 - `DeleteVpnConnection`
 - `DeleteVpnConnectionRoute`
 - `DeleteVpnGateway`
@@ -264,15 +255,12 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeLocalGateways`
 - `DescribeLockedSnapshots`
 - `DescribeMacHosts`
-- `DescribeManagedPrefixLists`
 - `DescribeNetworkAcls`
 - `DescribeNetworkInsightsAccessScopeAnalyses`
 - `DescribeNetworkInsightsAccessScopes`
 - `DescribeNetworkInsightsAnalyses`
 - `DescribeNetworkInsightsPaths`
-- `DescribeNetworkInterfaceAttribute`
 - `DescribeNetworkInterfacePermissions`
-- `DescribePrefixLists`
 - `DescribePublicIpv4Pools`
 - `DescribeReplaceRootVolumeTasks`
 - `DescribeReservedInstances`
@@ -281,7 +269,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeScheduledInstanceAvailability`
 - `DescribeScheduledInstances`
 - `DescribeSecurityGroupReferences`
-- `DescribeSnapshotAttribute`
 - `DescribeSnapshotTierStatus`
 - `DescribeSpotDatafeedSubscription`
 - `DescribeSpotFleetInstances`
@@ -301,21 +288,16 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeTransitGatewayPolicyTables`
 - `DescribeTransitGatewayRouteTableAnnouncements`
 - `DescribeTransitGatewayRouteTables`
-- `DescribeTransitGatewayVpcAttachments`
-- `DescribeTransitGateways`
 - `DescribeTrunkInterfaceAssociations`
 - `DescribeVerifiedAccessEndpoints`
 - `DescribeVerifiedAccessGroups`
 - `DescribeVerifiedAccessInstanceLoggingConfigurations`
 - `DescribeVerifiedAccessInstances`
 - `DescribeVerifiedAccessTrustProviders`
-- `DescribeVolumeAttribute`
 - `DescribeVpcEndpointConnectionNotifications`
 - `DescribeVpcEndpointConnections`
 - `DescribeVpcEndpointServiceConfigurations`
 - `DescribeVpcEndpointServicePermissions`
-- `DescribeVpcEndpointServices`
-- `DescribeVpcPeeringConnections`
 - `DescribeVpnConnections`
 - `DescribeVpnGateways`
 - `DetachVerifiedAccessTrustProvider`
@@ -325,8 +307,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DisableFastSnapshotRestores`
 - `DisableImage`
 - `DisableImageBlockPublicAccess`
-- `DisableImageDeprecation`
-- `DisableImageDeregistrationProtection`
 - `DisableIpamOrganizationAdminAccount`
 - `DisableSnapshotBlockPublicAccess`
 - `DisableTransitGatewayRouteTablePropagation`
@@ -348,8 +328,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `EnableFastSnapshotRestores`
 - `EnableImage`
 - `EnableImageBlockPublicAccess`
-- `EnableImageDeprecation`
-- `EnableImageDeregistrationProtection`
 - `EnableIpamOrganizationAdminAccount`
 - `EnableReachabilityAnalyzerOrganizationSharing`
 - `EnableSnapshotBlockPublicAccess`
@@ -365,7 +343,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetCapacityReservationUsage`
 - `GetCoipPoolUsage`
 - `GetConsoleScreenshot`
-- `GetDefaultCreditSpecification`
 - `GetEbsDefaultKmsKeyId`
 - `GetFlowLogsIntegrationTemplate`
 - `GetGroupsForCapacityReservation`
@@ -374,7 +351,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetInstanceMetadataDefaults`
 - `GetInstanceTpmEkPub`
 - `GetInstanceTypesFromInstanceRequirements`
-- `GetInstanceUefiData`
 - `GetIpamAddressHistory`
 - `GetIpamDiscoveredAccounts`
 - `GetIpamDiscoveredPublicAddresses`
@@ -384,7 +360,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetIpamResourceCidrs`
 - `GetLaunchTemplateData`
 - `GetManagedPrefixListAssociations`
-- `GetManagedPrefixListEntries`
 - `GetNetworkInsightsAccessScopeAnalysisFindings`
 - `GetNetworkInsightsAccessScopeContent`
 - `GetReservedInstancesExchangeQuote`
@@ -453,12 +428,10 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `ModifyVerifiedAccessInstanceLoggingConfiguration`
 - `ModifyVerifiedAccessTrustProvider`
 - `ModifyVolumeAttribute`
-- `ModifyVpcEndpoint`
 - `ModifyVpcEndpointConnectionNotification`
 - `ModifyVpcEndpointServiceConfiguration`
 - `ModifyVpcEndpointServicePayerResponsibility`
 - `ModifyVpcEndpointServicePermissions`
-- `ModifyVpcPeeringConnectionOptions`
 - `ModifyVpcTenancy`
 - `ModifyVpnConnection`
 - `ModifyVpnConnectionOptions`
@@ -480,7 +453,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `RejectTransitGatewayPeeringAttachment`
 - `RejectTransitGatewayVpcAttachment`
 - `RejectVpcEndpointConnections`
-- `RejectVpcPeeringConnection`
 - `ReleaseHosts`
 - `ReleaseIpamPoolAllocation`
 - `ReplaceNetworkAclAssociation`
@@ -490,8 +462,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `RequestSpotFleet`
 - `ResetAddressAttribute`
 - `ResetEbsDefaultKmsKeyId`
-- `ResetInstanceAttribute`
-- `ResetNetworkInterfaceAttribute`
 - `ResetSnapshotAttribute`
 - `RestoreImageFromRecycleBin`
 - `RestoreManagedPrefixListVersion`
@@ -748,10 +718,6 @@ fpga: FPGA images are built and ingested through AWS's own AFI pipeline for its 
 
 id-format: These switched resource IDs between the short and long forms during AWS's 2016 migration, which has long since finished.
 
-- `DescribeAggregateIdFormat`
-- `DescribeIdFormat`
-- `DescribeIdentityIdFormat`
-- `DescribePrincipalIdFormat`
 - `ModifyIdFormat`
 - `ModifyIdentityIdFormat`
 
@@ -976,7 +942,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## elasticloadbalancingv2
 
-`2015-12-01` — 36 of 51 modelled operations implemented (70.6%), 0 stubbed, 3 require SDK v2, 0 not applicable, 2 registered outside the pinned model.
+`2015-12-01` — 34 of 51 modelled operations implemented (66.7%), 2 stubbed, 3 require SDK v2, 0 not applicable, 2 registered outside the pinned model.
 
 ### Not implemented
 
@@ -998,6 +964,11 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `DescribeCapacityReservation`
 - `ModifyCapacityReservation`
 - `ModifyIpPools`
+
+### Stubbed
+
+- `DescribeListenerAttributes`
+- `ModifyListenerAttributes`
 
 ### Registered outside the pinned model
 
@@ -1128,7 +1099,7 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 
 ## rds
 
-`2014-10-31` — 27 of 168 modelled operations implemented (16.1%), 0 stubbed, 6 require SDK v2, 4 not applicable, 5 registered outside the pinned model.
+`2014-10-31` — 28 of 168 modelled operations implemented (16.7%), 0 stubbed, 6 require SDK v2, 4 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1191,7 +1162,6 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 - `DescribeDBRecommendations`
 - `DescribeDBSecurityGroups`
 - `DescribeDBShardGroups`
-- `DescribeDBSnapshotAttributes`
 - `DescribeDBSnapshotTenantDatabases`
 - `DescribeEngineDefaultClusterParameters`
 - `DescribeEngineDefaultParameters`

@@ -1,10 +1,10 @@
-# Spinifex EKS demo app — multi-stage build to a tiny distroless image.
+# Spinifex demo app for EKS — multi-stage build to a tiny distroless image.
 #
 # Stage 1 compiles a static binary; stage 2 ships only that binary on a
 # distroless base (no shell, no package manager) for a small, production-shaped
 # image suitable for pushing to ECR and pulling onto EKS workers.
 
-FROM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build
 WORKDIR /src
 COPY go.mod ./
 COPY main.go ./

@@ -65,10 +65,18 @@ type daemonLiteOpts struct {
 	// stubVPCD installs the canned vpc.create-sg/vpc.delete-sg acks. On by
 	// default; StartVPCDLite is the only reason to turn it off.
 	stubVPCD bool
+	// volumeTags, when set, serves the volume rows of DescribeTags.
+	volumeTags ec2tags.VolumeTagReader
 }
 
 // DaemonLiteOption customises what StartDaemonLite wires.
 type DaemonLiteOption func(*daemonLiteOpts)
+
+// WithVolumeTagReader makes DescribeTags read volume tags from r, as the daemon
+// does with its volume service.
+func WithVolumeTagReader(r ec2tags.VolumeTagReader) DaemonLiteOption {
+	return func(o *daemonLiteOpts) { o.volumeTags = r }
+}
 
 // WithRealVPCD suppresses the canned vpc.create-sg/vpc.delete-sg acks so a
 // real subscriber wired by StartVPCDLite answers them instead. Without it the
@@ -116,6 +124,9 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	tagsKV, err := ec2tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
 	require.NoError(t, err, "tag store bucket")
 	tagsSvc := ec2tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
+	if o.volumeTags != nil {
+		tagsSvc.SetVolumeTagReader(o.volumeTags)
+	}
 
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")

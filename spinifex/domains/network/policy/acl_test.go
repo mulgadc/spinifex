@@ -272,3 +272,26 @@ func TestBlockedWANEgressACL_EmptyDisables(t *testing.T) {
 	_, ok = BlockedWANEgressACL("sg_test", []int{})
 	assert.False(t, ok)
 }
+
+// A prefix-list rule matches the list's address set, on the peer side of the
+// direction: destination for egress, source for ingress.
+func TestACL_PrefixListPeer(t *testing.T) {
+	rule := Rule{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"}
+	egress, err := BuildEgressACLMatch("sg_test", rule)
+	require.NoError(t, err)
+	assert.Equal(t, "inport == @sg_test && ip4 && tcp.dst == 443 && ip4.dst == $spx_pl_6ca54005", egress)
+	ingress, err := BuildIngressACLMatch("sg_test", rule)
+	require.NoError(t, err)
+	assert.Equal(t, "outport == @sg_test && ip4 && tcp.dst == 443 && ip4.src == $spx_pl_6ca54005", ingress)
+}
+
+// The ID is interpolated into a match, so anything but pl-<hex> is refused
+// rather than rendered.
+func TestACL_PrefixListIDIsValidated(t *testing.T) {
+	for _, id := range []string{"pl-xyz", "pl-1234567", "6ca54005", "pl-6ca54005 || 1", "PL-6CA54005"} {
+		_, err := BuildEgressACLMatch("sg_test", Rule{IPProtocol: "-1", PrefixListID: id})
+		require.Error(t, err, id)
+		_, err = PrefixListAddressSet(id)
+		require.Error(t, err, id)
+	}
+}

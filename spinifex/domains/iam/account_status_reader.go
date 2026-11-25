@@ -29,28 +29,49 @@ func NewAccountStatusReader(js jetstream.JetStream) *AccountStatusReader {
 	}
 }
 
+// AccountActive reports whether the account record exists with status ACTIVE.
+// Unlike AccountTerminating, a missing record is (false, nil): a create that
+// reads after account deletion removed the record must be refused.
+func (r *AccountStatusReader) AccountActive(ctx context.Context, accountID string) (bool, error) {
+	status, found, err := r.status(ctx, accountID)
+	return found && status == AccountStatusActive, err
+}
+
+// AccountExists reports whether the account record exists, in any status.
+// Only a failed read or decode is an error.
+func (r *AccountStatusReader) AccountExists(ctx context.Context, accountID string) (bool, error) {
+	_, found, err := r.status(ctx, accountID)
+	return found, err
+}
+
 // AccountTerminating is a direct read, which suffices because TERMINATING is
 // one-way until the record is deleted. A missing record is (false, nil); only
 // a failed read or decode is an error.
 func (r *AccountStatusReader) AccountTerminating(ctx context.Context, accountID string) (bool, error) {
+	status, _, err := r.status(ctx, accountID)
+	return status == AccountStatusTerminating, err
+}
+
+// status reads the account's status; found is false for a missing record.
+func (r *AccountStatusReader) status(ctx context.Context, accountID string) (status string, found bool, err error) {
 	kv, err := r.accounts.KV(ctx)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 
 	entry, err := kv.Get(ctx, accountID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
 
 	var record struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return false, err
+		return "", false, err
 	}
-	return record.Status == AccountStatusTerminating, nil
+	return record.Status, true, nil
 }

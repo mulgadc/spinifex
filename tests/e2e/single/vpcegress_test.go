@@ -358,7 +358,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		})
 		require.NoError(t, err, "attach-internet-gateway")
 
-		mainRT := mainRouteTableID(t, c, vID)
+		mainRT := harness.MainRouteTableID(t, c, vID)
 		harness.Detail(t, "vpc", vID, "igw", iID, "main_rtb", mainRT)
 
 		// Route FIRST, on the main RT, before the subnet exists.
@@ -740,7 +740,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 			harness.DumpIMDSDatapathDiagnostics(t, pubSubnetID, pubPrivIP, fix.ArtifactDir(t))
 			t.Fatalf("guest unreachable via %s within %s after restart (see diagnostics above)", newIP, harness.SSHReadyBudget)
 		}
-		out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id")
+		out := harness.RunSSHSettled(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id", harness.SSHSettleBudget)
 		require.Containsf(t, out, "ubuntu", "ssh after restart did not report ubuntu\n%s", out)
 		harness.Detail(t, "datapath", "reachable_on_new_address_ok")
 
@@ -803,7 +803,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 			t.Fatalf("guest unreachable via EIP %s within %s (see diagnostics above)", eipIP, harness.SSHReadyBudget)
 		}
 		tgt := harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}
-		idOut := harness.RunSSH(t, tgt, "id")
+		idOut := harness.RunSSHSettled(t, tgt, "id", harness.SSHSettleBudget)
 		require.Containsf(t, idOut, "ubuntu", "ssh via EIP id did not report ubuntu\n%s", idOut)
 		harness.Detail(t, "datapath", "eip_reachable_ok")
 
@@ -866,7 +866,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				harness.DumpIMDSDatapathDiagnostics(t, pubSubnetID, aws.StringValue(started.PrivateIpAddress), fix.ArtifactDir(t))
 				t.Fatalf("guest unreachable via EIP %s within %s after restart (see diagnostics above)", eipIP, harness.SSHReadyBudget)
 			}
-			out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id")
+			out := harness.RunSSHSettled(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id", harness.SSHSettleBudget)
 			require.Containsf(t, out, "ubuntu", "ssh via EIP after restart did not report ubuntu\n%s", out)
 			harness.Detail(t, "datapath", "eip_reachable_after_restart_ok")
 		})

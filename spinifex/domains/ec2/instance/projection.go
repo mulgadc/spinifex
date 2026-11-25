@@ -7,13 +7,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // instanceEnaSupport is what every instance reports for ENA. Guests use virtio
-// NICs, and DescribeInstances, RunInstances and DescribeInstanceAttribute all
-// answer from this one value.
+// NICs, and DescribeInstances and RunInstances both answer from this one value.
 const instanceEnaSupport = true
 
 // InstanceProjection carries the caller-scoped values ProjectInstance needs.
@@ -25,11 +25,10 @@ type InstanceProjection struct {
 	AZ                string
 
 	// IncludeRuntimeNetwork projects the fields that only hold while an instance
-	// runs: the public IP, its derived DNS names, and the consumed capacity
-	// reservation. AWS releases all three when an instance stops, so the
-	// stopped/terminated path leaves IncludeRuntimeNetwork false and they stay
-	// unset. Placement and Spot lineage survive a stop and are projected either
-	// way.
+	// runs: the public IP, its association and the consumed capacity reservation.
+	// AWS releases them when an instance stops, so the stopped/terminated path
+	// leaves IncludeRuntimeNetwork false and they stay unset. Placement and Spot
+	// lineage survive a stop and are projected either way.
 	IncludeRuntimeNetwork bool
 
 	// FallbackStateCode/Name label the state when vm.EC2APIState has no mapping
@@ -54,35 +53,34 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// Association.PublicDnsName (stamped below) cannot drift apart.
 	var publicDNS string
 
-	// Public IP and its derived DNS names exist only while the instance runs; a
-	// stopped instance has released the public IP, so the KV path leaves them
-	// unset. Mirrors the records the control-plane writer publishes to northstar.
+	// The public IP exists only while the instance runs; a stopped instance has
+	// released it, so the KV path clears it. Mirrors the records the
+	// control-plane writer publishes to northstar.
 	if !cfg.IncludeRuntimeNetwork {
 		// Cleared, not merely left alone: launch stamps the auto-assigned address
 		// onto the stored instance, so a stopped instance kept reporting an
 		// address that had been released and may already belong to someone else.
 		instanceCopy.PublicIpAddress = nil
-		instanceCopy.PublicDnsName = nil
 	}
-	if cfg.IncludeRuntimeNetwork {
-		// The runtime address wins over the launch stamp. Associating an EIP
-		// replaces what an instance is reachable on, and filling only a nil field
-		// could never express that — the stamp is always present.
-		if v.PublicIP != "" {
-			instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
-		}
+	// The runtime address wins over the launch stamp. Associating an EIP
+	// replaces what an instance is reachable on, and filling only a nil field
+	// could never express that — the stamp is always present.
+	if cfg.IncludeRuntimeNetwork && v.PublicIP != "" {
+		instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
+	}
 
-		var privateDNS string
-		publicDNS, privateDNS = dns.EC2DNSNames(
-			cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
-			aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
-		)
-		if publicDNS != "" {
-			instanceCopy.PublicDnsName = aws.String(publicDNS)
-		}
-		if privateDNS != "" {
-			instanceCopy.PrivateDnsName = aws.String(privateDNS)
-		}
+	// AWS reports both names on every instance: the private one survives a stop,
+	// and the public one is "" while the instance has no public address.
+	var privateDNS string
+	publicDNS, privateDNS = dns.EC2DNSNames(
+		cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
+		aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
+	)
+	instanceCopy.PublicDnsName = aws.String(publicDNS)
+	instanceCopy.PrivateDnsName = aws.String(privateDNS)
+
+	if cfg.IncludeRuntimeNetwork && instanceCopy.StateTransitionReason == nil {
+		instanceCopy.StateTransitionReason = aws.String("")
 	}
 
 	// Map internal status to AWS state, projecting Spinifex-only states
@@ -121,9 +119,8 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	if cfg.AZ != "" {
 		placement.AvailabilityZone = aws.String(cfg.AZ)
 	}
-	if v.PlacementGroupName != "" {
-		placement.GroupName = aws.String(v.PlacementGroupName)
-	}
+	placement.GroupName = aws.String(v.PlacementGroupName)
+	placement.Tenancy = aws.String(ec2.TenancyDefault)
 	instanceCopy.Placement = placement
 
 	// Echo the consumed capacity reservation so targeted-launch Terraform
@@ -138,7 +135,18 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 				CapacityReservationId: aws.String(v.CapacityReservationId),
 			},
 		}
+	} else {
+		preference := ec2.CapacityReservationPreferenceOpen
+		if v.RunInstancesInput != nil && v.RunInstancesInput.CapacityReservationSpecification != nil &&
+			aws.StringValue(v.RunInstancesInput.CapacityReservationSpecification.CapacityReservationPreference) != "" {
+			preference = aws.StringValue(v.RunInstancesInput.CapacityReservationSpecification.CapacityReservationPreference)
+		}
+		instanceCopy.CapacityReservationSpecification = &ec2.CapacityReservationSpecificationResponse{
+			CapacityReservationPreference: aws.String(preference),
+		}
 	}
+
+	projectLaunchConstants(&instanceCopy, v)
 
 	// Monitoring reads the same field the telemetry collector's period does, so
 	// a describe cannot disagree with the tier actually being collected. Only
@@ -207,7 +215,60 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		instanceCopy.NetworkInterfaces = nics
 	}
 
+	// A terminated instance has given up its interfaces, volumes and addresses,
+	// so AWS reports them empty and drops the fields derived from them.
+	if v.Status == vm.StateTerminated {
+		instanceCopy.PrivateDnsName = aws.String("")
+		instanceCopy.PrivateIpAddress = nil
+		instanceCopy.SubnetId = nil
+		instanceCopy.VpcId = nil
+		instanceCopy.SourceDestCheck = nil
+		instanceCopy.BlockDeviceMappings = []*ec2.InstanceBlockDeviceMapping{}
+		instanceCopy.NetworkInterfaces = []*ec2.InstanceNetworkInterface{}
+		instanceCopy.SecurityGroups = []*ec2.GroupIdentifier{}
+	}
+
 	return &instanceCopy, stateMapped
+}
+
+// projectLaunchConstants stamps the fields AWS reports on every instance whose
+// value is fixed by the launch request, the AMI's boot mode, or the platform.
+func projectLaunchConstants(inst *ec2.Instance, v *vm.VM) {
+	clientToken := ""
+	if v.RunInstancesInput != nil {
+		clientToken = aws.StringValue(v.RunInstancesInput.ClientToken)
+	}
+	inst.ClientToken = aws.String(clientToken)
+
+	if v.BootMode != "" {
+		inst.BootMode = aws.String(v.BootMode)
+	}
+	currentBootMode := ec2.InstanceBootModeValuesLegacyBios
+	if vm.UsesUEFIVarStore(v) {
+		currentBootMode = ec2.InstanceBootModeValuesUefi
+	}
+	inst.CurrentInstanceBootMode = aws.String(currentBootMode)
+
+	// QEMU's -smp presents each vCPU as its own core with one thread. Read from
+	// the current type so a resize is reflected.
+	if vcpus, ok := instancetypes.DefaultVCPUs(v.InstanceType); ok {
+		inst.CpuOptions = &ec2.CpuOptions{CoreCount: aws.Int64(int64(vcpus)), ThreadsPerCore: aws.Int64(1)}
+	}
+
+	// AWS's instance Hypervisor enum is ovm or xen, and xen covers Nitro, the
+	// KVM-based hypervisor, so it is the only accurate value for a KVM guest.
+	inst.Hypervisor = aws.String(ec2.HypervisorTypeXen)
+	inst.VirtualizationType = aws.String(ec2.VirtualizationTypeHvm)
+	inst.EbsOptimized = aws.Bool(false)
+	inst.HibernationOptions = &ec2.HibernationOptions{Configured: aws.Bool(false)}
+	inst.MaintenanceOptions = &ec2.InstanceMaintenanceOptions{
+		AutoRecovery: aws.String(ec2.InstanceAutoRecoveryStateDefault),
+	}
+	inst.PrivateDnsNameOptions = &ec2.PrivateDnsNameOptionsResponse{
+		HostnameType:                    aws.String(ec2.HostnameTypeIpName),
+		EnableResourceNameDnsARecord:    aws.Bool(false),
+		EnableResourceNameDnsAAAARecord: aws.Bool(false),
+	}
 }
 
 // projectInterfaceFields stamps the fields AWS reports on every interface of an

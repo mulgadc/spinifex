@@ -27,7 +27,7 @@ resources:
 
 # ECR (Container Registry)
 
-> Spinifex's ECR service is an AWS-compatible, OCI-compliant container registry. You create repositories with `aws ecr`, authenticate Docker with a registry token, and `docker push` / `docker pull` exactly as you would on AWS — and your EKS clusters can pull from it directly.
+> The Spinifex service for ECR is an AWS-compatible, OCI-compliant container registry. You create repositories with `aws ecr`, authenticate Docker with a registry token, and `docker push` / `docker pull` exactly as you would on AWS — and your EKS clusters can pull from it directly.
 
 ## Overview
 

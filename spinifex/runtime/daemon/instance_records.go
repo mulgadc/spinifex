@@ -282,6 +282,25 @@ func (m *JetStreamManager) InstanceLastNode(instanceID string) (node string, fou
 	return record.Status.LastNode, true, nil
 }
 
+// InstanceStateOf reports instanceID's state and owning account from its live
+// record or, failing that, its terminated one. found is false when neither
+// exists, and a failed read is returned rather than reported as absent.
+func (m *JetStreamManager) InstanceStateOf(instanceID string) (state vm.InstanceState, accountID string, found bool, err error) {
+	record, err := m.LoadInstanceRecord(instanceID)
+	if err != nil {
+		return "", "", false, err
+	}
+	if record == nil {
+		if record, err = m.LoadTerminatedInstanceRecord(instanceID); err != nil {
+			return "", "", false, err
+		}
+	}
+	if record == nil {
+		return "", "", false, nil
+	}
+	return record.Status.Status, record.Metadata.AccountID, true, nil
+}
+
 // TerminateDecided reports whether instanceID has no live instance record, or
 // one that is terminating, read from the KV store at call time. The live record
 // wins over a terminated one, and a read error is returned rather than guessed.
@@ -296,6 +315,8 @@ func (m *JetStreamManager) TerminateDecided(instanceID string) (bool, error) {
 	switch record.Status.Status {
 	case vm.StateShuttingDown, vm.StateTerminated:
 		return true, nil
+	case vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping, vm.StateStopped, vm.StateError:
+		// Terminate is not decided for these.
 	}
 	return false, nil
 }

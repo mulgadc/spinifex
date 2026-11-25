@@ -19,6 +19,9 @@ var ErrPortGroupNotFound = errors.New("port group not found")
 // ErrAddressSetNotFound is returned when an address set is absent (use errors.Is for idempotency).
 var ErrAddressSetNotFound = errors.New("address set not found")
 
+// ErrLogicalRouterNotFound is returned when a logical router is absent (use errors.Is).
+var ErrLogicalRouterNotFound = errors.New("logical router not found")
+
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
 type ACLSpec struct {
 	Direction string // "to-lport" or "from-lport"
@@ -28,6 +31,58 @@ type ACLSpec struct {
 	Name      string
 	Log       bool
 	Severity  string // "alert", "warning", "notice", "info", "debug"
+}
+
+// ExternalIDPcxID stamps every row a VPC peering connection owns: its link
+// ports, guards, entry routes, no-route drops and reroutes. A route's drop does not.
+const ExternalIDPcxID = "spinifex:pcx_id"
+
+// ExternalIDRole names what a spinifex-owned row is for.
+const ExternalIDRole = "spinifex:role"
+
+// SamePeeringOwner reports whether two rows' external IDs name the same
+// connection and role; a row with no role matches only another with none.
+func SamePeeringOwner(a, b map[string]string) bool {
+	return a[ExternalIDPcxID] == b[ExternalIDPcxID] && a[ExternalIDRole] == b[ExternalIDRole]
+}
+
+// PeeringGuardRole is the spinifex:role a peering guard policy carries, so a
+// re-ensure can find the connection's other guards on a router.
+const PeeringGuardRole = "peering-guard"
+
+// PeeringNoRouteRole is the spinifex:role of the drop that decides traffic to
+// the peer range wherever no peering route does.
+const PeeringNoRouteRole = "peering-no-route"
+
+// PeeringLinkEnd is one router's end of a VPC peering link: the port that
+// joins it to the peer router, the guard on traffic arriving through it, and
+// the entry route and no-route drop that let the policy stage decide the peer range.
+type PeeringLinkEnd struct {
+	Router  string
+	Port    nbdb.LogicalRouterPort
+	Guard   nbdb.LogicalRouterPolicy
+	Entry   nbdb.LogicalRouterStaticRoute
+	NoRoute nbdb.LogicalRouterPolicy
+}
+
+// ExternalIDTGWID stamps a Transit Gateway's router.
+const ExternalIDTGWID = "spinifex:tgw_id"
+
+// ExternalIDTGWAttachmentID stamps every row a Transit Gateway attachment
+// owns: its link ports, guards, entry and propagated routes, and reroutes.
+const ExternalIDTGWAttachmentID = "spinifex:tgw_attachment_id"
+
+// TransitGatewayRerouteRole is the role of an attachment's reroutes. Route
+// sync owns them, so a link write leaves them alone.
+const TransitGatewayRerouteRole = "tgw-reroute"
+
+// TransitGatewayLinkEnd is one router's end of an attachment's link: the port
+// and every policy and static route the attachment owns on that router.
+type TransitGatewayLinkEnd struct {
+	Router   string
+	Port     nbdb.LogicalRouterPort
+	Policies []nbdb.LogicalRouterPolicy
+	Routes   []nbdb.LogicalRouterStaticRoute
 }
 
 // Client is the OVN Northbound DB abstraction. The vpcd in-tree
@@ -111,12 +166,17 @@ type Client interface {
 	// addresses on the existing row (see EnsureLogicalRouter for the wait-op
 	// rationale). Returns the persisted row UUID.
 	EnsureAddressSet(ctx context.Context, name string, addresses []string) (uuid string, err error)
+	// CreateAddressSetIfAbsent inserts the named set empty unless it exists. It
+	// never reads or writes an existing set's addresses, including when it
+	// loses the insert to a concurrent writer.
+	CreateAddressSetIfAbsent(ctx context.Context, name string) (uuid string, err error)
 	GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error)
 
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error
 	DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error
 	FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error)
+	ListStaticRoutes(ctx context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error)
 
 	// Logical Router Policies (per-subnet egress steering). Identity is the
 	// (router, priority, match) triple — same triple replaces, missing rows
@@ -125,6 +185,27 @@ type Client interface {
 	DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error
 	FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error)
 	ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error)
+	// UpdateLogicalRouterPolicy rewrites the action, next hops, options and
+	// external IDs of the row with policy's priority and match in one write,
+	// so the row is never absent. A missing row is an error.
+	UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error
+
+	// EnsurePeeringLink writes both ends' rows in one transaction, creating each
+	// or rewriting it in place, and removes the connection's other rows of the
+	// same kind on either router. A failed transaction changes nothing.
+	EnsurePeeringLink(ctx context.Context, ends [2]PeeringLinkEnd) error
+	// DeletePeeringLink removes every port, policy and static route stamped pcxID on the
+	// named routers in one transaction. A router absent from NB is skipped.
+	DeletePeeringLink(ctx context.Context, pcxID string, routers []string) error
+
+	// EnsureTransitGatewayLink makes the rows attachmentID owns on both ends'
+	// routers exactly ends, in one transaction: a missing or drifted row is
+	// written and any other row it owns there, reroutes aside, is removed. A
+	// converged link writes nothing.
+	EnsureTransitGatewayLink(ctx context.Context, attachmentID string, ends [2]TransitGatewayLinkEnd) error
+	// DeleteTransitGatewayLink removes every row stamped attachmentID on the
+	// named routers in one transaction. A router absent from NB is skipped.
+	DeleteTransitGatewayLink(ctx context.Context, attachmentID string, routers []string) error
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
@@ -152,6 +233,8 @@ type Client interface {
 	// ReplaceACLs atomically swaps the port group's ACL set in one transaction.
 	// Use instead of ClearACLs+AddACLs to avoid a zero-ACL window (defaults to drop).
 	ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
+	// ListACLs returns every ACL row in the client's view.
+	ListACLs(ctx context.Context) ([]nbdb.ACL, error)
 
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error

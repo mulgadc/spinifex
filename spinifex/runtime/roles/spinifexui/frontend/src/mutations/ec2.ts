@@ -5,6 +5,7 @@ import {
   type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
+  AcceptVpcPeeringConnectionCommand,
   AllocateAddressCommand,
   AssociateAddressCommand,
   AssociateIamInstanceProfileCommand,
@@ -27,8 +28,12 @@ import {
   CreateSecurityGroupCommand,
   CreateSnapshotCommand,
   CreateSubnetCommand,
+  CreateTransitGatewayCommand,
+  CreateTransitGatewayVpcAttachmentCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
+  CreateVpcEndpointCommand,
+  CreateVpcPeeringConnectionCommand,
   DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
   DeleteLaunchTemplateCommand,
@@ -40,8 +45,12 @@ import {
   DeleteSecurityGroupCommand,
   DeleteSnapshotCommand,
   DeleteSubnetCommand,
+  DeleteTransitGatewayCommand,
+  DeleteTransitGatewayVpcAttachmentCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DeleteVpcEndpointsCommand,
+  DeleteVpcPeeringConnectionCommand,
   DetachInternetGatewayCommand,
   DisassociateAddressCommand,
   DisassociateIamInstanceProfileCommand,
@@ -53,9 +62,11 @@ import {
   ModifyInstanceAttributeCommand,
   ModifyLaunchTemplateCommand,
   ModifySubnetAttributeCommand,
+  ModifyVpcEndpointCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
   RegisterImageCommand,
+  RejectVpcPeeringConnectionCommand,
   ResourceType,
   RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
@@ -64,7 +75,11 @@ import {
   StopInstancesCommand,
   TerminateInstancesCommand,
 } from "@aws-sdk/client-ec2"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import {
+  type QueryClient,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query"
 
 import { getEc2Client } from "@/lib/aws-client"
 import { resolveSubnetCidrs } from "@/lib/subnet-calculator"
@@ -1428,6 +1443,216 @@ export function useDeleteNatGateway() {
   })
 }
 
+// Routes and the map derive their state from a connection, so both refresh.
+function invalidatePeering(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({
+    queryKey: ["ec2", "vpcPeeringConnections"],
+  })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+  void queryClient.invalidateQueries({ queryKey: ["topology"] })
+}
+
+export function useCreateVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcId: string
+      peerVpcId: string
+      peerOwnerId?: string
+      name?: string
+    }) => {
+      const command = new CreateVpcPeeringConnectionCommand({
+        VpcId: params.vpcId,
+        PeerVpcId: params.peerVpcId,
+        PeerOwnerId: params.peerOwnerId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.vpc_peering_connection,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useAcceptVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new AcceptVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useRejectVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new RejectVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useDeleteVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new DeleteVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+// An endpoint's routes are derived from it, so routes and the map refresh too.
+function invalidateEndpoints(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "vpcEndpoints"] })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+  void queryClient.invalidateQueries({ queryKey: ["topology"] })
+}
+
+export function useCreateVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcId: string
+      serviceName: string
+      routeTableIds: string[]
+      // Left out for the default full-access policy.
+      policyDocument?: string
+      name?: string
+      // The same for every retry of one request, so a replay creates nothing.
+      clientToken: string
+    }) => {
+      const command = new CreateVpcEndpointCommand({
+        ClientToken: params.clientToken,
+        VpcEndpointType: "Gateway",
+        VpcId: params.vpcId,
+        ServiceName: params.serviceName,
+        RouteTableIds:
+          params.routeTableIds.length > 0 ? params.routeTableIds : undefined,
+        PolicyDocument: params.policyDocument,
+        TagSpecifications: buildTagSpec(
+          ResourceType.vpc_endpoint,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+export function useModifyVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcEndpointId: string
+      addRouteTableIds?: string[]
+      removeRouteTableIds?: string[]
+      policyDocument?: string
+      resetPolicy?: boolean
+    }) => {
+      const command = new ModifyVpcEndpointCommand({
+        VpcEndpointId: params.vpcEndpointId,
+        AddRouteTableIds: params.addRouteTableIds?.length
+          ? params.addRouteTableIds
+          : undefined,
+        RemoveRouteTableIds: params.removeRouteTableIds?.length
+          ? params.removeRouteTableIds
+          : undefined,
+        PolicyDocument: params.policyDocument,
+        ResetPolicy: params.resetPolicy === true ? true : undefined,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+// One call deletes many endpoints and names each it refused, with AWS's reason.
+async function deleteVpcEndpoints(
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const result = await getEc2Client().send(
+    new DeleteVpcEndpointsCommand({ VpcEndpointIds: [...ids] }),
+  )
+
+  return new Map(
+    (result.Unsuccessful ?? []).map((item) => [
+      item.ResourceId ?? "",
+      item.Error?.Message ?? item.Error?.Code ?? "Not deleted",
+    ]),
+  )
+}
+
+export function useDeleteVpcEndpoints() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: deleteVpcEndpoints,
+    onSettled: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
+// The panel's delete: the same call, with a refusal raised as an error.
+export function useDeleteVpcEndpoint() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (endpointId: string) => {
+      const refused = await deleteVpcEndpoints([endpointId])
+      const reason = refused.get(endpointId)
+
+      if (reason !== undefined) {
+        throw new Error(reason)
+      }
+    },
+    onSettled: () => {
+      invalidateEndpoints(queryClient)
+    },
+  })
+}
+
 export function useCreateRouteTable() {
   const queryClient = useQueryClient()
 
@@ -1467,6 +1692,100 @@ export function useDeleteRouteTable() {
   })
 }
 
+// Routes derive their state from the gateway and its attachments, so they refresh too.
+function invalidateTransitGateways(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "transitGateways"] })
+  void queryClient.invalidateQueries({
+    queryKey: ["ec2", "transitGatewayVpcAttachments"],
+  })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+}
+
+export function useCreateTransitGateway() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: { name?: string; description?: string }) => {
+      const command = new CreateTransitGatewayCommand({
+        Description: params.description,
+        TagSpecifications: buildTagSpec(
+          ResourceType.transit_gateway,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useDeleteTransitGateway() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (transitGatewayId: string) => {
+      const command = new DeleteTransitGatewayCommand({
+        TransitGatewayId: transitGatewayId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useCreateTransitGatewayVpcAttachment() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      transitGatewayId: string
+      vpcId: string
+      subnetIds: string[]
+      name?: string
+    }) => {
+      const command = new CreateTransitGatewayVpcAttachmentCommand({
+        TransitGatewayId: params.transitGatewayId,
+        VpcId: params.vpcId,
+        SubnetIds: params.subnetIds,
+        TagSpecifications: buildTagSpec(
+          ResourceType.transit_gateway_attachment,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
+export function useDeleteTransitGatewayVpcAttachment() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (attachmentId: string) => {
+      const command = new DeleteTransitGatewayVpcAttachmentCommand({
+        TransitGatewayAttachmentId: attachmentId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidateTransitGateways(queryClient)
+    },
+  })
+}
+
 export function useCreateRoute() {
   const queryClient = useQueryClient()
 
@@ -1476,12 +1795,16 @@ export function useCreateRoute() {
       destinationCidrBlock: string
       gatewayId?: string
       natGatewayId?: string
+      vpcPeeringConnectionId?: string
+      transitGatewayId?: string
     }) => {
       const command = new CreateRouteCommand({
         RouteTableId: params.routeTableId,
         DestinationCidrBlock: params.destinationCidrBlock,
         GatewayId: params.gatewayId,
         NatGatewayId: params.natGatewayId,
+        VpcPeeringConnectionId: params.vpcPeeringConnectionId,
+        TransitGatewayId: params.transitGatewayId,
       })
 
       return await getEc2Client().send(command)

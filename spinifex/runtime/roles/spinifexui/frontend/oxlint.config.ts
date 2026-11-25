@@ -38,7 +38,6 @@ export default defineConfig({
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": ["error", { functions: false }],
     "eslint/require-unicode-regexp": "off",
-    "eslint/sort-keys": "off",
     "jsx-a11y/label-has-associated-control": [
       "error",
       {
@@ -115,15 +114,12 @@ export default defineConfig({
         "anti-slop/no-unknown-returns": "off",
         "eslint/require-await": "off",
         "import/first": "off",
-        "shadcn/no-unknown-classes": "off",
         "typescript/await-thenable": "off",
         "typescript/consistent-type-imports": "off",
         "typescript/no-non-null-assertion": "off",
-        "typescript/no-unsafe-argument": "off",
         "typescript/no-unsafe-assignment": "off",
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-type-assertion": "off",
-        "unicorn/no-useless-undefined": "off",
         "vitest/max-expects": "off",
         "vitest/prefer-called-with": "off",
         "vitest/prefer-describe-function-title": "off",

@@ -18,11 +18,11 @@ import {
 
 describe("cn", () => {
   it("merges class names", () => {
-    expect(cn("foo", "bar")).toBe("foo bar")
+    expect(cn("flex", "gap-2")).toBe("flex gap-2")
   })
 
   it("handles conditional classes", () => {
-    expect(cn("foo", false, "baz")).toBe("foo baz")
+    expect(cn("flex", false, "gap-2")).toBe("flex gap-2")
   })
 
   it("deduplicates conflicting tailwind classes", () => {

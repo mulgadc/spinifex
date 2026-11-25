@@ -87,6 +87,7 @@ func TestAvailableSlicesSnapshotsPoolTransitions(t *testing.T) {
 
 // The whole-GPU claim path already skips slices; only the arithmetic was wrong.
 func TestAvailableWholeDropsAClaimedGPU(t *testing.T) {
+	useKernfs(t)
 	root, dev := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{dev}, root)
 

@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
-import { createTestQueryClient, renderWithClient } from "@/test/render"
+import {
+  createTestQueryClient,
+  renderWithClient,
+  waitForPanelLoaded,
+} from "@/test/render"
 
 const { routerState } = vi.hoisted(() => ({
   routerState: { navigate: vi.fn() },
@@ -154,9 +158,10 @@ describe("list-hosted-zones page", () => {
     })
   })
 
-  it("shows the selected zone in the panel", () => {
+  it("shows the selected zone in the panel", async () => {
     renderList(ZONES, { ...CLOSED_PANEL, selected: "ZACTIVE" })
 
+    await waitForPanelLoaded(document.body)
     expect(
       screen.getByRole("heading", { name: "active.example." }),
     ).toBeInTheDocument()

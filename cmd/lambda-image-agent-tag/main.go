@@ -162,15 +162,17 @@ func parseEntry(raw []byte, off int) (entry, int, error) {
 	if dataOff > len(raw) || size > uint64(len(raw)-dataOff) {
 		return entry{}, 0, errors.New("truncated entry")
 	}
-	dataEnd := dataOff + int(size)
-	if dataEnd > len(raw) || align4(dataEnd) > len(raw) {
+	// Slice by the uint64 size so no narrowing conversion can wrap on 32-bit int.
+	data := raw[dataOff:][:size]
+	dataEnd := dataOff + len(data)
+	if align4(dataEnd) > len(raw) {
 		return entry{}, 0, errors.New("truncated entry")
 	}
 	name := raw[off+newcHeader : nameEnd]
 	if name[len(name)-1] != 0 || bytes.IndexByte(name[:len(name)-1], 0) >= 0 {
 		return entry{}, 0, errors.New("name is not one NUL-terminated string")
 	}
-	return entry{name: string(name[:len(name)-1]), mode: mode, nlink: nlink, data: raw[dataOff:dataEnd]}, align4(dataEnd), nil
+	return entry{name: string(name[:len(name)-1]), mode: mode, nlink: nlink, data: data}, align4(dataEnd), nil
 }
 
 func align4(n int) int { return (n + 3) &^ 3 }

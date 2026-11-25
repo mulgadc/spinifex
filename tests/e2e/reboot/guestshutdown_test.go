@@ -56,6 +56,8 @@ const (
 //
 // Ordinary service dependencies on purpose — the unit is stopped early in the
 // shutdown transaction, while the root filesystem is still writable.
+// multipathd is stopped first: the guest has one virtio disk, and a stop job of
+// its that hangs would be timed against the budget as if it were the hook.
 var slowShutdownUserData = fmt.Sprintf(`#!/bin/bash
 set -e
 cat > /usr/local/bin/slow-shutdown <<'EOS'
@@ -84,6 +86,7 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 UNIT
 rm -f %[2]s
+systemctl disable --now multipathd.socket multipathd.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now slow-shutdown.service
 touch /run/guest-shutdown-ready

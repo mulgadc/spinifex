@@ -16,12 +16,24 @@ name: Publish System AMIs
 # Operators then install them on any cluster with:
 #   spx admin images import --name <catalog key>
 #
-# Publishing overwrites the mirror artifact, so it runs only from release.yml
-# once a tag has passed its gates, with siblings at the tags go.mod requires.
-# The `variant` input scopes which images build — the Ubuntu GPU legs are 16G
-# and much slower (NVIDIA driver download + DKMS build).
+# Publishing overwrites the mirror artifact, so it runs from release.yml once a
+# tag has passed its gates, or by hand from main to republish the released
+# images, with siblings at the tags go.mod requires. The `variant` input scopes
+# which images build — the Ubuntu GPU legs are 16G and much slower (NVIDIA
+# driver download + DKMS build).
 
 on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Which images to build (all|cpu|gpu|rds)"
+        type: choice
+        options: [all, cpu, gpu, rds]
+        default: all
+      dry_run:
+        description: "Build + convert only; skip the R2 upload"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       variant:
@@ -84,54 +96,10 @@ jobs:
         with:
           path: spinifex
 
-      - name: Resolve sibling release tags from go.mod
-        id: siblings
-        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
-
-      - name: Setup Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: "spinifex/go.mod"
-          # Self-hosted runner: the Go module + build cache already persists on
-          # local disk between runs.
-          cache: false
-
-      - name: Setup Go Workspace
-        # Idempotent: the ci-single runner reuses one workspace across matrix
-        # legs and runs, and checkout never scrubs the root go.work. Remove any
-        # stale file so each leg re-inits cleanly instead of failing on
-        # "go.work already exists".
-        run: |
-          rm -f go.work go.work.sum
-          go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
+          siblings: release
 
       - name: Install build + upload tooling
         # mkosi legs build and upload inside the pinned builder container.

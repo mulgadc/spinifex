@@ -549,22 +549,70 @@ func TestModifyDBInstance_DefersADisruptiveChangeToTheMaintenanceWindow(t *testi
 
 // A disruptive change needs a live engine to stop cleanly and a live agent to
 // apply parameters, so it is legal only from a state that has both.
-func TestModifyDBInstance_RejectsADisruptiveChangeWhileNotAvailable(t *testing.T) {
+func TestModifyDBInstance_RefusesAnyChangeWhileNotAvailable(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		status Status
+		modify func(*rds.ModifyDBInstanceInput)
+	}{
+		"backup window while creating": {StatusCreating, func(in *rds.ModifyDBInstanceInput) {
+			in.PreferredBackupWindow = aws.String("03:00-03:30")
+		}},
+		"deletion protection while creating": {StatusCreating, func(in *rds.ModifyDBInstanceInput) {
+			in.DeletionProtection = aws.Bool(true)
+		}},
+		"password while creating": {StatusCreating, func(in *rds.ModifyDBInstanceInput) {
+			in.MasterUserPassword = aws.String("a-new-password-1")
+		}},
+		"malformed window while creating": {StatusCreating, func(in *rds.ModifyDBInstanceInput) {
+			in.PreferredMaintenanceWindow = aws.String("not-a-window")
+		}},
+		"storage grow while stopped": {StatusStopped, func(in *rds.ModifyDBInstanceInput) {
+			in.AllocatedStorage = aws.Int64(50)
+			in.ApplyImmediately = aws.Bool(true)
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newModifyHarness(t)
+			rec := modifiableRecord()
+			rec.Status = tc.status
+			seedInstance(t, h.svc, rec)
+
+			in := modifyInput()
+			tc.modify(in)
+			_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok, "not an AWS error: %v", err)
+			assert.Equal(t, awserrors.ErrorDBInstanceInvalidState, code)
+			assert.Equal(t, "Database instance is not in available state.", message)
+			stored := h.record(t)
+			assert.Equal(t, tc.status, stored.Status)
+			assert.False(t, stored.DeletionProtection)
+			assert.Equal(t, rec.PreferredBackupWindow, stored.PreferredBackupWindow)
+			assert.Nil(t, stored.PendingModifiedValues)
+		})
+	}
+}
+
+// A request repeating the current values changes nothing, so it is answered
+// whatever the state, as AWS answers it.
+func TestModifyDBInstance_AnswersANoChangeWhileNotAvailable(t *testing.T) {
 	t.Parallel()
 	h := newModifyHarness(t)
 	rec := modifiableRecord()
-	rec.Status = StatusStopped
+	rec.Status = StatusCreating
 	seedInstance(t, h.svc, rec)
 
 	in := modifyInput()
-	in.AllocatedStorage = aws.Int64(50)
-	in.ApplyImmediately = aws.Bool(true)
-	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+	in.DBInstanceClass = aws.String(rec.DBInstanceClass)
+	in.DeletionProtection = aws.Bool(rec.DeletionProtection)
+	out, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceInvalidState)
-	assert.Equal(t, StatusStopped, h.record(t).Status)
-	assert.Nil(t, h.record(t).PendingModifiedValues)
+	require.NoError(t, err)
+	assert.Equal(t, string(StatusCreating), aws.StringValue(out.DBInstance.DBInstanceStatus))
 }
 
 // A failed instance is exactly the one a customer retries a change on, so the
@@ -686,4 +734,23 @@ func (h *modifyHarness) eventMessages(t *testing.T) []string {
 		messages = append(messages, event.Message)
 	}
 	return messages
+}
+
+// AWS answers a malformed maintenance window in its own words, echoing the value.
+func TestModifyDBInstance_RejectsAMalformedMaintenanceWindowInAWSText(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	rec := modifiableRecord()
+	seedInstance(t, h.svc, rec)
+
+	in := modifyInput()
+	in.PreferredMaintenanceWindow = aws.String("someday")
+	_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "not an AWS error: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Invalid maintenance window format: someday. Should be specified as a range "+
+		"ddd:hh24:mi-ddd:hh24:mi (24H Clock UTC). Example: Sun:23:45-Mon:00:15", message)
+	assert.Equal(t, rec.PreferredMaintenanceWindow, h.record(t).PreferredMaintenanceWindow)
 }

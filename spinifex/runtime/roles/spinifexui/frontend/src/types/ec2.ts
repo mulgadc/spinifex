@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { isValidJson } from "@/lib/json"
 import {
   cidrContains,
   cidrsOverlap,
@@ -283,6 +284,77 @@ export const createNatGatewaySchema = z.object({
 
 export type CreateNatGatewayFormData = z.infer<typeof createNatGatewaySchema>
 
+export const createVpcPeeringConnectionSchema = z
+  .object({
+    name: z.string().optional(),
+    vpcId: z.string().min(1, "VPC is required"),
+    account: z.enum(["self", "other"]),
+    peerOwnerId: z.string(),
+    peerVpcId: z.string().trim().min(1, "Peer VPC is required"),
+  })
+  .superRefine((data, ctx) => {
+    if (data.account === "other" && !/^\d{12}$/.test(data.peerOwnerId)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["peerOwnerId"],
+        message: "Account ID must be 12 digits",
+      })
+    }
+
+    if (data.account === "self" && data.peerVpcId === data.vpcId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["peerVpcId"],
+        message: "A VPC cannot peer with itself",
+      })
+    }
+  })
+
+export type CreateVpcPeeringConnectionFormData = z.infer<
+  typeof createVpcPeeringConnectionSchema
+>
+
+export const createTransitGatewaySchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+})
+
+export type CreateTransitGatewayFormData = z.infer<
+  typeof createTransitGatewaySchema
+>
+
+export const createTransitGatewayVpcAttachmentSchema = z.object({
+  name: z.string().optional(),
+  transitGatewayId: z.string().min(1, "Transit gateway is required"),
+  vpcId: z.string().min(1, "VPC is required"),
+  subnetIds: z.array(z.string()).min(1, "Choose at least one subnet"),
+})
+
+export type CreateTransitGatewayVpcAttachmentFormData = z.infer<
+  typeof createTransitGatewayVpcAttachmentSchema
+>
+
+export const createVpcEndpointSchema = z
+  .object({
+    name: z.string().optional(),
+    serviceName: z.string().min(1, "Service is required"),
+    vpcId: z.string().min(1, "VPC is required"),
+    routeTableIds: z.array(z.string()),
+    policy: z.enum(["full", "custom"]),
+    policyDocument: z.string(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.policy === "custom" && !isValidJson(data.policyDocument)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["policyDocument"],
+        message: "Policy must be valid JSON",
+      })
+    }
+  })
+
+export type CreateVpcEndpointFormData = z.infer<typeof createVpcEndpointSchema>
+
 export const createInternetGatewaySchema = z.object({
   name: z.string().optional(),
 })
@@ -305,7 +377,7 @@ export const createRouteSchema = z.object({
     0,
     32,
   ),
-  targetType: z.enum(["igw", "nat"]),
+  targetType: z.enum(["igw", "nat", "pcx", "tgw"]),
   targetId: z.string().min(1, "Target is required"),
 })
 

@@ -19,6 +19,7 @@ import (
 type OVSPlumber struct{}
 
 var _ vm.NetworkPlumber = (*OVSPlumber)(nil)
+var _ vm.EndpointDemuxer = (*OVSPlumber)(nil)
 
 // NewOVSPlumber returns the default plumber wired to hostcommand.SudoCommand.
 func NewOVSPlumber() *OVSPlumber { return &OVSPlumber{} }

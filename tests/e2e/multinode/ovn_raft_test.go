@@ -57,6 +57,7 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 		for _, db := range ovnRaftDBs {
 			waitOVNRaftMember(t, ssh, n, db.sock, db.schema, 60*time.Second)
 		}
+		assertOVNSocketsReachable(t, ssh, n)
 
 		sw := fmt.Sprintf("e2e-raft-rolling-%d-%d", time.Now().Unix(), i)
 		t.Cleanup(func() {
@@ -71,6 +72,19 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 		writeCancel()
 		require.NoErrorf(t, err, "NB ls-add after restarting OVN central on %s", n.Name)
 	}
+
+	// The SB unit alone, as a single unit restart does it: NB's perms hook does
+	// not run, so SB's own must regroup its socket. EL has no separate SB unit.
+	sbNode := dbNodes[0]
+	harness.Step(t, "restart the SB unit alone on %s (%s)", sbNode.Name, sbNode.Addr)
+	sbCtx, sbCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	_, err := ssh.Run(sbCtx, sbNode.Addr,
+		"if systemctl cat ovn-central.service >/dev/null 2>&1; then sudo systemctl restart ovn-ovsdb-server-sb; fi")
+	sbCancel()
+	require.NoErrorf(t, err, "restart the SB unit alone on %s", sbNode.Name)
+	waitOVNRaftMember(t, ssh, sbNode, ovnSBSock, host.OVNSBSchema, 60*time.Second)
+	assertOVNSocketsReachable(t, ssh, sbNode)
+
 	assertOVNQuorum(t, ssh, dbNodes)
 
 	// 3. Failover: kill the NB leader and confirm an NB write still succeeds.
@@ -89,7 +103,7 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 	harness.Step(t, "stop ovn-central on NB leader %s (%s)", leader.Name, leader.Addr)
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stopCancel()
-	_, err := ssh.Run(stopCtx, leader.Addr, "sudo systemctl stop "+ovnCentralUnits("ovn-central ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd"))
+	_, err = ssh.Run(stopCtx, leader.Addr, "sudo systemctl stop "+ovnCentralUnits("ovn-central ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd"))
 	require.NoErrorf(t, err, "stop ovn-central on %s", leader.Name)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -132,6 +146,19 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 		fmt.Sprintf("sudo ovn-nbctl --db=%s --timeout=15 ls-list", dbList))
 	require.NoError(t, err, "NB ls-list via surviving endpoint")
 	require.Containsf(t, string(out), sw, "switch %s not visible after failover write", sw)
+}
+
+// assertOVNSocketsReachable checks a spinifex service account reaches the NB and
+// SB database sockets without sudo, which the units' perms hooks exist to keep.
+func assertOVNSocketsReachable(t *testing.T, ssh *harness.PeerSSH, n harness.Node) {
+	t.Helper()
+	for _, sock := range []string{"/var/run/ovn/ovnnb_db.sock", "/var/run/ovn/ovnsb_db.sock"} {
+		harness.Step(t, "spinifex-daemon reaches %s on %s without sudo", sock, n.Name)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		out, err := ssh.Run(ctx, n.Addr, "sudo -u spinifex-daemon ovsdb-client -t 10 list-dbs unix:"+sock)
+		cancel()
+		require.NoErrorf(t, err, "spinifex-daemon cannot reach %s on %s: %s", sock, n.Name, out)
+	}
 }
 
 var ovnRaftDBs = []struct{ name, sock, schema string }{

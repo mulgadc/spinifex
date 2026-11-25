@@ -56,6 +56,9 @@ For development use:
    pnpm dev
    ```
 
+Vite serves the UI from `src/` and forwards `/api` and `/proxy` to the console on `https://localhost:3000`, so the dev UI acts on the live cluster.
+The forwarder trusts the cluster CA at `/etc/spinifex/ca.pem`; set `SPINIFEX_CA` to use another path.
+
 ## UI conventions
 
 Every page is built from the design system in `docs/ui/design-system.md`: tokens, primitives, the list-and-panel layout, and the create-flow rules.

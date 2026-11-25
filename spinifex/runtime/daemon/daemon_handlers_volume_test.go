@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
@@ -257,7 +258,49 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 		5*time.Second,
 	)
 	require.NoError(t, err)
-	assert.Contains(t, string(resp.Data), "VolumeInUse")
+	responseError, _ := awserrors.ValidateErrorPayload(resp.Data)
+	assert.Equal(t, awserrors.ErrorVolumeInUse, aws.StringValue(responseError.Code))
+	assert.Equal(t, volumeID+" is already attached to an instance", aws.StringValue(responseError.Message))
+}
+
+// Detaching an available volume is refused with AWS's text naming its state.
+func TestDetachVolume_AvailableVolumeNamesItsState(t *testing.T) {
+	t.Parallel()
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	instanceID := "i-detach-available"
+	volumeID := "vol-detach-available"
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:           instanceID,
+		Status:       vm.StateRunning,
+		AccountID:    testAccountID,
+		InstanceType: getTestInstanceType(t),
+		Instance:     &ec2.Instance{},
+		QMPClient:    &qmp.QMPClient{},
+	})
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "available",
+		TenantID:    testAccountID,
+	})
+
+	sub, err := daemon.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instanceID), daemon.handleEC2Events)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	cmdData, err := json.Marshal(ec2v1.EC2InstanceCommand{
+		ID:               instanceID,
+		Attributes:       ec2v1.EC2CommandAttributes{DetachVolume: true},
+		DetachVolumeData: &ec2v1.DetachVolumeData{VolumeID: volumeID},
+	})
+	require.NoError(t, err)
+
+	resp, err := natsRequest(daemon.natsConn, fmt.Sprintf("ec2.cmd.%s", instanceID), cmdData, 5*time.Second)
+	require.NoError(t, err)
+	responseError, _ := awserrors.ValidateErrorPayload(resp.Data)
+	assert.Equal(t, awserrors.ErrorIncorrectState, aws.StringValue(responseError.Code))
+	assert.Equal(t, "Volume '"+volumeID+"' is in the 'available' state.", aws.StringValue(responseError.Message))
 }
 
 // TestAttachVolume_DeletingVolumeRefused pins the half of the delete contract

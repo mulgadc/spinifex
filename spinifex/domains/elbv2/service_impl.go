@@ -570,6 +570,13 @@ func (s *ELBv2ServiceImpl) loadRecoveryLBIndex(ctx context.Context) (map[string]
 	return s.recoveryLBIndex, nil
 }
 
+// invalidateRecoveryLBIndex forces the next recovery lookup to re-list LB records.
+func (s *ELBv2ServiceImpl) invalidateRecoveryLBIndex() {
+	s.recoveryLBIndexMu.Lock()
+	s.recoveryLBIndex = nil
+	s.recoveryLBIndexMu.Unlock()
+}
+
 // RebuildSystemInstanceInput reconstructs the launch input for host-reboot recovery.
 // The instance→LB map is memoised so concurrent recovery candidates share one ListLoadBalancers call.
 func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*SystemInstanceInput, error) {
@@ -578,6 +585,14 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*Syst
 		return nil, err
 	}
 	lb := index[rc.InstanceID]
+	if lb == nil {
+		// Another node may have launched or relaunched this VM since the index was built.
+		s.invalidateRecoveryLBIndex()
+		if index, err = s.loadRecoveryLBIndex(s.ctx); err != nil {
+			return nil, err
+		}
+		lb = index[rc.InstanceID]
+	}
 	if lb == nil {
 		return nil, fmt.Errorf("no LB record references instance %s", rc.InstanceID)
 	}
@@ -808,6 +823,11 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(ctx context.Context, listeners [
 				continue
 			}
 			pem, err := s.resolveCertPEM(ctx, c.CertificateArn, accountID)
+			if errors.Is(err, errCertNoMaterial) {
+				// Leave it out so the renderer skips it and the other frontends still load.
+				slog.WarnContext(ctx, "resolveListenerCerts: certificate has no material, not staged", "certArn", c.CertificateArn)
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("cert %s: %w", c.CertificateArn, err)
 			}
@@ -819,6 +839,10 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(ctx context.Context, listeners [
 	}
 	return out, nil
 }
+
+// errCertNoMaterial means the ACM record has no leaf or no private key, for
+// example a certificate that is still PENDING_VALIDATION.
+var errCertNoMaterial = errors.New("certificate has no issued material")
 
 // resolveCertPEM loads a certificate from ACM and returns its combined PEM
 // (leaf + chain + key). Cross-account certs are treated as absent.
@@ -833,6 +857,9 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(ctx context.Context, arn, accountID st
 	if rec == nil || rec.AccountID != accountID {
 		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
 	}
+	if strings.TrimSpace(rec.Certificate) == "" || strings.TrimSpace(rec.PrivateKey) == "" {
+		return "", errCertNoMaterial
+	}
 
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(rec.Certificate, "\n"))
@@ -846,8 +873,8 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(ctx context.Context, arn, accountID st
 	return b.String(), nil
 }
 
-// validateListenerCerts confirms every certificate ARN resolves in the ACM store
-// and is owned by the account. Rejects at the API boundary to avoid silently
+// validateListenerCerts confirms every certificate ARN resolves in the ACM store,
+// is owned by the account and has issued material. Rejects at the API boundary to avoid silently
 // freezing data-plane convergence at config-render time.
 func (s *ELBv2ServiceImpl) validateListenerCerts(ctx context.Context, certs []ListenerCertificate, accountID string) error {
 	if s.acmStore == nil {
@@ -1425,7 +1452,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
 			return out, err
 		}
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
+		return nil, errDuplicateLoadBalancerName(name)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1620,7 +1647,12 @@ func (s *ELBv2ServiceImpl) repeatCreateLoadBalancer(ctx context.Context, want *L
 			LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, existing)},
 		}, nil
 	}
-	return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+	return nil, errDuplicateLoadBalancerName(name)
+}
+
+// errDuplicateLoadBalancerName is AWS's refusal of a name the account already holds.
+func errDuplicateLoadBalancerName(name string) error {
+	return awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
 		"A load balancer with the same name '%s' exists, but with different settings", name)
 }
 
@@ -2222,7 +2254,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		if existing.Protocol == protocol && existing.ProtocolVersion == protocolVersion && existing.Port == port &&
 			existing.TargetType == targetType && existing.HealthCheck == hc {
 			return &elbv2.CreateTargetGroupOutput{
-				TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(existing, nil)},
+				TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(existing)},
 			}, nil
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateTargetGroup,
@@ -2260,8 +2292,16 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
+		TargetGroups: []*elbv2.TargetGroup{s.createdTGToSDK(record)},
 	}, nil
+}
+
+// AWS omits LoadBalancerArns from a CreateTargetGroup result, while
+// DescribeTargetGroups and ModifyTargetGroup return it as an empty list.
+func (s *ELBv2ServiceImpl) createdTGToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+	tg := s.tgRecordToSDK(r, nil)
+	tg.LoadBalancerArns = nil
+	return tg
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
@@ -2372,7 +2412,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		liveListener[l.ListenerArn] = true
 		for _, action := range l.DefaultActions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2389,7 +2430,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		}
 		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2908,7 +2950,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	}
 
 	if len(in) == 0 {
-		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorValidationError, "A certificate must be specified for %s listeners", protocol)
 	}
 
 	certs := make([]ListenerCertificate, 0, len(in))
@@ -2937,7 +2979,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	if policy == "" {
 		policy = DefaultSslPolicy
 	} else if !isKnownSslPolicy(policy) {
-		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorELBv2SSLPolicyNotFound, "SSL policy '%s' not found", policy)
 	}
 
 	return certs, policy, nil
@@ -2979,7 +3021,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		case ProtocolHTTP, ProtocolHTTPS:
 			// valid ALB protocols
 		default:
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Listener protocol '%s' must be one of 'HTTPS, HTTP'", protocol)
 		}
 	}
 
@@ -2996,7 +3038,8 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 	}
 	for _, l := range existingListeners {
 		if l.Port == port {
-			return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+				"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 		}
 	}
 
@@ -3255,7 +3298,8 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 					continue
 				}
 				if l.Port == newPort {
-					return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+					return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+						"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 				}
 			}
 			updated.Port = newPort

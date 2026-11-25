@@ -234,7 +234,7 @@ In Spinifex the token issuer is an [EKS](/docs/eks) cluster. Each cluster publis
 
 ### Register the OIDC Provider
 
-The role account must register the issuer as an IAM OIDC provider before any token from it is accepted:
+The role account must register the issuer as an IAM OIDC provider before any token from it is accepted. Only EKS cluster issuers can be registered; any other URL, such as an external identity provider, returns `InvalidInput`:
 
 ```bash
 aws iam create-open-id-connect-provider \

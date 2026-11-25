@@ -9,6 +9,11 @@ import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
+import {
+  type PickerNotice,
+  pickerNotice,
+  PickerNoticeText,
+} from "@/components/picker-notice"
 import { StateBadge } from "@/components/state-badge"
 import { TruncatedText } from "@/components/table-cells"
 import { Button } from "@/components/ui/button"
@@ -21,10 +26,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { routableTransitGateways } from "@/lib/transit-gateway"
+import { getNameTag } from "@/lib/utils"
+import { isLivePeering, peerOf, touchesVpc } from "@/lib/vpc-peering"
 import { useCreateRoute, useDeleteRoute } from "@/mutations/ec2"
 import {
   ec2InternetGatewaysQueryOptions,
   ec2NatGatewaysQueryOptions,
+  ec2TransitGatewaysByIdQueryOptions,
+  ec2VpcLiveTransitGatewayAttachmentsQueryOptions,
+  ec2VpcPeeringConnectionsQueryOptions,
 } from "@/queries/ec2"
 import { type CreateRouteFormData, createRouteSchema } from "@/types/ec2"
 
@@ -41,12 +52,13 @@ export function routeTarget(route: RouteEntry): string {
     route.NetworkInterfaceId ??
     route.InstanceId ??
     route.VpcPeeringConnectionId ??
+    route.TransitGatewayId ??
     "—"
   )
 }
 
-// The table's routes, with add and delete. Only gateways in the table's own VPC
-// are offered as targets; the local route cannot be deleted.
+// The table's routes, with add and delete. Only targets the table's own VPC can
+// reach are offered; the local route cannot be deleted.
 function routeColumns(
   deleting: boolean,
   onDelete: (cidr: string) => void,
@@ -104,11 +116,66 @@ function routeColumns(
   ]
 }
 
+interface RouteTargets {
+  targets: { id: string; label: string }[]
+  notice: PickerNotice | undefined
+}
+
+// The transit gateways the VPC can route to, read only once the user picks that
+// target type, and scoped to the VPC's own attachments.
+function useTransitGatewayTargets(
+  vpcId: string,
+  enabled: boolean,
+): RouteTargets {
+  const attachments = useQuery({
+    ...ec2VpcLiveTransitGatewayAttachmentsQueryOptions(vpcId),
+    enabled,
+  })
+
+  const attachmentList = attachments.data?.TransitGatewayVpcAttachments ?? []
+
+  const ids = [
+    ...new Set(attachmentList.flatMap((att) => att.TransitGatewayId ?? [])),
+  ].toSorted()
+
+  const gateways = useQuery({
+    ...ec2TransitGatewaysByIdQueryOptions(ids),
+    enabled: enabled && ids.length > 0,
+  })
+
+  const routable = routableTransitGateways(
+    gateways.data?.TransitGateways ?? [],
+    attachmentList,
+    vpcId,
+  )
+
+  const messages = {
+    loading: "Loading transit gateways…",
+    failed: "Could not load transit gateways",
+    empty: "No available transit gateway is attached to this VPC.",
+  }
+
+  const notice =
+    pickerNotice(attachments, ids.length === 0, messages) ??
+    pickerNotice(gateways, routable.length === 0, messages)
+
+  return {
+    notice,
+    targets: routable.map((tgw) => {
+      const id = tgw.TransitGatewayId ?? ""
+      const name = getNameTag(tgw.Tags)
+
+      return { id, label: name ? `${id} (${name})` : id }
+    }),
+  }
+}
+
 export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   const routeTableId = rtb.RouteTableId ?? ""
   const routes = rtb.Routes ?? []
   const { data: igwData } = useQuery(ec2InternetGatewaysQueryOptions)
   const { data: natData } = useQuery(ec2NatGatewaysQueryOptions)
+  const { data: pcxData } = useQuery(ec2VpcPeeringConnectionsQueryOptions)
   const createRoute = useCreateRoute()
   const deleteRoute = useDeleteRoute()
   const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
@@ -131,6 +198,40 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   const vpcNatGateways = (natData?.NatGateways ?? []).filter(
     (nat) => nat.VpcId === rtb.VpcId && nat.State === "available",
   )
+
+  // A pending connection is a valid target; its route reads blackhole until accepted.
+  const vpcPeerings = (pcxData?.VpcPeeringConnections ?? []).filter(
+    (pcx) => touchesVpc(pcx, rtb.VpcId) && isLivePeering(pcx),
+  )
+
+  const transitGateways = useTransitGatewayTargets(
+    rtb.VpcId ?? "",
+    targetType === "tgw",
+  )
+
+  const targetNotice = targetType === "tgw" ? transitGateways.notice : undefined
+
+  const targets = {
+    igw: attachedIgws.map((igw) => ({
+      id: igw.InternetGatewayId ?? "",
+      label: igw.InternetGatewayId ?? "",
+    })),
+    nat: vpcNatGateways.map((nat) => ({
+      id: nat.NatGatewayId ?? "",
+      label: nat.NatGatewayId ?? "",
+    })),
+    pcx: vpcPeerings.map((pcx) => {
+      const id = pcx.VpcPeeringConnectionId ?? ""
+      const name = getNameTag(pcx.Tags)
+      const peer = peerOf(pcx, rtb.VpcId)
+
+      return {
+        id,
+        label: `${id} (${name ?? `${peer?.VpcId ?? ""} ${peer?.CidrBlock ?? ""}`.trim()})`,
+      }
+    }),
+    tgw: transitGateways.targets,
+  }[targetType]
 
   const error = createRoute.error ?? deleteRoute.error
 
@@ -158,6 +259,10 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
         destinationCidrBlock: values.destinationCidrBlock,
         gatewayId: values.targetType === "igw" ? values.targetId : undefined,
         natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
+        vpcPeeringConnectionId:
+          values.targetType === "pcx" ? values.targetId : undefined,
+        transitGatewayId:
+          values.targetType === "tgw" ? values.targetId : undefined,
       })
     } catch {
       // Shown by the banner above the form.
@@ -218,6 +323,8 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
                     <SelectContent>
                       <SelectItem value="igw">Internet gateway</SelectItem>
                       <SelectItem value="nat">NAT gateway</SelectItem>
+                      <SelectItem value="pcx">Peering connection</SelectItem>
+                      <SelectItem value="tgw">Transit gateway</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -231,36 +338,28 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
               <Controller
                 control={form.control}
                 name="targetId"
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger
-                      aria-invalid={!!form.formState.errors.targetId}
-                      className="w-full"
-                      id="targetId"
-                    >
-                      <SelectValue placeholder="Select target" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {targetType === "igw"
-                        ? attachedIgws.map((igw) => (
-                            <SelectItem
-                              key={igw.InternetGatewayId}
-                              value={igw.InternetGatewayId ?? ""}
-                            >
-                              {igw.InternetGatewayId}
-                            </SelectItem>
-                          ))
-                        : vpcNatGateways.map((nat) => (
-                            <SelectItem
-                              key={nat.NatGatewayId}
-                              value={nat.NatGatewayId ?? ""}
-                            >
-                              {nat.NatGatewayId}
-                            </SelectItem>
-                          ))}
-                    </SelectContent>
-                  </Select>
-                )}
+                render={({ field }) =>
+                  targetNotice ? (
+                    <PickerNoticeText notice={targetNotice} />
+                  ) : (
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <SelectTrigger
+                        aria-invalid={!!form.formState.errors.targetId}
+                        className="w-full"
+                        id="targetId"
+                      >
+                        <SelectValue placeholder="Select target" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {targets.map((target) => (
+                          <SelectItem key={target.id} value={target.id}>
+                            {target.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )
+                }
               />
               <FieldError errors={[form.formState.errors.targetId]} />
             </Field>

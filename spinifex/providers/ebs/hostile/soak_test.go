@@ -149,6 +149,8 @@ func explainedTargets(injections []hostile.Injection) map[string]bool {
 		switch injection.Fault {
 		case hostile.FaultErrorAfterWork, hostile.FaultLatency, hostile.FaultLie:
 			explained[injection.Target] = true
+		case hostile.FaultNone, hostile.FaultError, hostile.FaultUnavailable:
+			// These do no work the caller is not told about, so they explain nothing.
 		}
 	}
 	return explained

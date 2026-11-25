@@ -1,3 +1,4 @@
+import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useState } from "react"
@@ -45,6 +46,24 @@ import {
 
 import { CreateClusterRoleSection } from "./create-cluster-role-section"
 
+// The default VPC, else the only one. With several and none default, the
+// customer picks, as a guess could put the cluster in the wrong network.
+function initialVpcId(vpcs: readonly Vpc[]): string {
+  const vpc =
+    vpcs.find((candidate) => candidate.IsDefault) ??
+    (vpcs.length === 1 ? vpcs[0] : undefined)
+
+  return vpc?.VpcId ?? ""
+}
+
+function subnetIdsIn(subnets: readonly Subnet[], vpcId: string): string[] {
+  return subnets.flatMap((subnet) =>
+    vpcId !== "" && subnet.VpcId === vpcId && subnet.SubnetId
+      ? [subnet.SubnetId]
+      : [],
+  )
+}
+
 interface CreateClusterPageProps {
   // Called with the new cluster's name, or with nothing on cancel.
   onClose: (clusterName?: string) => void
@@ -64,6 +83,8 @@ export function CreateClusterPage({ onClose }: CreateClusterPageProps) {
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
   const roles = rolesData.Roles ?? []
+  // Defaults apply once at mount, so a refetch never overwrites a choice.
+  const defaultVpcId = initialVpcId(vpcs)
 
   const {
     control,
@@ -77,8 +98,8 @@ export function CreateClusterPage({ onClose }: CreateClusterPageProps) {
       name: "",
       version: EKS_SUPPORTED_VERSIONS[0],
       roleArn: "",
-      vpcId: "",
-      subnetIds: [],
+      vpcId: defaultVpcId,
+      subnetIds: subnetIdsIn(allSubnets, defaultVpcId),
       bootstrapClusterCreatorAdminPermissions: true,
       endpointPublicAccess: true,
       endpointPrivateAccess: false,

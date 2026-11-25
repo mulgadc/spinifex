@@ -42,6 +42,7 @@ function seed(cluster: Cluster) {
     nodegroups: [],
   })
   qc.setQueryData(["eks", "clusters", CLUSTER, "addons"], { addons: [] })
+  qc.setQueryData(["eks", "addon-versions"], { addons: [] })
   qc.setQueryData(["eks", "clusters", CLUSTER, "access-entries"], {
     accessEntries: [],
   })

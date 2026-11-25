@@ -263,7 +263,7 @@ esac
 # OVN central options file and management role.
 # --------------------------------------------------------------------------
 # The functions run on their own against scratch paths, through the stub sudo.
-for fn in write_ovn_central_opts record_management_role management_role_markers cap_logrotate; do
+for fn in write_ovn_central_opts record_management_role management_role_markers cap_logrotate perms_units sb_pidfile_override_needed; do
     awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/ovn_fn.sh"
 done
 
@@ -306,6 +306,47 @@ printf '# OVN_CTL_OPTS="--db-nb-addr=0.0.0.0"\n' >"$TMP/role/etc/default/ovn-cen
 echo compute >"$TMP/role/etc/spinifex/ovn-role"
 ovn_fn management_role_markers
 if [ "$RC" != 0 ]; then pass "role: a package-default options file and another role are not markers"; else fail "role: non-markers gave rc=$RC out=$OUT"; fi
+
+# --------------------------------------------------------------------------
+# Single OVN unit restarts.
+# --------------------------------------------------------------------------
+# Each split DB unit recreates /var/run/ovn root-owned on start, so a restart of
+# one without its own hook leaves vpcd unable to reach NB or SB.
+ovn_fn perms_units split
+for want in "ovn-ovsdb-server-nb:/var/run/ovn/ovnnb_db.sock" "ovn-ovsdb-server-sb:/var/run/ovn/ovnsb_db.sock"; do
+    if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -qxF "$want"; then pass "perms: split hooks ${want%%:*}"; else fail "perms: split lacks $want: $OUT"; fi
+done
+ovn_fn perms_units lone-northd
+if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -qx 'ovn-northd:.*' && ! printf '%s\n' "$OUT" | grep -q '^ovn-ovsdb-server-'; then
+    pass "perms: lone-northd hooks ovn-northd, which starts the DBs"
+else
+    fail "perms: lone-northd gave $OUT"
+fi
+
+# Restarting the packaged northd stops the split NB/SB units unless its ExecStop
+# is overridden, and a single node runs the standalone branch, not the clustered.
+mgmt_head=$(awk '/^if \[ "\$MANAGEMENT" = true \]; then/ { on = 1 } on && /^    if \[ -n "\$DB_CLUSTER_LOCAL_ADDR" \]; then/ { exit } on { print }' "$SETUP")
+case "$mgmt_head" in
+    *"no-manage-ovsdb.conf"*) pass "northd: the ExecStop override is written for standalone and clustered DBs" ;;
+    *) fail "northd: the ExecStop override is written only on the clustered branch" ;;
+esac
+
+# The packaged SB unit's PIDFile= names a file nothing writes, so with the perms
+# hook a restart waits for it until the start times out.
+for c in "simple /run/run/ovn/ovnsb_db.pid 0" "simple /run/ovn/ovnsb_db.pid 1" "simple '' 1" "forking /run/run/ovn/ovnsb_db.pid 1"; do
+    eval "set -- $c"
+    ovn_fn sb_pidfile_override_needed "$1" "$2"
+    if [ "$RC" = "$3" ]; then pass "sb pidfile: Type=$1 PIDFile='$2' gives rc=$3"; else fail "sb pidfile: Type=$1 PIDFile='$2' gave rc=$RC"; fi
+done
+
+# Before any DB restart, and with our override removed and reloaded before the
+# unit is read, or a re-run reads its own empty PIDFile= and drops the override.
+sb_order=$(printf '%s\n' "$mgmt_head" | grep -nE 'rm -f "\$SB_PIDFILE_OVERRIDE"|systemctl daemon-reload|systemctl show -p (Type|PIDFile) --value ovn-ovsdb-server-sb' | cut -d: -f2- | sed -E 's/^ +//' | sed -n '/rm -f/,$p' | head -3)
+case "$sb_order" in
+    'sudo rm -f "$SB_PIDFILE_OVERRIDE"'*'sudo systemctl daemon-reload'*'systemctl show -p Type --value ovn-ovsdb-server-sb'*)
+        pass "sb pidfile: the override is cleared and reloaded before the unit is read, ahead of any DB restart" ;;
+    *) fail "sb pidfile: management block order is: $sb_order" ;;
+esac
 
 # --------------------------------------------------------------------------
 # OVS and OVN log rotation.

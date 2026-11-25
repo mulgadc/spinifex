@@ -33,12 +33,14 @@ resources:
 
 ## Overview
 
-Deploy a VPC with public and private subnets where the private subnet has no internet access. A bastion host in the public subnet is the only way to reach instances in the private subnet. This pattern is used for sensitive workloads that must remain isolated from the internet — the private instance cannot make or receive any connections outside the VPC.
+Deploy a VPC with public and private subnets where the private subnet has no internet access. A bastion host in the public subnet is the only way to reach instances in the private subnet. This pattern is used for sensitive workloads that must remain isolated from the internet.
+The private instance cannot make or receive connections to the internet.
+It reaches S3 through an S3 gateway VPC endpoint on its route table, so its S3 traffic does not need an internet or NAT gateway.
 
 **Architecture:**
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/tf-bastion.svg" alt="Bastion architecture — WAN reaches bastion in public subnet, SSH hop to app server in private subnet" width="900">
+  <img src="../../../.github/assets/diagrams/tf-bastion.svg" alt="Bastion architecture — WAN reaches bastion in public subnet, SSH hop to app server in private subnet, which reaches S3 through a gateway endpoint" width="900">
 </p>
 
 **What you'll learn:**
@@ -47,6 +49,7 @@ Deploy a VPC with public and private subnets where the private subnet has no int
 - Isolating compute instances from the internet using route tables and security groups
 - Using a bastion host as the sole access point to private resources
 - SSH hopping through a bastion to reach private instances
+- Reaching S3 from a private subnet through a gateway VPC endpoint and the S3 prefix list
 
 **Use cases:**
 
@@ -112,7 +115,8 @@ From the private instance, confirm there is no internet connectivity:
 curl --connect-timeout 5 https://deb.debian.org || echo "No internet access (expected)"
 ```
 
-The private instance can only communicate within the VPC (`10.20.0.0/16`). Its security group restricts egress to VPC-internal traffic only.
+The private instance can communicate within the VPC (`10.20.0.0/16`) and with S3 through the gateway endpoint.
+Its security group allows egress to the VPC, and to the S3 prefix list on the S3 port.
 
 ### Clean Up
 
@@ -146,7 +150,43 @@ If the private instance unexpectedly has internet access, check that its route t
 aws ec2 describe-route-tables --profile spinifex
 ```
 
-The private route table should have no `0.0.0.0/0` route. Also verify the private security group egress is restricted to the VPC CIDR (`10.20.0.0/16`).
+The private route table should have no `0.0.0.0/0` route. Its only route out of the VPC is from the S3 prefix list (`pl-`) to the gateway endpoint (`vpce-`).
+Also verify that the private security group egress allows only the VPC CIDR (`10.20.0.0/16`), and the S3 prefix list on the S3 port.
+
+### InvalidServiceName on Apply
+
+The apply fails on `aws_vpc_endpoint.s3`, or the `aws_vpc_endpoint_service` data source finds no service, when the cluster does not offer the S3 gateway endpoint service yet.
+Check that `aws ec2 describe-vpc-endpoint-services --profile spinifex` lists `com.amazonaws.<region>.s3`. Use `spx admin cluster status` to find the node that has not reached feature level 2.
+
+### Private Instance Cannot Reach S3
+
+On your workstation, print the S3 check command:
+
+```bash
+tofu output -raw s3_check_from_private
+```
+
+Run the printed command on the private instance. It has the form `curl -sk https://<s3_gateway_address>:<s3_gate_port>/`.
+The request is unsigned, so S3 answers with an `AccessDenied` error document, which shows that the path through the endpoint works.
+
+> **Note:** On AWS, S3 is at `s3.<region>.amazonaws.com` on port 443. On Spinifex, use an address from the `s3_gateway_addresses` output and the port from the `s3_gate_port` output (8443 by default). The security group egress rule uses the same port.
+> `-k` turns off certificate verification, because the S3 gateway presents a certificate from the cluster CA. `--cacert` with the cluster CA verifies the certificate only if the certificate names the address that you dial.
+
+If the command times out or the connection resets, more than one fault can cause it. Do these checks:
+
+1. The private route table is associated with the endpoint:
+
+   ```bash
+   aws ec2 describe-vpc-endpoints --profile spinifex --query 'VpcEndpoints[].RouteTableIds'
+   ```
+
+2. The private security group allows egress to the S3 prefix list on the gate port:
+
+   ```bash
+   aws ec2 describe-security-groups --profile spinifex --filters Name=group-name,Values=bastion-demo-private-sg --query 'SecurityGroups[].IpPermissionsEgress'
+   ```
+
+3. You dial an address from the `s3_gateway_addresses` output on the port from the `s3_gate_port` output, and that port is the port that S3 serves on in your cluster.
 
 ### AMI Not Found
 

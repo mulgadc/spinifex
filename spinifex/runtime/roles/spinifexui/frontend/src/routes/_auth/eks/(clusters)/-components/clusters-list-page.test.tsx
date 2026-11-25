@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.hoisted(() => vi.fn())
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
@@ -18,7 +18,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 })
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
-import { createTestQueryClient, renderWithClient } from "@/test/render"
+import {
+  createTestQueryClient,
+  renderWithClient,
+  waitForPanelLoaded,
+} from "@/test/render"
 
 import { ClustersListPage } from "./clusters-list-page"
 
@@ -93,9 +97,10 @@ describe("ClustersListPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("opens the selected cluster's panel, linked to its own page", () => {
+  it("opens the selected cluster's panel, linked to its own page", async () => {
     renderPage(["c1"], { selected: "c1" })
     const panel = screen.getByRole("region", { name: "Cluster details" })
+    await waitForPanelLoaded(panel)
     expect(
       panel.querySelector('a[href="/eks/list-clusters/c1"]'),
     ).toBeInTheDocument()

@@ -553,6 +553,17 @@ For existing infrastructure using the API-key path (`instance_principal = "off"`
 
 Add `--dry-run` to print the plan and change nothing.
 
+### Reinstall Spinifex on a deployment
+
+To put a new build on a deployment, run the same command with `--reinstall` added.
+For a build of your own checkout, run `make distro-amd64` at the repository root, and add `--distro ../../../dist/spinifex-<version>-linux-amd64.tar.gz --setup-sh ../../../scripts/setup.sh`.
+
+The driver keeps a formed cluster.
+Before it changes a host, it asks each node whether `spx admin init` has run on it.
+When every node answers yes, it does not form the cluster again, and it keeps the OVN configuration of each node.
+When no node answers yes, it installs and forms a new cluster.
+The [Troubleshooting](#troubleshooting) section tells you what to do when it stops before it changes a host.
+
 > [!NOTE]
 > **If `--channel dev` fails to download, pass a tag instead.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited by Github. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
@@ -726,6 +737,12 @@ The four are `oracle-10.1-x86_64`, `oracle-10.1-arm64`, `oracle-9.8-x86_64` and 
 
 It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
 
+The ocibsd EBS volumes and backups are in no Terraform state, so the destroy leaves them.
+A successful destroy marks the state directory for the sweep.
+The next `e2e-oci.sh` run with the same `OCI_STATE_ROOT` then deletes every volume and backup tagged with the cluster ID, whether it is `./e2e-oci.sh --sweep-only` or a full test run.
+The sweep does not reach a `--keep` deployment that you have not destroyed.
+A checkout from before this marker ignores it, so while an older checkout shares the state root, keep the deployment in its own `OCI_STATE_ROOT`.
+
 If this was the only Spinifex cluster using the instance-principal Dynamic Group and policy, remove those tenancy-wide resources as well:
 
 ```bash
@@ -777,7 +794,7 @@ oci limits resource-availability get --service-name vcn \
 
 ## EBS on OCI Block Volumes
 
-On an OCI virtual machine, EBS volumes can be backed by OCI Block Volumes through the `ocibsd` provider instead of Viperblock. Each EBS volume is one OCI block volume, attached over iSCSI to the node that runs the instance using it.
+On an OCI instance, virtual machine or bare metal, EBS volumes are backed by OCI Block Volumes through the `ocibsd` provider instead of Viperblock. Each EBS volume is one OCI block volume, attached over iSCSI to the node that runs the instance using it.
 
 ### How the provider is chosen
 
@@ -785,9 +802,9 @@ There is no flag. `spx admin init` takes the provider from the first of these th
 
 1. The existing `/etc/spinifex/spinifex.toml`, whose provider the node keeps; a node table that omits it is `viperblockd`.
 2. The `SPINIFEX_EBS_PROVIDER` environment variable: `viperblockd`, `qemunbd` or `ocibsd`.
-3. The OCI instance metadata service (IMDS v2), read with a one-second timeout. An OCI VM shape selects `ocibsd`; a `BM.*` shape, or no answer, selects `viperblockd`.
+3. The OCI instance metadata service (IMDS v2), read with a one-second timeout. Any OCI shape, `VM.*` or `BM.*`, selects `ocibsd`; no answer selects `viperblockd`.
 
-Init prints its choice and where it came from, for example `EBS provider: ocibsd (detected: OCI virtual machine <shape>)`. Joining nodes take the provider from formation rather than choosing their own. The choice is written once for every node and cannot be changed without wiping and re-forming the cluster.
+Init prints its choice and where it came from, for example `EBS provider: ocibsd (detected: OCI instance <shape>)`. Joining nodes take the provider from formation rather than choosing their own. The choice is written once for every node and cannot be changed without wiping and re-forming the cluster.
 
 For `ocibsd`, init fills the compartment and availability domain from instance metadata unless the existing config names them, generates a cluster ID that tags every OCI volume and backup the cluster makes, and defaults `auth` to `instance_principal` when the existing config names no credential. It then reads the compartment's volumes with that credential, and stops with an error naming the needed policy, `manage volume-family` and `use instances`, if the read is refused. It never falls back to Viperblock.
 
@@ -804,15 +821,18 @@ cluster_id = "<generated-cluster-id>"
 auth = "instance_principal"
 ```
 
-On an OCI VM, `setup.sh` installs the iSCSI initiator (`open-iscsi` with apt, `iscsi-initiator-utils` with dnf) and stages the `ocibsd` files under `/usr/local/share/spinifex/ocibsd`. When the provider resolves to `ocibsd`, init and join install the `spinifex-ocibsd.service` unit, its udev rule and a `spinifex-daemon` drop-in, mask `spinifex-viperblock.service`, and enable `spinifex-ocibsd.service`, so exactly one service answers for EBS on the node.
+On an OCI instance, `setup.sh` installs the iSCSI initiator (`open-iscsi` with apt, `iscsi-initiator-utils` with dnf) and stages the `ocibsd` files under `/usr/local/share/spinifex/ocibsd`. When the provider resolves to `ocibsd`, init and join install the `spinifex-ocibsd.service` unit, its udev rule and a `spinifex-daemon` drop-in, mask `spinifex-viperblock.service`, and enable `spinifex-ocibsd.service`, so exactly one service answers for EBS on the node.
 
-To keep Viperblock on an OCI VM, name it before init:
+On bare metal the instance boots from an iSCSI boot volume, so the node already holds a session to an `iqn.2015-02.oracle.boot` target; `ocibsd` only ever logs out sessions to its own cluster's volumes and leaves that one alone.
+`ocibsd` attaches its volumes with the Oracle Cloud Agent's iSCSI login turned off, so the agent's Block Volume Management plugin can stay enabled for the instance's other attachments.
+
+To keep Viperblock on an OCI instance, name it before init:
 
 ```bash
 sudo env SPINIFEX_EBS_PROVIDER=viperblockd spx admin init <your usual flags>
 ```
 
-`validate-topology.sh` does this for every topology except `vm-single-ocibsd` and `vm-multi-ocibsd`, which rely on detection and need `--distro`.
+`validate-topology.sh` does this only with `--ebs-provider viperblockd`; by default every topology relies on detection and needs `--distro`. Build such nodes with `ebs_provider = "viperblockd"` in your tfvars, since the Terraform default is `ocibsd`.
 
 ### One availability domain per cluster
 
@@ -827,7 +847,7 @@ Allow dynamic-group <dynamic-group-name> to manage volume-family in compartment 
 Allow dynamic-group <dynamic-group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` on an `ocibsd` topology (or `setup-identity.sh --ebs-provider ocibsd`) creates grants both, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built for `viperblockd`, the default, it grants neither, and because the policy is shared by every deployment in the compartment, re-running `setup-identity.sh` without the flag removes them.
+`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` or `setup-identity.sh` creates grants both by default, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built with `--ebs-provider viperblockd` it grants neither, and because the policy is shared by every deployment in the compartment, that run removes them. A policy created while `viperblockd` was the default lacks them too, so `spx admin init` refuses the instance principal until `setup-identity.sh` is run again.
 
 For an API key, grant the same two verbs to the key user's group, alongside the four from [section 2.2](#grant-the-group-its-four-permissions):
 
@@ -836,7 +856,7 @@ Allow group <group-name> to manage volume-family in compartment id <compartment-
 Allow group <group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, and only the four address grants otherwise. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
+`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, the default, and only the four address grants with `ebs_provider = "viperblockd"`. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
 
 ```toml
 [nodes.<node>.ebs]
@@ -896,5 +916,18 @@ The deploy stops at the first failure and names the log it wrote, all under `.va
 - [A node that was fine and then was not](../oci-architecture/README.md#a-node-that-was-fine-and-then-was-not), where one command answers all of it
 - [Guests cannot reach instance metadata](../oci-architecture/README.md#guests-cannot-reach-instance-metadata), because OCI and AWS guests want the same address
 - [Addresses and quotas](../oci-architecture/README.md#addresses-and-quotas), including why a detached address still bills
+
+**The driver stops with `could not read the formation state of <host>` or `the hosts disagree`.**
+It stopped before it changed a host.
+In the first case, make sure that you can connect to each named host with SSH, and run the command again.
+In the second case, some nodes are formed and some are not.
+Make sure that the hosts file or Terraform state names the nodes of one cluster, then examine `/etc/spinifex/spinifex.toml` on each named node.
+A formation that failed part of the way through can also cause this, and the driver does not repair it.
+Destroy and deploy again only a deployment that holds no data you need.
+
+**The driver stops with `cloud-init did not finish on <host>`.**
+The node did not write `/var/lib/cloud/instance/boot-finished` within 20 minutes, or it did not answer.
+Log in and run `cloud-init status --long` to find the module that failed.
+Set `OCI_CLOUD_INIT_TIMEOUT` to a number of seconds to change the limit.
 
 Installing by hand instead of with Terraform is [Deploying without Terraform](../oci-architecture/README.md#deploying-without-terraform).

@@ -30,7 +30,21 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 import { Route } from "./$id"
 
-async function renderPage() {
+function peering(
+  id: string,
+  code: string,
+  requester: string,
+  accepter: string,
+) {
+  return {
+    VpcPeeringConnectionId: id,
+    Status: { Code: code },
+    RequesterVpcInfo: { VpcId: requester, CidrBlock: "10.0.0.0/16" },
+    AccepterVpcInfo: { VpcId: accepter, CidrBlock: "10.1.0.0/16" },
+  }
+}
+
+async function renderPage({ transitGateways = true } = {}) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "routeTables", "rtb-1"], {
     RouteTables: [
@@ -49,6 +63,39 @@ async function renderPage() {
   })
   qc.setQueryData(["ec2", "internetGateways"], { InternetGateways: [] })
   qc.setQueryData(["ec2", "natGateways"], { NatGateways: [] })
+  qc.setQueryData(["ec2", "vpcPeeringConnections"], {
+    VpcPeeringConnections: [
+      peering("pcx-pending", "pending-acceptance", "vpc-1", "vpc-2"),
+      peering("pcx-accepted", "active", "vpc-3", "vpc-1"),
+      peering("pcx-deleted", "deleted", "vpc-1", "vpc-2"),
+      peering("pcx-elsewhere", "active", "vpc-2", "vpc-3"),
+    ],
+  })
+
+  if (transitGateways) {
+    qc.setQueryData(["ec2", "transitGatewayVpcAttachments", "vpc", "vpc-1"], {
+      TransitGatewayVpcAttachments: [
+        { TransitGatewayId: "tgw-ready", VpcId: "vpc-1", State: "available" },
+        { TransitGatewayId: "tgw-named", VpcId: "vpc-1", State: "pending" },
+        { TransitGatewayId: "tgw-new", VpcId: "vpc-1", State: "available" },
+      ],
+    })
+    qc.setQueryData(
+      ["ec2", "transitGateways", "ids", "tgw-named", "tgw-new", "tgw-ready"],
+      {
+        TransitGateways: [
+          { TransitGatewayId: "tgw-ready", State: "available" },
+          {
+            TransitGatewayId: "tgw-named",
+            State: "available",
+            Tags: [{ Key: "Name", Value: "core" }],
+          },
+          { TransitGatewayId: "tgw-new", State: "pending" },
+        ],
+      },
+    )
+  }
+
   qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
   const Detail = Route.options.component
 
@@ -108,5 +155,92 @@ describe("route table detail", () => {
     expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
       input: { AssociationId: "rtbassoc-1" },
     })
+  })
+
+  it("routes to a live peering connection of the table's own VPC", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(screen.getByRole("combobox", { name: "Target type" }))
+    await user.click(
+      await screen.findByRole("option", { name: "Peering connection" }),
+    )
+    await user.click(screen.getByRole("combobox", { name: "Target" }))
+
+    const options = await screen.findAllByRole("option")
+
+    expect(options.map((o) => o.textContent)).toStrictEqual([
+      "pcx-pending (vpc-2 10.1.0.0/16)",
+      "pcx-accepted (vpc-3 10.0.0.0/16)",
+    ])
+
+    await user.click(
+      screen.getByRole("option", { name: "pcx-accepted (vpc-3 10.0.0.0/16)" }),
+    )
+    await user.clear(screen.getByLabelText("Destination"))
+    await user.type(screen.getByLabelText("Destination"), "10.3.0.0/16")
+    await user.click(screen.getByRole("button", { name: "Add route" }))
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: {
+        RouteTableId: "rtb-1",
+        DestinationCidrBlock: "10.3.0.0/16",
+        VpcPeeringConnectionId: "pcx-accepted",
+      },
+    })
+  })
+
+  it("routes to a transit gateway attached to the table's own VPC", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(screen.getByRole("combobox", { name: "Target type" }))
+    await user.click(
+      await screen.findByRole("option", { name: "Transit gateway" }),
+    )
+    await user.click(screen.getByRole("combobox", { name: "Target" }))
+
+    const options = await screen.findAllByRole("option")
+
+    expect(options.map((o) => o.textContent)).toStrictEqual([
+      "tgw-ready",
+      "tgw-named (core)",
+    ])
+
+    await user.click(screen.getByRole("option", { name: "tgw-named (core)" }))
+    await user.clear(screen.getByLabelText("Destination"))
+    await user.type(screen.getByLabelText("Destination"), "10.8.0.0/16")
+    await user.click(screen.getByRole("button", { name: "Add route" }))
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: {
+        RouteTableId: "rtb-1",
+        DestinationCidrBlock: "10.8.0.0/16",
+        TransitGatewayId: "tgw-named",
+      },
+    })
+  })
+
+  it("says the transit gateways failed to load rather than that there are none", async () => {
+    const user = userEvent.setup()
+    sdk.send.mockRejectedValue(new Error("UnauthorizedOperation"))
+    await renderPage({ transitGateways: false })
+
+    await user.click(screen.getByRole("combobox", { name: "Target type" }))
+    await user.click(
+      await screen.findByRole("option", { name: "Transit gateway" }),
+    )
+
+    await expect(
+      screen.findByText(
+        "Could not load transit gateways: UnauthorizedOperation",
+      ),
+    ).resolves.toBeInTheDocument()
   })
 })

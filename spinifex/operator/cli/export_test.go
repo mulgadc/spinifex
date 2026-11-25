@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
@@ -229,3 +230,17 @@ func EnableSQSRemote(ctx context.Context, target adminTarget, node, instanceType
 
 // AccountDeleteCmd exposes the delete command so a test can run it end to end.
 var AccountDeleteCmd = accountDeleteCmd
+
+// AdminPreflightCmd and RunAdminPreflight expose spx admin preflight for testing.
+var (
+	AdminPreflightCmd = adminPreflightCmd
+	RunAdminPreflight = runAdminPreflight
+)
+
+// StubPreflightChecks replaces the full and asset-only host checks and returns
+// the function that restores them.
+func StubPreflightChecks(full, assets func() []preflight.Result) func() {
+	origFull, origAssets := checkHost, checkHostAssets
+	checkHost, checkHostAssets = full, assets
+	return func() { checkHost, checkHostAssets = origFull, origAssets }
+}

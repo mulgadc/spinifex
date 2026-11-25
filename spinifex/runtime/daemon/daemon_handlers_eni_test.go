@@ -437,6 +437,8 @@ func TestHandleDetachNetworkInterface_WrongOwner(t *testing.T) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, otherVM)
 	})
 	assertErrorCode(t, payload, awserrors.ErrorInvalidAttachmentIDNotFound)
+	responseError, _ := awserrors.ValidateErrorPayload(payload)
+	assert.Equal(t, "The interface attachment '"+attachID+"' does not exist.", aws.StringValue(responseError.Message))
 }
 
 func TestHandleDetachNetworkInterface_NotRunning(t *testing.T) {

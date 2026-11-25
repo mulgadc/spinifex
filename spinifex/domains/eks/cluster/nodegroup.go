@@ -349,9 +349,9 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	rec := &NodegroupRecord{
 		ClusterName: cluster,
 		Name:        ng,
-		// Derived, not random: the policy gate builds the same ARN from the same
-		// identifiers, so a Deny naming this exact ARN fires without a lookup.
-		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, arn.EKSNodegroupDiscriminator(accountID, cluster, ng)),
+		// A fresh UUID per incarnation, as AWS does, so a re-created group of the
+		// same name never inherits a policy, tag or audit trail naming the old one.
+		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,
@@ -613,7 +613,8 @@ func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV jetstream.Key
 // host capacity pressure) instead of abandoning the nodegroup at its first
 // failed launch. Each retry relaunches only what's still missing —
 // already-launched workers are never reissued — until the desired count is
-// reached, workerLaunchRetryTimeout elapses, or bgCtx is cancelled. Every retry
+// reached, workerLaunchRetryTimeout elapses, workerLaunchMaxAttempts (when set)
+// is used up, or bgCtx is cancelled. Every retry
 // is logged so a stuck launch is diagnosable without live-tailing the daemon.
 func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV jetstream.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	deadline := time.Now().Add(s.workerLaunchRetryTimeout)
@@ -628,7 +629,8 @@ func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV j
 			return all, nil
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		attemptsUsed := s.workerLaunchMaxAttempts > 0 && attempt >= s.workerLaunchMaxAttempts
+		if attemptsUsed || time.Now().After(deadline) {
 			return all, fmt.Errorf("worker launch shortfall after %d attempt(s), %d still missing: %w", attempt, remaining, lastErr)
 		}
 		slog.WarnContext(ctx, "launchNodegroupInfra: worker launch failed short of desired capacity, relaunching shortfall",
@@ -946,9 +948,6 @@ func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, p
 func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
 	ng := aws.StringValue(input.NodegroupName)
-	if cluster == "" || ng == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
 	if err := requireCluster(ctx, acctKV, cluster); err != nil {
 		return nil, err
 	}
@@ -964,9 +963,6 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 
 func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.KeyValue, input *eks.ListNodegroupsInput) (*eks.ListNodegroupsOutput, error) {
 	cluster := aws.StringValue(input.ClusterName)
-	if cluster == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return nil, clusterNotFound(cluster)
@@ -981,7 +977,11 @@ func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.Ke
 	for _, rec := range recs {
 		names = append(names, rec.Name)
 	}
-	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(names)}, nil
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetstream.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {

@@ -45,6 +45,23 @@ type Client struct {
 	AddACLCalls     int
 	ClearACLCalls   int
 	ReplaceACLCalls int
+
+	// EnsurePeeringLinkErr, when set, fails EnsurePeeringLink with no change.
+	EnsurePeeringLinkErr   error
+	EnsurePeeringLinkCalls int
+
+	// DeletePeeringLinkErr, when set, fails DeletePeeringLink with no change.
+	DeletePeeringLinkErr error
+
+	// EnsureTransitGatewayLinkErr, when set, fails EnsureTransitGatewayLink
+	// with no change; the calls count only writes that changed a row.
+	EnsureTransitGatewayLinkErr    error
+	EnsureTransitGatewayLinkWrites int
+	// DeleteTransitGatewayLinkErr, when set, fails DeleteTransitGatewayLink with no change.
+	DeleteTransitGatewayLinkErr error
+
+	// UpdateLogicalRouterPolicyErr, when set, fails UpdateLogicalRouterPolicy with no change.
+	UpdateLogicalRouterPolicyErr error
 }
 
 var _ ovn.Client = (*Client)(nil)
@@ -316,7 +333,7 @@ func (m *Client) GetLogicalRouter(_ context.Context, name string) (*nbdb.Logical
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[name]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, name)
 	}
 	result := *lr
 	return &result, nil
@@ -692,6 +709,22 @@ func (m *Client) FindStaticRoute(_ context.Context, routerName, ipPrefix string)
 	return nil, nil
 }
 
+func (m *Client) ListStaticRoutes(_ context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	var out []nbdb.LogicalRouterStaticRoute
+	for _, uuid := range lr.StaticRoutes {
+		if r, ok := m.StaticRoutes[uuid]; ok {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
 func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefix string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -764,7 +797,7 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[routerName]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", routerName)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, routerName)
 	}
 	out := make([]nbdb.LogicalRouterPolicy, 0, len(lr.Policies))
 	for _, uuid := range lr.Policies {
@@ -773,6 +806,27 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 		}
 	}
 	return out, nil
+}
+
+func (m *Client) UpdateLogicalRouterPolicy(_ context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if m.UpdateLogicalRouterPolicyErr != nil {
+		return m.UpdateLogicalRouterPolicyErr
+	}
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if ok && p.Priority == policy.Priority && p.Match == policy.Match {
+			p.Action, p.Nexthop, p.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+			p.Options, p.ExternalIDs = maps.Clone(policy.Options), maps.Clone(policy.ExternalIDs)
+			return nil
+		}
+	}
+	return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
 }
 
 func (m *Client) DeleteLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) error {
@@ -947,6 +1001,19 @@ func (m *Client) EnsureAddressSet(_ context.Context, name string, addresses []st
 	return as.UUID, nil
 }
 
+// CreateAddressSetIfAbsent inserts the named set empty, leaving an existing
+// set's addresses alone.
+func (m *Client) CreateAddressSetIfAbsent(_ context.Context, name string) (string, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.AddressSets[name]; ok {
+		return existing.UUID, nil
+	}
+	as := &nbdb.AddressSet{UUID: awsidentifiers.GenerateResourceID("as"), Name: name, Addresses: []string{}}
+	m.AddressSets[name] = as
+	return as.UUID, nil
+}
+
 // GetAddressSet returns the address set, or ovn.ErrAddressSetNotFound.
 func (m *Client) GetAddressSet(_ context.Context, name string) (*nbdb.AddressSet, error) {
 	m.Mu.Lock()
@@ -960,6 +1027,17 @@ func (m *Client) GetAddressSet(_ context.Context, name string) (*nbdb.AddressSet
 }
 
 // ACLs
+
+// ListACLs returns a snapshot of every ACL.
+func (m *Client) ListACLs(_ context.Context) ([]nbdb.ACL, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	out := make([]nbdb.ACL, 0, len(m.ACLs))
+	for _, a := range m.ACLs {
+		out = append(out, *a)
+	}
+	return out, nil
+}
 
 func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.ACLSpec) error {
 	m.Mu.Lock()

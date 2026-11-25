@@ -29,9 +29,11 @@ type fakeEndpointService struct {
 	deleteCalls    int
 	describeInputs []*ochre.DescribeEndpointInput
 	deleteInputs   []*ochre.DeleteEndpointInput
+	ensureInputs   []*ochre.EnsureEndpointInput
 }
 
-func (f *fakeEndpointService) Ensure(_ context.Context, _ *ochre.EnsureEndpointInput, _ string) (*ochre.EnsureEndpointOutput, error) {
+func (f *fakeEndpointService) Ensure(_ context.Context, in *ochre.EnsureEndpointInput, _ string) (*ochre.EnsureEndpointOutput, error) {
+	f.ensureInputs = append(f.ensureInputs, in)
 	if f.ensureErr != nil {
 		return nil, f.ensureErr
 	}
@@ -150,10 +152,77 @@ func TestRunEnsureEndpoint_NoWaitReportsStarting(t *testing.T) {
 	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting}}
 	now := time.Unix(0, 0).UTC()
 
-	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, time.Minute, fakeClock(&now))
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, false, time.Minute, fakeClock(&now))
 	require.NoError(t, err)
 	require.Contains(t, msg, "STARTING")
 	require.Equal(t, 0, svc.describeCalls, "no --wait must not poll")
+}
+
+func TestRunEnsureEndpoint_PinnedSendsPinAndReportsReservation(t *testing.T) {
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting, Pinned: true, OperatorReserved: true}}
+	now := time.Unix(0, 0).UTC()
+
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, false, time.Minute, fakeClock(&now))
+	require.NoError(t, err)
+	require.Len(t, svc.ensureInputs, 1)
+	require.True(t, svc.ensureInputs[0].Pinned, "--pinned must reach the service")
+	require.True(t, svc.ensureInputs[0].OperatorReserved, "--pinned must record an operator reservation")
+	require.Contains(t, msg, "STARTING")
+	require.Contains(t, msg, "Pinned")
+}
+
+func TestRunEnsureEndpoint_WithoutPinnedSendsNoPin(t *testing.T) {
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting}}
+	now := time.Unix(0, 0).UTC()
+
+	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, false, time.Minute, fakeClock(&now))
+	require.NoError(t, err)
+	require.Len(t, svc.ensureInputs, 1)
+	require.False(t, svc.ensureInputs[0].Pinned)
+	require.False(t, svc.ensureInputs[0].OperatorReserved)
+}
+
+// Ensure returns a running endpoint unchanged, so a pin request against an
+// unpinned one must fail rather than report a reservation it did not make.
+func TestRunEnsureEndpoint_PinnedOnExistingUnpinnedEndpointErrors(t *testing.T) {
+	for _, state := range []ochre.EndpointState{ochre.StateStarting, ochre.StateReady} {
+		t.Run(string(state), func(t *testing.T) {
+			svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: state}}
+			now := time.Unix(0, 0).UTC()
+
+			msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, true, time.Minute, fakeClock(&now))
+			require.Error(t, err)
+			require.Empty(t, msg)
+			require.Contains(t, err.Error(), "cannot be pinned in place")
+			require.Contains(t, err.Error(), string(state))
+			require.Equal(t, 0, svc.describeCalls, "a refused pin must not wait on the endpoint")
+			require.Equal(t, 0, svc.deleteCalls, "a refused pin must not delete or replace the endpoint")
+		})
+	}
+}
+
+// A pin a commitment made, with no operator reservation recorded, is a shared
+// bundle the operator never claimed, so --pinned must not adopt it.
+func TestRunEnsureEndpoint_PinnedOnLegacyCommitmentPinErrors(t *testing.T) {
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady, Pinned: true, InstanceID: "i-legacy"}}
+	now := time.Unix(0, 0).UTC()
+
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, true, time.Minute, fakeClock(&now))
+	require.Error(t, err)
+	require.Empty(t, msg)
+	require.Contains(t, err.Error(), "not reserved by an operator")
+	require.Equal(t, 0, svc.describeCalls, "a refused pin must not wait on the endpoint")
+	require.Equal(t, 0, svc.deleteCalls, "a refused pin must not delete or replace the endpoint")
+}
+
+func TestRunEnsureEndpoint_PinnedOnExistingPinnedEndpointPrintsRecord(t *testing.T) {
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady, Pinned: true, OperatorReserved: true, InstanceID: "i-pinned"}}
+	now := time.Unix(0, 0).UTC()
+
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, false, time.Minute, fakeClock(&now))
+	require.NoError(t, err)
+	require.Contains(t, msg, "READY")
+	require.Contains(t, msg, "i-pinned")
 }
 
 func TestRunEnsureEndpoint_WaitReportsColdStart(t *testing.T) {
@@ -166,7 +235,7 @@ func TestRunEnsureEndpoint_WaitReportsColdStart(t *testing.T) {
 	}
 	now := time.Unix(0, 0).UTC()
 
-	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, time.Minute, fakeClock(&now))
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, time.Minute, fakeClock(&now))
 	require.NoError(t, err)
 	require.Contains(t, msg, "READY after 2s")
 }
@@ -177,7 +246,7 @@ func TestRunEnsureEndpoint_AlreadyReadyDoesNotReportElapsed(t *testing.T) {
 	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady}}
 	now := time.Unix(0, 0).UTC()
 
-	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, time.Minute, fakeClock(&now))
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, time.Minute, fakeClock(&now))
 	require.NoError(t, err)
 	require.Contains(t, msg, "already READY")
 	require.NotContains(t, msg, "after")
@@ -188,7 +257,7 @@ func TestRunEnsureEndpoint_EnsureErrorSurfaces(t *testing.T) {
 	svc := &fakeEndpointService{ensureErr: errors.New("ResourceNotFoundException")}
 	now := time.Unix(0, 0).UTC()
 
-	_, err := runEnsureEndpoint(context.Background(), svc, "no.such.model", false, time.Minute, fakeClock(&now))
+	_, err := runEnsureEndpoint(context.Background(), svc, "no.such.model", false, false, time.Minute, fakeClock(&now))
 	require.ErrorContains(t, err, "ResourceNotFoundException")
 }
 
@@ -201,7 +270,7 @@ func TestRunEnsureEndpoint_WaitTimeoutIncludesRecord(t *testing.T) {
 	}
 	now := time.Unix(0, 0).UTC()
 
-	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, 4*time.Second, fakeClock(&now))
+	_, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, true, 4*time.Second, fakeClock(&now))
 	require.ErrorIs(t, err, errEndpointWaitTimeout)
 	require.ErrorContains(t, err, "STARTING")
 }

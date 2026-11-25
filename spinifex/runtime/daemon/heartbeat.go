@@ -1,9 +1,10 @@
 package daemon
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"log/slog"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 const heartbeatInterval = 10 * time.Second
@@ -20,6 +21,7 @@ func (d *Daemon) startHeartbeat() {
 	go func() {
 		// Fire immediately on startup
 		d.publishHeartbeat()
+		d.tickFeatureLevel()
 
 		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
@@ -31,6 +33,7 @@ func (d *Daemon) startHeartbeat() {
 				return
 			case <-ticker.C:
 				d.publishHeartbeat()
+				d.tickFeatureLevel()
 			}
 		}
 	}()
@@ -69,5 +72,6 @@ func (d *Daemon) buildHeartbeat() *Heartbeat {
 		AvailableMem:  totalMem - allocMem,
 		ReservedVCPU:  reservedVCPU,
 		ReservedMem:   reservedMem,
+		FeatureLevel:  d.advertisedFeatureLevel(),
 	}
 }

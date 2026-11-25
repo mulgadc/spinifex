@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +21,13 @@ func TestMeasureQEMURSSMiB_Self(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+
+	// Until the child execs, its RSS is the forked test binary's.
+	comm := fmt.Sprintf("/proc/%d/comm", cmd.Process.Pid)
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(comm)
+		return err == nil && strings.TrimSpace(string(b)) == "sleep"
+	}, 10*time.Second, time.Millisecond, "child never exec'd sleep")
 
 	rss, err := measureQEMURSSMiB(cmd.Process.Pid)
 	if err != nil {

@@ -20,15 +20,10 @@ tags:
 
 Predastore implements **26 operations** in the S3 `2006-03-01` API model.
 
-### Predastore serves this endpoint
-
-S3 is the one surface the AWS gateway does not answer itself. Object storage runs on [Predastore](https://github.com/mulgadc/predastore), which serves the S3 REST API directly over its own endpoint.
-
 ### Routed is not the same as conforming
 
-This page says an operation is routed to a handler. It does not say the handler's behaviour matches S3 in every case.
-
-That behaviour is measured separately, against the `ceph/s3-tests` suite Ceph RGW, MinIO and Garage are all validated with, and the results are published in Predastore's [S3 compatibility report](https://github.com/mulgadc/predastore/blob/dev/docs/S3-COMPATIBILITY.md).
+This page shows which operations are routed to a handler.
+Behaviour differences from S3 are measured with the `ceph/s3-tests` suite and published in Predastore's [S3 compatibility report](https://github.com/mulgadc/predastore/blob/dev/docs/S3-COMPATIBILITY.md).
 
 ### Operations
 
@@ -60,27 +55,3 @@ That behaviour is measured separately, against the `ceph/s3-tests` suite Ceph RG
 | `PutObject` |
 | `UploadPart` |
 | `UploadPartCopy` |
-
-### Requires AWS SDK v2
-
-These 17 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
-
-| Operation |
-|---|
-| `CreateBucketMetadataConfiguration` |
-| `CreateBucketMetadataTableConfiguration` |
-| `DeleteBucketMetadataConfiguration` |
-| `DeleteBucketMetadataTableConfiguration` |
-| `DeleteObjectAnnotation` |
-| `GetBucketAbac` |
-| `GetBucketMetadataConfiguration` |
-| `GetBucketMetadataTableConfiguration` |
-| `GetObjectAnnotation` |
-| `ListObjectAnnotations` |
-| `PutBucketAbac` |
-| `PutObjectAnnotation` |
-| `RenameObject` |
-| `UpdateBucketMetadataAnnotationTableConfiguration` |
-| `UpdateBucketMetadataInventoryTableConfiguration` |
-| `UpdateBucketMetadataJournalTableConfiguration` |
-| `UpdateObjectEncryption` |

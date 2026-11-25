@@ -86,7 +86,7 @@ func TestChangeVisibilityRefusesInvalidHandles(t *testing.T) {
 	_, before := e.state(t, q, m.ReceiptHandle)
 	for name, in := range map[string]message.ChangeVisibilityInput{
 		"malformed":         vis("orders", "not-a-handle", 60),
-		"tampered":          vis("orders", m.ReceiptHandle[:len(m.ReceiptHandle)-2]+"AA", 60),
+		"tampered":          vis("orders", tamper(m.ReceiptHandle), 60),
 		"another queue":     vis("audit", m.ReceiptHandle, 60),
 		"another account's": {Account: other, Region: region, Queue: "orders", ReceiptHandle: m.ReceiptHandle, VisibilityTimeout: 60},
 	} {

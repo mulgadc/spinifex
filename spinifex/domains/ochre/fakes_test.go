@@ -304,6 +304,10 @@ type fakeInstanceLauncher struct {
 	nextID       int
 	failLaunch   error
 	terminateErr error
+
+	// onTerminate, when set, runs before a termination is recorded, so a test
+	// can land another daemon's writes while this teardown is in flight.
+	onTerminate func(instanceID string)
 }
 
 var _ systeminstance.SystemInstanceLauncher = (*fakeInstanceLauncher)(nil)
@@ -349,6 +353,9 @@ func (f *fakeInstanceLauncher) terminations() []string {
 }
 
 func (f *fakeInstanceLauncher) TerminateSystemInstance(instanceID string) error {
+	if f.onTerminate != nil {
+		f.onTerminate(instanceID)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.terminateErr != nil {

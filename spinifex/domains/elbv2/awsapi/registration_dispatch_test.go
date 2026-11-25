@@ -257,6 +257,9 @@ func TestRegistrationDispatch_ModifyListenerAttributesNeedsNoDaemon(t *testing.T
 	w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, form.Encode(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, "ModifyListenerAttributesResponse", rootElement(t, w.Body.Bytes()))
+	requestID := w.Header().Get("X-Amzn-Requestid")
+	require.NotEmpty(t, requestID)
+	assert.Contains(t, w.Body.String(), "<ResponseMetadata><RequestId>"+requestID+"</RequestId></ResponseMetadata>")
 }
 
 // DescribeListenerAttributes returns the TCP idle timeout default AWS reports
@@ -276,6 +279,7 @@ func TestRegistrationDispatch_DescribeListenerAttributes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, w.Body.String(),
 			"<Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes>")
+		assert.Contains(t, w.Body.String(), "<RequestId>"+w.Header().Get("X-Amzn-Requestid")+"</RequestId>")
 
 		var in elbv2.DescribeListenersInput
 		select {

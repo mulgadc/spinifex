@@ -152,6 +152,7 @@ func TestDistributeInstancesSpread_OnePerNode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, reservation.Instances, 3)
 	assert.NotNil(t, reservation.ReservationId)
+	assert.Equal(t, "test-account", aws.StringValue(reservation.OwnerId))
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

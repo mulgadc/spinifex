@@ -160,6 +160,22 @@ type Config struct {
 	// chassis this pass is what decides. Optional: nil is every environment
 	// where an address is on the wire from any node.
 	BindGatewayVPC func(ctx context.Context, externalIP, vpcID string) error
+
+	// PeeringRoutes converges peering route policies. Optional: nil builds one
+	// on OVN.
+	PeeringRoutes policy.PeeringRouteManager
+	// FlowsBarrier returns once every chassis has installed the NB changes made
+	// so far. Optional: nil confirms a peering link as soon as NB holds it.
+	FlowsBarrier func() error
+	// MarkPeeringActive reports that generation of a connection is realised.
+	// Optional: nil leaves records unchanged and lets every link deliver.
+	MarkPeeringActive func(ctx context.Context, pcxID string, generation int64) error
+	// MarkPeeringCleaned reports that a deleted connection's rows are gone.
+	// Optional: nil leaves the cleanup obligation recorded.
+	MarkPeeringCleaned func(ctx context.Context, pcxID string) error
+	// TransitGateways reports Transit Gateway realization. Optional: the zero
+	// value changes no record and lets every link deliver.
+	TransitGateways TransitGatewayHooks
 }
 
 type reconciler struct {
@@ -181,6 +197,12 @@ type reconciler struct {
 	markAttached func(ctx context.Context, recordKey, vpcID string) error
 	datapathIP   policy.DatapathResolver
 	bindGateway  func(ctx context.Context, externalIP, vpcID string) error
+
+	peeringRoutes      policy.PeeringRouteManager
+	flowsBarrier       func() error
+	markPeeringActive  func(ctx context.Context, pcxID string, generation int64) error
+	markPeeringCleaned func(ctx context.Context, pcxID string) error
+	tgwHooks           TransitGatewayHooks
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.
@@ -231,6 +253,10 @@ func New(cfg Config) (Reconciler, error) {
 	if datapathIP == nil {
 		datapathIP = func(_ context.Context, ip string) (string, error) { return ip, nil }
 	}
+	peeringRoutes := cfg.PeeringRoutes
+	if peeringRoutes == nil {
+		peeringRoutes = policy.NewPeeringRouteManager(cfg.OVN)
+	}
 	return &reconciler{
 		ovn:          cfg.OVN,
 		sg:           cfg.SG,
@@ -250,6 +276,12 @@ func New(cfg Config) (Reconciler, error) {
 		markAttached: cfg.MarkIGWAttached,
 		datapathIP:   datapathIP,
 		bindGateway:  cfg.BindGatewayVPC,
+
+		peeringRoutes:      peeringRoutes,
+		flowsBarrier:       cfg.FlowsBarrier,
+		markPeeringActive:  cfg.MarkPeeringActive,
+		markPeeringCleaned: cfg.MarkPeeringCleaned,
+		tgwHooks:           cfg.TransitGateways,
 	}, nil
 }
 
@@ -300,6 +332,11 @@ const (
 	classNATGWRoute   = "natgw_route"
 	classDropGate     = "drop_gate"
 	classPublicEgress = "public_egress"
+	classPeeringLink  = "peering_link"
+	classPeeringRoute = "peering_route"
+	classTGW          = "transit_gateway"
+	classTGWLink      = "tgw_link"
+	classTGWRoute     = "tgw_route"
 )
 
 // Reconcile diffs intent vs. actual OVN state and applies in topological order.
@@ -352,6 +389,10 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 		"intent_natgws", len(intent.NATGWs),
 		"intent_igw_routes", len(intent.IGWRoutes),
 		"intent_natgw_routes", len(intent.NATGWRoutes),
+		"intent_peering_links", len(intent.PeeringLinks),
+		"intent_peering_routes", len(intent.PeeringRoutes),
+		"intent_tgw_links", len(intent.TGWLinks),
+		"intent_tgw_routes", len(intent.TGWRoutes),
 	)
 
 	res := &passResult{}
@@ -365,6 +406,15 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 	r.applyNATGWs(ctx, intent, actual, res)
 	r.applyIGWRoutes(ctx, intent, actual, res)
 	r.applyNATGWRoutes(ctx, intent, actual, res)
+	deliver := r.applyPeeringLinks(ctx, intent, actual, res)
+	r.applyPeeringRoutes(ctx, intent, actual, deliver, res)
+	tgwDeliver, tgwPending := r.applyTransitGateways(ctx, intent, actual, res)
+	unsynced := r.applyTGWRoutes(ctx, intent, actual, tgwDeliver, res)
+	r.confirmTGWLinks(ctx, intent, tgwPending, unsynced, res)
+	if pruneTopology {
+		r.prunePeeringOrphans(ctx, intent, res)
+		r.pruneTGWOrphans(ctx, intent, res)
+	}
 	r.applyDropGates(ctx, intent, actual, res)
 	r.applyPublicInstanceEgress(ctx, intent, actual, res)
 

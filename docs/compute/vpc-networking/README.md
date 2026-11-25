@@ -38,7 +38,7 @@ Spinifex maps AWS VPC concepts directly to OVN constructs:
 ## Network Path
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-network-path.svg" alt="VPC logical topology — WAN, br-wan, VPC logical router, subnets, ENIs" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-network-path.svg" alt="VPC logical topology — WAN, br-wan, veth pair, br-ext, VPC logical router, subnets, ENIs" width="700">
 </p>
 
 Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overlay NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int` (the integration bridge where all VM TAP devices connect).
@@ -174,17 +174,88 @@ A subnet's behavior depends on three things: whether the VPC has an Internet Gat
 Instances get a private IP only. They can communicate with other instances in the same VPC (even across subnets and hosts via the overlay). They cannot reach the internet or be reached from the WAN.
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="620">
 </p>
 
 Private subnet instances reach the internet only if their route table has a default route to the IGW (shared SNAT, outbound only — they share the gateway IP) or to a NAT gateway. With no default route, egress is dropped. Either way they cannot be reached from the WAN because they have no public IP.
+
+## S3 From a Private Subnet (Gateway Endpoints)
+
+A private subnet reaches the S3 API without an internet gateway or NAT once its route table is named by an S3 gateway endpoint (`CreateVpcEndpoint` with service `com.amazonaws.<region>.s3`).
+The table gains a route to the endpoint's prefix list, whose entries are the cluster's S3 gate addresses and ports.
+
+The guest's connection to an entry never leaves the host.
+On the guest's `br-imds` bridge, endpoint flows send it to the guest's `ime-*` port, where a `TPROXY` rule hands it to vpcd's endpoint proxy on port 8473.
+The proxy admits it only if the destination is an entry, the subnet's endpoint is in the same VPC, the source is the interface's primary address and the security groups allow the egress.
+It then relays the connection over mutual TLS to the gate's endpoint listener on port 8474 on the node the guest dialled, and every refusal resets the connection.
+Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
+The service is offered once every node reports feature level 2.
+A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate and a connection carrying an endpoint policy: its own on a node running Predastore, otherwise a peer's.
+Its vpcd must also run this release, and its own prefix-list entry must be its advertised address rather than its management bridge address.
+Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
+`spx admin cluster status` shows each node's level.
+
+### In the Console
+
+**Networking › Endpoints** lists the account's endpoints and creates, changes and deletes them.
+The create panel asks for the VPC, the service and the route tables, and shows the AWS CLI command that sends the same request.
+Until the formation offers the service, the panel says so and cannot create an endpoint.
+An endpoint's panel shows its prefix list, its route tables and its policy, and its Topology tab draws it beside the gateways, with a line to each subnet whose route table sends traffic to it.
+The console offers the policy choice and **Edit policy** only while `DescribeVpcEndpointServices` lists the service with `VpcEndpointPolicySupported`.
+During a rollback the service can still be listed; a policy write is then refused, and the refusal shows beside the submit button with the draft kept.
+
+### Endpoint Policies
+
+`CreateVpcEndpoint` and `ModifyVpcEndpoint` accept a custom `PolicyDocument` of up to 20,480 characters, and `ResetPolicy` restores the default, which allows everything.
+On every request through the endpoint, including anonymous reads of a public object, the gate evaluates the endpoint policy as well as the caller's identity policy.
+The request is allowed only if both allow it, and an explicit deny in either denies it.
+In a `DeleteObjects` batch each key is decided on its own, and a denied key is reported in `Errors`.
+
+A statement's `Principal` is `"*"`, `{"AWS": "*"}`, or an account by ID or root ARN.
+As on AWS, an account principal names that account's root user only.
+No tenant credential on Spinifex is an account's root user, so an `Allow` naming an account grants nothing.
+A `Deny` naming an account still applies to a caller the gate cannot identify by type, such as an anonymous read or a service credential.
+Name users and roles with the `aws:PrincipalArn` condition key; a role session matches its role's ARN.
+A policy naming a user, role, service or federated principal is refused with `InvalidPolicyDocument`, which AWS stores instead.
+So is a condition the gate could not enforce as written, such as an operand that does not parse or an unsupported key.
+
+After a policy change, the endpoint's open connections close within seconds, on vpcd's next pass, and at most after its 5-minute resync.
+Rolling back to level 1 needs every endpoint deleted, so no policy outlives it.
+
+### Security Groups Naming the S3 Prefix List
+
+A security-group rule can name the S3 prefix list as its peer, in either direction, from feature level 2, the same level that offers the endpoint service.
+Until then a rule adding the list is refused with `InvalidPrefixListID.NotFound`, as any other prefix list always is.
+From level 2, `DescribePrefixLists`, `GetManagedPrefixListEntries` and the capture rules list each node at its advertised address.
+
+The rule matches an OVN address set `spx_pl_<id>`, so it governs S3 traffic by the public path as well as the proxy's check, and the proxy reads the same set.
+A security-group change creates the set empty if it is absent; vpcd's reconcile pass alone fills it, after the drift loop's debounce, so a new rule grants nothing for those seconds.
+Each vpcd reads the node set when it starts and fills the set from that copy.
+After a node joins, leaves or changes its advertised address, restart vpcd on every node; until then the set's members change whenever the reconcile lease moves to a vpcd holding a different copy.
+
+Rolling back to level 1 withdraws every prefix-list grant once each vpcd has read the rollback, and leaves the rules stored.
+Besides deleting every endpoint, the rollback then waits until every rule naming the prefix list is revoked and no ACL names the set; `RevokeSecurityGroupEgress` and `RevokeSecurityGroupIngress` still work during it, and nothing revokes a rule automatically.
+
+### Formations Installed With v1.25.0 or Earlier
+
+A formation installed with v1.25.0 or earlier stays at level 1 after an upgrade, because its `predastore.toml` does not configure the gate's endpoint listener.
+Upgrading does not change that file, so add two settings by hand on every node:
+
+1. In `/etc/spinifex/predastore/predastore.toml`, add `tls_ca = "/etc/spinifex/ca.pem"` to every `[[host]]` table.
+2. Add `endpoint_port = 8474` to every `[[host.node]]` table with `role = "gate"`.
+   Leave `version = 1` as it is.
+3. Re-run `setup.sh` on the node if it was upgraded without the `firewall` stage, so the host firewall accepts port 8474 from peers and the captured guest traffic.
+4. Restart Predastore with `sudo systemctl restart spinifex-predastore`.
+
+Once every node is done, `spx admin cluster status` shows level 2.
+If `spinifex-predastore` fails to start after the change, remove the two settings and restart it; `journalctl -u spinifex-predastore` names the setting it rejected.
 
 ## Public Subnet
 
 Instances get both a private IP and a public IP. The public IP is a 1:1 NAT managed by OVN — the instance OS only sees its private IP.
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-public-subnet-flow.svg" alt="Public subnet — outbound SNAT and inbound DNAT between private and public IPs" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-public-subnet-flow.svg" alt="Public subnet — outbound SNAT and inbound DNAT between private and public IPs" width="520">
 </p>
 
 **Requirements for a public subnet:**
@@ -588,7 +659,7 @@ ip -d link show wan
 ## Network Flow Diagram
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-host-flow.svg" alt="Bare-metal host — br-int overlay, br-ext OVS uplink, br-wan Linux bridge, physical NIC, OVN NAT pipeline" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-host-flow.svg" alt="Bare-metal host — br-int overlay, br-ext OVS uplink, br-wan Linux bridge, physical NIC, OVN NAT pipeline" width="280">
 </p>
 
 ## Configuration Reference
@@ -598,7 +669,7 @@ All network configuration lives in `spinifex.toml`. Settings are split into thre
 ## Configuration Levels
 
 <p align="center">
-  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node NIC" width="900">
+  <img src="../../../.github/assets/diagrams/vpc-config-layers.svg" alt="spinifex.toml configuration layers — cluster mode, IP pools, per-node WAN bridge" width="740">
 </p>
 
 ## Cluster-Wide: external_mode
@@ -918,6 +989,7 @@ Every VPC gets a default security group that:
 | Ingress TCP/22 from 0.0.0.0/0   | `outport == @sg && ip4 && tcp.dst == 22`                           |
 | Ingress TCP/443 from 10.0.0.0/8 | `outport == @sg && ip4 && tcp.dst == 443 && ip4.src == 10.0.0.0/8` |
 | Ingress ALL from sg-other       | `outport == @sg && ip4 && ip4.src == $sg_other_ip4`                |
+| Egress TCP/8443 to pl-1a2b3c4d  | `inport == @sg && ip4 && tcp.dst == 8443 && ip4.dst == $spx_pl_1a2b3c4d` |
 | Ingress ICMP from anywhere      | `outport == @sg && ip4 && icmp4`                                   |
 | Egress ALL to 0.0.0.0/0         | `inport == @sg && ip4`                                             |
 | Default deny inbound            | `outport == @sg && ip4` (priority 900, action=drop)                |

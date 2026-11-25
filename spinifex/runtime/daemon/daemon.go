@@ -57,13 +57,17 @@ import (
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2prefixlist "github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
@@ -83,6 +87,7 @@ import (
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -181,25 +186,32 @@ type Daemon struct {
 	insight               *nodeInsight
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
-	eksService            *ekscluster.EKSServiceImpl
-	ecsService            *ecsdomain.Service
-	ecsScheduler          *ecsdomain.Scheduler
-	rdsService            *rdsinstance.Service
-	rdsReconciler         *rdsinstance.Reconciler
-	bedrockService        *ochre.Service
-	bedrockReaper         *ochre.Reaper
-	acmService            *acmdomain.ACMServiceImpl
-	acmRenewalWorker      *acmdomain.Worker
-	route53Service        *route53domain.Service
-	route53Verifier       *route53domain.Verifier
-	ochreVectorService    ochrevector.VectorService
-	ochreAppliance        *ochrevector.Appliance
-	ochreBackupService    *ochrevector.BackupService
-	ecrMetaService        *ecr.MetaServiceImpl
-	lambdaMetaService     *lambdafunction.MetaService
-	routeTableService     *ec2routetable.RouteTableServiceImpl
-	natGatewayService     *ec2natgw.NatGatewayServiceImpl
-	externalIPAM          *ec2vpc.ExternalIPAM
+	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
+	// advertisedLevel is the last level the heartbeat reported, 0 before the first.
+	advertisedLevel    atomic.Int64
+	eksService         *ekscluster.EKSServiceImpl
+	ecsService         *ecsdomain.Service
+	ecsScheduler       *ecsdomain.Scheduler
+	rdsService         *rdsinstance.Service
+	rdsReconciler      *rdsinstance.Reconciler
+	bedrockService     *ochre.Service
+	bedrockReaper      *ochre.Reaper
+	acmService         *acmdomain.ACMServiceImpl
+	acmRenewalWorker   *acmdomain.Worker
+	route53Service     *route53domain.Service
+	route53Verifier    *route53domain.Verifier
+	ochreVectorService ochrevector.VectorService
+	ochreAppliance     *ochrevector.Appliance
+	ochreBackupService *ochrevector.BackupService
+	ecrMetaService     *ecr.MetaServiceImpl
+	lambdaMetaService  *lambdafunction.MetaService
+	routeTableService  *ec2routetable.RouteTableServiceImpl
+	natGatewayService  *ec2natgw.NatGatewayServiceImpl
+	vpcPeeringService  *ec2vpcpeering.ServiceImpl
+	vpcEndpointService *ec2vpcendpoint.ServiceImpl
+	tgwService         *ec2tgw.ServiceImpl
+	prefixListService  *ec2prefixlist.ServiceImpl
+	externalIPAM       *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
 	floatingAllocators []floatingPool
@@ -952,6 +964,10 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeImageAttribute", handleNATSRequest(d.node, d.imageService.DescribeImageAttribute), "spinifex-workers"},
 		{"ec2.ModifyImageAttribute", handleNATSRequest(d.node, d.imageService.ModifyImageAttribute), "spinifex-workers"},
 		{"ec2.ResetImageAttribute", handleNATSRequest(d.node, d.imageService.ResetImageAttribute), "spinifex-workers"},
+		{"ec2.EnableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.EnableImageDeregistrationProtection), "spinifex-workers"},
+		{"ec2.DisableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.DisableImageDeregistrationProtection), "spinifex-workers"},
+		{"ec2.EnableImageDeprecation", handleNATSRequest(d.node, d.imageService.EnableImageDeprecation), "spinifex-workers"},
+		{"ec2.DisableImageDeprecation", handleNATSRequest(d.node, d.imageService.DisableImageDeprecation), "spinifex-workers"},
 		{"ec2.CreateVolume", handleNATSRequest(d.node, d.volumeService.CreateVolume), "spinifex-workers"},
 		{"ec2.DescribeVolumes", handleNATSRequest(d.node, d.volumeService.DescribeVolumes), "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},
@@ -1009,6 +1025,26 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
 		{"ec2.DeleteNatGateway", handleNATSRequest(d.node, d.natGatewayService.DeleteNatGateway), "spinifex-workers"},
 		{"ec2.DescribeNatGateways", handleNATSRequest(d.node, d.natGatewayService.DescribeNatGateways), "spinifex-workers"},
+		{"ec2.CreateVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.CreateVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.AcceptVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.AcceptVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.RejectVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.RejectVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DeleteVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.DeleteVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DescribeVpcPeeringConnections", handleNATSRequest(d.node, d.vpcPeeringService.DescribeVpcPeeringConnections), "spinifex-workers"},
+		{"ec2.ModifyVpcPeeringConnectionOptions", handleNATSRequest(d.node, d.vpcPeeringService.ModifyVpcPeeringConnectionOptions), "spinifex-workers"},
+		{"ec2.CreateVpcEndpoint", handleNATSRequest(d.node, d.vpcEndpointService.CreateVpcEndpoint), "spinifex-workers"},
+		{"ec2.ModifyVpcEndpoint", handleNATSRequest(d.node, d.vpcEndpointService.ModifyVpcEndpoint), "spinifex-workers"},
+		{"ec2.DeleteVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DeleteVpcEndpoints), "spinifex-workers"},
+		{"ec2.DescribeVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpoints), "spinifex-workers"},
+		{"ec2.DescribeVpcEndpointServices", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpointServices), "spinifex-workers"},
+		{"ec2.CreateTransitGateway", handleNATSRequest(d.node, d.tgwService.CreateTransitGateway), "spinifex-workers"},
+		{"ec2.DeleteTransitGateway", handleNATSRequest(d.node, d.tgwService.DeleteTransitGateway), "spinifex-workers"},
+		{"ec2.DescribeTransitGateways", handleNATSRequest(d.node, d.tgwService.DescribeTransitGateways), "spinifex-workers"},
+		{"ec2.CreateTransitGatewayVpcAttachment", handleNATSRequest(d.node, d.tgwService.CreateTransitGatewayVpcAttachment), "spinifex-workers"},
+		{"ec2.DeleteTransitGatewayVpcAttachment", handleNATSRequest(d.node, d.tgwService.DeleteTransitGatewayVpcAttachment), "spinifex-workers"},
+		{"ec2.DescribeTransitGatewayVpcAttachments", handleNATSRequest(d.node, d.tgwService.DescribeTransitGatewayVpcAttachments), "spinifex-workers"},
+		{"ec2.DescribePrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribePrefixLists), "spinifex-workers"},
+		{"ec2.DescribeManagedPrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribeManagedPrefixLists), "spinifex-workers"},
+		{"ec2.GetManagedPrefixListEntries", handleNATSRequest(d.node, d.prefixListService.GetManagedPrefixListEntries), "spinifex-workers"},
 		{"ec2.CreateRouteTable", handleNATSRequest(d.node, d.routeTableService.CreateRouteTable), "spinifex-workers"},
 		{"ec2.DeleteRouteTable", handleNATSRequest(d.node, d.routeTableService.DeleteRouteTable), "spinifex-workers"},
 		{"ec2.DescribeRouteTables", handleNATSRequest(d.node, d.routeTableService.DescribeRouteTables), "spinifex-workers"},
@@ -1045,6 +1081,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.ModifySecurityGroupRules", handleNATSRequest(d.node, d.vpcService.ModifySecurityGroupRules), "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ModifyInstanceAttribute), "spinifex-workers"},
 		{"ec2.ModifyInstanceMetadataOptions", handleNATSRequest(d.node, d.instanceService.ModifyInstanceMetadataOptions), "spinifex-workers"},
+		{"ec2.ResetInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ResetInstanceAttribute), "spinifex-workers"},
 		{"ec2.MonitorInstances", handleNATSRequest(d.node, d.monitorInstances), "spinifex-workers"},
 		{"ec2.UnmonitorInstances", handleNATSRequest(d.node, d.unmonitorInstances), "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
@@ -1240,6 +1277,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{rdsinstance.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSnapshotAttributes, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshotAttributes), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},
@@ -1396,8 +1434,20 @@ func (d *Daemon) subscribeAll() error {
 	} else {
 		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
 	}
+	subs = append(subs, d.featureLevelStatusSubs()...)
 
 	return d.registerNatsSubs(subs)
+}
+
+// featureLevelStatusSubs serves the status route only once the gate exists, so a
+// node that has not read the record never answers as having nothing in flight.
+// Per-node, no queue group, like the seal responder.
+func (d *Daemon) featureLevelStatusSubs() []natsSub {
+	if d.featureGate == nil || !featurelevel.ValidNode(d.node) {
+		slog.Error("Not serving feature level status", "node", d.node, "gate_ready", d.featureGate != nil)
+		return nil
+	}
+	return []natsSub{{featurelevel.StatusSubject(d.node), handleNATSRequest(d.node, d.featureGate.ServeStatus(d.node, featurelevel.Build)), ""}}
 }
 
 // registerNatsSubs turns each entry in subs into a live NATS subscription and
@@ -1973,6 +2023,14 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.routeTableService must be nil before startCluster")
 	case d.natGatewayService != nil:
 		return errors.New("d.natGatewayService must be nil before startCluster")
+	case d.vpcPeeringService != nil:
+		return errors.New("d.vpcPeeringService must be nil before startCluster")
+	case d.vpcEndpointService != nil:
+		return errors.New("d.vpcEndpointService must be nil before startCluster")
+	case d.tgwService != nil:
+		return errors.New("d.tgwService must be nil before startCluster")
+	case d.prefixListService != nil:
+		return errors.New("d.prefixListService must be nil before startCluster")
 	case d.externalIPAM != nil:
 		return errors.New("d.externalIPAM must be nil before startCluster")
 	case d.eipService != nil:
@@ -2017,6 +2075,17 @@ func (d *Daemon) startCluster() error {
 
 	if err := d.initJetStream(); err != nil {
 		return fmt.Errorf("initialize JetStream: %w", err)
+	}
+
+	// Before any cluster state is claimed: a build below the recorded feature
+	// level would write what the newer builds no longer read. A refusal exits so
+	// the unit shows failed rather than a healthy idle daemon.
+	if err := d.checkFeatureLevel(); err != nil {
+		if errors.Is(err, errStartupPermanent) {
+			slog.Error("Refusing to start: cluster feature level", "err", err)
+			d.exitFunc(1)
+		}
+		return fmt.Errorf("feature level: %w", err)
 	}
 
 	// Before any service is built: a node on a different provider from the
@@ -2108,6 +2177,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
 	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
+	d.tagsService.SetVolumeTagReader(d.volumeService)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
 		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
@@ -2184,6 +2254,56 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
+	d.vpcPeeringService, err = initServiceWithRetry("VPC peering service", func() (*ec2vpcpeering.ServiceImpl, error) {
+		return ec2vpcpeering.NewServiceImplWithNATS(d.ctx, d.natsConn, d.config.Region)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC peering service: %w", err)
+	}
+	d.vpcPeeringService.SetCentralTagStore(d.tagsService)
+	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
+	d.vpcService.SetDependencyCheck("vpc-peering-connection", func(ctx context.Context, _, vpcID string) (bool, error) {
+		return d.vpcPeeringService.VpcBlocksDeletion(ctx, vpcID)
+	})
+
+	endpointSettings := ec2vpcendpoint.Settings{Region: d.config.Region, AZ: d.config.AZ}
+	if d.clusterConfig != nil {
+		endpointSettings.ServicesDomain = strings.TrimSpace(d.clusterConfig.AWS.ServicesDomain)
+	}
+	d.vpcEndpointService, err = initServiceWithRetry("VPC endpoint service", func() (*ec2vpcendpoint.ServiceImpl, error) {
+		return ec2vpcendpoint.NewServiceImplWithNATS(d.ctx, d.natsConn, endpointSettings)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC endpoint service: %w", err)
+	}
+	d.vpcEndpointService.SetTableLookup(d.routeTableService)
+	d.vpcEndpointService.SetActivation(endpointAdmission(d.featureGate), endpointOffered(d.featureGate))
+	d.vpcEndpointService.SetCentralTagStore(d.tagsService)
+	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
+	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)
+
+	d.tgwService, err = initServiceWithRetry("Transit Gateway service", func() (*ec2tgw.ServiceImpl, error) {
+		return ec2tgw.NewServiceImplWithNATS(d.ctx, d.natsConn, d.config.Region)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize Transit Gateway service: %w", err)
+	}
+	d.tgwService.SetActivation(tgwAdmission(d.featureGate), tgwOffered(d.featureGate))
+	d.tgwService.SetCentralTagStore(d.tagsService)
+	d.routeTableService.SetTransitGatewayLookup(d.tgwService.Store, tgwAdmission(d.featureGate))
+	d.vpcService.SetDependencyCheck("transit-gateway-attachment", d.tgwService.VpcBlocksDeletion)
+	d.vpcService.SetSubnetDependencyCheck("transit-gateway-attachment", d.tgwService.SubnetBlocksDeletion)
+	d.vpcService.SetDeletionMarkAdmission(tgwAdmission(d.featureGate))
+	tgwAccountsJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream handle for Transit Gateway account status: %w", err)
+	}
+	var _ ec2tgw.AccountStatus = (*iamdomain.AccountStatusReader)(nil)
+	d.tgwService.SetAccountStatus(iamdomain.NewAccountStatusReader(tgwAccountsJS))
+	d.prefixListService = ec2prefixlist.NewServiceImpl(d.config.Region, d.mgmtBridgeIP, func() *config.ClusterConfig { return d.clusterConfig })
+	d.prefixListService.SetGossiped(prefixListGossiped(d.featureGate))
+	d.vpcService.SetPrefixListAdmission(prefixListAdmission(d.featureGate))
+
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub
 	// answers cluster-wide with an empty address list on the requests it wins.
@@ -2224,7 +2344,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
 		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
-			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService, d.config.Region)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -2621,6 +2741,7 @@ func (d *Daemon) startCluster() error {
 	// ovs-vswitchd keeps br-imds flows only in memory and nothing else restores
 	// them, so a restart would leave every guest on this node without a network.
 	d.vmMgr.StartIMDSDatapathReconcile(d.ctx)
+	d.startEndpointDemuxReconcile(d.ctx)
 
 	// Reality→desired GC backstop (historic PROP-LIFECYCLE-003 §3): finish teardown interrupted by
 	// a node-down mid-cascade and purge completed terminated records. The volume
@@ -2652,6 +2773,15 @@ func (d *Daemon) startCluster() error {
 			// One sweep per cluster reads the provider for each pending document;
 			// the snapshot's claim, not the scope, decides who may repeat a call.
 			reapers = append(reapers, clusterWideReaper{d.snapshotService.NewPendingSnapshotReaper()})
+		}
+		if d.vpcPeeringService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcPeeringService.NewSweepReaper()})
+		}
+		if d.vpcEndpointService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcEndpointService.NewSweepReaper()})
+		}
+		if d.tgwService != nil {
+			reapers = append(reapers, clusterWideReaper{d.tgwService.NewSweepReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

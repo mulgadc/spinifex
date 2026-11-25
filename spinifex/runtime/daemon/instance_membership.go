@@ -61,6 +61,8 @@ func recoverable(record *vm.InstanceRecord) bool {
 	switch record.Status.Status {
 	case vm.StateTerminated, vm.StateShuttingDown:
 		return false
+	case vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping, vm.StateStopped, vm.StateError:
+		// Recoverable unless a check below says otherwise.
 	}
 	if vm.VolumeFenced(record.Status.Instance) {
 		return false

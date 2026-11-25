@@ -94,10 +94,23 @@ func Run[Out any](
 	output, err := idempotency.Do(ctx, store, accountID, token, paramHash, work)
 	switch {
 	case errors.Is(err, idempotency.ErrParamMismatch):
-		return zero, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+		return zero, mismatch(namespace, token)
 	case errors.Is(err, idempotency.ErrUnavailable):
 		slog.ErrorContext(ctx, "client-token replay unavailable", "namespace", namespace, "token", token, "err", err)
 		return zero, errors.New(awserrors.ErrorServerInternal)
 	}
 	return output, err
+}
+
+// mismatchFormats are the actions whose IdempotentParameterMismatch message
+// AWS words its own way, each formatted with the request's token.
+var mismatchFormats = map[string]string{
+	"CreateVpcEndpoint": "Wrong arguments for token: %s",
+}
+
+func mismatch(namespace, token string) error {
+	if format, ok := mismatchFormats[namespace]; ok {
+		return awserrors.Errorf(awserrors.ErrorIdempotentParameterMismatch, format, token)
+	}
+	return errors.New(awserrors.ErrorIdempotentParameterMismatch)
 }

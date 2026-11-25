@@ -601,11 +601,56 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, safecast.Int64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
+	// Every create is format 2: it holds the new volume's lease and takes a
+	// creation epoch from it, so no two attempts share a map key.
+	if cfg.afterCreateCheck != nil {
+		cfg.afterCreateCheck(req.VolumeID)
+	}
+	lease, epoch, lerr := cfg.creationEpoch(ctx, req.VolumeID)
+	if lerr != nil {
+		slog.Error("ebs.provider.volume.create: creation epoch failed", "volume", req.VolumeID, "err", lerr)
+		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("creation epoch: %v", lerr)})
+		return
+	}
+	// The lease is released before the reply, so a caller acting on the new
+	// volume as soon as it is told it exists never finds it still held.
+	released := false
+	reply := func(r ebsprovider.CreateVolumeResponse) {
+		if !released {
+			released = true
+			cfg.leases.release(ctx, lease)
+		}
+		if cfg.onCreateReply != nil {
+			cfg.onCreateReply(req.VolumeID)
+		}
+		respondProvider(ctx, msg, r)
+	}
+	defer func() {
+		if !released {
+			cfg.leases.release(ctx, lease)
+		}
+	}()
+	// Checked again under the lease: another node may have finished this
+	// creation between the first check and the claim, and a second map
+	// published over it would supersede that volume and its writes.
+	if existing, eerr := describeVolumeEngine(ctx, cfg, req.VolumeID); eerr == nil {
+		if existing.CapacityBytes != req.CapacityRange.RequiredBytes {
+			reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: alreadyExistsError("volume %s already exists with a different capacity", req.VolumeID)})
+			return
+		}
+		reply(ebsprovider.CreateVolumeResponse{Versioned: v, Volume: existing})
+		return
+	} else if !errors.Is(eerr, viperblock.ErrStateNotFound) {
+		slog.Error("ebs.provider.volume.create: existence recheck failed", "volume", req.VolumeID, "err", eerr)
+		reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("check existing volume: %v", eerr)})
+		return
+	}
+	vbconfig.LeaseEpoch = epoch
 	s3cfg := cfg.volumeS3Config(req.VolumeID)
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
 		slog.Error("ebs.provider.volume.create: new viperblock failed", "volume", req.VolumeID, "err", err)
-		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("new viperblock: %v", err)})
+		reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("new viperblock: %v", err)})
 		return
 	}
 	defer vb.Detach()
@@ -613,26 +658,34 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 
 	if err := vb.Backend.InitCtx(ctx); err != nil {
 		slog.Error("ebs.provider.volume.create: backend init failed", "volume", req.VolumeID, "err", err)
-		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("backend init: %v", err)})
+		reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("backend init: %v", err)})
 		return
 	}
 	if req.SourceSnapshotID != "" {
 		if perr := verifySourceSnapshot(vb, req.SourceSnapshotID, req.SourceSnapshotVolumeID); perr != nil {
 			slog.Error("ebs.provider.volume.create: source snapshot rejected", "volume", req.VolumeID, "snapshot", req.SourceSnapshotID, "err", perr.Message)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: perr})
+			reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: perr})
 			return
 		}
+	}
+	// The fence stubs, base and first head are durable before VBState, whose
+	// presence is what describe and a repeated create treat as created.
+	// A seeded volume publishes its first head only once the seed is in.
+	if err := vb.InitMapDeltaCtx(ctx, len(req.SeedData) == 0); err != nil {
+		slog.Error("ebs.provider.volume.create: map init failed", "volume", req.VolumeID, "err", err)
+		reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("map init: %v", err)})
+		return
 	}
 	if len(req.SeedData) > 0 {
 		if err := seedVolume(ctx, vb, req.SeedData); err != nil {
 			slog.Error("ebs.provider.volume.create: seed failed", "volume", req.VolumeID, "bytes", len(req.SeedData), "err", err)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("seed volume: %v", err)})
+			reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("seed volume: %v", err)})
 			return
 		}
 	} else {
 		if err := vb.SaveStateCtx(ctx); err != nil {
 			slog.Error("ebs.provider.volume.create: save state failed", "volume", req.VolumeID, "err", err)
-			respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("save state: %v", err)})
+			reply(ebsprovider.CreateVolumeResponse{Versioned: v, Error: internalError("save state: %v", err)})
 			return
 		}
 		// A state read prefers a local copy over the backend, so state left on
@@ -644,7 +697,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	slog.Info("ebs.provider.volume.create: created", "volume", req.VolumeID, "capacityBytes", req.CapacityRange.RequiredBytes, "seedBytes", len(req.SeedData))
-	respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{
+	reply(ebsprovider.CreateVolumeResponse{
 		Versioned: v,
 		Volume: &ebsprovider.Volume{
 			ID:            req.VolumeID,
@@ -727,6 +780,12 @@ func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*e
 	state, err := readVolumeState(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err
+	}
+	// An encrypted volume persists VBState when it reserves sequence numbers,
+	// before its seed commits, so a format-2 volume exists only once VBState
+	// records a committed head; a create retry then recreates it.
+	if state.MapFormat == viperblock.MapFormatDelta && !state.MapCommitted {
+		return nil, fmt.Errorf("volume %s creation incomplete: %w", volumeID, viperblock.ErrStateNotFound)
 	}
 	return &ebsprovider.Volume{
 		ID:            volumeID,
@@ -1641,6 +1700,16 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
+	// Every launch takes its own epoch, a shared open on this node included:
+	// a format-2 volume commits under it, and a format-1 volume converts
+	// under it.
+	launchEpoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		ebsResponse.Error = err.Error()
+		ebsResponse.Retryable = true
+		return ebsResponse, err
+	}
+
 	useTCP := cfg.NBDTransport == NBDTransportTCP
 
 	var nbdURI string
@@ -1708,6 +1777,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		EncryptionKeyFile: cfg.EncryptionKeyFile,
 		ReadOnly:          readOnly,
 		Threads:           cfg.Threads,
+		LeaseEpoch:        launchEpoch,
 	}
 
 	// Create a unique error channel for this specific mount request

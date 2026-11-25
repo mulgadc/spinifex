@@ -22,6 +22,7 @@ type gpuEntry struct {
 	Available     bool               // false = error state requiring operator action
 	groupMembers  []IOMMUGroupMember // only populated for whole-GPU entries
 	memberDrivers map[string]string  // PCI addr -> driver held before VFIO takeover; whole-GPU only
+	claimPreBound map[string]bool    // members Claim found already on vfio-pci; whole-GPU only
 }
 
 // Manager is a thread-safe pool of passthrough-eligible GPUs.
@@ -177,19 +178,32 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 	members = filterBridgeMembers(members)
 
 	drivers := make(map[string]string, len(members))
-	var bound []string
+	// Only members this claim moved to vfio-pci; pre-bound ones stay as found.
+	var moved []string
+	preBound := make(map[string]bool, len(members))
 
 	for _, member := range members {
 		orig, err := bindVFIO(m.sysfsRoot, member.PCIAddress)
 		if err != nil {
-			// Rollback any members already bound in this attempt.
-			for _, addr := range bound {
+			rollbackFailed := false
+			for _, addr := range moved {
 				if rbErr := unbindVFIO(m.sysfsRoot, addr, drivers[addr]); rbErr != nil {
-					slog.Error("GPU claim rollback failed", "addr", addr, "err", rbErr)
+					rollbackFailed = true
+					slog.Error("GPU claim rollback failed, GPU marked unavailable — operator action required",
+						"gpu", entry.Device.PCIAddress, "addr", addr, "err", rbErr)
 				}
+			}
+			// One fence covers the group however many members failed to restore.
+			if rollbackFailed {
+				m.fenceGroupLocked(idx)
 			}
 			m.mu.Unlock()
 			return nil, nil, fmt.Errorf("bind IOMMU group member %s: %w", member.PCIAddress, err)
+		}
+		if orig != "vfio-pci" {
+			moved = append(moved, member.PCIAddress)
+		} else {
+			preBound[member.PCIAddress] = true
 		}
 		// bindVFIO returns "vfio-pci" when the device was already bound (idempotent
 		// path — e.g. pre-bound by spx-test-gpu, or after a daemon restart with a
@@ -203,12 +217,12 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 			// so Release leaves it bound rather than unbinding without a rebind target.
 		}
 		drivers[member.PCIAddress] = orig
-		bound = append(bound, member.PCIAddress)
 	}
 
 	entry.InstanceID = instanceID
 	entry.groupMembers = members
 	entry.memberDrivers = drivers
+	entry.claimPreBound = preBound
 
 	slog.Info("GPU claimed", "instance", instanceID,
 		"gpu", entry.Device.PCIAddress, "model", entry.Device.Model)
@@ -225,20 +239,38 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 // than a fault: it says the desired state already holds. Callers that re-drive
 // releases decide for themselves whether that counts as success.
 func (m *Manager) Release(instanceID string) error {
+	return m.release(instanceID, false)
+}
+
+// RollbackClaim undoes a claim the caller could not complete. Unlike Release,
+// every member Claim found already on vfio-pci is left there, whatever the
+// driver recorded at discovery.
+func (m *Manager) RollbackClaim(instanceID string) error {
+	return m.release(instanceID, true)
+}
+
+func (m *Manager) release(instanceID string, rollback bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var firstErr error
 	released := false
 	var releasedMIGPCI string
+	// Entries of one instance can share an IOMMU group: each group is restored
+	// once, from the records of all its entries, and its outcome applies to each.
+	var keys [][2]int
+	groups := make(map[[2]int][]int)
+	// Every whole-GPU entry per IOMMU group, held or idle, for fencing a failure.
+	siblings := make(map[int][]int)
 
 	for i := range m.pool {
-		if m.pool[i].InstanceID != instanceID {
+		entry := &m.pool[i]
+		if entry.MIGInstance == nil && entry.Device.IOMMUGroup >= 0 {
+			siblings[entry.Device.IOMMUGroup] = append(siblings[entry.Device.IOMMUGroup], i)
+		}
+		if entry.InstanceID != instanceID {
 			continue
 		}
 		released = true
-		entry := &m.pool[i]
-
 		if entry.MIGInstance != nil {
 			releasedMIGPCI = entry.Device.PCIAddress
 			entry.InstanceID = ""
@@ -246,49 +278,41 @@ func (m *Manager) Release(instanceID string) error {
 				"gpu", entry.Device.PCIAddress, "mdev", entry.MIGInstance.MdevPath)
 			continue
 		}
-
-		// Scoped to this entry, not the whole release: an instance can hold
-		// several GPUs, and one that unbound cleanly stays available however
-		// its siblings fared.
-		var entryErr error
-
-		for _, member := range entry.groupMembers {
-			orig := entry.memberDrivers[member.PCIAddress]
-			if orig == "vfio-pci" {
-				// GPU was already bound to vfio-pci before this instance (e.g. by
-				// spx-test-gpu at node setup). QEMU released the group fd on exit;
-				// the device stays vfio-pci bound and is immediately available for
-				// the next claim. Skipping unbind avoids a needless round-trip and
-				// eliminates a brief window where the device is unbound.
-				continue
-			}
-			if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
-				slog.Error("GPU release failed for IOMMU group member",
-					"instance", instanceID, "pci", member.PCIAddress, "err", err)
-				if entryErr == nil {
-					entryErr = err
-				}
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
+		key := releaseKey(i, entry.Device.IOMMUGroup)
+		if _, seen := groups[key]; !seen {
+			keys = append(keys, key)
 		}
-
-		entry.InstanceID = ""
-		entry.groupMembers = nil
-		entry.memberDrivers = nil
-
-		if entryErr != nil {
-			entry.Available = false
-			slog.Error("GPU marked unavailable after failed release — operator action required",
-				"gpu", entry.Device.PCIAddress)
-		} else {
-			slog.Info("GPU released", "instance", instanceID, "gpu", entry.Device.PCIAddress)
-		}
+		groups[key] = append(groups[key], i)
 	}
 
 	if !released {
 		return fmt.Errorf("%w %s", ErrNoGPUClaimed, instanceID)
+	}
+
+	var firstErr error
+	for _, key := range keys {
+		idxs := groups[key]
+		groupErr := m.releaseGroupLocked(instanceID, idxs, rollback)
+		if groupErr != nil && firstErr == nil {
+			firstErr = groupErr
+		}
+		for _, i := range idxs {
+			entry := &m.pool[i]
+			entry.InstanceID = ""
+			entry.groupMembers = nil
+			entry.memberDrivers = nil
+			entry.claimPreBound = nil
+			if groupErr == nil {
+				slog.Info("GPU released", "instance", instanceID, "gpu", entry.Device.PCIAddress)
+			}
+		}
+		if groupErr != nil {
+			if group := m.pool[idxs[0]].Device.IOMMUGroup; group >= 0 {
+				m.fenceLocked(siblings[group])
+			} else {
+				m.fenceLocked(idxs)
+			}
+		}
 	}
 
 	// For dynamically carved MIG GPUs: destroy all slices when the last instance
@@ -300,6 +324,94 @@ func (m *Manager) Release(instanceID string) error {
 	}
 
 	return firstErr
+}
+
+// releaseKey groups whole-GPU entries by IOMMU group; an entry with no valid
+// group is its own key.
+func releaseKey(idx, group int) [2]int {
+	if group >= 0 {
+		return [2]int{group, -1}
+	}
+	return [2]int{-1, idx}
+}
+
+// fenceGroupLocked marks the whole-GPU entry at idx unavailable, and with it
+// every whole-GPU entry in the same IOMMU group, since claiming any of them
+// moves the same functions. Must hold m.mu.
+func (m *Manager) fenceGroupLocked(idx int) {
+	group := m.pool[idx].Device.IOMMUGroup
+	idxs := []int{idx}
+	for i := range m.pool {
+		e := &m.pool[i]
+		if i != idx && group >= 0 && e.MIGInstance == nil && e.Device.IOMMUGroup == group {
+			idxs = append(idxs, i)
+		}
+	}
+	m.fenceLocked(idxs)
+}
+
+// fenceLocked marks the pool entries at idxs unavailable. Must hold m.mu.
+func (m *Manager) fenceLocked(idxs []int) {
+	for _, i := range idxs {
+		e := &m.pool[i]
+		e.Available = false
+		slog.Error("GPU marked unavailable after failed driver restoration — operator action required",
+			"gpu", e.Device.PCIAddress, "group", e.Device.IOMMUGroup)
+	}
+}
+
+// releaseGroupLocked restores one IOMMU group from instanceID's entries at idxs.
+// A member's record comes from the claim that moved it; it is pre-bound for
+// rollback only if the first claim found it on vfio-pci. Must hold m.mu.
+func (m *Manager) releaseGroupLocked(instanceID string, idxs []int, rollback bool) error {
+	var members []IOMMUGroupMember
+	drivers := make(map[string]string)
+	preBound := make(map[string]bool)
+	moverSeen := make(map[string]bool)
+	for _, i := range idxs {
+		e := &m.pool[i]
+		for _, member := range e.groupMembers {
+			addr := member.PCIAddress
+			if _, seen := preBound[addr]; !seen {
+				members = append(members, member)
+				preBound[addr] = true
+			}
+			// The claim that moved a member recorded its true original, even an empty
+			// one; otherwise a discovery-time driver is preferred over vfio-pci.
+			if orig, ok := e.memberDrivers[addr]; ok && !moverSeen[addr] {
+				if !e.claimPreBound[addr] {
+					drivers[addr] = orig
+					moverSeen[addr] = true
+				} else if cur, had := drivers[addr]; !had || cur == "vfio-pci" {
+					drivers[addr] = orig
+				}
+			}
+			// A later claim finds on vfio-pci whatever an earlier one moved there.
+			preBound[addr] = preBound[addr] && e.claimPreBound[addr]
+		}
+	}
+
+	var groupErr error
+	for _, member := range members {
+		addr := member.PCIAddress
+		orig, known := drivers[addr]
+		var err error
+		if orig == "vfio-pci" || (rollback && preBound[addr]) {
+			// Pre-bound before this instance (e.g. by spx-test-gpu): it stays on
+			// vfio-pci for the next claim, so only confirm it is still there.
+			err = checkStillVFIO(m.sysfsRoot, addr)
+		} else {
+			err = restoreVFIO(m.sysfsRoot, addr, orig, known)
+		}
+		if err != nil {
+			slog.Error("GPU release failed for IOMMU group member",
+				"instance", instanceID, "pci", addr, "err", err)
+			if groupErr == nil {
+				groupErr = err
+			}
+		}
+	}
+	return groupErr
 }
 
 // tryDestroyIdleMIGGPULocked destroys MIG instances on pciAddr when none are

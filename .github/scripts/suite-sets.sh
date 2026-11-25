@@ -4,7 +4,7 @@
 #   . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
 #
 # Which e2e suites each topology can run. Sourced by every workflow that drives
-# suites (e2e.yml, e2e-suites.yml, e2e-nightly.yml) so the lists cannot drift
+# suites (e2e.yml, e2e-nightly.yml) so the lists cannot drift
 # apart — they previously disagreed three ways.
 #
 # Eligibility is a property of the suite, not of the workflow: a suite belongs
@@ -190,15 +190,15 @@ e2e_suite_timeout() {
     # owner, a lease, a boot, HAProxy's own start, and its health checks against
     # the backends before it forwards anything. Then the node comes back and has
     # to be shown not to answer for an address it no longer holds.
-    lbrecovery) echo "75m" ;;
+    lbrecovery) echo "30m" ;;
     # kvquorum audits every bucket in seconds and then spends the rest of its
     # budget on a node stopping and starting: seven units down, a raft election,
     # and the whole service stack back up with every stream caught up.
     kvquorum) echo "40m" ;;
-    # single is the broadest suite and finishes, it does not hang: passing runs
-    # took 24-29m, and an Oracle host ran out at 30m inside the last test's
-    # cleanup. The default left it no headroom at all.
-    single) echo "40m" ;;
+    # single is the broadest suite and finishes, it does not hang: it took 34m on
+    # Debian before cross-account peering added six more, and an Ubuntu host ran
+    # out at 40m on its last three tests, each of them only just started.
+    single) echo "55m" ;;
     # uefistore's prune test has to outwait the 10-minute prune age and a GC
     # sweep after its last write-back, on top of three stop/starts and a boot.
     # A pass is estimated at 40 minutes, unmeasured; the rest is the watch's cap.

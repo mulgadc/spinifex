@@ -1,16 +1,19 @@
 package awsapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ServiceName is the SigV4 credential-scope service EKS clients sign for.
@@ -143,7 +146,8 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 
 	// After the body read: CreateCluster and the other create actions name their
 	// resource there rather than in the path.
-	resources, err := ResourceARNs(action, inv.Region, accountID, params, body)
+	resources, err := ResourceARNs(action, inv.Region, accountID, params, body,
+		storedNodegroupARNs(r.Context(), d.NATS, accountID))
 	if err != nil {
 		return err
 	}
@@ -194,4 +198,34 @@ func (d Deps) checkPassRole(inv dispatch.Invocation, action, accountID string, b
 		}
 	}
 	return nil
+}
+
+// storedNodegroupARNs reads nodegroup records straight from JetStream, as the
+// internal-route gate reads cluster meta. An absent bucket, an absent key and a
+// name no key can hold all mean no such nodegroup.
+func storedNodegroupARNs(ctx context.Context, natsConn *nats.Conn, accountID string) NodegroupARNLookup {
+	return func(cluster, name string) (string, error) {
+		if natsConn == nil {
+			return "", errors.New("gateway NATS connection not initialised")
+		}
+		js, err := jetstream.New(natsConn)
+		if err != nil {
+			return "", err
+		}
+		kv, err := js.KeyValue(ctx, ekscluster.AccountBucketName(accountID))
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		rec, err := ekscluster.GetNodegroupRecord(ctx, kv, cluster, name)
+		if errors.Is(err, ekscluster.ErrNodegroupNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return rec.Arn, nil
+	}
 }

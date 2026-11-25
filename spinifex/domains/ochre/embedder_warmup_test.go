@@ -5,8 +5,12 @@
 package ochre
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,4 +132,93 @@ func TestWarmupProbe_StopEndsThePollLoop(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run kept polling after stop")
 	}
+}
+
+// A static endpoint whose /health redirects to a healthy host must stay
+// unready: the probe must not follow the redirect and report the other host.
+func TestWarmupProbe_HealthRedirectStaysUnready(t *testing.T) {
+	t.Parallel()
+	var destinationCalls, sourceHealthCalls, embedCalls atomic.Int64
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		destinationCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case embedderHealthPath:
+			sourceHealthCalls.Add(1)
+			http.Redirect(w, r, destination.URL+r.URL.Path, http.StatusTemporaryRedirect)
+		default:
+			embedCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer source.Close()
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: source.URL}))
+	p.warmupPollInterval = 10 * time.Millisecond
+	wp := p.warmupFor(source.URL)
+	t.Cleanup(wp.stop)
+
+	require.Eventually(t, func() bool { return sourceHealthCalls.Load() >= 2 }, 5*time.Second, 5*time.Millisecond)
+	assert.False(t, wp.Ready(), "a redirected health check must not mark the endpoint ready")
+	assert.Zero(t, destinationCalls.Load(), "the probe must not follow the health redirect")
+
+	_, err := p.Embed(t.Context(), modelID, []string{"hello"})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Zero(t, embedCalls.Load(), "Embed must stay gated while the endpoint is unready")
+}
+
+func TestWarmupProbe_LogsOmitEndpointCredentials(t *testing.T) {
+	var healthy atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if healthy.Load() {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+	baseURL := strings.Replace(ts.URL, "http://", "http://kbuser:kbsecret@", 1)
+
+	logs := &warmupLogBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: baseURL}))
+	p.warmupPollInterval = 10 * time.Millisecond
+	t.Cleanup(p.warmupFor(baseURL).stop)
+
+	_, err := p.Embed(t.Context(), modelID, []string{"hello"})
+	require.Error(t, err)
+	healthy.Store(true)
+	require.Eventually(t, func() bool { return strings.Contains(logs.String(), "embedder ready") }, 5*time.Second, 10*time.Millisecond)
+
+	out := logs.String()
+	assert.Contains(t, out, "endpoint not ready, failing closed during warm-up")
+	assert.NotContains(t, out, "kbuser")
+	assert.NotContains(t, out, "kbsecret")
+}
+
+// warmupLogBuffer is a log sink safe for the probe's background goroutine.
+type warmupLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *warmupLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *warmupLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

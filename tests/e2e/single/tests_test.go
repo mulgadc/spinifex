@@ -30,11 +30,11 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
-// TestKVReplication reads the cluster's own state and runs a repair that has
-// nothing to repair, so it mutates nothing another test can see.
-func TestKVReplication(t *testing.T) {
+// Owns a throwaway account and one bucket inside it, so it mutates nothing
+// another test can see.
+func TestAccountVersionedBucketTeardown(t *testing.T) {
 	t.Parallel()
-	runKVReplication(t, requireSingleNodeFixture(t))
+	runAccountVersionedBucketTeardown(t, requireSingleNodeFixture(t))
 }
 
 // Reaches the public internet rather than the cluster: it asks whether the
@@ -45,6 +45,12 @@ func TestImageCatalogReachable(t *testing.T) {
 }
 
 // --- Sequential: singleton VM lifecycle ---
+
+// TestKVReplication compares the bucket list across a repair, so it runs where
+// no parallel test can create an account's buckets between the two audits.
+func TestKVReplication(t *testing.T) {
+	runKVReplication(t, requireSingleNodeFixture(t))
+}
 
 // TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is
 // concurrency-tolerant (other suites may have VMs on the node).
@@ -68,6 +74,30 @@ func TestSGReachabilityPolicy(t *testing.T) {
 // breakdown and gating rationale).
 func TestVPCEgressPaths(t *testing.T) {
 	runVPCEgressPaths(t, requireSingleNodeFixture(t))
+}
+
+// TestVPCPeering covers same-account VPC peering on the datapath (see
+// runVPCPeering for the stages).
+func TestVPCPeering(t *testing.T) {
+	runVPCPeering(t, requireSingleNodeFixture(t))
+}
+
+// TestVPCPeeringCrossAccount covers peering between two accounts, with a third
+// that must see nothing (see runVPCPeeringCrossAccount for the stages).
+func TestVPCPeeringCrossAccount(t *testing.T) {
+	runVPCPeeringCrossAccount(t, requireSingleNodeFixture(t))
+}
+
+// TestTransitGateway covers two VPCs routed through one Transit Gateway on
+// the datapath (see runTransitGateway for the stages).
+func TestTransitGateway(t *testing.T) {
+	runTransitGateway(t, requireSingleNodeFixture(t))
+}
+
+// TestVPCGatewayEndpoint covers an S3 gateway endpoint on a private subnet's
+// datapath: create, modify, delete, security groups and the DeleteVpc fence.
+func TestVPCGatewayEndpoint(t *testing.T) {
+	runVPCGatewayEndpoint(t, requireSingleNodeFixture(t))
 }
 
 // TestWANEgressSMTPBlock boots one public guest and asserts the platform
@@ -95,6 +125,10 @@ func TestVolumeLifecycle(t *testing.T) {
 
 func TestVolumeStatus(t *testing.T) {
 	runVolumeStatus(t, requireSingleNodeFixture(t))
+}
+
+func TestRootVolumeTagsInDescribeTags(t *testing.T) {
+	runRootVolumeTagsInDescribeTags(t, requireSingleNodeFixture(t))
 }
 
 // TestEarlyRebootLiveness owns a fresh guest so the reset lands as soon as

@@ -206,11 +206,15 @@ func TestPercentilesComeFromRealSamples(t *testing.T) {
 func TestFirstBreachNamesTheStageThatCrossedTheSLO(t *testing.T) {
 	t.Parallel()
 
-	// Two stages: the second is slow enough to miss a 30ms read SLO.
+	// The fast op sits far below the SLO, and the slow op ignores the stage
+	// deadline so every sample it records is at least its sleep, past the SLO.
+	slo := loadgen.SLO{ReadP99: 500 * time.Millisecond}
 	fast := fixedOp("Op", loadgen.KindRead, 2*time.Millisecond, nil)
-	slow := fixedOp("Op", loadgen.KindRead, 60*time.Millisecond, nil)
+	slow := loadgen.Op{Name: "Op", Kind: loadgen.KindRead, Call: func(context.Context, *loadgen.Target) error {
+		time.Sleep(slo.ReadP99 + 100*time.Millisecond)
+		return nil
+	}}
 
-	slo := loadgen.SLO{ReadP99: 30 * time.Millisecond}
 	first, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{fast},
 		[]loadgen.Stage{{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 100 * time.Millisecond}}, slo)
 	if err != nil {

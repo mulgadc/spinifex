@@ -52,7 +52,7 @@ func RunElection(ctx context.Context, l *Lease, onGained func(context.Context) e
 	for {
 		var retry <-chan time.Time
 		if lost == nil {
-			retry = l.clock.After(l.ttl / 3)
+			retry = time.After(l.ttl / 3)
 		}
 		select {
 		case <-ctx.Done():

@@ -116,6 +116,29 @@ func TestInstanceLastNode_ReadsTheLiveThenTheTerminatedRecord(t *testing.T) {
 	assert.False(t, found)
 }
 
+func TestInstanceStateOf_ReadsTheLiveThenTheTerminatedRecord(t *testing.T) {
+	t.Parallel()
+	m := newLastNodeManager(t)
+	require.NoError(t, m.WriteInstanceRecord("i-live", (&vm.VM{ID: "i-live", AccountID: "acc-a", Status: vm.StateRunning}).Record()))
+	require.NoError(t, m.WriteTerminatedInstanceRecord("i-term", (&vm.VM{ID: "i-term", AccountID: "acc-b", Status: vm.StateTerminated}).Record()))
+
+	state, account, found, err := m.InstanceStateOf("i-live")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, vm.StateRunning, state)
+	assert.Equal(t, "acc-a", account)
+
+	state, account, found, err = m.InstanceStateOf("i-term")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, vm.StateTerminated, state)
+	assert.Equal(t, "acc-b", account)
+
+	_, _, found, err = m.InstanceStateOf("i-none")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
 // A record that cannot be read is not a missing one: treating it as missing
 // would name every member rather than fail the request.
 func TestInstanceLastNode_AnUnreadableRecordIsAnError(t *testing.T) {

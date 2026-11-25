@@ -25,7 +25,8 @@
 # data and project spinifex-<name>; Elastic IPs only by the IDs it recorded.
 
 set -euo pipefail
-shopt -s inherit_errexit
+# bash 4.4 and newer only; an older bash keeps going without it.
+shopt -s inherit_errexit 2>/dev/null || true
 # A provider trace log would carry the Authorization header.
 unset TF_LOG TF_LOG_PATH TF_LOG_CORE TF_LOG_PROVIDER
 
@@ -116,6 +117,7 @@ die() { log "ERROR: $*"; exit 1; }
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,15}$ ]] || die "--name must be 1-16 lowercase letters, digits or hyphens"
 [ "$NODES" = 1 ] || [ "$NODES" = 3 ] || die "--nodes must be 1 or 3"
 [[ "$VPC_SUBNET" =~ ^([0-9]{1,3}\.){3}0$ ]] || die "--vpc-subnet must be a /24 network address such as 10.10.8.0"
+SITE="$(printf '%s' "$SITE" | tr '[:lower:]' '[:upper:]')"
 [[ "$SITE" =~ ^[A-Za-z0-9]+$ ]] || die "--site must be a site slug such as DAL"
 [[ "$SPX_REGION" =~ ^[a-z0-9-]+$ ]] || die "--spx-region must be lowercase letters, digits and hyphens"
 [[ "$SPX_AZ" =~ ^[a-z0-9-]+$ ]] || die "--spx-az must be lowercase letters, digits and hyphens"
@@ -142,7 +144,7 @@ latitude() {
     local out code body=()
     if [ -n "${3:-}" ]; then body=(-H 'Content-Type: application/json' -d "$3"); fi
     out="$(printf 'header = "Authorization: Bearer %s"\n' "$LATITUDESH_AUTH_TOKEN" |
-        curl -sS -g -K - -w '\n%{http_code}' -X "$1" -H 'Accept: application/json' "${body[@]}" "$LAT_API$2")" || return 1
+        curl -sS -g -K - -w '\n%{http_code}' -X "$1" -H 'Accept: application/json' ${body[@]+"${body[@]}"} "$LAT_API$2")" || return 1
     code="${out##*$'\n'}"
     out="${out%$'\n'*}"
     case "$code" in
@@ -235,6 +237,14 @@ node_field() {
     tf_output -json nodes | python3 -I -c 'import json,sys; [print(n[sys.argv[1]]) for n in json.load(sys.stdin)]' "$1"
 }
 
+# load_nodes fills IPS and IDS, in node order, one element per node.
+load_nodes() {
+    local line
+    IPS=() IDS=()
+    while IFS= read -r line; do IPS+=("$line"); done < <(node_field public_ip)
+    while IFS= read -r line; do IDS+=("$line"); done < <(node_field provider_host_id)
+}
+
 # for_nodes STEP FN runs FN once per node with IP, SERVER_ID and NODE_NAME set,
 # recording STEP.<node> so a rerun skips the nodes already done.
 for_nodes() {
@@ -303,19 +313,26 @@ require_branch_build() {
     [ -n "$DISTRO" ] || die "--nodes 3 needs --distro: the latitude pool is not in a release yet, and a released spx rejects source=\"latitude\" and crash-loops; build one with 'make distro-amd64' and pass its tarball"
 }
 
-# require_one_address stops a one-node run that would buy more than one Elastic IP. The one-node
-# pool publishes a single address, and a second pool is never tried when the first is full, so
-# the extra addresses would be paid for and never used.
-require_one_address() {
-    [ "$NODES" = 1 ] || return 0
-    case "${TF_VAR_elastic_ip_count:-1}" in
-        1) ;;
-        *) die "a one-node deployment publishes one Elastic IP; unset TF_VAR_elastic_ip_count (it is ${TF_VAR_elastic_ip_count}) or use --nodes 3 for the floating pool" ;;
+# Reads elastic_ip_count as Terraform will see it, with no overriding -var, and refuses 0 (this script buys
+# its own addresses) or, on one node, anything but 1. TF_CLI_ARGS could change the count after the read, so
+# it is refused.
+require_effective_count() {
+    local count v
+    for v in TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply; do
+        [ -z "${!v:-}" ] || die "$v is set; unset it, this script controls its own Terraform arguments"
+    done
+    "$TF_BIN" -chdir="$SCRIPT_DIR" init -input=false >/dev/null 2>&1 || die "terraform init failed; run it in $SCRIPT_DIR to see why"
+    count="$(printf 'var.elastic_ip_count\n' | tf console 2>/dev/null | tail -n 1)" || count=""
+    case "$count" in
+        0) die "elastic_ip_count is 0, and this script buys and records its own Elastic IPs; zero is for provisioning with Terraform alone and forming the cluster with the operator collection (see the README)" ;;
+        [1-5]) ;;
+        *) die "could not read elastic_ip_count from Terraform (got '${count}'); check TF_VAR_elastic_ip_count and the .tfvars files in $SCRIPT_DIR" ;;
     esac
+    [ "$NODES" != 1 ] || [ "$count" = 1 ] || die "a one-node deployment publishes one Elastic IP; elastic_ip_count is $count, so unset it or use --nodes 3 for the floating pool"
 }
 preflight() {
     require_branch_build
-    require_one_address
+    done_step terraform || require_effective_count
     [ -r "$SSH_KEY" ] && [ -r "$SSH_KEY.pub" ] || die "SSH key $SSH_KEY (and .pub) not readable"
     command -v aws >/dev/null || die "the AWS CLI is not installed"
     command -v python3 >/dev/null || die "python3 is not installed"
@@ -863,8 +880,7 @@ write_profile() {
 cmd_up() {
     preflight
     done_step terraform || { provision; mark_step terraform; }
-    mapfile -t IPS < <(node_field public_ip)
-    mapfile -t IDS < <(node_field provider_host_id)
+    load_nodes
     [ "${#IPS[@]}" = "$NODES" ] || die "the state holds ${#IPS[@]} node(s), not $NODES; destroy it or pass --nodes ${#IPS[@]}"
     for_nodes host wait_host
     for_nodes disk data_disk

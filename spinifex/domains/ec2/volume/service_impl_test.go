@@ -344,7 +344,7 @@ func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
 	assert.Equal(t, int64(8), aws.Int64Value(described.Volumes[0].Size))
 	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, aws.StringValue(vol.VolumeId), "in-use", "i-123", "/dev/sda1"))
 	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, testVolAccountID)
-	assert.EqualError(t, err, awserrors.ErrorVolumeInUse)
+	assert.EqualError(t, err, "Volume "+aws.StringValue(vol.VolumeId)+" is currently attached to {i-123}: "+awserrors.ErrorVolumeInUse)
 	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, aws.StringValue(vol.VolumeId), "available", "", ""))
 	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, testVolAccountID)
 	require.NoError(t, err)
@@ -965,26 +965,39 @@ func createVolumeInStore(t *testing.T, svc *VolumeServiceImpl, store *objectstor
 }
 
 func TestDeleteVolume_BlockedByKV(t *testing.T) {
-	kv := setupTestVolumeKV(t)
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-	svc.snapshotKV = kv
+	tests := []struct {
+		name      string
+		snapOwner string
+		want      string
+	}{
+		{"caller owns the snapshot", testVolAccountID, "The volume 'vol-kvblocked' cannot be deleted because snapshot 'snap-001' depends on it"},
+		{"another account owns the snapshot", "210987654321", "The volume 'vol-kvblocked' cannot be deleted because a snapshot depends on it"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kv := setupTestVolumeKV(t)
+			store := objectstore.NewMemoryObjectStore()
+			svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+			svc.snapshotKV = kv
 
-	volumeID := "vol-kvblocked"
-	createVolumeInStore(t, svc, store, volumeID)
+			volumeID := "vol-kvblocked"
+			createVolumeInStore(t, svc, store, volumeID)
+			putTestSnapshotMetadata(t, store, "snap-001", tt.snapOwner, 10)
 
-	// Put a snapshot ref in KV
-	data, err := json.Marshal([]string{"snap-001"})
-	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), volumeID, data)
-	require.NoError(t, err)
+			data, err := json.Marshal([]string{"snap-001"})
+			require.NoError(t, err)
+			_, err = kv.Put(t.Context(), volumeID, data)
+			require.NoError(t, err)
 
-	// DeleteVolume should be blocked
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(volumeID),
-	}, testVolAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
+			_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
+				VolumeId: aws.String(volumeID),
+			}, testVolAccountID)
+			code, msg, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok, "err %v carries no AWS code", err)
+			assert.Equal(t, awserrors.ErrorVolumeInUse, code)
+			assert.Equal(t, tt.want, msg)
+		})
+	}
 }
 
 func TestDeleteVolume_AllowedByKV(t *testing.T) {
@@ -1138,6 +1151,9 @@ func TestGetVolumeByID_DefaultStateAndType(t *testing.T) {
 
 	assert.Equal(t, "available", *vol.State)
 	assert.Equal(t, "gp3", *vol.VolumeType)
+	// An unattached volume reports a non-nil empty list, which renders as [].
+	require.NotNil(t, vol.Attachments)
+	assert.Empty(t, vol.Attachments)
 }
 
 // TestGetVolumeByID_ThroughputOmitted_PreFieldVolume covers a volume written
@@ -1776,7 +1792,7 @@ func TestDeleteVolume_VolumeInUse(t *testing.T) {
 		VolumeId: aws.String("vol-busy"),
 	}, testVolAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
+	assert.EqualError(t, err, "Volume vol-busy is currently attached to {i-running}: "+awserrors.ErrorVolumeInUse)
 }
 
 func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
@@ -1799,7 +1815,7 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 		VolumeId: aws.String("vol-attached"),
 	}, testVolAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
+	assert.EqualError(t, err, "Volume vol-attached is currently attached to {i-stopped}: "+awserrors.ErrorVolumeInUse)
 }
 
 // A stopped instance keeps its volumes in use, so deleting one is refused
@@ -1821,7 +1837,7 @@ func TestDeleteVolume_VolumeHeldByStoppedInstanceIsRefused(t *testing.T) {
 		VolumeId: aws.String("vol-held"),
 	}, testVolAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
+	assert.EqualError(t, err, "Volume vol-held is currently attached to {i-stopped}: "+awserrors.ErrorVolumeInUse)
 }
 
 func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {

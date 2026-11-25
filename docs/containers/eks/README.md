@@ -29,7 +29,7 @@ resources:
 
 # EKS (Managed Kubernetes)
 
-> Spinifex's EKS service gives you a managed, AWS-compatible Kubernetes API: you create a cluster and a node group, and Spinifex provisions and runs the control plane and workers for you. Standard tools — `aws eks`, `kubectl`, the Terraform AWS provider — work unchanged against your cluster.
+> The Spinifex service for EKS gives you a managed, AWS-compatible Kubernetes API: you create a cluster and a node group, and Spinifex provisions and runs the control plane and workers for you. Standard tools — `aws eks`, `kubectl`, the Terraform AWS provider — work unchanged against your cluster.
 
 ## Overview
 
@@ -67,7 +67,8 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
   This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
   A node group launch template that sets `metadata_options` overrides each field it sets, and any field it leaves unset keeps the default.
   Existing workers keep their hop limit until they are replaced or changed with `ModifyInstanceMetadataOptions`.
-- **Default Kubernetes version is `1.32`.**
+- **Kubernetes version `1.32` is the only supported version and the default.**
+  `CreateCluster` refuses any other `version` with `InvalidParameterException` naming the supported versions.
 
 ### Control plane readiness and kubectl authentication
 
@@ -118,7 +119,7 @@ When the pod's ServiceAccount has the annotation, the webhook adds these to each
 
 - `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with a projected token volume named `aws-iam-token` mounted at `/var/run/secrets/eks.amazonaws.com/serviceaccount`.
 - `AWS_REGION`, `AWS_DEFAULT_REGION` and `AWS_STS_REGIONAL_ENDPOINTS`.
-- `AWS_ENDPOINT_URL_STS`, so the SDK calls the Spinifex STS endpoint.
+- `AWS_ENDPOINT_URL_STS`, so the SDK calls the Spinifex endpoint for STS.
 - `AWS_CA_BUNDLE`, pointing at `/etc/spinifex/ca-bundle/ca.pem`, a ConfigMap named `spinifex-ca-bundle` that is created in every namespace and holds the system roots plus the gateway CA.
 - `SSL_CERT_FILE` with the same path, only when the container does not set it. Clients such as the AWS Load Balancer Controller read this variable instead of `AWS_CA_BUNDLE`.
 
@@ -395,6 +396,6 @@ aws iam delete-instance-profile --instance-profile-name <role-name>
 
 ### EKS AI Platform on Bare Metal: llama.cpp + YOLO on RTX Pro 6000
 
-A complete end-to-end example of Spinifex EKS in production: a GPU-accelerated AI inference platform running on a Supermicro X14 2U with two NVIDIA RTX Pro 6000 Blackwell GPUs. The guide provisions an EKS cluster with two GPU worker nodes via VFIO PCIe passthrough, deploys an OpenAI-compatible LLM API (llama.cpp / Llama 3.2 3B) and a real-time YOLO object-detection stream on separate GPU nodes, and wires them together behind an ALB using IAM, ECR, ACM, and EBS — all with standard AWS tooling and a single `AWS_PROFILE` swap.
+A complete end-to-end example of EKS on Spinifex in production: a GPU-accelerated AI inference platform running on a Supermicro X14 2U with two NVIDIA RTX Pro 6000 Blackwell GPUs. The guide provisions an EKS cluster with two GPU worker nodes via VFIO PCIe passthrough, deploys an OpenAI-compatible LLM API (llama.cpp / Llama 3.2 3B) and a real-time YOLO object-detection stream on separate GPU nodes, and wires them together behind an ALB using IAM, ECR, ACM, and EBS — all with standard AWS tooling and a single `AWS_PROFILE` swap.
 
 → [EKS AI Platform Reference Architecture](/hardware/supermicro/rtx-pro-6000)

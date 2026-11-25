@@ -6,6 +6,13 @@ import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
+function sentPublicKeyMaterial(): string {
+  const material: Uint8Array =
+    mockSend.mock.calls[0]?.[0].input.PublicKeyMaterial
+
+  return new TextDecoder().decode(material)
+}
+
 vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
@@ -698,7 +705,7 @@ describe("useImportKeyPair", () => {
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.KeyName).toBe("my-key")
 
-    const decoded = new TextDecoder().decode(input.PublicKeyMaterial)
+    const decoded = sentPublicKeyMaterial()
     expect(decoded).toBe("ssh-rsa AAAAB3Nza...")
     expect(decoded).not.toContain("user@host")
   })
@@ -715,9 +722,7 @@ describe("useImportKeyPair", () => {
       expect(result.current.isSuccess).toBeTruthy()
     })
 
-    const decoded = new TextDecoder().decode(
-      mockSend.mock.calls[0]?.[0].input.PublicKeyMaterial,
-    )
+    const decoded = sentPublicKeyMaterial()
 
     expect(decoded).toBe("ssh-rsa AAAAB3Nza...")
   })
@@ -734,9 +739,7 @@ describe("useImportKeyPair", () => {
       expect(result.current.isSuccess).toBeTruthy()
     })
 
-    const decoded = new TextDecoder().decode(
-      mockSend.mock.calls[0]?.[0].input.PublicKeyMaterial,
-    )
+    const decoded = sentPublicKeyMaterial()
 
     expect(decoded).toBe("ssh-rsa AAAAB3Nza...")
   })

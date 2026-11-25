@@ -91,6 +91,9 @@ type EndpointRecord struct {
 
 	// Pinned exempts this endpoint from the idle-reclaim sweep and from eviction.
 	Pinned bool `json:"pinned,omitempty"`
+	// OperatorReserved marks a pin an operator made explicitly, as opposed to
+	// one a provisioned-throughput commitment made on the same key.
+	OperatorReserved bool `json:"operator_reserved,omitempty"`
 
 	// The reaper's last observation of this endpoint. Persisted rather than kept
 	// in the reaper's memory because an eviction decision runs on whichever

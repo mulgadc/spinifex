@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -117,4 +118,38 @@ func removeIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	replyErr := RemoveTapReplyRouting(ctx, r, d)
 	dpErr := RemoveTapDatapath(ctx, r, d)
 	return errors.Join(replyErr, dpErr)
+}
+
+// EndpointDemuxStates reports the gateway-endpoint destinations each primary
+// ENI's tap currently demuxes to the proxy, from one bridge dump.
+func (p *OVSPlumber) EndpointDemuxStates(ctx context.Context, eniIDs []string) (vm.EndpointDemuxStates, error) {
+	states, unowned, err := EndpointDemuxStates(ctx, NewExecRunner(), eniIDs)
+	if err != nil {
+		return vm.EndpointDemuxStates{}, err
+	}
+	out := vm.EndpointDemuxStates{ByENI: make(map[string][]netip.AddrPort, len(states)), Unowned: unowned}
+	for eni, entries := range states {
+		aps := make([]netip.AddrPort, len(entries))
+		for i, e := range entries {
+			aps[i] = netip.AddrPortFrom(e.Addr, e.Port)
+		}
+		out.ByENI[eni] = aps
+	}
+	return out, nil
+}
+
+// RemoveEndpointDemuxCookie removes the demux flows under a cookie no running
+// guest owns.
+func (p *OVSPlumber) RemoveEndpointDemuxCookie(ctx context.Context, cookie uint64) error {
+	return RemoveEndpointDemuxCookie(ctx, NewExecRunner(), cookie)
+}
+
+// EnsureEndpointDemux makes eniID's tap demux exactly entries to the proxy;
+// an empty set removes its demux.
+func (p *OVSPlumber) EnsureEndpointDemux(ctx context.Context, eniID string, entries []netip.AddrPort) error {
+	es := make([]EndpointEntry, len(entries))
+	for i, ap := range entries {
+		es[i] = EndpointEntry{Addr: ap.Addr(), Port: ap.Port()}
+	}
+	return EnsureEndpointDemux(ctx, NewExecRunner(), eniID, es)
 }

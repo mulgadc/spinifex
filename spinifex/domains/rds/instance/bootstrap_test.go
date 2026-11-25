@@ -497,6 +497,7 @@ func TestDeleteDBInstance_RemovesTheStagedPayload(t *testing.T) {
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	envelope, _ := storedPayload(t, h.svc, testDBID)
 	assert.Nil(t, envelope, "the ciphertext must not outlive the instance it belongs to")

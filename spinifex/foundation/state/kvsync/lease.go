@@ -25,7 +25,6 @@ type Lease struct {
 	key    string
 	holder string
 	ttl    time.Duration
-	clock  clock
 
 	// mu guards every field below.
 	mu sync.Mutex
@@ -54,14 +53,14 @@ type acquisition struct {
 // already constructed against store, if holder is empty, or if ttl is not positive.
 func NewLease(store KVStore, key, holder string, ttl time.Duration) *Lease {
 	mustWire(errors.Join(validHolder(holder), validTTL(ttl), registerKey(store, key)))
-	return newLease(store, key, holder, ttl, realClock{})
+	return newLease(store, key, holder, ttl)
 }
 
 // newLease builds a Lease whose holder and ttl the caller has checked.
-func newLease(store KVStore, key, holder string, ttl time.Duration, c clock) *Lease {
+func newLease(store KVStore, key, holder string, ttl time.Duration) *Lease {
 	closed := make(chan struct{})
 	close(closed)
-	return &Lease{store: store, key: key, holder: holder, ttl: ttl, clock: c, lost: closed}
+	return &Lease{store: store, key: key, holder: holder, ttl: ttl, lost: closed}
 }
 
 // Key returns the store key the lease is held on.
@@ -110,7 +109,7 @@ func (l *Lease) acquire(ctx context.Context) (uint64, time.Time, error) {
 		return 0, time.Time{}, &HeldError{Current: cur}
 	}
 	validity := 2 * l.ttl / 3
-	sent := l.clock.Now()
+	sent := time.Now()
 	casCtx, cancel := context.WithTimeout(ctx, validity)
 	next, err := l.store.CompareAndSwap(casCtx, l.key, encode(l.holder, 0), rev)
 	cancel()
@@ -120,7 +119,7 @@ func (l *Lease) acquire(ctx context.Context) (uint64, time.Time, error) {
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("kvsync: lock %s: %w", l.key, err)
 	}
-	if l.clock.Now().Sub(sent) >= validity {
+	if time.Since(sent) >= validity {
 		return 0, time.Time{}, fmt.Errorf("kvsync: lock %s: grant arrived after its validity: %w", l.key, ErrUnavailable)
 	}
 	return next, sent, nil
@@ -129,7 +128,7 @@ func (l *Lease) acquire(ctx context.Context) (uint64, time.Time, error) {
 // observedFor records rev as seen now if it is new, and reports whether it has
 // been seen for a full TTL.
 func (l *Lease) observedFor(rev uint64) bool {
-	now := l.clock.Now()
+	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.obsRev != rev {
@@ -170,21 +169,21 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 		rev, landed := a.rev, a.landed
 		l.mu.Unlock()
 		deadline := landed.Add(validity)
-		wait := max(0, landed.Add(interval).Sub(l.clock.Now()))
+		wait := max(0, time.Until(landed.Add(interval)))
 		if lastErr != nil {
-			wait = min(retry, deadline.Sub(l.clock.Now()))
+			wait = min(retry, time.Until(deadline))
 		}
 		select {
 		case <-a.lost:
 			return
-		case <-l.clock.After(wait):
+		case <-time.After(wait):
 		}
-		budget := deadline.Sub(l.clock.Now())
+		budget := time.Until(deadline)
 		if budget <= 0 {
 			l.lose(ctx, a, "renewal unavailable for two thirds of the ttl", lastErr)
 			return
 		}
-		sent := l.clock.Now()
+		sent := time.Now()
 		next, err := l.swapWithin(ctx, a, rev, budget, min(budget, interval))
 		switch {
 		case errors.Is(err, errRenewalStopped):
@@ -215,7 +214,7 @@ var (
 )
 
 // swapWithin runs one renewal CAS, giving up on it at Unlock or once budget has
-// passed on the lease's clock, since a CAS can block past its own context. A
+// passed, since a CAS can block past its own context. A
 // late result is dropped; it cannot land after Unlock's delete at a.rev.
 func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budget, timeout time.Duration) (uint64, error) {
 	type result struct {
@@ -229,12 +228,12 @@ func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budg
 		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, a.gen), rev)
 		done <- result{next, err}
 	}()
-	expired, stop := l.clock.Deadline(budget)
-	defer stop()
+	expired := time.NewTimer(budget)
+	defer expired.Stop()
 	select {
 	case r := <-done:
 		return r.next, r.err
-	case <-expired:
+	case <-expired.C:
 		return 0, errRenewalLate
 	case <-a.lost:
 		return 0, errRenewalStopped
@@ -307,7 +306,6 @@ type LeaseGroup struct {
 	prefix string
 	holder string
 	ttl    time.Duration
-	clock  clock
 
 	// mu guards leases.
 	mu     sync.Mutex
@@ -318,7 +316,7 @@ type LeaseGroup struct {
 // on an invalid or overlapping prefix, an empty holder or a non-positive ttl.
 func NewLeaseGroup(store KVStore, prefix, holder string, ttl time.Duration) *LeaseGroup {
 	mustWire(errors.Join(validHolder(holder), validTTL(ttl), registerPrefix(store, prefix)))
-	return &LeaseGroup{store: store, prefix: prefix, holder: holder, ttl: ttl, clock: realClock{}, leases: map[string]*Lease{}}
+	return &LeaseGroup{store: store, prefix: prefix, holder: holder, ttl: ttl, leases: map[string]*Lease{}}
 }
 
 // Get returns the Lease for prefix+name, the same one until Forget.
@@ -329,7 +327,7 @@ func (g *LeaseGroup) Get(name string) *Lease {
 	if l, ok := g.leases[name]; ok {
 		return l
 	}
-	l := newLease(g.store, g.prefix+name, g.holder, g.ttl, g.clock)
+	l := newLease(g.store, g.prefix+name, g.holder, g.ttl)
 	g.leases[name] = l
 	return l
 }

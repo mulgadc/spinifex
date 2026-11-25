@@ -20,7 +20,12 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.Se
 	if input.IpAddressType == nil || *input.IpAddressType == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if *input.IpAddressType != IPAddressTypeIPv4 {
+	switch *input.IpAddressType {
+	case IPAddressTypeIPv4:
+	case elbv2.IpAddressTypeDualstack, elbv2.IpAddressTypeDualstackWithoutPublicIpv4:
+		// Subnets here are IPv4-only, so a dual-stack type always lacks IPv6 subnets.
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "You must specify subnets with an associated IPv6 CIDR block.")
+	default:
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
@@ -282,6 +287,8 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// The relaunched VM has a new instance ID; drop the memoised recovery index.
+	s.invalidateRecoveryLBIndex()
 	if err := s.store.ResumeLBHealth(ctx, lb.LoadBalancerID, lb.InstanceID); err != nil {
 		slog.WarnContext(ctx, "SetSubnets: failed to lift data-path suspension", "lbId", lb.LoadBalancerID, "err", err)
 	}

@@ -88,6 +88,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	rec.Status = StatusDeleting
 	rec.FailureReason = ""
 	rec.FinalSnapshotIdentifier = finalSnapshot
+	rec.TeardownHandedOff = false
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
@@ -106,7 +107,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	// handler's alone until the reconciler may resume it.
 	teardownCtx, cancel := context.WithDeadline(ctx, deleteClaimEnds(rec))
 	defer cancel()
-	if err := s.teardownDBInstance(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
+	if _, err := s.retireDBInstanceVM(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
 		// The reconciler finishes the delete once the modify lets go, or once
 		// the final snapshot settles.
 		if errors.Is(err, errModifyInProgress) || errors.Is(err, errFinalSnapshotInProgress) ||
@@ -115,10 +116,28 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 		}
 		return nil, err
 	}
+	// Purging the automated backups scales with how many are stored, so the rest
+	// of the teardown is the reconciler's, which this hands it straight away.
+	s.handOffTeardown(teardownCtx, kv, id)
 
-	// The record is gone, so the customer is answered with the last state it
-	// held — as AWS does, which reports the instance as deleting.
+	// Answered with the state the delete recorded, as AWS does, which reports
+	// the instance as deleting.
 	return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+}
+
+// Ends the handler's claim early. A write that does not land only leaves the
+// reconciler waiting for the claim to run out.
+func (s *Service) handOffTeardown(ctx context.Context, kv *kvstore.Bucket, id string) {
+	if _, err := s.updateInstanceIf(ctx, kv, id, func(stored *DBInstanceRecord) bool {
+		if stored.Status != StatusDeleting {
+			return false
+		}
+		stored.TeardownHandedOff = true
+		return true
+	}); err != nil {
+		slog.WarnContext(ctx, "rds: handing a delete to the reconciler failed; it resumes once the claim ends",
+			"dbInstance", id, "err", err)
+	}
 }
 
 // One of the two is required, exactly as AWS: omitting both is the request that
@@ -197,38 +216,13 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv *kvstore.B
 // any point it stopped at.
 func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, finalSnapshotCreator bool) error {
-	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
-	if err != nil {
-		return err
-	}
-	if current.ModifyLease.live() {
-		return errModifyInProgress
-	}
-	// A modify that finished since the delete was accepted may have replaced the
-	// VM, so the teardown works from the record as it is now.
-	rec = current
-
-	// Asked to stop cleanly even though the VM is about to go: it is what makes
-	// the final snapshot a clean checkpoint rather than one needing WAL replay.
-	// Once the final snapshot is cut the VM is already gone, so a resumed
-	// teardown waiting on that snapshot has no engine left to stop.
-	if rec.FinalSnapshotIdentifier != "" && !s.finalSnapshotCut(ctx, kv, rec) {
-		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
-	}
-
-	// The engine stop swallows a deadline, and a handler past its claim must not
-	// start a terminate the reconciler may already be running.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
-		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
-	}
-	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
-		return err
-	}
-	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
-		return err
+	// A handed-off delete has already retired its VM and cut its final snapshot.
+	if !rec.TeardownHandedOff {
+		retired, err := s.retireDBInstanceVM(ctx, kv, accountID, rec, finalSnapshotCreator)
+		if err != nil {
+			return err
+		}
+		rec = retired
 	}
 	// Before the volume is released, so the automated backups are no longer holding
 	// its chunks when that decides between deleting and retaining it. AWS keeps
@@ -263,6 +257,46 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID,
 		"finalSnapshot", rec.FinalSnapshotIdentifier)
 	return nil
+}
+
+// The request-scaled head of the teardown, up to a sealed data volume and the
+// final snapshot, returning the record it worked from.
+func (s *Service) retireDBInstanceVM(ctx context.Context, kv *kvstore.Bucket, accountID string,
+	rec *DBInstanceRecord, finalSnapshotCreator bool) (*DBInstanceRecord, error) {
+	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	if current.ModifyLease.live() {
+		return nil, errModifyInProgress
+	}
+	// A modify that finished since the delete was accepted may have replaced the
+	// VM, so the teardown works from the record as it is now.
+	rec = current
+
+	// Asked to stop cleanly even though the VM is about to go: it is what makes
+	// the final snapshot a clean checkpoint rather than one needing WAL replay.
+	// Once the final snapshot is cut the VM is already gone, so a resumed
+	// teardown waiting on that snapshot has no engine left to stop.
+	if rec.FinalSnapshotIdentifier != "" && !s.finalSnapshotCut(ctx, kv, rec) {
+		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
+	}
+
+	// The engine stop swallows a deadline, and a handler past its claim must not
+	// start a terminate the reconciler may already be running.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
+		return nil, fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
+	}
+	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
+		return nil, err
+	}
+	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // A VM no node owns is either already gone or stopped, and a stopped one is
@@ -366,7 +400,6 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, 
 	record := s.newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
 		SnapshotType:         SnapshotTypeManual,
-		Tags:                 rec.Tags,
 	})
 	record.FinalSnapshot = true
 	rev, err := createJSONRevision(ctx, kv, DBSnapshotKey(identifier), &record)

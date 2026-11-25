@@ -1,0 +1,49 @@
+...@style
+direction: down
+
+machine: "Client\nyour machine: deploy-vultr.sh\nOpenTofu or Terraform" {class: client}
+api: "Vultr API\nVPC · servers · reserved IPs" {class: box}
+internet: "Internet\ncustomers reach your EC2\nand load balancers" {class: internet}
+
+vultr: "Vultr VPC · private network 10.10.8.0/24\n--nodes 1 or 3 · vx1-g-16c-64g or bare metal" {
+  class: datacenter
+
+  n1: "node1\nUbuntu 24.04 · Spinifex" {
+    class: server
+    svc: "AWS API · EBS · S3\nVPC networking · your instances" {class: box}
+  }
+  n2: "node2\nwith --nodes 3" {
+    class: server
+    svc: "AWS API · EBS · S3\nVPC networking · your instances" {class: box}
+  }
+  n3: "node3\nwith --nodes 3" {
+    class: server
+    svc: "AWS API · EBS · S3\nVPC networking · your instances" {class: box}
+  }
+  mesh: "Nodes cluster over the private network\ncontrol plane · EBS replicas · S3 shards" {class: box}
+}
+
+fleet: "AWS services across the fleet" {
+  class: group
+  grid-columns: 8
+  grid-gap: 16
+  ec2: "EC2 instances" {class: instance}
+  elb: "ELB\nALB and NLB" {class: lb}
+  eks: "EKS\nKubernetes" {class: eks}
+  ecs: "ECS\ncontainers" {class: ecs}
+  rds: "RDS\ndatabases" {class: database}
+  s3: "S3\nobject storage" {class: bucket}
+  ebs: "EBS volumes" {class: volume}
+  iam: "IAM\naccess" {class: iam}
+}
+
+
+machine -> api: "Terraform builds" {class: flow}
+api -> vultr: "VPC · servers" {class: flow}
+machine -> vultr: "SSH installs" {class: flow}
+internet -> vultr: "reserved IPs" {class: flow}
+vultr.n1.svc -- vultr.mesh: {class: quiet}
+vultr.n2.svc -- vultr.mesh: {class: quiet}
+vultr.n3.svc -- vultr.mesh: {class: quiet}
+vultr -> api: "Spinifex calls the API\nfor reserved IPs" {class: quiet}
+vultr -> fleet: "spread across the nodes · with three,\nmoved to a survivor if one fails" {class: flow}

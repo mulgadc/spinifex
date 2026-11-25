@@ -5,6 +5,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -45,10 +46,16 @@ func RunGuestSSH(ctx context.Context, target SSHTarget, cmd string) ([]byte, err
 // guestSSHArgs is the non-interactive, no-host-key-check ssh(1) argument list
 // every guest probe uses; connectTimeout is in seconds.
 func guestSSHArgs(tgt SSHTarget, connectTimeout int, cmd string) []string {
+	return guestSSHArgsAt(tgt, connectTimeout, "ERROR", cmd)
+}
+
+// guestSSHArgsAt is guestSSHArgs at an explicit ssh LogLevel. Above ERROR,
+// ssh also prints a host-key notice, so only use it where stderr is separate.
+func guestSSHArgsAt(tgt SSHTarget, connectTimeout int, logLevel, cmd string) []string {
 	return []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
+		"-o", "LogLevel=" + logLevel,
 		"-o", "ConnectTimeout=" + strconv.Itoa(connectTimeout),
 		"-o", "BatchMode=yes",
 		"-p", strconv.Itoa(tgt.Port),
@@ -71,6 +78,64 @@ func RunSSH(t *testing.T, tgt SSHTarget, command string) string {
 			tgt.User, tgt.Host, tgt.Port, command, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+// SSHSettleBudget bounds RunSSHSettled: long enough for one vpcd reconcile
+// pass or a guest finishing boot, short against SSHReadyBudget.
+const SSHSettleBudget = 30 * time.Second
+
+// RunSSHSettled is RunSSH that retries ssh's exit 255 within budget, logging
+// ssh's INFO-level stderr for each drop. A remote command's own 255 looks the
+// same, so pass only read-only commands that are safe to run twice.
+func RunSSHSettled(t *testing.T, tgt SSHTarget, command string, budget time.Duration) string {
+	t.Helper()
+	args := guestSSHArgsAt(tgt, 5, "INFO", command)
+	stdout, stderr, err := retrySSHTransport(budget, 2*time.Second,
+		func(ctx context.Context) (string, string, error) {
+			var o, e bytes.Buffer
+			cmd := exec.CommandContext(ctx, "ssh", args...)
+			cmd.Stdout = &o
+			cmd.Stderr = &e
+			err := cmd.Run()
+			return o.String(), e.String(), err
+		},
+		func(attempt int, stderr string) {
+			Step(t, "ssh %s@%s:%d %q exited 255 on attempt %d; retrying\nstderr: %s",
+				tgt.User, tgt.Host, tgt.Port, command, attempt, strings.TrimSpace(stderr))
+		})
+	if err != nil {
+		t.Fatalf("ssh %s@%s:%d %q failed within %s: %v\nstderr: %s",
+			tgt.User, tgt.Host, tgt.Port, command, budget, err, stderr)
+	}
+	return stdout
+}
+
+// retrySSHTransport runs attempt under one deadline of budget, pausing and
+// retrying while it exits 255. Every attempt shares the deadline, so a stalled
+// session is killed at the budget rather than holding the caller past it.
+func retrySSHTransport(budget, pause time.Duration,
+	attempt func(context.Context) (stdout, stderr string, err error),
+	onRetry func(attempt int, stderr string),
+) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	for n := 1; ; n++ {
+		stdout, stderr, err := attempt(ctx)
+		if err == nil || !isSSHExit255(err) || ctx.Err() != nil {
+			return stdout, stderr, err
+		}
+		onRetry(n, stderr)
+		select {
+		case <-ctx.Done():
+			return stdout, stderr, err
+		case <-time.After(pause):
+		}
+	}
+}
+
+func isSSHExit255(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 255
 }
 
 // RunSSHCombined runs command in the guest and returns combined stdout+stderr
@@ -131,18 +196,25 @@ func (h *SSHHealth) Require(t *testing.T) {
 // command then times out during banner exchange.
 func (h *SSHHealth) WaitReady(t *testing.T, host string, port int, keyPath string) {
 	t.Helper()
+	h.WaitReadyOr(t, host, port, keyPath, nil)
+}
+
+// WaitReadyOr is WaitReady that calls onMiss, when not nil, as soon as the
+// first budget misses and before the re-prime, so a diagnostic dump captures
+// the guest's state while it is still failing.
+func (h *SSHHealth) WaitReadyOr(t *testing.T, host string, port int, keyPath string, onMiss func()) {
+	t.Helper()
 	h.Require(t)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	Step(t, "waiting for SSH handshake %s", addr)
-	if h.handshakeWithin(host, port, keyPath, SSHReadyBudget) {
-		return
-	}
-	// OVN emits no GARP on a same-chassis EIP rebind, so a decayed host neigh
-	// entry can blackhole host->guest SSH past the budget. Re-prime and retry
-	// once before declaring the datapath broken.
-	Step(t, "SSH handshake %s missed %s budget; re-priming ARP + retrying", addr, SSHReadyBudget)
-	reprimeSSHReachability(t, host)
-	if h.handshakeWithin(host, port, keyPath, sshReprimeBudget) {
+	ready := waitReadyDecision(
+		func(budget time.Duration) bool { return h.handshakeWithin(host, port, keyPath, budget) },
+		func() {
+			Step(t, "SSH handshake %s missed %s budget; re-priming ARP + retrying", addr, SSHReadyBudget)
+			reprimeSSHReachability(t, host)
+		},
+		onMiss)
+	if ready {
 		return
 	}
 	h.broken.Store(true)
@@ -161,18 +233,52 @@ func (h *SSHHealth) TryReady(t *testing.T, host string, port int, keyPath string
 	return h.handshakeWithin(host, port, keyPath, budget)
 }
 
+// waitReadyDecision tries the first budget, then on a miss calls onMiss and
+// reprime and retries once. OVN emits no GARP on a same-chassis EIP rebind, so
+// a decayed host neigh entry can blackhole host->guest SSH past the budget.
+func waitReadyDecision(attempt func(time.Duration) bool, reprime, onMiss func()) bool {
+	if attempt(SSHReadyBudget) {
+		return true
+	}
+	if onMiss != nil {
+		onMiss()
+	}
+	reprime()
+	return attempt(sshReprimeBudget)
+}
+
 // handshakeWithin polls for a full SSH handshake until budget runs out.
 func (h *SSHHealth) handshakeWithin(host string, port int, keyPath string, budget time.Duration) bool {
 	tgt := SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
+	return pollHandshake(budget, sshAttemptFloor, 2*time.Second, func(ctx context.Context) bool {
+		return exec.CommandContext(ctx, "ssh", guestSSHArgs(tgt, 3, "true")...).Run() == nil
+	})
+}
+
+// sshAttemptFloor is the least time one handshake attempt gets, so the last
+// attempt before the deadline is not killed before it can connect.
+const sshAttemptFloor = 5 * time.Second
+
+// pollHandshake retries attempt until it succeeds or budget runs out. Each
+// attempt is cancelled at the deadline (or floor after it starts, if later),
+// so a stalled ssh cannot hold the wait past its budget.
+func pollHandshake(budget, floor, pause time.Duration, attempt func(context.Context) bool) bool {
 	deadline := time.Now().Add(budget)
 	for {
-		if exec.Command("ssh", guestSSHArgs(tgt, 3, "true")...).Run() == nil {
+		stop := deadline
+		if f := time.Now().Add(floor); f.After(stop) {
+			stop = f
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), stop)
+		ok := attempt(ctx)
+		cancel()
+		if ok {
 			return true
 		}
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(pause)
 	}
 }
 

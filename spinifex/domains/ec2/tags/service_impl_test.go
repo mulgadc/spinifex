@@ -159,6 +159,25 @@ func TestCreateTags_UnrecognisedPrefixIsInvalidID(t *testing.T) {
 	assert.Empty(t, out.Tags)
 }
 
+// The AWS-managed prefix list has no record to tag, so a request naming it is
+// refused before any resource in it is written.
+func TestCreateTags_ManagedPrefixListIsUnsupported(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
+		Resources: []*string{aws.String("vpc-0abc"), aws.String("pl-0abc1234")},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("x")}},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, err)
+	assert.Equal(t, awserrors.ErrorUnsupportedOperation, code)
+	assert.Equal(t, "The action is not supported for an AWS-managed prefix list.", msg)
+
+	out, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Tags)
+}
+
 // Launch templates, capacity reservations and spot requests have no ARN-type
 // prefix mapping but are still taggable resources. A nil entry is skipped.
 func TestCreateTags_AcceptsTaggablePrefixesWithoutARNType(t *testing.T) {

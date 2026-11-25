@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,7 +23,7 @@ type anthropicInvokeAdapter struct {
 
 func newAnthropicInvokeAdapterClient() *anthropicInvokeAdapter {
 	return &anthropicInvokeAdapter{
-		httpClient: &http.Client{Timeout: providerHTTPTimeout},
+		httpClient: newProviderHTTPClient(),
 		baseURL:    anthropicDefaultBaseURL,
 	}
 }
@@ -59,7 +60,7 @@ func newAnthropicInvokeAdapter(apiKey string) InvokeAdapter {
 func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string, body []byte, apiKey string) ([]byte, string, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		slog.Error("anthropic invoke: failed to parse request body", "model", modelID, "err", err)
+		slog.Error("anthropic invoke: failed to parse request body", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorValidationException)
 	}
 	delete(fields, "anthropic_version")
@@ -79,7 +80,7 @@ func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody))
 	if err != nil {
-		slog.Error("anthropic invoke: failed to build request", "model", modelID, "err", err)
+		slog.Error("anthropic invoke: failed to build request", "model", modelID)
 		return nil, "", errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("X-Api-Key", apiKey)
@@ -88,20 +89,20 @@ func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Error("anthropic invoke: request failed", "model", modelID, "err", err)
+		slog.Error("anthropic invoke: request failed", "model", modelID, "failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		slog.Error("anthropic invoke: failed to read response body", "model", modelID, "err", err)
-		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("anthropic invoke: upstream error", "model", modelID, "status", resp.StatusCode)
+		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("anthropic invoke: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, "", errors.New(mapUpstreamStatus(resp.StatusCode))
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		slog.Error("anthropic invoke: failed to read response body", "model", modelID, "failure", transportFailureClass(err))
+		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	return respBody, "application/json", nil
@@ -115,7 +116,7 @@ func (a *anthropicInvokeAdapter) InvokeModel(ctx context.Context, modelID string
 func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte, apiKey string) (invokeStreamSource, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		slog.Error("anthropic invoke-stream: failed to parse request body", "model", modelID, "err", err)
+		slog.Error("anthropic invoke-stream: failed to parse request body", "model", modelID, "failure", decodeFailureClass(err))
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 	delete(fields, "anthropic_version")
@@ -141,7 +142,7 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, a.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
-		slog.Error("anthropic invoke-stream: failed to build request", "model", modelID, "err", err)
+		slog.Error("anthropic invoke-stream: failed to build request", "model", modelID)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("X-Api-Key", apiKey)
@@ -152,25 +153,23 @@ func (a *anthropicInvokeAdapter) InvokeModelWithResponseStream(ctx context.Conte
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
-		slog.Error("anthropic invoke-stream: request failed", "model", modelID, "err", err)
+		slog.Error("anthropic invoke-stream: request failed", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("anthropic invoke-stream: upstream error", "model", modelID, "status", resp.StatusCode)
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	return &anthropicInvokeStreamSource{resp: resp, scanner: newSSEScanner(resp.Body), cancel: cancel}, nil
 }
 
-// anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line
-// verbatim as the chunk payload, skipping keepalive "ping" events. It also
-// opportunistically taps message_start/message_delta for token usage
-// without altering the forwarded bytes.
+// anthropicInvokeStreamSource forwards each Anthropic SSE "data:" line verbatim,
+// skips "ping" events, ends the stream with a fault on an "error" event, and
+// taps message_start/message_delta for token usage without altering the bytes.
 type anthropicInvokeStreamSource struct {
 	resp    *http.Response
 	scanner *sseScanner
@@ -201,6 +200,10 @@ func (s *anthropicInvokeStreamSource) Next(_ context.Context) ([]byte, bool, err
 		}
 		if !ok {
 			continue
+		}
+		if ev.Event == "error" {
+			// The event data is not carried: a provider can echo request secrets in it.
+			return nil, false, newStreamFault(fmt.Errorf("anthropic invoke stream: %w", errUpstreamErrorEvent))
 		}
 		if ev.Event == "ping" || ev.Data == "" {
 			continue

@@ -74,7 +74,7 @@ e2e-storagefault: ; $(MAKE) e2e PKG=./storagefault/... TIMEOUT=45m
 e2e-instancerecovery: ; $(MAKE) e2e PKG=./instancerecovery/... TIMEOUT=110m
 # Stands a load balancer and its backends up before it breaks anything, then
 # takes the load balancer's node away and brings it back.
-e2e-lbrecovery: ; $(MAKE) e2e PKG=./lbrecovery/... TIMEOUT=75m
+e2e-lbrecovery: ; $(MAKE) e2e PKG=./lbrecovery/... TIMEOUT=30m
 # Audits every KV bucket, then takes a node away and brings it back. Most of its
 # budget is the node stopping and starting, not the assertions.
 e2e-kvquorum:   ; $(MAKE) e2e PKG=./kvquorum/... MODE=multinode TIMEOUT=40m

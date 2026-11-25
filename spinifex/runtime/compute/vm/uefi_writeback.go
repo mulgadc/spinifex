@@ -479,6 +479,8 @@ func (m *Manager) settleUEFIStore(ctx context.Context, w *uefiWriter, dirty bool
 		m.unlockUEFIClaim(ctx, w.id, w.tok, why)
 	case uefiWriteBackFailed:
 		m.writeUEFIOwed(w, true)
+	case uefiWriteBackFenced, uefiWriteBackGone:
+		// The caller settles a fenced or gone store.
 	}
 	return out
 }

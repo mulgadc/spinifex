@@ -433,6 +433,8 @@ type Summary struct {
 
 	FirstClient4xxMessage string // message the FirstClient4xx frame carried, "" if none
 
+	ErrorMessages map[string]string // AWS error code -> message of the first frame with that code that carried one
+
 	// The rest are populated only in identity mode (ExpectedResponders set,
 	// or Mode == CollectUntilDeadline). They stay nil/zero for a caller that
 	// does not opt in, so that caller's behavior is unchanged by construction.
@@ -444,6 +446,15 @@ type Summary struct {
 	DuplicateFrames   int             // frames whose node had already answered; bytes dropped, identity kept
 	CapHit            bool            // the identity frame or byte cap ended collection early
 	SettledEarly      bool            // collection ended before the deadline with the answer settled, by Settled or by full responder coverage
+}
+
+// CodeError rebuilds an error with code, carrying the message a node sent
+// with that code if any did.
+func (s Summary) CodeError(code string) error {
+	if message := s.ErrorMessages[code]; message != "" {
+		return awserrors.Errorf(code, "%s", message)
+	}
+	return errors.New(code)
 }
 
 // Client4xxError rebuilds the first deterministic 4xx with the message its
@@ -501,6 +512,7 @@ type GatherOpts struct {
 // joins the same trace.
 func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames []Frame, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
+	sum.ErrorMessages = map[string]string{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable
 	}
@@ -633,6 +645,9 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 				code = *responseError.Code
 			}
 			sum.ErrorCodes[code]++
+			if _, seen := sum.ErrorMessages[code]; !seen && responseError.Message != nil && *responseError.Message != "" {
+				sum.ErrorMessages[code] = *responseError.Message
+			}
 			// Capture the first deterministic 4xx; callers propagate it only when nothing was collected.
 			if sum.FirstClient4xx == "" && code != "" {
 				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {

@@ -7,7 +7,8 @@ name: E2E Nightly
 # copy of this file — leaving a fix to the workflow itself untestable until it
 # had already shipped. A dispatch takes both the file and the source from its ref.
 #
-# Cells (matrix cells are defined in .github/e2e-cells.json):
+# Cells (matrix cells are defined in .github/e2e-cells.json, in matrix order: cell 25
+# first, as only one runner has its NVMe, then longest first):
 #
 #   Single node                       Three nodes
 #    1  Debian 13, DHCP                 8  Debian 13, DHCP
@@ -18,10 +19,14 @@ name: E2E Nightly
 #   19  routed NAT                     31  instance recovery
 #   25  eks                            32  load balancer recovery
 #   26  ecs                            33  KV bucket quorum under node loss
-#   27  rds                            37  Oracle Linux 10, DHCP
+#   27  rds, shard 1 of 2              37  Oracle Linux 10, DHCP
 #   34  Oracle Linux 10, DHCP          38  Oracle Linux 10, routed NAT
-#   35  Oracle Linux 10, reboot
+#   35  Oracle Linux 10, reboot        40  storage fault injection, shard 2 of 2
 #   36  Oracle Linux 10, routed NAT
+#   39  rds, shard 2 of 2
+#
+#   cell-29 is storage fault injection shard 1 of 2. Select 27,39 or 29,40 to
+#   run a whole suite.
 #
 #   Standalone jobs
 #   20  bare metal (PXE)               23  predastore throughput
@@ -33,6 +38,9 @@ on:
       cells:
         description: "Comma-separated cell numbers, no spaces, e.g. 1,25,27 (blank = all). The cell list is at the top of .github/workflows/e2e-nightly.yml."
         required: false
+      max_parallel:
+        description: "Matrix cells at once (blank = the E2E_NIGHTLY_MAX_PARALLEL variable, else 8)."
+        required: false
 
 permissions:
   contents: read
@@ -43,8 +51,8 @@ permissions:
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
 #
-# The group is shared with e2e-suites.yml and e2e-ddil.yml, which draw on the
-# same runner pools. e2e.yml is deliberately outside it: a single-cluster push
+# The group is shared with e2e-ddil.yml, which draws on the same
+# runner pools. e2e.yml is deliberately outside it: a single-cluster push
 # run is cheap enough to overlap, and grouping it stalled every push behind a
 # multi-hour nightly.
 concurrency:
@@ -105,10 +113,10 @@ jobs:
             fi
           done < <(jq -r '.[]|select((.suite//"")!="")|[.cell,.suite,(.timeout_minutes//50)]|@tsv' <<<"$sel")
 
-          # A permutation cell names no suite and runs the nightly subset for its
-          # topology, so its bound is the longest of those. max() and not sum():
-          # whichever suite hangs must panic on its own timeout first, and a sum
-          # would demand a budget the set has never come close to using.
+          # A permutation cell names no suite or extra and runs the nightly subset
+          # for its topology, so its bound is the longest of those. max() and not
+          # sum(): whichever suite hangs must panic on its own timeout first, and
+          # a sum would demand a budget the set has never come close to using.
           while IFS=$'\t' read -r cell topo budget; do
             case "$topo" in
               *multi) set -- ${E2E_SUITES_NIGHTLY_MULTI} ;;
@@ -123,7 +131,7 @@ jobs:
               echo "::error::cell-$cell runs the $topo nightly subset, whose longest suite asks ${want}m, inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN))." >&2
               bad=1
             fi
-          done < <(jq -r '.[]|select((.suite//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+          done < <(jq -r '.[]|select((.suite//"")=="" and (.extra//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
           [ "$bad" -eq 0 ]
 
   matrix:
@@ -131,11 +139,12 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
-    # Six is the ci-single and ci-multi runner count. Provisioning is serialised
-    # per hypervisor by hv-lock.sh, which is what made more than three unsafe.
+    # Eight by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input overrides it. Cells use
+    # 6 ci-single-nightly and 5 ci-multi runners; ci-single-5 and -6 lack the label, so
+    # these selectors never put a nightly job there. hv-lock.sh serialises provisioning per hypervisor.
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '8') }}
       matrix:
         include: ${{ fromJSON(needs.select.outputs.cells) }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
@@ -152,7 +161,7 @@ jobs:
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -567,6 +576,8 @@ jobs:
         if: matrix.suite != '' && matrix.topo == 'single'
         env:
           SUITE: ${{ matrix.suite }}
+          SHARD: ${{ matrix.shard || 0 }}
+          SHARDS: ${{ matrix.shards || 0 }}
         run: |
           set -euo pipefail
           # Same guard as the permutation steps, against the full single-node
@@ -575,6 +586,15 @@ jobs:
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_SINGLE}"
           TMO="$(e2e_suite_timeout "${SUITE}")"
+          SKIP_FLAG=""
+          if [ "${SHARDS:-0}" -gt 1 ]; then
+            mkdir -p "${RUNNER_TEMP}/shard-tests"
+            SKIP_RE=$("${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-suite-shard.sh" \
+              "${SUITE}" "${SHARD}" "${SHARDS}" "${RUNNER_TEMP}/spinifex-tests.tar" \
+              "${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights" \
+              "${RUNNER_TEMP}/shard-tests/${SUITE}-${SHARD}-of-${SHARDS}")
+            [ -z "${SKIP_RE}" ] || SKIP_FLAG="-test.skip='${SKIP_RE}'"
+          fi
 
           ssh -tt -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
@@ -585,7 +605,7 @@ jobs:
                SPINIFEX_NODES='${{ steps.vm.outputs.wan_ip }}' SPINIFEX_SSH_USER=tf-user \
                SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=${TMO} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${SKIP_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
              rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
              if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \
@@ -599,11 +619,22 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         env:
           SUITE: ${{ matrix.suite }}
+          SHARD: ${{ matrix.shard || 0 }}
+          SHARDS: ${{ matrix.shards || 0 }}
         run: |
           set -euo pipefail
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_MULTI}"
           TMO="$(e2e_suite_timeout "${SUITE}")"
+          SKIP_FLAG=""
+          if [ "${SHARDS:-0}" -gt 1 ]; then
+            mkdir -p "${RUNNER_TEMP}/shard-tests"
+            SKIP_RE=$("${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-suite-shard.sh" \
+              "${SUITE}" "${SHARD}" "${SHARDS}" "${RUNNER_TEMP}/spinifex-tests.tar" \
+              "${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights" \
+              "${RUNNER_TEMP}/shard-tests/${SUITE}-${SHARD}-of-${SHARDS}")
+            [ -z "${SKIP_RE}" ] || SKIP_FLAG="-test.skip='${SKIP_RE}'"
+          fi
 
           INVENTORY=$(tofu output -json inventory)
           NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
@@ -625,7 +656,7 @@ jobs:
                SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
                SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=${TMO} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${SKIP_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
              rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
              if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \
@@ -892,6 +923,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Upload shard test lists
+        if: always() && matrix.shards
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: shard-tests-cell-${{ matrix.cell }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/shard-tests
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Gated like every other step, not just always(): a cell the dispatch
       # deselected never checked out or ran tofu init, so destroying would fail
       # on missing plugins and report the cell red for correctly doing nothing.
@@ -926,6 +966,57 @@ jobs:
           path: ${{ env.TOFU_LOG }}
           if-no-files-found: ignore
           retention-days: 14
+
+  # Each cell of a split suite lists its own build of the suite, and the cells
+  # can start hours apart on a branch that moves, so the shards are checked
+  # together: the same test list in every cell, each test run by one of them.
+  shard_union:
+    name: shard union
+    needs: [select, matrix]
+    if: always() && needs.select.outputs.any == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github/scripts/go-pkg-shard-union.sh
+          sparse-checkout-cone-mode: false
+
+      # No match is not an error here: the next step names every list it expects.
+      - name: Collect shard test lists
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: shard-tests-cell-*-${{ github.run_id }}
+          merge-multiple: true
+          path: shard-tests
+        continue-on-error: true
+
+      # Expected lists come from the selected cells, not from what downloaded,
+      # so a cell that uploaded nothing fails here. A suite whose other shard
+      # was not selected is checked for presence only.
+      - name: Check every split suite ran each test once
+        env:
+          CELLS: ${{ needs.select.outputs.cells }}
+        run: |
+          set -euo pipefail
+          rc=0
+          while IFS=$'\t' read -r cell suite shard shards; do
+            [ -s "shard-tests/${suite}-${shard}-of-${shards}.runs" ] ||
+              { echo "::error::cell-${cell} (${suite} shard ${shard}/${shards}) uploaded no test list"; rc=1; }
+          done < <(jq -r '.[] | select((.shards // 0) > 1) | [.cell, .suite, .shard, .shards] | @tsv' <<<"${CELLS}")
+          while IFS=$'\t' read -r suite shards; do
+            runs=() alls=() whole=1
+            for n in $(seq 1 "${shards}"); do
+              f="shard-tests/${suite}-${n}-of-${shards}"
+              [ -s "${f}.runs" ] || whole=0
+              runs+=("${f}.runs"); alls+=("${f}.all")
+            done
+            if [ "${whole}" -eq 0 ]; then
+              echo "::notice::${suite}: not every shard has a test list, so the union is not checked"; continue
+            fi
+            echo "${suite}:"
+            NOUN=tests .github/scripts/go-pkg-shard-union.sh "${alls[@]}" -- "${runs[@]}" || rc=1
+          done < <(jq -r '[.[] | select((.shards // 0) > 1) | [.suite, (.shards | tostring)]] | unique | .[] | @tsv' <<<"${CELLS}")
+          exit "${rc}"
 
   # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it
   # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
@@ -988,7 +1079,7 @@ jobs:
     if: >-
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',21,')
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     # ISO build, install, boot and pool re-form is ~35 of these on its own,
     # before the workload step imports an AMI and launches an instance.
     timeout-minutes: 90
@@ -1025,7 +1116,7 @@ jobs:
             { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -1283,7 +1374,7 @@ jobs:
           # disks, which is what the tmpfs assertion below is about.
           echo "WORK_DIR=$E2E_ROOT/work/cell22-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3.3.0
+      - uses: actions/create-github-app-token@v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -1424,7 +1515,7 @@ jobs:
       !cancelled() && (
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',23,') )
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     timeout-minutes: 60
     env:
       # Two-minute samples. The 30s smoke preset is too short to compare nights.
@@ -1534,7 +1625,7 @@ jobs:
       !cancelled() && (
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     # The thirteen scenarios run serially and are ~35 minutes of work on their
     # own, measured from the per-scenario predastore matrix, before checkout
     # and build. 30 could not have passed whatever the disk did.

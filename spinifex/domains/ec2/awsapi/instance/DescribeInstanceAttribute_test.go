@@ -208,6 +208,36 @@ func TestDescribeInstanceAttribute_ClientErrorPropagates(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
 
+// TestDescribeInstanceAttribute_ClientErrorKeepsMessage covers the owner's
+// message reaching the caller alongside its code, past a sibling's NotFound.
+func TestDescribeInstanceAttribute_ClientErrorKeepsMessage(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	const msg = "Value (enaSupport) for parameter attribute is invalid. Unknown attribute."
+	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", func(m *nats.Msg) {
+		m.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, msg))
+	})
+	require.NoError(t, err)
+	nc2, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	defer nc2.Close()
+	_, err = nc2.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorInvalidInstanceIDNotFound))
+	require.NoError(t, err)
+	nc.Flush()
+	nc2.Flush()
+
+	_, err = DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-abc123"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameEnaSupport),
+	}, nc, 2, "123456789012")
+	require.Error(t, err)
+	code, gotMsg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, msg, gotMsg)
+}
+
 // TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound ensures a node's
 // 5xx fault (e.g. a transient KV outage on the owner) is surfaced rather than
 // masked by sibling NotFound replies — otherwise terraform treats a live

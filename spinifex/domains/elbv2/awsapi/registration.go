@@ -3,10 +3,12 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
@@ -45,7 +47,7 @@ type Deps struct {
 // action parses once so authorization and dispatch share one typed input.
 type action struct {
 	parse    func(map[string]string) (any, error)
-	dispatch func(ctx context.Context, name string, parsed any, d Deps, accountID string) ([]byte, error)
+	dispatch func(ctx context.Context, name string, parsed any, d Deps, accountID, requestID string) ([]byte, error)
 }
 
 // handler creates a type-safe action. Parsing is separate from dispatch so the
@@ -60,7 +62,7 @@ func handler[In any](h func(context.Context, *In, Deps, string) (any, error)) ac
 			}
 			return input, nil
 		},
-		dispatch: func(ctx context.Context, name string, parsed any, d Deps, accountID string) ([]byte, error) {
+		dispatch: func(ctx context.Context, name string, parsed any, d Deps, accountID, requestID string) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
 				return nil, errors.New(awserrors.ErrorInternalError)
@@ -69,7 +71,7 @@ func handler[In any](h func(context.Context, *In, Deps, string) (any, error)) ac
 			if err != nil {
 				return nil, err
 			}
-			payload := awsxml.QueryResponsePayload(name, output)
+			payload := awsxml.QueryResponsePayload(name, requestID, output)
 			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New("failed to marshal response to XML")
@@ -201,9 +203,20 @@ var actions = map[string]action{
 		}
 		return DescribeAccountLimits(input, loadBalancers), nil
 	}),
-	"DescribeListenerAttributes": handler(func(ctx context.Context, input *DescribeListenerAttributesInput, d Deps, accountID string) (any, error) {
-		return DescribeListenerAttributes(ctx, input, d.NATS, accountID)
-	}),
+	"DescribeListenerAttributes": {
+		parse: handler[DescribeListenerAttributesInput](nil).parse,
+		dispatch: func(ctx context.Context, _ string, parsed any, d Deps, accountID, requestID string) ([]byte, error) {
+			input, ok := parsed.(*DescribeListenerAttributesInput)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			out, err := DescribeListenerAttributes(ctx, input, d.NATS, accountID)
+			if err != nil {
+				return nil, err
+			}
+			return marshalDescribeListenerAttributes(out, requestID)
+		},
+	},
 	"ModifyListenerAttributes": handler(func(ctx context.Context, input *ModifyListenerAttributesInput, d Deps, accountID string) (any, error) {
 		return ModifyListenerAttributes(input, accountID)
 	}),
@@ -226,10 +239,13 @@ func ActionNames() []string {
 	return slices.Sorted(maps.Keys(actions))
 }
 
-// OperationInventory classifies the actions the registration serves. Every
-// ELBv2 action is implemented, so none is Stubbed or Unsupported.
+// OperationInventory classifies the actions the registration serves. Listener
+// attributes are not persisted, so their Describe and Modify are Stubbed.
 func OperationInventory() dispatch.Inventory {
-	return dispatch.Inventory{Registered: ActionNames()}
+	return dispatch.Inventory{
+		Registered: ActionNames(),
+		Stubbed:    []string{"DescribeListenerAttributes", "ModifyListenerAttributes"},
+	}
 }
 
 // dispatch parses, scopes and authorizes the request from one parse of its
@@ -282,12 +298,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	xmlOutput, err := h.dispatch(r.Context(), name, input, d, accountID)
+	requestID := uuid.NewV4().String()
+	xmlOutput, err := h.dispatch(r.Context(), name, input, d, accountID, requestID)
 	if err != nil {
 		return err
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set(envelope.RequestIDHeader, requestID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(xmlOutput); err != nil {
 		slog.ErrorContext(r.Context(), "Failed to write ELBv2 response", "err", err)

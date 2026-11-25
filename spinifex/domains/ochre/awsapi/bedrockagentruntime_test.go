@@ -9,6 +9,8 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -444,4 +446,46 @@ func TestRetrieveAndGenerate_PropagatesConverseError(t *testing.T) {
 	_, err := RetrieveAndGenerate(context.Background(), bedrockAgentTestAccount, kb, vector, fc.call, nil, input)
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorAccessDeniedException))
+}
+
+// A failed query embedding (a redirecting embedder returns ModelErrorException)
+// reaches both retrieval operations unchanged, as HTTP 424.
+func TestRetrievalOperations_QueryEmbeddingFailureIsModelError(t *testing.T) {
+	queryErr := fmt.Errorf("ochrevector: query: embed query text: %w", errors.New(awserrors.ErrorModelErrorException))
+	kb, _ := newBedrockAgentTestStores(t)
+	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
+
+	t.Run("Retrieve", func(t *testing.T) {
+		vector := &fakeBedrockAgentVectorService{queryErr: queryErr}
+		input := &bedrockagentruntime.RetrieveInput{
+			KnowledgeBaseId: aws.String("kb-1"),
+			RetrievalQuery:  &bedrockagentruntime.KnowledgeBaseQuery{Text: aws.String("dragons")},
+		}
+		_, err := Retrieve(context.Background(), bedrockAgentTestAccount, kb, vector, nil, input)
+		require.Error(t, err)
+		require.NotNil(t, vector.queryReq, "the failure must come from the vector query")
+		assert.Equal(t, awserrors.ErrorModelErrorException, awserrors.ValidErrorCodeFromError(err))
+		assert.Equal(t, http.StatusFailedDependency, awserrors.HTTPStatusForError(err))
+	})
+
+	t.Run("RetrieveAndGenerate", func(t *testing.T) {
+		vector := &fakeBedrockAgentVectorService{queryErr: queryErr}
+		fc := &fakeConverse{}
+		input := &bedrockagentruntime.RetrieveAndGenerateInput{
+			Input: &bedrockagentruntime.RetrieveAndGenerateInput_{Text: aws.String("dragons")},
+			RetrieveAndGenerateConfiguration: &bedrockagentruntime.RetrieveAndGenerateConfiguration{
+				Type: aws.String(bedrockagentruntime.RetrieveAndGenerateTypeKnowledgeBase),
+				KnowledgeBaseConfiguration: &bedrockagentruntime.KnowledgeBaseRetrieveAndGenerateConfiguration{
+					KnowledgeBaseId: aws.String("kb-1"),
+					ModelArn:        aws.String("some-model"),
+				},
+			},
+		}
+		_, err := RetrieveAndGenerate(context.Background(), bedrockAgentTestAccount, kb, vector, fc.call, nil, input)
+		require.Error(t, err)
+		require.NotNil(t, vector.queryReq, "the failure must come from the vector query")
+		assert.Nil(t, fc.gotInput, "generation must not run after a failed retrieval")
+		assert.Equal(t, awserrors.ErrorModelErrorException, awserrors.ValidErrorCodeFromError(err))
+		assert.Equal(t, http.StatusFailedDependency, awserrors.HTTPStatusForError(err))
+	})
 }

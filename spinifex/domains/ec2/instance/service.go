@@ -24,6 +24,7 @@ type InstanceService interface {
 	DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error)
 	ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error)
+	ResetInstanceAttribute(ctx context.Context, input *ec2.ResetInstanceAttributeInput, accountID string) (*ec2.ResetInstanceAttributeOutput, error)
 	StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error)
 	TerminateStoppedInstance(ctx context.Context, input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error)
 }
@@ -105,6 +106,9 @@ type GPUClaimer interface {
 // daemon.JetStreamManager.
 type StoppedInstanceStore interface {
 	LoadStoppedInstance(instanceID string) (*vm.VM, error)
+	// InstanceStateOf reports an instance's state and account from its live
+	// record in any state, or else its terminated one; found is false for neither.
+	InstanceStateOf(instanceID string) (state vm.InstanceState, accountID string, found bool, err error)
 	ListStoppedInstances() ([]*vm.VM, error)
 	ListNonTerminatedInstances() ([]*vm.VM, error)
 	ListTerminatedInPrimary() ([]*vm.VM, error)

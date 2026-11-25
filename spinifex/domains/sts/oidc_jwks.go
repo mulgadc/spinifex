@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"slices"
-	"strings"
 )
 
 // ClusterJWKSResolver resolves the raw JWKS document published for an EKS
@@ -50,46 +47,6 @@ func (s *JWKS) FindByKID(kid string) *JWK {
 		}
 	}
 	return nil
-}
-
-// eksIssuerPathSegments is the fixed path layout of a spinifex EKS OIDC issuer:
-//
-//	oidc / eks / {region} / {accountID} / {clusterName}
-const (
-	eksIssuerPathSegments = 5
-	eksIssuerSegOIDC      = 0
-	eksIssuerSegEKS       = 1
-	eksIssuerSegRegion    = 2
-	eksIssuerSegAccountID = 3
-	eksIssuerSegCluster   = 4
-)
-
-// ParseEKSIssuerURL extracts (accountID, clusterName) from a spinifex EKS OIDC issuer URL:
-//
-//	https://{gateway-host}/oidc/eks/{region}/{accountID}/{clusterName}
-//
-// Strict 5-segment path parsing pins accountID and clusterName at fixed positions so a
-// crafted `iss` claim cannot steer the JWKS lookup to a different cluster bucket.
-func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error) {
-	u, err := url.Parse(issuer)
-	if err != nil {
-		return "", "", fmt.Errorf("parse issuer URL: %w", err)
-	}
-	if u.Scheme != "https" {
-		return "", "", errors.New("issuer URL must use https scheme")
-	}
-	if u.Host == "" {
-		return "", "", errors.New("issuer URL missing host")
-	}
-	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(segments) != eksIssuerPathSegments ||
-		segments[eksIssuerSegOIDC] != "oidc" || segments[eksIssuerSegEKS] != "eks" {
-		return "", "", errors.New("issuer path must be /oidc/eks/{region}/{accountID}/{clusterName}")
-	}
-	if slices.Contains(segments, "") {
-		return "", "", errors.New("issuer path has empty segment")
-	}
-	return segments[eksIssuerSegAccountID], segments[eksIssuerSegCluster], nil
 }
 
 // FetchClusterJWKS resolves and decodes the JWKS for an EKS cluster via resolver.

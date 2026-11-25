@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -50,6 +51,12 @@ func TestRemoveTagsMut(t *testing.T) {
 		tags := base()
 		RemoveTagsMut(&ec2.DeleteTagsInput{})(tags)
 		assert.Empty(t, tags)
+	})
+
+	t.Run("clear all keeps the platform tag", func(t *testing.T) {
+		tags := map[string]string{"a": "1", awstags.ManagedByKey: awstags.ManagedByELBv2}
+		RemoveTagsMut(&ec2.DeleteTagsInput{})(tags)
+		assert.Equal(t, map[string]string{awstags.ManagedByKey: awstags.ManagedByELBv2}, tags)
 	})
 
 	t.Run("value match deletes, mismatch keeps", func(t *testing.T) {

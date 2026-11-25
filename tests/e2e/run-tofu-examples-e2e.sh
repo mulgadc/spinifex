@@ -52,11 +52,16 @@ curl_public() {
 # SSH_OPTS itself: a hop added to every ssh would also divert the bastion's
 # inner ssh to a private address, which no proxy can reach.
 ssh_public() {
-    if [ -n "$PUBLIC_PROXY" ]; then
-        ssh -o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p" "$@"
-        return
-    fi
-    ssh "$@"
+    ssh_public_cmd
+    "${SSH_PUBLIC_CMD[@]}" "$@"
+}
+
+# Sets SSH_PUBLIC_CMD to the ssh argv ssh_public runs, for callers that must
+# put it under timeout(1), which cannot run a shell function.
+ssh_public_cmd() {
+    SSH_PUBLIC_CMD=(ssh)
+    [ -n "$PUBLIC_PROXY" ] && SSH_PUBLIC_CMD+=(-o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p")
+    return 0
 }
 
 # Fail here rather than letting every assertion time out in turn: a proxy that
@@ -301,12 +306,84 @@ assert_bastion_private_subnet() {
     local attempt
     for attempt in $(seq 1 30); do
         if ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} true" 2>/dev/null; then
-            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid='
+            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid=' || return 1
+            assert_bastion_s3_endpoint "$bastion" "$key" "$inner_ssh"
             return $?
         fi
         sleep 5
     done
     log "  bastion→private: SSH never reachable after 150s"
+    return 1
+}
+
+# The private instance has no internet route, so an S3 answer can only come
+# through the workbook's gateway endpoint. An unsigned GET / must give S3's
+# AccessDenied; any other answer, or none, fails.
+assert_bastion_s3_endpoint() {
+    local bastion="$1" key="$2" inner_ssh="$3"
+    local port addrs addr attempt out rc code body
+    port=$(tofu output -raw s3_gate_port)
+    addrs=$(tofu output -json s3_gateway_addresses | jq -r '.[]')
+    if [ -z "$addrs" ]; then
+        log "  s3-endpoint: s3_gateway_addresses is empty"
+        return 1
+    fi
+    # Sent on stdin through both SSH hops, so no quoting crosses a shell.
+    # Prints the body, then the HTTP status, then curl's exit code.
+    local probe='out=$(curl -sk --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "https://$1:$2/"); rc=$?; printf "%s\ncurl_exit=%s\n" "$out" "$rc"'
+    # 60s of wall clock per address covers every SSH hop, curl and pause.
+    local deadline left
+    ssh_public_cmd
+    for addr in $addrs; do
+        local ok=0
+        deadline=$((SECONDS + 60))
+        attempt=0
+        while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+            attempt=$((attempt + 1))
+            out=$(timeout "$left" "${SSH_PUBLIC_CMD[@]}" "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
+                "${inner_ssh} bash -s -- ${addr} ${port}" <<<"$probe" 2>&1)
+            rc=$?
+            if [ "$rc" -eq 124 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: no answer before the 60s deadline"
+            elif [ "$rc" -ne 0 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: ssh exit ${rc}: $(tail -c 200 <<<"$out")"
+            elif [ "$(sed -n '$p' <<<"$out")" != "curl_exit=0" ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: curl failed, $(sed -n '$p' <<<"$out")"
+            else
+                code=$(sed '$d' <<<"$out" | sed -n '$p')
+                body=$(sed '$d' <<<"$out" | sed '$d')
+                if [ "$code" = "403" ] && grep -q '<Code>AccessDenied</Code>' <<<"$body"; then
+                    log "  s3-endpoint ${addr}:${port}: AccessDenied through the endpoint"
+                    ok=1
+                    break
+                fi
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: HTTP ${code}: $(head -c 200 <<<"$body")"
+            fi
+            [ $((deadline - SECONDS)) -gt 5 ] || break
+            sleep 5
+        done
+        [ "$ok" -eq 1 ] || { log "  s3-endpoint ${addr}:${port}: no S3 AccessDenied within 60s (${attempt} attempts)"; return 1; }
+    done
+}
+
+# The workbook's aws_vpc_endpoint needs the S3 service, which the cluster
+# offers only once every node reaches the endpoint feature level.
+require_s3_endpoint_service() {
+    local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names left
+    local want="com.amazonaws.${CLUSTER_REGION}.s3"
+    if [ -z "$CLUSTER_REGION" ]; then
+        log "  no region in the spinifex profile, so the S3 endpoint service name is unknown"
+        return 1
+    fi
+    while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+        if names=$(timeout "$left" aws ec2 describe-vpc-endpoint-services --service-names "$want" \
+            --query 'ServiceNames' --output text 2>&1) && tr '\t' '\n' <<<"$names" | grep -qxF "$want"; then
+            return 0
+        fi
+        [ $((deadline - SECONDS)) -gt 5 ] || break
+        sleep 5
+    done
+    log "  the cluster does not offer ${want} (last answer: ${names:-none}); check spx admin cluster status for a node below feature level 2"
     return 1
 }
 
@@ -353,10 +430,35 @@ assert_nginx_alb() {
     }
 }
 
+# dump_guest_apt shows cloud-init's result, apt's error lines and the boot log tail.
+# cloud-init keeps no output of a failed packages: install, so its packages ($4)
+# are downloaded again to show apt's error. Best-effort; always returns 0.
+dump_guest_apt() {
+    local key="$1" host="$2" label="$3" packages="${4:-}"
+    chmod 600 "$key" 2>/dev/null || true
+    log "--- ${label} guest: cloud-init status, apt errors, boot log tail ---"
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" '
+        echo "== cloud-init status =="; timeout 20 cloud-init status --long 2>/dev/null || true
+        echo "== apt errors =="
+        sudo timeout 20 grep -aE "^(E|Err|W):|Failed to fetch|Unable to|Could not|Hash Sum|Temporary failure" \
+            /var/log/cloud-init-output.log 2>/dev/null | tail -40 || true
+        echo "== /var/log/cloud-init-output.log (tail 80) =="
+        sudo timeout 20 tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
+        if [ -n "'"$packages"'" ]; then
+            echo "== apt-get install --download-only '"$packages"' (now) =="
+            sudo timeout 120 apt-get install --download-only -y -q '"$packages"' 2>&1 | tail -20 || true
+        fi
+    ' 2>&1 | sed "s|^|    |" || log "  ${label}: guest SSH unreachable for the cloud-init dump"
+    return 0
+}
+
 assert_nginx_webserver() {
     local ip
     ip=$(tofu output -raw public_ip)
-    wait_for_http_200 "http://${ip}/"
+    wait_for_http_200 "http://${ip}/" && return 0
+    log "  nginx-webserver: no HTTP 200 from http://${ip}/"
+    dump_guest_apt "$(pwd)/nginx-demo.pem" "$ip" nginx-webserver
+    return 1
 }
 
 # The DB endpoint is a private VPC address and there is no publicly_accessible
@@ -382,9 +484,7 @@ assert_rds_quickstart() {
     if ! ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
         'timeout 300 cloud-init status --wait >/dev/null && command -v psql >/dev/null && test -s "$HOME/.pgpass"'; then
         log "  rds-quickstart: client bootstrap incomplete after 300s"
-        ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
-            'cloud-init status --long; sudo tail -n 40 /var/log/cloud-init-output.log' 2>&1 | \
-            sed "s|^|    |" || true
+        dump_guest_apt "$key" "$ip" rds-quickstart postgresql-client
         return 1
     fi
 
@@ -418,15 +518,11 @@ dump_s3_webapp_guest() {
         log "  s3-webapp: ${key} missing, skipping guest cloud-init dump"
         return 0
     fi
-    chmod 600 "$key" 2>/dev/null || true
-    log "--- s3-webapp guest: cloud-init status + output log + unit status ---"
-    ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" '
-        echo "== cloud-init status =="; cloud-init status --long 2>/dev/null || true
-        echo "== /var/log/cloud-init-output.log (tail 80) =="
-        sudo tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
-        echo "== s3-webapp.service =="
-        systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true
-    ' 2>&1 | sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for cloud-init dump"
+    dump_guest_apt "$key" "$host" s3-webapp
+    log "--- s3-webapp guest: unit status ---"
+    ssh_public "${SSH_OPTS[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i "$key" "ubuntu@${host}" \
+        'timeout 20 systemctl status s3-webapp --no-pager 2>/dev/null | head -20 || true' 2>&1 |
+        sed "s|^|    |" || log "  s3-webapp: guest SSH unreachable for the unit status"
 }
 
 assert_s3_webapp() {
@@ -612,7 +708,7 @@ assert_eks_gitops_argocd() {
 # Opt-in rather than universal: the four original workbooks were never written
 # against this assertion, and a pre-existing diff in one of them would fail a
 # suite that is otherwise reporting on something else.
-CLEAN_PLAN_WORKBOOKS=" rds-quickstart "
+CLEAN_PLAN_WORKBOOKS=" rds-quickstart bastion-private-subnet "
 
 assert_clean_plan() {
     local example="$1"
@@ -691,6 +787,14 @@ run_workbook() {
 
     CURRENT_WORKBOOK="$example"
     log "=== ${example} ==="
+
+    # Before the state cleanup below, so a cluster that cannot run the
+    # workbook leaves the directory as it found it.
+    if [ "$example" = "bastion-private-subnet" ] && ! require_s3_endpoint_service; then
+        log "  FAIL ${example}: S3 gateway endpoint service not offered"
+        return 1
+    fi
+
     cd "$path"
     rm -rf .terraform terraform.tfstate* .terraform.lock.hcl
 

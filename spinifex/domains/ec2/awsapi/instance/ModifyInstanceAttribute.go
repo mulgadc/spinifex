@@ -98,6 +98,9 @@ func ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttri
 
 	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "ModifyInstanceAttribute: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
+		if responseError.Message != nil && *responseError.Message != "" {
+			return ec2.ModifyInstanceAttributeOutput{}, awserrors.Errorf(*responseError.Code, "%s", *responseError.Message)
+		}
 		return ec2.ModifyInstanceAttributeOutput{}, errors.New(*responseError.Code)
 	}
 

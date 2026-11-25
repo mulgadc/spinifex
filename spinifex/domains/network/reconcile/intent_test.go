@@ -490,7 +490,7 @@ func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 	}
 }
 
-// Tenant SG rules reach the ACL builder only through sgRulesToPolicyRules. The
+// Tenant SG rules reach the ACL builder only through SGRulesToPolicyRules. The
 // golden scenarios construct IntentState by hand and never exercise it, so a
 // field dropped or transposed here would silently ship an ACL that opens or
 // closes the wrong port.
@@ -635,7 +635,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // address for it to match.
 func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 	t.Parallel()
-	out := sgRulesToPolicyRules([]ec2vpc.SGRule{
+	out := SGRulesToPolicyRules([]ec2vpc.SGRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1", CidrIpv6: "::/0"},
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},
@@ -645,6 +645,16 @@ func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 	}
 	if out[0].CIDR != "0.0.0.0/0" || out[1].SourceSG != "sg-abc" {
 		t.Fatalf("wrong rules survived: %+v", out)
+	}
+}
+
+// A stored rule naming a prefix list reaches the ACL builder and the endpoint
+// proxy's egress check with the list as its peer.
+func TestSGRulesToPolicyRules_CarriesPrefixList(t *testing.T) {
+	t.Parallel()
+	out := SGRulesToPolicyRules([]ec2vpc.SGRule{{IpProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListId: "pl-6ca54005"}})
+	if len(out) != 1 || out[0].PrefixListID != "pl-6ca54005" || out[0].CIDR != "" {
+		t.Fatalf("want the prefix list as the rule's peer, got %+v", out)
 	}
 }
 

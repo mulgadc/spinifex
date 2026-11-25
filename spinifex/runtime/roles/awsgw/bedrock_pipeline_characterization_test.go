@@ -25,6 +25,7 @@ import (
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +56,10 @@ func (weightsStub) Resolve(_ context.Context, modelID string) (string, bool, err
 type bedrockPipelineEnv struct {
 	Deps   ochreawsapi.Deps
 	NoNATS bool
+
+	// CallerAccountID owns the signing access key; JS lets a case seed state.
+	CallerAccountID string
+	JS              jetstream.JetStream
 }
 
 // bedrockPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
@@ -62,24 +67,6 @@ type bedrockPipelineEnv struct {
 // unless mutate clears it. Policy statements are the caller's only IAM policy.
 func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statements ...iamdomain.Statement) http.Handler {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
-	require.NoError(t, err)
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	svc := &gwfix.PolicyIAM{
-		IAM: gwfix.IAM{
-			MasterKey: gwfix.MasterKey,
-			AccessKeys: map[string]*iamdomain.AccessKey{
-				gwfix.AccessKey: {
-					AccessKeyID:     gwfix.AccessKey,
-					SecretAccessKey: encryptedSecret,
-					UserName:        "alice",
-					AccountID:       authzAccountID,
-					Status:          "Active",
-				},
-			},
-		},
-		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-	}
 	_, nc, js := testutil.StartTestJetStream(t)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -98,9 +85,27 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 		KB:          ochrevector.NewKBStore(js),
 		DataSources: ochrevector.NewDataSourceStore(js),
 		Vector:      unusedVector{},
-	}}
+	}, CallerAccountID: authzAccountID, JS: js}
 	if mutate != nil {
 		mutate(env)
+	}
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	svc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       env.CallerAccountID,
+					Status:          "Active",
+				},
+			},
+		},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 	cfg := gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})
 	if env.NoNATS {
@@ -441,4 +446,39 @@ func TestBedrockPipeline_BodyTooLarge(t *testing.T) {
 	big := []byte(`{"name":"` + strings.Repeat("a", 11<<20) + `"}`)
 	got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/guardrails", big))
 	require.Equal(t, http.StatusRequestEntityTooLarge, got.Status, got.Body[:min(len(got.Body), 200)])
+}
+
+// An embedding InvokeModel through the signed pipeline reaches TEI, and the
+// same request carrying guardrail headers is refused before it does.
+func TestBedrockPipeline_EmbeddingInvokeRefusesGuardrail(t *testing.T) {
+	const embedModel = "nomic-embed-text-v1.5"
+	var teiCalls int
+	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teiCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[` + strings.TrimSuffix(strings.Repeat("0.5,", 768), ",") + `],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	}))
+	t.Cleanup(tei.Close)
+	app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) {
+		c.Deps.Endpoints = ochre.NewStaticEndpointResolver(map[string]string{embedModel: tei.URL})
+	}, allowBedrock())
+	body := []byte(`{"input":"hello"}`)
+	path := "/model/" + embedModel + "/invoke"
+
+	ok := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", path, body))
+	require.Equal(t, http.StatusOK, ok.Status, ok.Body)
+	assert.Contains(t, ok.Body, `"model":"`+embedModel+`"`)
+	assert.NotContains(t, ok.Body, "/guest/path")
+	require.Equal(t, 1, teiCalls)
+
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	req.Header.Set("X-Amzn-Bedrock-Guardrailidentifier", "gr-embed")
+	req.Header.Set("X-Amzn-Bedrock-Guardrailversion", "1")
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "bedrock", time.Now().UTC())
+
+	refused := probeBedrock(t, app, req)
+	assert.Equal(t, http.StatusBadRequest, refused.Status, refused.Body)
+	assert.Equal(t, "ValidationException", refused.Type)
+	assert.Equal(t, 1, teiCalls, "a guardrail request never reaches TEI")
 }

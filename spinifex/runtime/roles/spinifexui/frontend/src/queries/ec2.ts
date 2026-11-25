@@ -11,12 +11,18 @@ import {
   DescribeLaunchTemplateVersionsCommand,
   DescribeNatGatewaysCommand,
   DescribePlacementGroupsCommand,
+  DescribePrefixListsCommand,
   DescribeRegionsCommand,
   DescribeRouteTablesCommand,
   DescribeSecurityGroupsCommand,
   DescribeSnapshotsCommand,
   DescribeSubnetsCommand,
+  DescribeTransitGatewaysCommand,
+  DescribeTransitGatewayVpcAttachmentsCommand,
   DescribeVolumesCommand,
+  DescribeVpcEndpointServicesCommand,
+  DescribeVpcEndpointsCommand,
+  DescribeVpcPeeringConnectionsCommand,
   DescribeVpcsCommand,
   GetConsoleOutputCommand,
 } from "@aws-sdk/client-ec2"
@@ -360,6 +366,175 @@ export const ec2NatGatewayQueryOptions = (natGatewayId: string) =>
       return await getEc2Client().send(command)
     },
     refetchInterval: 5000,
+  })
+
+export const ec2VpcPeeringConnectionsQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcPeeringConnections"],
+  queryFn: async () => {
+    const command = new DescribeVpcPeeringConnectionsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2VpcPeeringConnectionQueryOptions = (connectionId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "vpcPeeringConnections", connectionId],
+    queryFn: async () => {
+      const command = new DescribeVpcPeeringConnectionsCommand({
+        VpcPeeringConnectionIds: [connectionId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2TransitGatewaysQueryOptions = queryOptions({
+  queryKey: ["ec2", "transitGateways"],
+  queryFn: async () => {
+    const command = new DescribeTransitGatewaysCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2TransitGatewayQueryOptions = (transitGatewayId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGateways", transitGatewayId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewaysCommand({
+        TransitGatewayIds: [transitGatewayId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2TransitGatewayVpcAttachmentsQueryOptions = queryOptions({
+  queryKey: ["ec2", "transitGatewayVpcAttachments"],
+  queryFn: async () => {
+    const command = new DescribeTransitGatewayVpcAttachmentsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+// The attachments a route table's VPC can route through, for its target picker.
+export const ec2VpcLiveTransitGatewayAttachmentsQueryOptions = (
+  vpcId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGatewayVpcAttachments", "vpc", vpcId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewayVpcAttachmentsCommand({
+        Filters: [
+          { Name: "vpc-id", Values: [vpcId] },
+          { Name: "state", Values: ["pending", "available"] },
+        ],
+      })
+
+      return await getEc2Client().send(command)
+    },
+  })
+
+export const ec2GatewayTransitGatewayAttachmentsQueryOptions = (
+  transitGatewayId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGatewayVpcAttachments", "tgw", transitGatewayId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewayVpcAttachmentsCommand({
+        Filters: [{ Name: "transit-gateway-id", Values: [transitGatewayId] }],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2TransitGatewaysByIdQueryOptions = (
+  transitGatewayIds: readonly string[],
+) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGateways", "ids", ...transitGatewayIds],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewaysCommand({
+        TransitGatewayIds: [...transitGatewayIds],
+      })
+
+      return await getEc2Client().send(command)
+    },
+  })
+
+export const ec2TransitGatewayVpcAttachmentQueryOptions = (
+  attachmentId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "transitGatewayVpcAttachments", attachmentId],
+    queryFn: async () => {
+      const command = new DescribeTransitGatewayVpcAttachmentsCommand({
+        TransitGatewayAttachmentIds: [attachmentId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2VpcEndpointsQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcEndpoints"],
+  queryFn: async () => {
+    const command = new DescribeVpcEndpointsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2VpcEndpointQueryOptions = (endpointId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "vpcEndpoints", endpointId],
+    queryFn: async () => {
+      const command = new DescribeVpcEndpointsCommand({
+        VpcEndpointIds: [endpointId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+// The gateway services a VPC can reach. The list is empty until the formation
+// offers one, and a listed service says whether it takes a custom policy.
+export const ec2GatewayEndpointServicesQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcEndpointServices", "Gateway"],
+  queryFn: async () => {
+    const command = new DescribeVpcEndpointServicesCommand({
+      Filters: [{ Name: "service-type", Values: ["Gateway"] }],
+    })
+
+    return await getEc2Client().send(command)
+  },
+  staleTime: 60_000,
+})
+
+// The AWS-managed prefix list named after a service, which its routes target.
+export const ec2ServicePrefixListQueryOptions = (serviceName: string) =>
+  queryOptions({
+    queryKey: ["ec2", "prefixLists", serviceName],
+    queryFn: async () => {
+      const command = new DescribePrefixListsCommand({
+        Filters: [{ Name: "prefix-list-name", Values: [serviceName] }],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    staleTime: 300_000,
   })
 
 export const ec2LaunchTemplatesQueryOptions = queryOptions({

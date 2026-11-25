@@ -5,11 +5,15 @@ package hostlink
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"net"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // pair returns the guest carrier and the raw host end of a pipe.
@@ -70,4 +74,63 @@ func TestShutdownSurfaced(t *testing.T) {
 	go func() { _ = hostEnd.HostShutdown() }()
 	_, err := guest.Next(context.Background())
 	require.ErrorIs(t, err, ErrShutdown)
+}
+
+// writeFrames writes fs to conn as the host would, in order.
+func writeFrames(conn net.Conn, fs ...frame) error {
+	for _, f := range fs {
+		b, err := json.Marshal(f)
+		if err != nil {
+			return err
+		}
+		buf := binary.BigEndian.AppendUint32(nil, uint32(len(b)))
+		if _, err := conn.Write(append(buf, b...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sendWithin(t *testing.T, conn net.Conn, fs ...frame) {
+	t.Helper()
+	sent := make(chan error, 1)
+	go func() { sent <- writeFrames(conn, fs...) }()
+	select {
+	case err := <-sent:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader stopped taking frames")
+	}
+}
+
+// The reader ends on close even with frames the owner never took.
+func TestReaderExitsOnCloseWithUnreadFrames(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	g, h := net.Pipe()
+	NewTestStream(g)
+	sendWithin(t, h, frame{Type: typeInvoke, Request: &Request{}}, frame{Type: typeShutdown})
+	require.NoError(t, g.Close())
+	require.NoError(t, h.Close())
+}
+
+// Past maxUnread frames the reader stops; queued frames drain in order first.
+func TestTooManyUnreadFramesEndTheStream(t *testing.T) {
+	ignore := goleak.IgnoreCurrent()
+	g, h := net.Pipe()
+	t.Cleanup(func() { g.Close(); h.Close() })
+	guest := NewTestStream(g)
+	fs := make([]frame, maxUnread+1)
+	for i := range fs {
+		fs[i] = frame{Type: typeInvoke, Request: &Request{RequestID: strconv.Itoa(i)}}
+	}
+	sendWithin(t, h, fs...)
+	require.NoError(t, goleak.Find(ignore), "the reader kept running past maxUnread")
+
+	for i := 0; i < maxUnread; i++ {
+		req, err := guest.Next(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, strconv.Itoa(i), req.RequestID)
+	}
+	_, err := guest.Next(context.Background())
+	require.ErrorIs(t, err, ErrTooManyUnread)
 }

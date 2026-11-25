@@ -875,6 +875,28 @@ record_management_role() {
     echo management | sudo tee "$OVN_ROLE_FILE" >/dev/null
 }
 
+# perms_units <layout> — the unit:socket-glob pairs that get the perms hook.
+# Every OVN daemon ovn-ctl starts re-owns /var/run/ovn root:root, so each needs one.
+perms_units() {
+    echo "ovs-vswitchd:/var/run/openvswitch/ovs-vswitchd.*.ctl"
+    echo "ovn-controller:/var/run/ovn/*.ctl"
+    echo "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"
+    echo "ovn-northd:/var/run/ovn/ovn-northd.*.ctl"
+    case "$1" in
+        split)
+            echo "ovn-ovsdb-server-nb:/var/run/ovn/ovnnb_db.sock"
+            echo "ovn-ovsdb-server-sb:/var/run/ovn/ovnsb_db.sock"
+            ;;
+    esac
+}
+
+# sb_pidfile_override_needed <type> <pidfile> — true for a Type=simple SB unit
+# whose PIDFile= is not the file ovn-ctl writes. With an ExecStartPost, systemd
+# waits for that file until the start times out and kills the server.
+sb_pidfile_override_needed() {
+    [ "$1" = simple ] && [ -n "$2" ] && [ "$2" != /run/ovn/ovnsb_db.pid ]
+}
+
 # management_role_markers — prints each file recording that a previous run set
 # this node up with --management, one per line; returns 1 when there is none.
 management_role_markers() {
@@ -952,6 +974,30 @@ if [ "$MANAGEMENT" = true ]; then
         OVN_DB_LISTEN_OPTS="--db-nb-addr=$LAN_ADDR --db-nb-create-insecure-remote=yes --db-sb-addr=$LAN_ADDR --db-sb-create-insecure-remote=yes"
     fi
 
+    # The packaged ovn-northd.service ExecStop runs `ovn-ctl stop_northd`
+    # without --ovn-manage-ovsdb=no, so restarting northd also stops the NB/SB
+    # units, standalone or clustered, and they stay down. Split units own their
+    # DBs, so leave them alone; EL's lone ovn-northd.service owns them itself.
+    if [ "$OVN_CENTRAL_LAYOUT" = split ]; then
+        sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
+        sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
+[Service]
+ExecStop=
+ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
+EOF
+        # Written before any DB restart, as Step 8's perms hook may already be on
+        # SB. Our override is dropped first so the packaged values are what's read.
+        SB_PIDFILE_OVERRIDE=/etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-pidfile.conf
+        sudo rm -f "$SB_PIDFILE_OVERRIDE"
+        sudo systemctl daemon-reload
+        if sb_pidfile_override_needed "$(systemctl show -p Type --value ovn-ovsdb-server-sb.service)" \
+            "$(systemctl show -p PIDFile --value ovn-ovsdb-server-sb.service)"; then
+            sudo mkdir -p "$(dirname "$SB_PIDFILE_OVERRIDE")"
+            printf '[Service]\nPIDFile=\n' | sudo tee "$SB_PIDFILE_OVERRIDE" >/dev/null
+            sudo systemctl daemon-reload
+        fi
+    fi
+
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
         ensure_clustered_db_storage
 
@@ -991,22 +1037,6 @@ if [ "$MANAGEMENT" = true ]; then
         fi
 
         write_ovn_central_opts "$OVN_CTL_OPTS"
-
-        # The packaged ovn-northd.service ExecStop runs `ovn-ctl stop_northd`
-        # without --ovn-manage-ovsdb=no, so restarting northd also tears down the
-        # NB/SB ovsdb-server units. With the split clustered units those DBs are
-        # owned by their own units, so override ExecStop to leave them alone —
-        # otherwise the restart below races and kills the freshly-started DBs.
-        # EL's lone ovn-northd.service owns the DBs, so stopping them is right there.
-        if [ "$OVN_CENTRAL_LAYOUT" = split ]; then
-            sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
-            sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
-[Service]
-ExecStop=
-ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
-EOF
-            sudo systemctl daemon-reload
-        fi
 
         # Debian's ovn-central aggregator is ExecStart=/bin/true, so restarting
         # it won't restart the children — restart the DB and northd units
@@ -1903,13 +1933,7 @@ echo "  OVS/OVN sockets: 0660 root:spinifex (group-scoped, no world access)"
 # so its ctl socket would otherwise be the one file left at the shipped mode.
 # ovs-vswitchd starts after ovsdb-server and restarts with it (Requires=), so
 # its hook sees both daemons' sockets and fires on a restart of either.
-PERMS_UNITS=("ovs-vswitchd:/var/run/openvswitch/ovs-vswitchd.*.ctl"
-    "ovn-controller:/var/run/ovn/*.ctl"
-    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl")
-# EL's ovn-northd.service starts the NB and SB databases as well as northd.
-if [ "$OVN_CENTRAL_LAYOUT" = lone-northd ]; then
-    PERMS_UNITS+=("ovn-northd:/var/run/ovn/ovn-northd.*.ctl")
-fi
+mapfile -t PERMS_UNITS < <(perms_units "$OVN_CENTRAL_LAYOUT")
 for unit in "${PERMS_UNITS[@]}"; do
     UNIT="${unit%%:*}"
     WAIT_GLOB="${unit#*:}"

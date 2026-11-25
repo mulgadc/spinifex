@@ -176,6 +176,9 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 		var certRef string
 		if protocolRequiresCert(l.Protocol) {
 			ref, certMap, files := buildNginxCerts(lb, l, certPEMByArn)
+			if ref == "" {
+				continue // never pass a TLS listener through unterminated
+			}
 			certRef = ref
 			if certMap != nil {
 				cfg.CertMaps = append(cfg.CertMaps, *certMap)

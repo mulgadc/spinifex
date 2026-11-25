@@ -1,0 +1,120 @@
+# Shared classes for every diagram. Import with `...@style`.
+# Colours follow the AWS category palette; icons are Lucide, set in icons.tsv.
+# Pick the class that says what a thing IS; sources set no icon or style.
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  # --- groups. The render step puts each label beside its icon. ----------
+  region: {
+    icon: icons/group/region.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#00A4A6"; stroke-dash: 4; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  vpc: {
+    icon: icons/group/vpc.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#8C4FFF"; stroke-width: 1; font-color: "#8C4FFF"; bold: false; font-size: 14; border-radius: 0}
+  }
+  az: {
+    label.near: top-center
+    style: {fill: "#ffffff"; stroke: "#00A4A6"; stroke-dash: 4; stroke-width: 1; font-color: "#00A4A6"; bold: false; font-size: 14; border-radius: 0}
+  }
+  public-subnet: {
+    icon: icons/group/public-subnet.svg
+    label.near: top-left
+    style: {fill: "#F2F6E8"; stroke: "#F2F6E8"; stroke-width: 1; font-color: "#248814"; bold: false; font-size: 14; border-radius: 0}
+  }
+  private-subnet: {
+    icon: icons/group/private-subnet.svg
+    label.near: top-left
+    style: {fill: "#E6F6F7"; stroke: "#E6F6F7"; stroke-width: 1; font-color: "#007C7E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # A physical or virtual host and what runs on it.
+  server: {
+    icon: icons/group/server.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # A provider site or network that is not ours: a data centre, a cloud zone.
+  datacenter: {
+    icon: icons/group/datacenter.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # What runs inside one instance.
+  instance-contents: {
+    icon: icons/group/instance-contents.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#ED7100"; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+  auto-scaling: {
+    icon: icons/group/auto-scaling.svg
+    label.near: top-left
+    style: {fill: "#ffffff"; stroke: "#ED7100"; stroke-dash: 4; stroke-width: 1; font-color: "#ED7100"; bold: false; font-size: 14; border-radius: 0}
+  }
+  # Any other grouping, with no icon.
+  group: {
+    label.near: top-center
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-dash: 4; stroke-width: 1; font-color: "#232F3E"; bold: false; font-size: 14; border-radius: 0}
+  }
+
+  # --- nodes ----------------------------------------------------------------
+  # A resource drawn as its icon with the label below. Each class has a row
+  # in icons.tsv. Start the label with the service name, e.g. "EC2 instance".
+  instance: {shape: image; icon: icons/instance.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  node: {shape: image; icon: icons/node.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  image: {shape: image; icon: icons/image.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  eks: {shape: image; icon: icons/eks.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  ecs: {shape: image; icon: icons/ecs.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  ecr: {shape: image; icon: icons/ecr.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  volume: {shape: image; icon: icons/volume.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  disk: {shape: image; icon: icons/disk.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  snapshot: {shape: image; icon: icons/snapshot.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  bucket: {shape: image; icon: icons/bucket.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  database: {shape: image; icon: icons/database.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  eip: {shape: image; icon: icons/eip.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  eni: {shape: image; icon: icons/eni.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  lb: {shape: image; icon: icons/lb.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  target-group: {shape: image; icon: icons/target-group.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  igw: {shape: image; icon: icons/igw.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  nat: {shape: image; icon: icons/nat.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  route-table: {shape: image; icon: icons/route-table.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  endpoint: {shape: image; icon: icons/endpoint.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  peering: {shape: image; icon: icons/peering.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  hosted-zone: {shape: image; icon: icons/hosted-zone.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  security-group: {shape: image; icon: icons/security-group.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  iam: {shape: image; icon: icons/iam.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  role: {shape: image; icon: icons/role.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  credentials: {shape: image; icon: icons/credentials.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  key-pair: {shape: image; icon: icons/key-pair.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  internet: {shape: image; icon: icons/internet.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  client: {shape: image; icon: icons/client.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  person: {shape: image; icon: icons/person.svg; width: 48; height: 48; style: {font-color: "#232F3E"; font-size: 13}}
+  # A thing with no resource class: a bridge, a port, a NIC, a config key.
+  box: {
+    style: {fill: "#ffffff"; stroke: "#7D8998"; stroke-width: 1; font-color: "#232F3E"; font-size: 13; border-radius: 2}
+  }
+  # A box that marks a step that fails or a packet that is dropped.
+  deny: {
+    style: {fill: "#FDEDEF"; stroke: "#DD344C"; stroke-width: 1; font-color: "#232F3E"; font-size: 13; border-radius: 2}
+  }
+  # A standing caption. Use with `near: bottom-center`.
+  note: {
+    shape: text
+    style: {font-color: "#545B64"; font-size: 12; italic: false}
+  }
+
+  # --- edges ----------------------------------------------------------------
+  flow: {
+    style: {stroke: "#545B64"; stroke-width: 2; font-color: "#232F3E"; font-size: 12}
+  }
+  # A secondary or management path.
+  quiet: {
+    style: {stroke: "#7D8998"; stroke-width: 1; stroke-dash: 4; font-color: "#545B64"; font-size: 12}
+  }
+}

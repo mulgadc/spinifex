@@ -39,6 +39,7 @@ const (
 	SubjectCreateDBSnapshot                = "rds.CreateDBSnapshot"
 	SubjectDescribeDBSnapshots             = "rds.DescribeDBSnapshots"
 	SubjectDeleteDBSnapshot                = "rds.DeleteDBSnapshot"
+	SubjectDescribeDBSnapshotAttributes    = "rds.DescribeDBSnapshotAttributes"
 	SubjectRestoreDBInstanceFromDBSnapshot = "rds.RestoreDBInstanceFromDBSnapshot"
 
 	// The automated-backup set, which is a KV read: the snapshots themselves are

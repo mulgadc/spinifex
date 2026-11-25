@@ -31,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
@@ -318,6 +317,9 @@ type EKSServiceImpl struct {
 	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
 	workerLaunchRetryTimeout time.Duration
 	workerLaunchRetryBackoff time.Duration
+	// workerLaunchMaxAttempts, when positive, also caps the shortfall retries by
+	// attempt count so tests stay deterministic; zero leaves only the deadline.
+	workerLaunchMaxAttempts int
 
 	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
 	// enumeration is still catching up. Tests inject a small value.
@@ -1262,7 +1264,10 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1277,7 +1282,13 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 }
 
 func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		if _, err := decodeEKSToken(input.NextToken); err != nil {
+			return nil, err
+		}
+		return &eks.ListClustersOutput{Clusters: []*string{}}, nil
+	}
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "account bucket")
 	}
@@ -1285,21 +1296,11 @@ func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListCluste
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
-	from, err := decodeEKSToken(input.NextToken)
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
 	if err != nil {
 		return nil, err
 	}
-	maxResults := int(aws.Int64Value(input.MaxResults))
-	if maxResults <= 0 || maxResults > 100 {
-		maxResults = 100
-	}
-	page, next := paging.Page(names, func(n string) string { return n }, paging.Request{Limit: maxResults, From: from})
-
-	out := &eks.ListClustersOutput{Clusters: aws.StringSlice(page)}
-	if next != "" {
-		out.NextToken = aws.String(next)
-	}
-	return out, nil
+	return &eks.ListClustersOutput{Clusters: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error) {
@@ -1690,10 +1691,13 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 }
 
 func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" || aws.StringValue(input.NodegroupName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(aws.StringValue(input.ClusterName))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1701,10 +1705,13 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 }
 
 func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
-	if input == nil {
+	if input == nil || aws.StringValue(input.ClusterName) == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(aws.StringValue(input.ClusterName))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1740,7 +1747,10 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.accountBucket(ctx, accountID)
+	acctKV, err := s.openAccountBucket(ctx, accountID)
+	if errors.Is(err, ErrClusterNotFound) {
+		return nil, clusterNotFound(cluster)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1849,7 +1859,11 @@ func (s *EKSServiceImpl) ListAccessEntries(ctx context.Context, input *eks.ListA
 	for _, rec := range recs {
 		arns = append(arns, rec.PrincipalARN)
 	}
-	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(arns)}, nil
+	page, next, err := pageEKSList(arns, func(a string) string { return a }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) UpdateAccessEntry(ctx context.Context, input *eks.UpdateAccessEntryInput, accountID string) (*eks.UpdateAccessEntryOutput, error) {
@@ -1969,15 +1983,28 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 	for _, p := range rec.AssociatedPolicies {
 		policies = append(policies, associatedPolicyToAWS(p))
 	}
+	page, next, err := pageEKSList(policies, func(p *eks.AssociatedAccessPolicy) string { return aws.StringValue(p.PolicyArn) },
+		input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	return &eks.ListAssociatedAccessPoliciesOutput{
 		ClusterName:              aws.String(cluster),
 		PrincipalArn:             aws.String(principalARN),
-		AssociatedAccessPolicies: policies,
+		AssociatedAccessPolicies: page,
+		NextToken:                next,
 	}, nil
 }
 
-func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	arns := slices.Sorted(maps.Keys(access.SupportedPolicies))
+func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, input *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
+	if input == nil {
+		input = &eks.ListAccessPoliciesInput{}
+	}
+	arns, next, err := pageEKSList(slices.Collect(maps.Keys(access.SupportedPolicies)), func(a string) string { return a },
+		input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	policies := make([]*eks.AccessPolicy, 0, len(arns))
 	for _, arn := range arns {
 		policies = append(policies, &eks.AccessPolicy{
@@ -1985,7 +2012,7 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 			Name: aws.String(accessPolicyName(arn)),
 		})
 	}
-	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies}, nil
+	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies, NextToken: next}, nil
 }
 
 // accessPolicyName extracts the policy short name from its ARN
@@ -2032,7 +2059,7 @@ func (s *EKSServiceImpl) TagResource(ctx context.Context, input *eks.TagResource
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, arn, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			if len(add) == 0 {
 				return tags, false
 			}
@@ -2075,7 +2102,7 @@ func (s *EKSServiceImpl) UntagResource(ctx context.Context, input *eks.UntagReso
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		if err := s.casUpdateNodegroupTags(ctx, accountID, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
+		if err := s.casUpdateNodegroupTags(ctx, accountID, arn, cluster, ng, func(tags map[string]string) (map[string]string, bool) {
 			changed := false
 			for _, k := range keys {
 				if _, ok := tags[k]; ok {
@@ -2097,9 +2124,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	arn := aws.StringValue(input.ResourceArn)
 
 	if name, ok := clusterNameFromARN(arn); ok {
-		acctKV, err := s.accountBucket(ctx, accountID)
+		acctKV, err := s.openAccountBucket(ctx, accountID)
 		if err != nil {
-			return nil, err
+			return nil, eksTagErr(err)
 		}
 		meta, err := GetClusterMeta(ctx, acctKV, name)
 		if err != nil {
@@ -2109,9 +2136,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 	}
 
 	if cluster, ng, ok := nodegroupRefFromARN(arn); ok {
-		acctKV, err := s.accountBucket(ctx, accountID)
+		acctKV, err := s.openAccountBucket(ctx, accountID)
 		if err != nil {
-			return nil, err
+			return nil, eksTagErr(err)
 		}
 		rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 		if err != nil {
@@ -2119,6 +2146,9 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 			}
 			return nil, err
+		}
+		if !namesIncarnation(arn, rec) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(rec.Tags)}, nil
 	}
@@ -2129,7 +2159,7 @@ func (s *EKSServiceImpl) ListTagsForResource(ctx context.Context, input *eks.Lis
 // casUpdateNodegroupTags applies mutate to the nodegroup record's tag map under
 // compare-and-swap. mutate returns the new tag map and whether it changed; a
 // no-op skips the write. A missing nodegroup surfaces as ResourceNotFound.
-func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
+func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, arn, cluster, ng string, mutate func(map[string]string) (map[string]string, bool)) error {
 	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return err
@@ -2139,6 +2169,9 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
 		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
 	}, func(rec *NodegroupRecord) (bool, error) {
+		if !namesIncarnation(arn, rec) {
+			return false, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
 		tags, changed := mutate(rec.Tags)
 		if !changed {
 			return false, nil
@@ -2150,8 +2183,37 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	return err
 }
 
-// accountBucket returns the per-account KV bucket for accountID.
+// accountBucket returns the per-account KV bucket for accountID, creating it.
 func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := s.jetStream()
+	if err != nil {
+		return nil, err
+	}
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	return acctKV, nil
+}
+
+// openAccountBucket opens the per-account KV bucket without creating it. A
+// missing bucket holds no cluster, so it is reported as ErrClusterNotFound.
+func (s *EKSServiceImpl) openAccountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	js, err := s.jetStream()
+	if err != nil {
+		return nil, err
+	}
+	acctKV, err := OpenAccountBucket(ctx, js, accountID)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, fmt.Errorf("open account bucket: %w", ErrClusterNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open account bucket: %w", err)
+	}
+	return acctKV, nil
+}
+
+func (s *EKSServiceImpl) jetStream() (jetstream.JetStream, error) {
 	if s.deps.NATSConn == nil {
 		return nil, errors.New("eks: nil NATS connection")
 	}
@@ -2159,11 +2221,7 @@ func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (j
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
-	}
-	return acctKV, nil
+	return js, nil
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN
@@ -2200,6 +2258,14 @@ func nodegroupRefFromARN(arn string) (string, string, bool) {
 	return seg[0], seg[1], true
 }
 
+// namesIncarnation reports whether arn carries rec's UUID, so an ARN of a
+// deleted group never reaches a re-created group of the same name.
+func namesIncarnation(arn string, rec *NodegroupRecord) bool {
+	_, want, _ := strings.CutLast(arn, "/")
+	_, have, _ := strings.CutLast(rec.Arn, "/")
+	return want == have
+}
+
 // eksTagErr maps a meta-store error to the AWS-visible tag-op error: a missing
 // cluster surfaces as ResourceNotFound, everything else passes through.
 func eksTagErr(err error) error {
@@ -2228,6 +2294,12 @@ func validateCreateClusterInput(input *eks.CreateClusterInput, accountID string)
 		if sn == nil || *sn == "" {
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
+	}
+	// The control plane image runs one Kubernetes version; an omitted version
+	// takes it, as AWS takes its default.
+	if v := input.Version; v != nil && *v != defaultK8sVersion {
+		return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+			"unsupported Kubernetes version %q, supported versions: %s", *v, defaultK8sVersion)
 	}
 	if input.AccessConfig != nil && input.AccessConfig.AuthenticationMode != nil {
 		mode := *input.AccessConfig.AuthenticationMode

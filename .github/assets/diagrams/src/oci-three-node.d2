@@ -1,0 +1,56 @@
+...@style
+direction: right
+
+laptop: "Client\nyour laptop: aws-cli,\nTerraform, boto3" {class: client}
+internet: "Internet" {class: internet}
+
+vcn: "OCI VCN 10.200.0.0/16\npublic subnet 10.200.0.0/23\nvirtual router 10.200.0.1 · internet gateway" {
+  class: datacenter
+
+  n1: "spinifex-node-01\nFAULT-DOMAIN-1 · BM.Standard.E2.64" {
+    class: server
+    vnic0: "VNIC 0 · 10.200.0.252\nmesh · advertise · encap" {class: box}
+    vnic1: "VNIC 1 · br-wan\n10.200.1.233/32\npublic IP pairs · table 200" {class: box}
+    svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
+    i: "EC2 instance\ni-23d2… 10.0.1.4\n→ 150.230.13.131" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
+  }
+
+  n2: "spinifex-node-02\nFAULT-DOMAIN-2 · BM.Standard.E2.64" {
+    class: server
+    vnic0: "VNIC 0 · 10.200.0.118\nmesh · advertise · encap" {class: box}
+    vnic1: "VNIC 1 · br-wan\n10.200.1.96/32\npublic IP pairs · table 200" {class: box}
+    svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
+    i: "EC2 instance\ni-6b91… 10.0.1.9\n→ 137.23.9.125" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
+  }
+
+  n3: "spinifex-node-03\nFAULT-DOMAIN-3 · BM.Standard.E2.64" {
+    class: server
+    vnic0: "VNIC 0 · 10.200.0.41\nmesh · advertise · encap" {class: box}
+    vnic1: "VNIC 1 · br-wan\n10.200.1.12/32\npublic IP pairs · table 200" {class: box}
+    svc: "awsgw · daemon · vpcd\nnats · predastore · viperblock" {class: box}
+    i: "EC2 instance\ni-0ae4… 10.0.2.6\n→ 150.230.4.88" {class: instance}
+    vol: "Disk\n/dev/sdb\n/var/lib/spinifex" {class: disk}
+  }
+
+  ew: "East–west inside the VCN\nno public address\n\nGeneve UDP 6081\nNATS JetStream R3\npredastore RS(2,1)\nOVN Northbound raft · OVSDB" {class: box}
+}
+
+
+laptop -> vcn.n1.vnic0: "API :9999 · SSH\nany node answers" {class: flow}
+internet -> vcn.n1.vnic1: {class: flow}
+internet -> vcn.n2.vnic1: {class: flow}
+internet -> vcn.n3.vnic1: "guest public IPs" {class: flow}
+vcn.n1.vnic1 -> vcn.n1.i: {class: flow}
+vcn.n1.vnic0 -> vcn.n1.svc: {class: quiet}
+vcn.n1.svc -> vcn.n1.vol: "iSCSI" {class: quiet}
+vcn.n1.vnic0 -- vcn.ew: {class: quiet}
+vcn.n2.vnic1 -> vcn.n2.i: {class: flow}
+vcn.n2.vnic0 -> vcn.n2.svc: {class: quiet}
+vcn.n2.svc -> vcn.n2.vol: "iSCSI" {class: quiet}
+vcn.n2.vnic0 -- vcn.ew: {class: quiet}
+vcn.n3.vnic1 -> vcn.n3.i: {class: flow}
+vcn.n3.vnic0 -> vcn.n3.svc: {class: quiet}
+vcn.n3.svc -> vcn.n3.vol: "iSCSI" {class: quiet}
+vcn.n3.vnic0 -- vcn.ew: {class: quiet}

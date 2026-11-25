@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -56,12 +57,14 @@ func TestSetIpAddressType_DualstackRejected(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-ds")
 
-	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
-		LoadBalancerArn: aws.String(arn),
-		IpAddressType:   aws.String("dualstack"),
-	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	for _, ipType := range []string{"dualstack", "dualstack-without-public-ipv4"} {
+		_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
+			LoadBalancerArn: aws.String(arn),
+			IpAddressType:   aws.String(ipType),
+		}, testAccountID)
+		assert.EqualError(t, err, "You must specify subnets with an associated IPv6 CIDR block.: ValidationError", ipType)
+	}
+	assert.Equal(t, "ipv4", *describeLB(t, svc, arn).IpAddressType)
 }
 
 func TestSetIpAddressType_MissingParams(t *testing.T) {
@@ -657,4 +660,50 @@ func TestCreateLoadBalancer_CustomerOwnedIpv4PoolRefused(t *testing.T) {
 		Name: aws.String("coip-lb"), CustomerOwnedIpv4Pool: aws.String("ipv4pool-coip-abc123"),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest)
+}
+
+func TestSetSubnets_RelaunchRefreshesRecoveryIndex(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.40.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.41.0/24", "us-east-1b")
+	mock.launchResult = &SystemInstanceOutput{InstanceID: "i-lb-old", PrivateIP: "10.0.40.5"}
+
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("recovery-index-lb"),
+		Subnets: []*string{aws.String(sub1)},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+
+	// A second daemon on the same JetStream, as when SetSubnets lands on another node.
+	mk, err := iamdomain.GenerateMasterKey()
+	require.NoError(t, err)
+	other, err := NewELBv2ServiceImplWithNATS(svc.config, svc.nc, mk)
+	require.NoError(t, err)
+	other.VPCService = vpcSvc
+
+	// Populate both recovery indexes with the original VM.
+	for _, s := range []*ELBv2ServiceImpl{svc, other} {
+		_, err = s.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+		require.NoError(t, err)
+	}
+
+	mock.launchResult = &SystemInstanceOutput{InstanceID: "i-lb-new", PrivateIP: "10.0.40.6"}
+	_, err = svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
+		LoadBalancerArn: out.LoadBalancers[0].LoadBalancerArn,
+		Subnets:         []*string{aws.String(sub1), aws.String(sub2)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rebuilt, err := svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-new", InstanceType: "sys.micro"})
+	require.NoError(t, err)
+	assert.Len(t, rebuilt.ExtraENIs, 1, "recovery must rebuild from the reshaped LB")
+	_, err = other.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-new", InstanceType: "sys.micro"})
+	require.NoError(t, err, "another node's stale index must reload on a miss")
+
+	_, err = svc.RebuildSystemInstanceInput(RecoveryContext{InstanceID: "i-lb-old", InstanceType: "sys.micro"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no LB record references instance i-lb-old")
 }

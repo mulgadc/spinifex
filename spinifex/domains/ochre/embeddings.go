@@ -145,7 +145,7 @@ var _ TokenLimiter = (*embeddingsProvider)(nil)
 func newEmbeddingsProvider(endpointResolver EndpointResolver) *embeddingsProvider {
 	return &embeddingsProvider{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 
@@ -217,7 +217,7 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 
 	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("embeddings: endpoint resolution failed", "service", embedServiceLabel, "action", "resolve_endpoint", "model", modelID, "err", err)
+		slog.Error("embeddings: endpoint resolution failed", "service", embedServiceLabel, "action", "resolve_endpoint", "model", modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 	if !ok {
@@ -232,7 +232,7 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 	// transport retry (below) still covers the narrow race right as the
 	// background probe catches up.
 	if wp, tracked := p.trackedWarmup(baseURL); tracked && !wp.Ready() {
-		slog.Warn("embeddings: endpoint not ready, failing closed during warm-up", "service", embedServiceLabel, "action", "embed", "model", modelID, "endpoint", baseURL)
+		slog.Warn("embeddings: endpoint not ready, failing closed during warm-up", "service", embedServiceLabel, "action", "embed", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 
@@ -264,20 +264,26 @@ func (p *embeddingsProvider) embedBatch(ctx context.Context, modelID, baseURL st
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		slog.Error("embeddings: failed to read response body", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	// Status first, so an unreadable error or redirect body cannot change the
+	// mapped result. Neither body nor decoder error is logged: both can quote input.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("embeddings: upstream error", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "status", resp.StatusCode)
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("embeddings: upstream error", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
-		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, teiEmbeddingsResponseLimit+1))
+	if err != nil {
+		slog.Error("embeddings: failed to read response body", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "failure", transportFailureClass(err))
+		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	}
+	if len(respBody) > teiEmbeddingsResponseLimit {
+		slog.Error("embeddings: response exceeds limit", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "limit_bytes", teiEmbeddingsResponseLimit)
+		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
 	var er embeddingsResponse
 	if err := json.Unmarshal(respBody, &er); err != nil {
-		slog.Error("embeddings: failed to parse response", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
+		slog.Error("embeddings: failed to parse response", "service", embedServiceLabel, "action", "embed_batch", "model", modelID)
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
@@ -309,7 +315,7 @@ func (p *embeddingsProvider) postEmbedRequest(ctx context.Context, modelID, base
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+embeddingsPath, bytes.NewReader(reqBody))
 		if err != nil {
-			slog.Error("embeddings: failed to build request", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
+			slog.Error("embeddings: failed to build request", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", endpointLogID(baseURL))
 			return nil, errors.New(awserrors.ErrorInternalError)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -322,10 +328,10 @@ func (p *embeddingsProvider) postEmbedRequest(ctx context.Context, modelID, base
 		if !isRetryableTransportError(doErr) || attempt == embedTransportRetries {
 			break
 		}
-		slog.Warn("embeddings: transport error, retrying", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", baseURL, "attempt", attempt+1, "err", doErr)
+		slog.Warn("embeddings: transport error, retrying", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", endpointLogID(baseURL), "attempt", attempt+1, "failure", transportFailureClass(doErr))
 	}
 
-	slog.Error("embeddings: request failed", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", baseURL, "err", lastErr)
+	slog.Error("embeddings: request failed", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(lastErr))
 	return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 }
 
@@ -365,25 +371,25 @@ func (p *embeddingsProvider) MaxInputLength(ctx context.Context, modelID string)
 func (p *embeddingsProvider) fetchMaxInputLength(ctx context.Context, baseURL string) int {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+infoPath, nil)
 	if err != nil {
-		slog.Debug("embeddings: failed to build /info request, using default max_input_length", "endpoint", baseURL, "default", defaultMaxInputLength, "err", err)
+		slog.Debug("embeddings: failed to build /info request, using default max_input_length", "endpoint", endpointLogID(baseURL), "default", defaultMaxInputLength)
 		return defaultMaxInputLength
 	}
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Debug("embeddings: /info request failed, using default max_input_length", "endpoint", baseURL, "default", defaultMaxInputLength, "err", err)
+		slog.Debug("embeddings: /info request failed, using default max_input_length", "endpoint", endpointLogID(baseURL), "default", defaultMaxInputLength, "failure", transportFailureClass(err))
 		return defaultMaxInputLength
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Debug("embeddings: /info returned non-OK status, using default max_input_length", "endpoint", baseURL, "status", resp.StatusCode, "default", defaultMaxInputLength)
+		slog.Debug("embeddings: /info returned non-OK status, using default max_input_length", "endpoint", endpointLogID(baseURL), "status", resp.StatusCode, "default", defaultMaxInputLength)
 		return defaultMaxInputLength
 	}
 
 	var info infoResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxIntrospectionResponseBytes)).Decode(&info); err != nil || info.MaxInputLength <= 0 {
-		slog.Debug("embeddings: /info missing or invalid max_input_length, using default", "endpoint", baseURL, "default", defaultMaxInputLength)
+		slog.Debug("embeddings: /info missing or invalid max_input_length, using default", "endpoint", endpointLogID(baseURL), "default", defaultMaxInputLength)
 		return defaultMaxInputLength
 	}
 	return info.MaxInputLength
@@ -413,19 +419,19 @@ func (p *embeddingsProvider) CountTokens(ctx context.Context, modelID, text stri
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Debug("embeddings: /tokenize request failed", "endpoint", baseURL, "err", err)
+		slog.Debug("embeddings: /tokenize request failed", "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return 0, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Debug("embeddings: /tokenize returned non-OK status", "endpoint", baseURL, "status", resp.StatusCode)
+		slog.Debug("embeddings: /tokenize returned non-OK status", "endpoint", endpointLogID(baseURL), "status", resp.StatusCode)
 		return 0, false
 	}
 
 	var tokens []tokenizeToken
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxIntrospectionResponseBytes)).Decode(&tokens); err != nil {
-		slog.Debug("embeddings: /tokenize response decode failed", "endpoint", baseURL, "err", err)
+		slog.Debug("embeddings: /tokenize response decode failed", "endpoint", endpointLogID(baseURL))
 		return 0, false
 	}
 	return len(tokens), true

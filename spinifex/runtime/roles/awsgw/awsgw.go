@@ -739,10 +739,11 @@ func launchService(config *config.ClusterConfig) error {
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
 	})
-	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, func() (accountlifecycle.PlatformCleaner, error) {
+	cleanupRetry := newStartupRetry(time.Now, time.Sleep)
+	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, cleanupRetry, func() (accountlifecycle.PlatformCleaner, error) {
 		return platformCleaner(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs)
 	})
-	operatorAdminDeps = withComputeCleaners(operatorAdminDeps, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
+	operatorAdminDeps = withComputeCleaners(operatorAdminDeps, cleanupRetry, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
 		return computeCleaners(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs, objStore)
 	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)
@@ -940,12 +941,15 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	endpoints := map[string]string{}
+	index := 0
 	for pair := range strings.SplitSeq(raw, ",") {
+		index++
 		modelID, baseURL, ok := strings.Cut(pair, "=")
 		modelID = strings.TrimSpace(modelID)
 		baseURL = strings.TrimSpace(baseURL)
 		if !ok || modelID == "" || baseURL == "" {
-			slog.Warn("awsgw: skipping malformed OCHRE_VLLM_ENDPOINTS entry", "entry", pair)
+			// The entry is not logged: its URL can carry credentials.
+			slog.Warn("awsgw: skipping malformed OCHRE_VLLM_ENDPOINTS entry", "position", index)
 			continue
 		}
 		endpoints[modelID] = baseURL

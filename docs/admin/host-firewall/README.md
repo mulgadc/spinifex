@@ -62,7 +62,7 @@ The public plane is open to any source, IPv4 only — an accept with no source s
 |---|---|
 | TCP 443 | Held for the TLS edge; no listener yet, so the rollout needs no firewall change |
 | TCP 3000 | Web console |
-| TCP 8443 | Predastore S3 gate |
+| TCP 8443 | Predastore gate (S3 API) |
 | TCP 9999 | AWS gateway — also how every guest agent (load balancer, EKS, ECS, RDS) reaches its control plane, since they speak SigV4 rather than NATS |
 | TCP and UDP 53 | Northstar authoritative DNS. Open on every node deliberately: a node serving no public zone still answers here, which is the accepted cost of not templating the policy per node |
 

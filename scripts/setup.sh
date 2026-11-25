@@ -693,6 +693,10 @@ table inet spinifex_filter {
         iifname "ime-*" ct original ip daddr 169.254.169.254 tcp dport 80 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 udp dport 53 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 tcp dport 53 accept
+        # VPC gateway endpoint traffic is untracked, so the ct rules above never
+        # see it; only the mark the endpoint TPROXY rule sets is accepted, and
+        # that rule delivers solely to the endpoint proxy's transparent socket.
+        iifname "ime-*" ct state untracked meta mark 0x8473 meta l4proto tcp accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
@@ -740,7 +744,9 @@ table inet spinifex_filter {
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
         # 5001 is the admin network test, listening only while one runs.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        # 8474 is predastore's endpoint listener, dialled only by a peer
+        # node's VPC endpoint proxy, which proves itself with its node cert.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8474, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a
@@ -1393,22 +1399,20 @@ install_apt_deps() {
     fi
 }
 
-# is_oci_vm is spx admin init's detection: the OCI metadata service answers
-# within a second with a shape that is not bare metal. Asked once per run,
-# because off OCI each ask costs the full second.
-is_oci_vm() {
-    if [ -z "${OCI_VM:-}" ]; then
+# is_oci_instance is spx admin init's detection: the OCI metadata service
+# answers within a second with a shape, virtual machine or bare metal. Asked
+# once per run, because off OCI each ask costs the full second.
+is_oci_instance() {
+    if [ -z "${OCI_INSTANCE:-}" ]; then
         local shape=""
-        OCI_VM=no
+        OCI_INSTANCE=no
         if command -v curl >/dev/null 2>&1 \
-            && shape=$(curl -sf -m 1 -H 'Authorization: Bearer Oracle' "$OCI_IMDS_SHAPE_URL" 2>/dev/null); then
-            case "$shape" in
-                "" | BM.*) ;;
-                *) OCI_VM=yes ;;
-            esac
+            && shape=$(curl -sf -m 1 -H 'Authorization: Bearer Oracle' "$OCI_IMDS_SHAPE_URL" 2>/dev/null) \
+            && [ -n "$shape" ]; then
+            OCI_INSTANCE=yes
         fi
     fi
-    [ "$OCI_VM" = yes ]
+    [ "$OCI_INSTANCE" = yes ]
 }
 
 # node_runs_ocibsd reports whether this node's existing config names ocibsd in
@@ -1429,8 +1433,8 @@ node_runs_ocibsd() {
 
 # The initiator ocibsd drives, on the only host it can back EBS on.
 install_iscsi_initiator() {
-    is_oci_vm || return 0
-    info "OCI virtual machine detected, installing the iSCSI initiator..."
+    is_oci_instance || return 0
+    info "OCI instance detected, installing the iSCSI initiator..."
     case "$1" in
         apt) DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq open-iscsi > /dev/null ;;
         dnf) $SUDO dnf install -y -q iscsi-initiator-utils > /dev/null ;;
@@ -2190,14 +2194,14 @@ install_udev() {
     info "udev rules installed"
 }
 
-# install_ocibsd stages the tarball's ocibsd/ on an OCI virtual machine, where
+# install_ocibsd stages the tarball's ocibsd/ on an OCI instance, where
 # spx admin init or join installs it once the provider resolves to ocibsd. On
 # a node whose config already runs ocibsd it also reinstalls the staged files.
 install_ocibsd() {
     stage "staging the ocibsd files"
     local ocibsd_node=false f
     node_runs_ocibsd && ocibsd_node=true
-    if ! $ocibsd_node && ! is_oci_vm; then
+    if ! $ocibsd_node && ! is_oci_instance; then
         return 0
     fi
     if [ ! -d "$EXTRACT_DIR/ocibsd" ]; then

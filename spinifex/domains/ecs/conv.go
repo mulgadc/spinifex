@@ -174,7 +174,7 @@ func runtimePlatformFromAWS(in *ecs.RuntimePlatform) *taskdefinition.RuntimePlat
 }
 
 // containerToAWS fills the defaults AWS returns for omitted fields: cpu 0,
-// empty mountPoints/volumesFrom/systemControls, protocol tcp, and under awsvpc
+// empty environment/mountPoints/volumesFrom/systemControls, protocol tcp, and under awsvpc
 // a hostPort equal to the containerPort.
 func containerToAWS(c taskdefinition.Container, networkMode string) *ecs.ContainerDefinition {
 	cd := &ecs.ContainerDefinition{
@@ -182,6 +182,7 @@ func containerToAWS(c taskdefinition.Container, networkMode string) *ecs.Contain
 		Image:          aws.String(c.Image),
 		Essential:      aws.Bool(c.Essential),
 		Cpu:            aws.Int64(int64(c.CPU)),
+		Environment:    []*ecs.KeyValuePair{},
 		MountPoints:    []*ecs.MountPoint{},
 		VolumesFrom:    []*ecs.VolumeFrom{},
 		SystemControls: []*ecs.SystemControl{},
@@ -197,9 +198,6 @@ func containerToAWS(c taskdefinition.Container, networkMode string) *ecs.Contain
 	}
 	for _, cmd := range c.Command {
 		cd.Command = append(cd.Command, aws.String(cmd))
-	}
-	if c.Environment != nil {
-		cd.Environment = []*ecs.KeyValuePair{}
 	}
 	for k, v := range c.Environment {
 		cd.Environment = append(cd.Environment, &ecs.KeyValuePair{Name: aws.String(k), Value: aws.String(v)})

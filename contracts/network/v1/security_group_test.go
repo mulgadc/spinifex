@@ -48,3 +48,19 @@ func TestSecurityGroupRule_FullShapeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, wider, string(marshaled))
 }
+
+// A rule naming a prefix list carries it; one naming none omits the key, so
+// the bytes older publishers send are unchanged.
+func TestSecurityGroupRule_PrefixListId(t *testing.T) {
+	golden := `{"rule_id":"sgr-1","ip_protocol":"tcp","from_port":443,"to_port":443,"prefix_list_id":"pl-6ca54005"}`
+	var decoded networkv1.SecurityGroupRule
+	require.NoError(t, json.Unmarshal([]byte(golden), &decoded))
+	assert.Equal(t, "pl-6ca54005", decoded.PrefixListId)
+	marshaled, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.JSONEq(t, golden, string(marshaled))
+
+	plain, err := json.Marshal(networkv1.SecurityGroupRule{RuleId: "sgr-2", IpProtocol: "-1", CidrIp: "0.0.0.0/0"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(plain), "prefix_list_id")
+}

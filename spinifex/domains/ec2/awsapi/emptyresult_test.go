@@ -199,3 +199,113 @@ func TestEC2_InstanceStatusDetailsOmittedWhenNotApplicable(t *testing.T) {
 	assert.Contains(t, out, "<instanceStatus><status>not-applicable</status></instanceStatus>")
 	assert.NotContains(t, out, "details")
 }
+
+// The instance, attribute and status lists AWS omits when empty, and the
+// volume attachmentSet that DescribeVolumes renders empty but CreateVolume omits.
+func TestEC2_InstanceAndVolumeListsAWSOmitsWhenEmpty(t *testing.T) {
+	run := render[ec2.RunInstancesInput](t, "RunInstances", ec2.Reservation{
+		Instances: []*ec2.Instance{{
+			InstanceId:        aws.String("i-1"),
+			NetworkInterfaces: []*ec2.InstanceNetworkInterface{{NetworkInterfaceId: aws.String("eni-1")}},
+		}},
+	})
+	for _, list := range []string{"elasticGpuAssociationSet", "elasticInferenceAcceleratorAssociationSet", "licenseSet", "ipv4PrefixSet", "ipv6PrefixSet"} {
+		assert.NotContains(t, run, list)
+	}
+	assert.Contains(t, run, "<productCodes></productCodes>")
+	assert.Contains(t, run, "<ipv6AddressesSet></ipv6AddressesSet>")
+
+	instAttr := render[ec2.DescribeInstanceAttributeInput](t, "DescribeInstanceAttribute", ec2.DescribeInstanceAttributeOutput{
+		InstanceId:     aws.String("i-1"),
+		DisableApiStop: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	})
+	for _, list := range []string{"blockDeviceMapping", "groupSet", "productCodes"} {
+		assert.NotContains(t, instAttr, list)
+	}
+	productCodes := render[ec2.DescribeInstanceAttributeInput](t, "DescribeInstanceAttribute", ec2.DescribeInstanceAttributeOutput{
+		InstanceId: aws.String("i-1"), ProductCodes: []*ec2.ProductCode{},
+	})
+	assert.Contains(t, productCodes, "<productCodes></productCodes>")
+
+	imgAttr := render[ec2.DescribeImageAttributeInput](t, "DescribeImageAttribute", ec2.DescribeImageAttributeOutput{
+		ImageId: aws.String("ami-1"), Description: &ec2.AttributeValue{},
+	})
+	for _, list := range []string{"blockDeviceMapping", "launchPermission", "productCodes"} {
+		assert.NotContains(t, imgAttr, list)
+	}
+	launchPerm := render[ec2.DescribeImageAttributeInput](t, "DescribeImageAttribute", ec2.DescribeImageAttributeOutput{
+		ImageId: aws.String("ami-1"), LaunchPermissions: []*ec2.LaunchPermission{},
+	})
+	assert.Contains(t, launchPerm, "<launchPermission></launchPermission>")
+
+	status := render[ec2.DescribeInstanceStatusInput](t, "DescribeInstanceStatus", ec2.DescribeInstanceStatusOutput{
+		InstanceStatuses: []*ec2.InstanceStatus{{InstanceId: aws.String("i-1")}},
+	})
+	assert.NotContains(t, status, "eventsSet")
+
+	volStatus := render[ec2.DescribeVolumeStatusInput](t, "DescribeVolumeStatus", ec2.DescribeVolumeStatusOutput{
+		VolumeStatuses: []*ec2.VolumeStatusItem{{VolumeId: aws.String("vol-1")}},
+	})
+	assert.NotContains(t, volStatus, "attachmentStatuses")
+	assert.Contains(t, volStatus, "<actionsSet></actionsSet>")
+	assert.Contains(t, volStatus, "<eventsSet></eventsSet>")
+
+	created := render[ec2.CreateVolumeInput](t, "CreateVolume", ec2.Volume{VolumeId: aws.String("vol-1")})
+	assert.NotContains(t, created, "attachmentSet")
+
+	described := render[ec2.DescribeVolumesInput](t, "DescribeVolumes", ec2.DescribeVolumesOutput{
+		Volumes: []*ec2.Volume{{VolumeId: aws.String("vol-1"), Attachments: []*ec2.VolumeAttachment{}}},
+	})
+	assert.Contains(t, described, "<attachmentSet></attachmentSet>")
+}
+
+// AWS renders only the requested attribute: an empty createVolumePermission
+// list, with no productCodes or groupSet beside it.
+func TestEC2AttributeDescribes_RenderOnlyTheRequestedAttribute(t *testing.T) {
+	volume := render[ec2.DescribeVolumeAttributeInput](t, "DescribeVolumeAttribute", ec2.DescribeVolumeAttributeOutput{
+		VolumeId: aws.String("vol-1"), AutoEnableIO: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	})
+	assert.Contains(t, volume, "<autoEnableIO><value>false</value></autoEnableIO>")
+	assert.NotContains(t, volume, "productCodes")
+
+	snapshot := render[ec2.DescribeSnapshotAttributeInput](t, "DescribeSnapshotAttribute", ec2.DescribeSnapshotAttributeOutput{
+		SnapshotId: aws.String("snap-1"), CreateVolumePermissions: []*ec2.CreateVolumePermission{},
+	})
+	assert.Contains(t, snapshot, "<createVolumePermission></createVolumePermission>")
+	assert.NotContains(t, snapshot, "productCodes")
+
+	eni := render[ec2.DescribeNetworkInterfaceAttributeInput](t, "DescribeNetworkInterfaceAttribute", ec2.DescribeNetworkInterfaceAttributeOutput{
+		NetworkInterfaceId: aws.String("eni-1"), Attachment: &ec2.NetworkInterfaceAttachment{AttachmentId: aws.String("eni-attach-1")},
+	})
+	assert.Contains(t, eni, "<attachmentId>eni-attach-1</attachmentId>")
+	assert.NotContains(t, eni, "groupSet")
+}
+
+// A peering side shown by identity only carries no CIDR lists, and no side
+// carries an IPv6 list the VPC does not have.
+func TestEC2_PeeringVpcInfoListsAWSOmitsWhenEmpty(t *testing.T) {
+	out := render[ec2.DescribeVpcPeeringConnectionsInput](t, "DescribeVpcPeeringConnections", ec2.DescribeVpcPeeringConnectionsOutput{
+		VpcPeeringConnections: []*ec2.VpcPeeringConnection{{
+			VpcPeeringConnectionId: aws.String("pcx-1"),
+			RequesterVpcInfo: &ec2.VpcPeeringConnectionVpcInfo{
+				VpcId: aws.String("vpc-1"), CidrBlock: aws.String("10.0.0.0/16"),
+				CidrBlockSet: []*ec2.CidrBlock{{CidrBlock: aws.String("10.0.0.0/16")}},
+			},
+			AccepterVpcInfo: &ec2.VpcPeeringConnectionVpcInfo{VpcId: aws.String("vpc-2")},
+			Tags:            []*ec2.Tag{},
+		}},
+	})
+	assert.Equal(t, 1, strings.Count(out, "<cidrBlockSet>"))
+	assert.NotContains(t, out, "ipv6CidrBlockSet")
+	assert.Contains(t, out, "<tagSet></tagSet>")
+}
+
+// AWS omits a gateway service's private DNS names rather than rendering an
+// empty set, and still renders its empty tag set.
+func TestEC2_ServiceDetailPrivateDnsNamesOmittedWhenEmpty(t *testing.T) {
+	out := render[ec2.DescribeVpcEndpointServicesInput](t, "DescribeVpcEndpointServices", ec2.DescribeVpcEndpointServicesOutput{
+		ServiceDetails: []*ec2.ServiceDetail{{ServiceName: aws.String("com.amazonaws.ap-southeast-2.s3"), Tags: []*ec2.Tag{}}},
+	})
+	assert.NotContains(t, out, "privateDnsNameSet")
+	assert.Contains(t, out, "<tagSet></tagSet>")
+}

@@ -24,8 +24,14 @@ type RouteRecord struct {
 	DestinationCidrBlock string `json:"destination_cidr_block"`
 	GatewayId            string `json:"gateway_id,omitempty"`     // "local" or "igw-xxx"
 	NatGatewayId         string `json:"nat_gateway_id,omitempty"` // "nat-xxx" (future)
-	State                string `json:"state"`                    // "active", "blackhole"
-	Origin               string `json:"origin"`                   // "CreateRouteTable", "CreateRoute"
+	// State is not stored for a peering route; it is derived when described.
+	VpcPeeringConnectionId string `json:"vpc_peering_connection_id,omitempty"`
+	// State is not stored for a Transit Gateway route either.
+	TransitGatewayId string `json:"transit_gateway_id,omitempty"`
+	// Set only on a derived VPC endpoint route, which is never stored.
+	DestinationPrefixListId string `json:"destination_prefix_list_id,omitempty"`
+	State                   string `json:"state"`  // "active", "blackhole"
+	Origin                  string `json:"origin"` // "CreateRouteTable", "CreateRoute"
 }
 
 // AssociationRecord represents a route table ↔ subnet association.

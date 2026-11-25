@@ -5,6 +5,7 @@ package multinode
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,9 +28,12 @@ import (
 // single-node suite's pingConverged window.
 const sameSGPingTimeout = 45 * time.Second
 
+// sameSGDiagTimeout bounds one whole dumpSameSGDiag capture across every node.
+const sameSGDiagTimeout = 90 * time.Second
+
 // baselineLaunch launches one instance with the given SGs into subnetID,
 // registers a terminate-and-wait cleanup, and returns the instance ID once "running".
-func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnetID string, sgIDs []string) string {
+func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnetID string, sgIDs []string, opts ...func(*ec2.RunInstancesInput)) string {
 	t.Helper()
 	sgs := make([]*string, 0, len(sgIDs))
 	for _, id := range sgIDs {
@@ -43,6 +47,9 @@ func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnet
 		SecurityGroupIds: sgs,
 		MinCount:         aws.Int64(1),
 		MaxCount:         aws.Int64(1),
+	}
+	for _, opt := range opts {
+		opt(input)
 	}
 	var id string
 	for attempt := 1; attempt <= 6; attempt++ {
@@ -88,12 +95,62 @@ func instancePrivateIP(t *testing.T, fix *Fixture, id string) string {
 
 // sshCapture runs cmd over SSH and returns combined output + error without fataling.
 func sshCapture(pem, user, host string, port int, cmd string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	return sshCaptureWithin(30*time.Second, pem, user, host, port, cmd)
+}
+
+// sshCaptureWithin is sshCapture bounded by limit instead of 30 s.
+func sshCaptureWithin(limit time.Duration, pem, user, host string, port int, cmd string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	out, err := harness.RunGuestSSH(ctx, harness.SSHTarget{
 		User: user, Host: host, Port: port, KeyPath: pem,
 	}, cmd)
 	return string(out), err
+}
+
+// pingResult is the outcome of pingUntil. elapsed excludes time spent in the
+// first-failure hook, so it measures the datapath and not the diagnostics.
+type pingResult struct {
+	out       string
+	converged bool
+	attempts  int
+	elapsed   time.Duration
+}
+
+// pingUntil runs attempt until it succeeds by the deadline or the budget is
+// spent. Each attempt gets the time left; a success that completes after the
+// deadline does not count. Time in onFirstFail extends the deadline.
+func pingUntil(budget time.Duration, attempt func(left time.Duration) (string, bool), onFirstFail func(),
+	now func() time.Time, pause func(time.Duration)) pingResult {
+	start := now()
+	deadline := start.Add(budget)
+	var paused time.Duration
+	var res pingResult
+	for {
+		left := deadline.Sub(now())
+		if left <= 0 {
+			res.elapsed = now().Sub(start) - paused
+			return res
+		}
+		res.attempts++
+		var ok bool
+		res.out, ok = attempt(left)
+		if ok && !now().After(deadline) {
+			res.converged = true
+			res.elapsed = now().Sub(start) - paused
+			return res
+		}
+		if res.attempts == 1 && onFirstFail != nil {
+			hookStart := now()
+			onFirstFail()
+			d := now().Sub(hookStart)
+			deadline = deadline.Add(d)
+			paused += d
+		}
+		if left := deadline.Sub(now()); left > 0 {
+			pause(min(2*time.Second, left))
+		}
+	}
 }
 
 // pingConvergedCrossHost probes dstPriv over ICMP from the source guest, retrying
@@ -102,26 +159,15 @@ func sshCapture(pem, user, host string, port int, cmd string) (string, error) {
 // derives from port-group membership, so the peer only becomes reachable once
 // that set has propagated to the remote chassis and ovn-controller has installed
 // the flows there. Returns the last output, whether it converged, the attempt
-// count and how long convergence took.
+// count and how long convergence took, not counting onFirstFail.
 func pingConvergedCrossHost(keyPath, host string, port int, dstPriv string, timeout time.Duration, onFirstFail func()) (string, bool, int, time.Duration) {
-	start := time.Now()
-	deadline := start.Add(timeout)
-	var out string
-	for attempt := 1; ; attempt++ {
-		var err error
-		out, err = sshCapture(keyPath, "ubuntu", host, port,
-			fmt.Sprintf("ping -c 3 -W 2 %s", dstPriv))
-		if err == nil && strings.Contains(out, "0% packet loss") {
-			return out, true, attempt, time.Since(start)
-		}
-		if attempt == 1 && onFirstFail != nil {
-			onFirstFail()
-		}
-		if time.Now().After(deadline) {
-			return out, false, attempt, time.Since(start)
-		}
-		time.Sleep(2 * time.Second)
-	}
+	res := pingUntil(timeout, func(left time.Duration) (string, bool) {
+		left = min(30*time.Second, left)
+		out, err := sshCaptureWithin(left, keyPath, "ubuntu", host, port,
+			fmt.Sprintf("ping -c 3 -W 2 -w %d %s", max(1, int(left/time.Second)), dstPriv))
+		return out, err == nil && strings.Contains(out, " 0% packet loss")
+	}, onFirstFail, time.Now, time.Sleep)
+	return res.out, res.converged, res.attempts, res.elapsed
 }
 
 // dumpSameSGDiag snapshots the OVN/OVS state the default-SG self-ingress rule
@@ -137,10 +183,8 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 	t.Logf("dumpSameSGDiag(%s): src=%s dst=%s dst_ip=%s nodes=%d -> %s",
 		tag, srcID, dstID, dstPriv, len(fix.Cluster.Nodes), artifactDir)
 
-	probes := []struct {
-		name string
-		cmd  string
-	}{
+	type probe struct{ name, cmd string }
+	ovnProbes := []probe{
 		{"ovn-nb-address-set", "sudo ovn-nbctl --no-leader-only list address_set 2>&1 || true"},
 		{"ovn-sb-address-set", "sudo ovn-sbctl --no-leader-only list address_set 2>&1 || true"},
 		{"ovn-nb-port-group", "sudo ovn-nbctl --no-leader-only list port_group 2>&1 || true"},
@@ -151,14 +195,37 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 		{"ovn-sbctl-show", "sudo ovn-sbctl --no-leader-only show 2>&1 || true"},
 		{"arp", "arp -an 2>&1 || true"},
 	}
+	// xfrm state uses nokeys because these artifacts are uploaded and the
+	// plain listing includes each SA's encryption key.
+	ipsecProbes := []probe{
+		{"xfrm-state", "sudo ip xfrm state list nokeys 2>&1 || true"},
+		{"xfrm-policy", "sudo ip xfrm policy list 2>&1 || true"},
+		{"xfrm-sysctl", "grep -H . /proc/sys/net/core/xfrm_acq_expires /proc/sys/net/core/xfrm_larval_drop 2>&1 || true"},
+		{"ipsec-status", "sudo ipsec statusall 2>&1 || sudo ipsec status 2>&1 || true"},
+		{"ipsec-guard", "sudo nft list table inet spinifex_ipsec_guard 2>&1 || true"},
+	}
+	// The probes for the suspected layer run first, on every node, so the
+	// capture bound cuts the less relevant ones.
+	probes := slices.Concat(ovnProbes, ipsecProbes)
+	if tag == "ipsec" {
+		probes = slices.Concat(ipsecProbes, ovnProbes)
+	}
 
+	// One bound for the whole capture, so a hung node cannot stall the test.
+	capture, cancelCapture := context.WithTimeout(context.Background(), sameSGDiagTimeout)
+	defer cancelCapture()
 	ssh := harness.NewPeerSSH()
-	for _, n := range fix.Cluster.Nodes {
-		for _, p := range probes {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	for _, p := range probes {
+		for _, n := range fix.Cluster.Nodes {
+			header := fmt.Sprintf("# tag=%s host=%s cmd=%s\n", tag, n.Addr, p.cmd)
+			if capture.Err() != nil {
+				harness.DumpFile(t, artifactDir, fmt.Sprintf("samesg-%s-%s-%s.log", tag, n.Name, p.name),
+					[]byte(header+"# (skipped: diagnostic capture bound reached)\n"))
+				continue
+			}
+			ctx, cancel := context.WithTimeout(capture, 20*time.Second)
 			out, err := ssh.Run(ctx, n.Addr, p.cmd)
 			cancel()
-			header := fmt.Sprintf("# tag=%s host=%s cmd=%s\n", tag, n.Addr, p.cmd)
 			if err != nil {
 				header += fmt.Sprintf("# (ssh error: %v)\n", err)
 			}
@@ -177,8 +244,15 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 		{"ping-dst", fmt.Sprintf("ping -c 3 -W 2 %s 2>&1 || true", dstPriv)},
 	}
 	for _, p := range guestProbes {
-		out, err := sshCapture(keyPath, "ubuntu", host, port, p.cmd)
 		header := fmt.Sprintf("# tag=%s guest=%s cmd=%s\n", tag, srcID, p.cmd)
+		captureEnd, _ := capture.Deadline()
+		left := time.Until(captureEnd)
+		if left <= 0 {
+			harness.DumpFile(t, artifactDir, fmt.Sprintf("samesg-%s-guest-%s.log", tag, p.name),
+				[]byte(header+"# (skipped: diagnostic capture bound reached)\n"))
+			continue
+		}
+		out, err := sshCaptureWithin(min(30*time.Second, left), keyPath, "ubuntu", host, port, p.cmd)
 		if err != nil {
 			header += fmt.Sprintf("# (ssh error: %v)\n", err)
 		}
@@ -197,6 +271,15 @@ func runMultinodeSameSGCrossHostComms(t *testing.T, fix *Fixture) {
 	pair := launchCrossNodePair(t, fix, "baseline-runnersg")
 	src, dst := pair.src, pair.dst
 	keyPath, host, port, dstPriv := pair.keyPath, pair.sshHost, pair.sshPort, pair.dstPrivateIP
+
+	// A fresh tunnel's SA can take one kernel acquire lifetime to come up. Wait
+	// for it on its own budget so the ping budget below times the datapath only.
+	harness.Step(t, "wait for the IPsec SAs between %s and %s", src.node.Name, dst.node.Name)
+	if missing := waitCrossHostSAs(t, src.node, dst.node); len(missing) > 0 {
+		dumpSameSGDiag(t, fix, "ipsec", keyPath, host, port, src.id, dst.id, dstPriv)
+		t.Fatalf("IPsec SA not established within %s for %s; the cross-host datapath was not tested",
+			ipsecSAReadyTimeout, strings.Join(missing, "; "))
+	}
 
 	harness.Step(t, "ping %s (%s) from %s across hosts via default-SG self-ingress", dst.id, dstPriv, src.id)
 	// Snapshot OVN/OVS state on the first failed burst, while the drop is still

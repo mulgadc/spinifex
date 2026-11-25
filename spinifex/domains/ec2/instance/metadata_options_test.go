@@ -51,6 +51,14 @@ func TestValidateMetadataOptions(t *testing.T) {
 	}
 }
 
+// AWS names the refused value and the valid range.
+func TestValidateMetadataOptions_HopLimitMessage(t *testing.T) {
+	err := validateMetadataOptions("", "", "", "", aws.Int64(65))
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "A value of '65' is not valid for HttpPutResponseHopLimit. Specify a value between 1 and 64 and try again.", message)
+}
+
 // Enabling IMDSv1 on an existing instance is applied and echoed back; IMDSv1-only
 // guest agents can be switched on after launch without a relaunch.
 func TestModifyInstanceMetadataOptions_EnableV1(t *testing.T) {

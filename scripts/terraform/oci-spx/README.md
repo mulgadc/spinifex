@@ -230,7 +230,7 @@ Create them once per tenancy, then every deployment and rebuild afterwards uses 
 
 **`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `ocinet credential authorised to allocate` in each node's `spinifex-daemon` journal.
 
-The policy grants `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets` in one compartment for the allocator, and with `ebs_provider = "ocibsd"` also `manage volume-family` and `use instances` for the `ocibsd` EBS provider. `setup-identity.sh --ebs-provider ocibsd` creates it with them; the policy is shared by every deployment in the compartment, so running it without the flag removes them.
+The policy grants `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets` in one compartment for the allocator, and with `ebs_provider = "ocibsd"`, the default, also `manage volume-family` and `use instances` for the `ocibsd` EBS provider. `setup-identity.sh` creates it with them unless given `--ebs-provider viperblockd`; the policy is shared by every deployment in the compartment, so a `viperblockd` run removes them.
 The first four are exactly what allocating an external address does and nothing more; the last two are what creating, attaching, backing up and deleting a block volume does.
 `use subnets` looks unrelated and is not: `CreatePrivateIp` is checked against `SUBNET_ATTACH` and `CreatePrivateIp` is how an address is registered, so a policy without it authorises nothing and every allocation returns a 404.
 
@@ -275,19 +275,31 @@ The count that later gates read is the number of addresses the `hosts_file` outp
 
 **A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
 
-### The ocibsd topologies
+### EBS on OCI Block Volumes
 
-`vm-single-ocibsd` and `vm-multi-ocibsd` are `vm-single` and `vm-multi` with EBS backed by OCI Block Volumes. They build with `ebs_provider = "ocibsd"`, which disables the Block Volume Management plugin and attaches each node's data volume paravirtualized, because every iSCSI session on the node is `ocibsd`'s to manage. They need `--distro`, because a published release predates the `ocibsd` files that `setup.sh` stages, and an external pool, because an API-key run gives `ocibsd` the pool's credential.
+Every topology backs EBS with OCI Block Volumes through `ocibsd`, `bm` included. It needs `--distro`, because a published release predates the `ocibsd` files that `setup.sh` stages, and an external pool, because an API-key run gives `ocibsd` the pool's credential. `e2e-oci.sh` records a topology `SKIPPED` without either.
 
-The ocibsd topologies name no EBS provider. `spx admin init` detects that it is on an OCI virtual machine, reads the compartment, availability domain and region from the instance metadata, and generates the cluster's `cluster_id`. Every other topology sets `SPINIFEX_EBS_PROVIDER=viperblockd`, so its viperblock baseline is not replaced by detection on OCI. The run checks the `EBS provider:` line init prints: `detected` on the ocibsd topologies under the instance principal, and `from SPINIFEX_EBS_PROVIDER` on the rest.
+No topology names an EBS provider. `spx admin init` detects that it is on an OCI instance, reads the compartment, availability domain and region from the instance metadata, and generates the cluster's `cluster_id`. The run checks the `EBS provider:` line init prints: `detected` under the instance principal. `--ebs-provider viperblockd` on `validate-topology.sh`, or `OCI_EBS_PROVIDER=viperblockd` for `e2e-oci.sh`, runs a one-off viperblock check instead, telling init through `SPINIFEX_EBS_PROVIDER`; no default run uses it. `vm-single-ocibsd` and `vm-multi-ocibsd` are accepted only with `--destroy-only`, so the sweep can still destroy state an earlier run left under those names.
+
+`ebs_provider` decides only the policy grants. Every node attaches its own data volume over iSCSI with the Block Volume Management plugin logging it in, whatever the provider or shape: bare metal attaches no other way, and `ocibsd`'s own attachments ask the agent not to log them in. `terraform test` in this directory plans that against a mocked provider.
 
 Under the instance principal, `ocibsd` uses the instance's own certificate. An API-key run runs the credential hook before formation instead, and seeds each node's `spinifex.toml` with `provider = "ocibsd"` and the hook's `/etc/spinifex/oci/config`, which init keeps as an existing config, so its `EBS provider:` line reads `from the existing config`.
 
 Every volume and backup `ocibsd` creates is tagged `spinifex-cluster=<cluster_id>`, and none of them is in any Terraform state, so the run records the ID in `.validate-<topology>/ocibsd-clusters` before any volume exists.
 
-The `ebs provider` gate then checks the units, the viperblock mask, the daemon's device drop-in, and that the compartment and availability domain init detected are the ones the state reports on every node, imports an AMI onto OCI and boots from it, and drives stop and start, attach and detach, snapshot and restore with a guest-written marker read back over the serial console. On `vm-multi-ocibsd` it also starts the stopped instance on another node. It ends by terminating everything and polling OCI until nothing tagged with the instance's volumes or snapshot is left.
+The `ebs provider` gate then checks the units, the viperblock mask, the daemon's device drop-in, and that the compartment and availability domain init detected are the ones the state reports on every node, imports an AMI onto OCI and boots from it, and drives stop and start, attach and detach, snapshot and restore with a guest-written marker read back over the serial console. On `vm-multi` it also starts the stopped instance on another node. It ends by terminating everything and polling OCI until nothing tagged with the instance's volumes or snapshot is left.
 
 `e2e-oci.sh` deletes everything tagged with each recorded `cluster_id` once that topology's nodes are destroyed, including from `--sweep-only`, and fails the run if anything tagged remains. A standalone `validate-topology.sh` run does not sweep, so follow it with `./e2e-oci.sh --sweep-only`.
+
+**The sweep reaches only a state directory marked `disposable`.**
+A run that will tear itself down writes the marker before it creates anything, so a killed run is still swept.
+`--keep`, existing infrastructure and a failure left up by `--keep-on-fail` remove it, so the sweep leaves those deployments and their volumes alone.
+A successful `--destroy-only` writes it, which makes the destroyed deployment's volumes and backups eligible for the next sweep.
+
+A run without `--keep` stops with an error when its directory holds Terraform instances, unreadable state or a cluster record and has no marker: that is a deployment it does not own.
+Use it with `--keep`, or remove it with `--destroy-only`.
+`--dry-run` does not sweep and does not change the marker, with or without `--keep`.
+A sweep from before this marker existed ignores it, so keep a deployment in its own `OCI_STATE_ROOT` while any older checkout shares the root.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
@@ -330,6 +342,33 @@ For infrastructure configured with `instance_principal = "off"`, supply the API-
 ```
 
 `--existing-state-file` skips Terraform apply and destroy, and automatically keeps the hosts. If state is unavailable, replace it with `--existing-hosts-file /path/to/hosts`, containing one public SSH IP address per line. A hosts file carries no authentication metadata, so pass either `--instance-principal` or `--credential-hook` explicitly.
+
+### Reinstall a formed cluster
+
+`--reinstall` runs the installer again on every node, for example to put a new build on a kept deployment.
+Before it changes a host, the run asks each host whether `spx admin init` wrote `data_dir` to `/etc/spinifex/spinifex.toml`:
+
+- **Every host has it:** the cluster is formed. The run does not form it again, and the installer does not run `setup-ovn.sh --management`, so the clustered NB/SB client configuration stays.
+- **No host has it:** the run installs and forms a new cluster.
+- **A host does not answer, or the hosts disagree:** the run stops before it changes a host, and names the hosts.
+
+To install a build of your checkout, build the bundle at the repository root, then give the bundle and its `setup.sh` to the run:
+
+```bash
+make distro-amd64
+cd scripts/terraform/oci-spx
+./validate-topology.sh \
+  --topology vm-multi \
+  --existing-state-file "$PWD/terraform.tfstate" \
+  --instance-principal \
+  --reinstall \
+  --distro ../../../dist/spinifex-<version>-linux-amd64.tar.gz \
+  --setup-sh ../../../scripts/setup.sh \
+  --skip-workload
+```
+
+The cloud-init gate waits for `/var/lib/cloud/instance/boot-finished` on every node for at most `OCI_CLOUD_INIT_TIMEOUT` seconds in total, 1200 by default.
+At that limit it stops with `cloud-init did not finish on <host>`, also when an SSH call to the host does not return.
 
 ## Common Commands
 

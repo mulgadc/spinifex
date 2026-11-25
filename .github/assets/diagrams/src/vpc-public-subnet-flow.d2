@@ -1,0 +1,21 @@
+...@style
+direction: right
+
+out: "Outbound" {
+  class: group
+  instance: "EC2 instance\n10.0.1.5" {class: instance}
+  snat: "SNAT\nsource IP rewritten\nexits as 203.0.113.10" {class: box}
+  wan: "Internet\nWAN" {class: internet}
+  instance -> snat: {class: flow}
+  snat -> wan: {class: flow}
+}
+
+in: "Inbound" {
+  class: group
+  client: "Client\nWAN client" {class: client}
+  dnat: "DNAT\ndestination IP rewritten\narrives at 10.0.1.5" {class: box}
+  instance: "EC2 instance\n10.0.1.5" {class: instance}
+  client -> dnat: "to 203.0.113.10" {class: flow}
+  dnat -> instance: {class: flow}
+}
+

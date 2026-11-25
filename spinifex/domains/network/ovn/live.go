@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -123,6 +124,9 @@ func namedUUID(prefix, name string) string {
 type LiveClient struct {
 	endpoint string
 	client   client.Client
+	// setUUIDs remembers created sets by name, so the request path confirms
+	// one by UUID without reading its row.
+	setUUIDs sync.Map
 }
 
 var _ Client = (*LiveClient)(nil)
@@ -545,7 +549,7 @@ func (c *LiveClient) GetLogicalRouter(ctx context.Context, name string) (*nbdb.L
 		return nil, fmt.Errorf("get logical router: %w", err)
 	}
 	if len(routers) == 0 {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ErrLogicalRouterNotFound, name)
 	}
 	return &routers[0], nil
 }
@@ -1122,6 +1126,18 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 	return &routes[0], nil
 }
 
+func (c *LiveClient) ListStaticRoutes(ctx context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for static route list: %w", err)
+	}
+	routes, err := rowsIn(ctx, c, lr.StaticRoutes, routeStamp)
+	if err != nil {
+		return nil, fmt.Errorf("list static routes: %w", err)
+	}
+	return routes, nil
+}
+
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
 	route, err := c.FindStaticRoute(ctx, routerName, ipPrefix)
 	if err != nil {
@@ -1235,6 +1251,33 @@ func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName s
 		return nil, fmt.Errorf("list LR policies: %w", err)
 	}
 	return policies, nil
+}
+
+func (c *LiveClient) UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, policy.Priority, policy.Match)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
+	}
+	row := *existing
+	row.Action, row.Nexthop, row.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+	row.Options, row.ExternalIDs = policy.Options, policy.ExternalIDs
+	if row.Options == nil {
+		row.Options = map[string]string{}
+	}
+	if row.ExternalIDs == nil {
+		row.ExternalIDs = map[string]string{}
+	}
+	ops, err := c.client.Where(&row).Update(&row, &row.Action, &row.Nexthop, &row.Nexthops, &row.Options, &row.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("update LR policy ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update LR policy transact: %w", err)
+	}
+	return nil
 }
 
 func (c *LiveClient) DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error {
@@ -1455,6 +1498,91 @@ func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresse
 	return created.UUID, nil
 }
 
+// addressSetInsertHook runs between CreateAddressSetIfAbsent's miss and its
+// insert; tests use it to lose the race deterministically.
+var addressSetInsertHook func()
+
+// CreateAddressSetIfAbsent inserts the named set with no addresses unless a row
+// with that name exists. It reads only the set's UUID, never its members, and
+// a lost insert race returns the winner's row untouched.
+func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) (string, error) {
+	if v, ok := c.setUUIDs.Load(name); ok {
+		if uuid, ok := v.(string); ok && c.cachedRow("Address_Set", uuid) {
+			return uuid, nil
+		}
+	}
+	uuid, err := c.selectAddressSetUUID(ctx, name)
+	if err != nil || uuid != "" {
+		return c.rememberSet(name, uuid, err)
+	}
+	if addressSetInsertHook != nil {
+		addressSetInsertHook()
+	}
+	as := &nbdb.AddressSet{
+		UUID:        namedUUID("as_", name),
+		Name:        name,
+		Addresses:   []string{},
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.ensureNamedRowOps("Address_Set", name, as)
+	if err != nil {
+		return "", err
+	}
+	insertErr := c.transactOps(ctx, ops)
+	uuid, err = c.selectAddressSetUUID(ctx, name)
+	switch {
+	case err == nil && uuid == "" && insertErr != nil:
+		return "", fmt.Errorf("create address set %q: %w", name, insertErr)
+	case err == nil && uuid == "":
+		return "", fmt.Errorf("address set %q absent after insert", name)
+	}
+	return c.rememberSet(name, uuid, err)
+}
+
+func (c *LiveClient) rememberSet(name, uuid string, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	c.setUUIDs.Store(name, uuid)
+	return uuid, nil
+}
+
+// cachedRow reports whether the monitor cache holds the row, without copying it.
+func (c *LiveClient) cachedRow(table, uuid string) bool {
+	tc := c.client.Cache()
+	if tc == nil {
+		return false
+	}
+	t := tc.Table(table)
+	return t != nil && t.HasRow(uuid)
+}
+
+// selectAddressSetUUID asks the server for the UUID of the set named name, or
+// "" when there is none; only the _uuid column is returned.
+func (c *LiveClient) selectAddressSetUUID(ctx context.Context, name string) (string, error) {
+	op := ovsdb.Operation{
+		Op:      ovsdb.OperationSelect,
+		Table:   "Address_Set",
+		Where:   []ovsdb.Condition{{Column: "name", Function: ovsdb.ConditionEqual, Value: name}},
+		Columns: []string{"_uuid"},
+	}
+	results, err := c.client.Transact(ctx, op)
+	if err == nil {
+		_, err = ovsdb.CheckOperationResults(results, []ovsdb.Operation{op})
+	}
+	if err != nil {
+		return "", fmt.Errorf("select address set %q: %w", name, err)
+	}
+	if len(results) == 0 || len(results[0].Rows) == 0 {
+		return "", nil
+	}
+	u, ok := results[0].Rows[0]["_uuid"].(ovsdb.UUID)
+	if !ok {
+		return "", fmt.Errorf("select address set %q: no _uuid in reply", name)
+	}
+	return u.GoUUID, nil
+}
+
 // convergeAddressSet updates the row's addresses when they differ from want.
 func (c *LiveClient) convergeAddressSet(ctx context.Context, existing *nbdb.AddressSet, want []string) error {
 	have := slices.Clone(existing.Addresses)
@@ -1636,6 +1764,15 @@ func (c *LiveClient) aclSetUnchanged(ctx context.Context, pg *nbdb.PortGroup, sp
 		rows = append(rows, *acl)
 	}
 	return ACLSetEqual(rows, specs), nil
+}
+
+// ListACLs returns every ACL row in the NB cache.
+func (c *LiveClient) ListACLs(ctx context.Context) ([]nbdb.ACL, error) {
+	var acls []nbdb.ACL
+	if err := c.client.List(ctx, &acls); err != nil {
+		return nil, fmt.Errorf("list ACLs: %w", err)
+	}
+	return acls, nil
 }
 
 // ReplaceACLs atomically swaps the port group's ACL set in one transaction.

@@ -7,6 +7,8 @@ import type {
   Subnet,
   Tag,
   Vpc,
+  VpcEndpoint,
+  VpcPeeringConnection,
 } from "@aws-sdk/client-ec2"
 import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import type { DBInstance } from "@aws-sdk/client-rds"
@@ -14,6 +16,7 @@ import type { DBInstance } from "@aws-sdk/client-rds"
 import type { LayoutDirection } from "@/lib/node-topology"
 import type { Reachability } from "@/lib/reachability"
 import { routeTableFor, subnetType } from "@/lib/subnet-routing"
+import { isLivePeering, peerOf, touchesVpc } from "@/lib/vpc-peering"
 
 // The map never draws more than this, whatever the account holds.
 export const MAP_BUDGET = { cards: 120, edges: 240 }
@@ -32,6 +35,8 @@ export type MapKind =
   | "internet"
   | "igw"
   | "nat"
+  | "pcx"
+  | "vpce"
   | "eip"
   | "vpc"
   | "rds"
@@ -46,6 +51,8 @@ export type MapResource =
   | "routeTables"
   | "internetGateways"
   | "natGateways"
+  | "peeringConnections"
+  | "vpcEndpoints"
   | "addresses"
   | "instances"
   | "loadBalancers"
@@ -101,6 +108,8 @@ export interface NetworkInputs {
   routeTables: RouteTable[]
   internetGateways: InternetGateway[]
   natGateways: NatGateway[]
+  peeringConnections: VpcPeeringConnection[]
+  vpcEndpoints: VpcEndpoint[]
   addresses: Address[]
   instances: Instance[]
   loadBalancers: LoadBalancer[]
@@ -111,7 +120,15 @@ export interface NetworkInputs {
 
 // The resource whose panel draws the map; all but the VPC dim the rest.
 export interface MapFocus {
-  kind: "vpc" | "subnet" | "routeTable" | "igw" | "nat" | "instance"
+  kind:
+    | "vpc"
+    | "subnet"
+    | "routeTable"
+    | "igw"
+    | "nat"
+    | "pcx"
+    | "vpce"
+    | "instance"
   id: string
 }
 
@@ -137,6 +154,8 @@ const KIND_RANK: Record<MapKind, number> = {
   vpc: 0,
   igw: 1,
   nat: 1,
+  pcx: 1,
+  vpce: 1,
   eip: 1,
   subnet: 2,
   instance: 3,
@@ -151,6 +170,7 @@ function byRankThenName(a: Draft, b: Draft): number {
 
 const LIVE_NAT = new Set(["pending", "available"])
 const GONE_INSTANCE = new Set(["terminated", "shutting-down"])
+const GONE_ENDPOINT = new Set(["deleted", "deleting"])
 
 // The cards and lines drawn before the budget decides which are kept.
 interface Sketch {
@@ -274,15 +294,70 @@ function sketchNatGateways(
   }
 }
 
+// A peering connection joins this VPC to another; its routes reach subnets.
+function sketchPeeringConnections(
+  sketch: Sketch,
+  connections: VpcPeeringConnection[],
+) {
+  for (const pcx of connections) {
+    const id = pcx.VpcPeeringConnectionId ?? ""
+    const named = labelled(id, pcx.Tags)
+    const peer = peerOf(pcx, sketch.vpcId)
+
+    sketch.cards.push({
+      id: `pcx:${id}`,
+      kind: "pcx",
+      tier: "gateways",
+      resourceId: id,
+      label: named.label,
+      details: compact([
+        ...named.details,
+        peer?.VpcId && `peer ${peer.VpcId}`,
+        peer?.CidrBlock,
+      ]),
+      rows: [{ label: "Status", value: pcx.Status?.Code ?? "-" }],
+    })
+    link(sketch, `pcx:${id}`, `vpc:${sketch.vpcId}`)
+  }
+}
+
+// A gateway endpoint joins the VPC through its route tables alone, so its
+// only lines are the routes to it.
+function sketchVpcEndpoints(sketch: Sketch, endpoints: VpcEndpoint[]) {
+  for (const endpoint of endpoints) {
+    const id = endpoint.VpcEndpointId ?? ""
+    const named = labelled(id, endpoint.Tags)
+
+    sketch.cards.push({
+      id: `vpce:${id}`,
+      kind: "vpce",
+      tier: "gateways",
+      resourceId: id,
+      label: named.label,
+      details: compact([...named.details, endpoint.ServiceName]),
+      rows: [{ label: "Type", value: endpoint.VpcEndpointType ?? "-" }],
+    })
+  }
+}
+
 // Each route to a gateway is its own line, labelled with its destination.
 function sketchRoutes(sketch: Sketch, subnetCard: string, table: RouteTable) {
   for (const route of table.Routes ?? []) {
-    const label = route.DestinationCidrBlock ?? route.DestinationIpv6CidrBlock
+    const label =
+      route.DestinationCidrBlock ??
+      route.DestinationIpv6CidrBlock ??
+      route.DestinationPrefixListId
 
     if (route.GatewayId?.startsWith("igw-")) {
       link(sketch, `igw:${route.GatewayId}`, subnetCard, { label })
+    } else if (route.GatewayId?.startsWith("vpce-")) {
+      link(sketch, `vpce:${route.GatewayId}`, subnetCard, { label })
     } else if (route.NatGatewayId) {
       link(sketch, `nat:${route.NatGatewayId}`, subnetCard, { label })
+    } else if (route.VpcPeeringConnectionId) {
+      link(sketch, `pcx:${route.VpcPeeringConnectionId}`, subnetCard, {
+        label,
+      })
     }
   }
 }
@@ -465,9 +540,22 @@ function sketchMap(inputs: NetworkInputs): Sketch {
     (i) => i.VpcId === vpcId && !GONE_INSTANCE.has(i.State?.Name ?? ""),
   )
 
+  const peerings = inputs.peeringConnections.filter(
+    (pcx) => touchesVpc(pcx, vpcId) && isLivePeering(pcx),
+  )
+
   sketchFrame(sketch, inputs.vpc)
   sketchInternetGateways(sketch, inputs.internetGateways)
   sketchNatGateways(sketch, nats, subnets, inputs.routeTables)
+  sketchPeeringConnections(sketch, peerings)
+  sketchVpcEndpoints(
+    sketch,
+    inputs.vpcEndpoints.filter(
+      // The wire sends AWS's lowercase states; the SDK's enum is capitalised.
+      (e) =>
+        e.VpcId === vpcId && !GONE_ENDPOINT.has((e.State ?? "").toLowerCase()),
+    ),
+  )
   sketchSubnets(sketch, subnets, inputs.routeTables)
   sketchInstances(sketch, instances)
   sketchLoadBalancers(sketch, inputs.loadBalancers)
@@ -533,7 +621,7 @@ function focusSet(
     return new Set([self, ...mine.map((c) => c.id), ...nats])
   }
 
-  if (focus.kind === "igw") {
+  if (focus.kind === "igw" || focus.kind === "pcx" || focus.kind === "vpce") {
     return new Set([self, ...from(self, isRoute)])
   }
 
@@ -598,7 +686,15 @@ function routeTableSet(
       return [`igw:${r.GatewayId}`]
     }
 
-    return r.NatGatewayId ? [`nat:${r.NatGatewayId}`] : []
+    if (r.GatewayId?.startsWith("vpce-")) {
+      return [`vpce:${r.GatewayId}`]
+    }
+
+    if (r.NatGatewayId) {
+      return [`nat:${r.NatGatewayId}`]
+    }
+
+    return r.VpcPeeringConnectionId ? [`pcx:${r.VpcPeeringConnectionId}`] : []
   })
 
   return new Set([...served.map((c) => c.id), ...targets])
@@ -613,7 +709,9 @@ function claimOrder(
   focused: Set<string>,
 ) {
   const frame = cards
-    .filter((c) => ["internet", "vpc", "igw", "nat"].includes(c.kind))
+    .filter((c) =>
+      ["internet", "vpc", "igw", "nat", "pcx", "vpce"].includes(c.kind),
+    )
     .toSorted(byRankThenName)
 
   const touching = new Set(

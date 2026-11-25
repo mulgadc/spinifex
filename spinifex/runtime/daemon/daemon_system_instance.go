@@ -338,8 +338,10 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	// Add to daemon state so LaunchInstance can find it
 	d.vmMgr.Insert(instance)
 
+	// A VM without a record is invisible to ownership checks and recovery.
 	if err := d.WriteState(); err != nil {
-		slog.Warn("LaunchSystemInstance: failed to write state", "instanceId", instance.ID, "err", err)
+		d.cleanupFailedSystemInstance(instance, instanceType)
+		return nil, fmt.Errorf("write instance record: %w", err)
 	}
 
 	// Subscribe to per-instance NATS topic for terminate commands.
@@ -882,32 +884,6 @@ func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
 func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTypeInfo) {
 	d.releaseSystemInstanceEIP(instance)
 	d.vmMgr.MarkFailed(context.Background(), instance, "system_instance_launch_failed")
-}
-
-// waitPollSleep is the poll delay seam used by WaitForSystemInstance; tests override it.
-var waitPollSleep = time.Sleep
-
-// WaitForSystemInstance polls until the instance reaches running state or times out.
-func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var status vm.InstanceState
-		exists := d.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
-
-		if !exists {
-			return fmt.Errorf("instance %s disappeared", instanceID)
-		}
-
-		switch status {
-		case vm.StateRunning:
-			return nil
-		case vm.StateError, vm.StateShuttingDown, vm.StateTerminated:
-			return fmt.Errorf("instance %s in terminal state: %s", instanceID, status)
-		}
-
-		waitPollSleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
 }
 
 // microvmDir holds the microvm kernel, initramfs and firmware. A variable so

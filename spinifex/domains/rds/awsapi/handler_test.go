@@ -41,6 +41,7 @@ var v1Actions = []string{
 	"CreateDBSnapshot",
 	"DescribeDBSnapshots",
 	"DeleteDBSnapshot",
+	"DescribeDBSnapshotAttributes",
 	"RestoreDBInstanceFromDBSnapshot",
 
 	"DescribeDBInstanceAutomatedBackups",
@@ -106,7 +107,7 @@ func TestHasAction_UnknownAction(t *testing.T) {
 }
 
 func TestDispatch_UnknownAction(t *testing.T) {
-	_, err := Dispatch(t.Context(), "NotAnRDSAction", nil, nil, testCaller, testEnv)
+	_, err := Dispatch(t.Context(), "NotAnRDSAction", "", nil, nil, testCaller, testEnv)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -124,7 +125,7 @@ func TestDispatch_MalformedScalarIsInvalidParameterValue(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), tc.action, tc.query, nil, testCaller, testEnv)
+			_, err := Dispatch(t.Context(), tc.action, "", tc.query, nil, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 		})
@@ -137,7 +138,7 @@ func TestDispatch_OversizedListIsMalformedQueryString(t *testing.T) {
 		query["Tags.Tag."+strconv.Itoa(i)+".Key"] = "key"
 	}
 
-	_, err := Dispatch(t.Context(), "CreateDBInstance", query, nil, testCaller, testEnv)
+	_, err := Dispatch(t.Context(), "CreateDBInstance", "", query, nil, testCaller, testEnv)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
 }
@@ -153,7 +154,7 @@ var liveActions = []string{
 	"CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup",
 	"DescribeDBParameters", "DeleteDBParameterGroup",
 	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
-	"RestoreDBInstanceFromDBSnapshot",
+	"DescribeDBSnapshotAttributes", "RestoreDBInstanceFromDBSnapshot",
 	"DescribeDBInstanceAutomatedBackups",
 	"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions",
 }
@@ -208,6 +209,13 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBSnapshotOutput{DBSnapshot: &rds.DBSnapshot{DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade")}})
 	respondWith(t, nc, rdsinstance.SubjectDescribeDBSnapshots, &rds.DescribeDBSnapshotsOutput{})
 	respondWith(t, nc, rdsinstance.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBSnapshotAttributes, &rds.DescribeDBSnapshotAttributesOutput{
+		DBSnapshotAttributesResult: &rds.DBSnapshotAttributesResult{
+			DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade"),
+			DBSnapshotAttributes: []*rds.DBSnapshotAttribute{
+				{AttributeName: aws.String("restore"), AttributeValues: []*string{}},
+			},
+		}})
 	respondWith(t, nc, rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot,
 		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
 	respondWith(t, nc, rdsinstance.SubjectDescribeDBInstanceAutomatedBackups,
@@ -249,7 +257,7 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for action := range actions {
 		t.Run(action, func(t *testing.T) {
-			body, err := Dispatch(t.Context(), action, dispatchQuery(action), nc, testCaller, testEnv)
+			body, err := Dispatch(t.Context(), action, "", dispatchQuery(action), nc, testCaller, testEnv)
 			if err == nil {
 				assert.NotEmpty(t, body, "a successful action must return an XML body")
 				return
@@ -268,7 +276,7 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, action := range liveActions {
-		body, err := Dispatch(t.Context(), action, dispatchQuery(action), nc, testCaller, testEnv)
+		body, err := Dispatch(t.Context(), action, "", dispatchQuery(action), nc, testCaller, testEnv)
 		require.NoError(t, err, "action %q", action)
 		assert.Contains(t, string(body), "<"+action+"Result", "action %q", action)
 	}
@@ -276,29 +284,27 @@ func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
 
 func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 	for _, action := range outOfScopeActions {
-		_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller, testEnv)
+		_, err := Dispatch(t.Context(), action, "", map[string]string{"Action": action}, nil, testCaller, testEnv)
 		require.Error(t, err, "action %q", action)
 		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(), "action %q", action)
 	}
 }
 
 func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
-	body, err := Dispatch(t.Context(), "DescribeDBInstances",
+	body, err := Dispatch(t.Context(), "DescribeDBInstances", "req-1",
 		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 
 	// The IAM-style envelope the aws-sdk-go query unmarshaler expects, carrying
-	// no instances rather than an error.
-	assert.Equal(t,
-		"<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances></DBInstances>"+
-			"</DescribeDBInstancesResult></DescribeDBInstancesResponse>",
-		string(body))
+	// no instances rather than an error. Sibling order is not stable.
+	assert.Contains(t, string(body), "<DescribeDBInstancesResult><DBInstances></DBInstances></DescribeDBInstancesResult>")
+	assert.Contains(t, string(body), "<ResponseMetadata><RequestId>req-1</RequestId></ResponseMetadata>")
 }
 
 // AWS nests each tag inside the list rather than flattening it, and the SDK's
 // unmarshaler will not find a tag any other way.
 func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
-	body, err := Dispatch(t.Context(), "ListTagsForResource", map[string]string{
+	body, err := Dispatch(t.Context(), "ListTagsForResource", "", map[string]string{
 		"Action":       "ListTagsForResource",
 		"ResourceName": rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 	}, newStubbedNATS(t), testCaller, testEnv)
@@ -311,6 +317,24 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "ListTagsForResourceResult"))
 
 	assert.Equal(t, []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}, out.TagList)
+}
+
+// An unshared snapshot's restore attribute carries an empty value list, which
+// AWS renders as an empty element rather than omitting it.
+func TestDispatch_DescribeDBSnapshotAttributesRendersTheEmptyRestoreList(t *testing.T) {
+	body, err := Dispatch(t.Context(), "DescribeDBSnapshotAttributes", "", map[string]string{
+		"Action":               "DescribeDBSnapshotAttributes",
+		"DBSnapshotIdentifier": "orders-db-pre-upgrade",
+	}, newStubbedNATS(t), testCaller, testEnv)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(body), "<AttributeValues></AttributeValues>")
+	var out rds.DescribeDBSnapshotAttributesOutput
+	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSnapshotAttributesResult"))
+	require.NotNil(t, out.DBSnapshotAttributesResult)
+	assert.Equal(t, "orders-db-pre-upgrade", aws.StringValue(out.DBSnapshotAttributesResult.DBSnapshotIdentifier))
+	require.Len(t, out.DBSnapshotAttributesResult.DBSnapshotAttributes, 1)
+	assert.Equal(t, "restore", aws.StringValue(out.DBSnapshotAttributesResult.DBSnapshotAttributes[0].AttributeName))
 }
 
 // RDS serializes a tag list under its own locationNameList, so the params
@@ -334,7 +358,7 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	arn := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db")
-	_, err = Dispatch(t.Context(), "AddTagsToResource", map[string]string{
+	_, err = Dispatch(t.Context(), "AddTagsToResource", "", map[string]string{
 		"Action":         "AddTagsToResource",
 		"ResourceName":   arn,
 		"Tags.Tag.1.Key": "env", "Tags.Tag.1.Value": "prod",
@@ -370,7 +394,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = Dispatch(t.Context(), "RemoveTagsFromResource", map[string]string{
+	_, err = Dispatch(t.Context(), "RemoveTagsFromResource", "", map[string]string{
 		"Action":           "RemoveTagsFromResource",
 		"ResourceName":     rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 		"TagKeys.member.1": "env",
@@ -384,7 +408,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 // A filtered describe is still an empty result set, not a parse failure: the
 // query params have to survive QueryParamsToStruct into the typed input.
 func TestDispatch_DescribeDBInstancesWithFilters(t *testing.T) {
-	body, err := Dispatch(t.Context(), "DescribeDBInstances", map[string]string{
+	body, err := Dispatch(t.Context(), "DescribeDBInstances", "", map[string]string{
 		"Action":               "DescribeDBInstances",
 		"DBInstanceIdentifier": "orders-db",
 		"MaxRecords":           "20",

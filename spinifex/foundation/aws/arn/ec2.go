@@ -30,6 +30,12 @@ const (
 	EC2NATGateway                EC2ResourceType = "natgateway"
 	EC2KeyPair                   EC2ResourceType = "key-pair"
 	EC2PlacementGroup            EC2ResourceType = "placement-group"
+	EC2VPCPeeringConnection      EC2ResourceType = "vpc-peering-connection"
+	EC2VPCEndpoint               EC2ResourceType = "vpc-endpoint"
+	EC2PrefixList                EC2ResourceType = "prefix-list"
+	EC2TransitGateway            EC2ResourceType = "transit-gateway"
+	EC2TransitGatewayAttachment  EC2ResourceType = "transit-gateway-attachment"
+	EC2TransitGatewayRouteTable  EC2ResourceType = "transit-gateway-route-table"
 )
 
 // Types that carry no id prefix of their own, so they are named by a parameter
@@ -40,8 +46,8 @@ const (
 	EC2SpotInstancesRequest EC2ResourceType = "spot-instances-request"
 )
 
-// Matched in order. No prefix here is a prefix of another, so the order is the
-// tag store's historical one rather than a disambiguation.
+// Matched in order. The tgw- forms are the only prefixes of one another, so
+// the longer ones come first; the rest keep the tag store's historical order.
 var ec2IDPrefixes = []struct {
 	prefix string
 	kind   EC2ResourceType
@@ -62,6 +68,12 @@ var ec2IDPrefixes = []struct {
 	{"nat-", EC2NATGateway},
 	{"key-", EC2KeyPair},
 	{"pg-", EC2PlacementGroup},
+	{"pcx-", EC2VPCPeeringConnection},
+	{"vpce-", EC2VPCEndpoint},
+	{"pl-", EC2PrefixList},
+	{"tgw-attach-", EC2TransitGatewayAttachment},
+	{"tgw-rtb-", EC2TransitGatewayRouteTable},
+	{"tgw-", EC2TransitGateway},
 }
 
 // EC2TypeForID maps an EC2 resource id to its ARN type by prefix. ok is false

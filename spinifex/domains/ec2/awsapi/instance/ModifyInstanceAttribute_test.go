@@ -221,6 +221,25 @@ func TestModifyInstanceAttribute_DaemonError(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
+func TestModifyInstanceAttribute_DaemonErrorKeepsMessage(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	const want = "The instance 'i-running' is not in the 'stopped' state."
+
+	nc.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorIncorrectInstanceState, want))
+	})
+
+	_, err := ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String("i-running"),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, nc, "123456789012")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, code)
+	assert.Equal(t, want, message)
+}
+
 func TestModifyInstanceAttribute_ValidationFailure(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)

@@ -47,6 +47,7 @@ import (
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -55,6 +56,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -4341,10 +4343,9 @@ func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
 	// per-type subscribe loop ran exactly once for the new map state.
 	// Requires a non-nil gpuManager because canAllocate gates GPU types on
 	// availGPU > 0.
-	port := freePortForTest(t)
-	startTestNATSOnPortForTest(t, port)
+	ns := startTestNATSOnPortForTest(t, server.RANDOM_PORT)
 
-	nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", port))
+	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { drainAndClose(t, nc) })
 
@@ -4396,6 +4397,7 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &ec2vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
 		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &ec2routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
 		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &ec2natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
+		{name: "vpcPeeringService", set: func(d *Daemon) { d.vpcPeeringService = &ec2vpcpeering.ServiceImpl{} }, wantMsg: "vpcPeeringService"},
 		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &ec2vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
 		{name: "eipService", set: func(d *Daemon) { d.eipService = &ec2eip.EIPServiceImpl{} }, wantMsg: "eipService"},
 		{name: "accountService", set: func(d *Daemon) { d.accountService = &ec2account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},

@@ -26,6 +26,8 @@ type resourceScope struct {
 	kind     arn.EC2ResourceType
 	byPrefix bool
 	optional bool
+	// owner replaces the caller's account in the ARN of an AWS-owned resource.
+	owner string
 }
 
 // Scopes shared across actions. Names ending in New resolve to <type>/*, which
@@ -86,6 +88,25 @@ var (
 	natGatewayOptScope = &resourceScope{paths: []string{"NatGatewayId"}, kind: arn.EC2NATGateway, optional: true}
 	natGatewayNewScope = &resourceScope{kind: arn.EC2NATGateway}
 
+	vpcPeeringScope    = &resourceScope{paths: []string{"VpcPeeringConnectionId"}, kind: arn.EC2VPCPeeringConnection}
+	vpcPeeringNewScope = &resourceScope{kind: arn.EC2VPCPeeringConnection}
+
+	tgwScope              = &resourceScope{paths: []string{"TransitGatewayId"}, kind: arn.EC2TransitGateway}
+	tgwOptScope           = &resourceScope{paths: []string{"TransitGatewayId"}, kind: arn.EC2TransitGateway, optional: true}
+	tgwNewScope           = &resourceScope{kind: arn.EC2TransitGateway}
+	tgwAttachmentScope    = &resourceScope{paths: []string{"TransitGatewayAttachmentId"}, kind: arn.EC2TransitGatewayAttachment}
+	tgwAttachmentNewScope = &resourceScope{kind: arn.EC2TransitGatewayAttachment}
+	subnetListScope       = &resourceScope{paths: []string{"SubnetIds"}, kind: arn.EC2Subnet}
+
+	vpcEndpointScope     = &resourceScope{paths: []string{"VpcEndpointId"}, kind: arn.EC2VPCEndpoint}
+	vpcEndpointListScope = &resourceScope{paths: []string{"VpcEndpointIds"}, kind: arn.EC2VPCEndpoint}
+	vpcEndpointNewScope  = &resourceScope{kind: arn.EC2VPCEndpoint}
+	routeTableListOpt    = &resourceScope{paths: []string{"RouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+	routeTableAddOpt     = &resourceScope{paths: []string{"AddRouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+	routeTableRemoveOpt  = &resourceScope{paths: []string{"RemoveRouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+
+	prefixListScope = &resourceScope{paths: []string{"PrefixListId"}, kind: arn.EC2PrefixList, owner: "aws"}
+
 	keyPairScope    = &resourceScope{paths: []string{"KeyPairId", "KeyName"}, kind: arn.EC2KeyPair}
 	keyPairOptScope = &resourceScope{paths: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
 
@@ -134,8 +155,10 @@ var ec2Scopes = map[string][]*resourceScope{
 	"UnmonitorInstances":            {instanceListScope},
 	"ModifyInstanceAttribute":       {instanceScope},
 	"ModifyInstanceMetadataOptions": {instanceScope},
+	"ResetInstanceAttribute":        {instanceScope},
 	"GetConsoleOutput":              {instanceScope},
 	"GetPasswordData":               {instanceScope},
+	"GetInstanceUefiData":           {instanceScope},
 	"AssociateIamInstanceProfile":   {instanceScope},
 
 	// The association id needs a NATS lookup to reach the instance behind it, so
@@ -151,16 +174,23 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DetachVolume":   {volumeScope, instanceOptScope},
 	"CreateSnapshot": {snapshotNewScope, volumeScope},
 	"DeleteSnapshot": {snapshotScope},
+	// Unlike the other describes, AWS scopes these two to the resource.
+	"DescribeVolumeAttribute":   {volumeScope},
+	"DescribeSnapshotAttribute": {snapshotScope},
 	// The source snapshot lives in SourceRegion, so an ARN built from gw.Region
 	// would name a resource in the wrong region.
 	"CopySnapshot": {snapshotNewScope},
 
 	// Images.
-	"CreateImage":          {imageNewScope, instanceScope},
-	"RegisterImage":        {imageNewScope},
-	"DeregisterImage":      {imageScope},
-	"ModifyImageAttribute": {imageScope},
-	"ResetImageAttribute":  {imageScope},
+	"CreateImage":                          {imageNewScope, instanceScope},
+	"RegisterImage":                        {imageNewScope},
+	"DeregisterImage":                      {imageScope},
+	"ModifyImageAttribute":                 {imageScope},
+	"ResetImageAttribute":                  {imageScope},
+	"EnableImageDeregistrationProtection":  {imageScope},
+	"DisableImageDeregistrationProtection": {imageScope},
+	"EnableImageDeprecation":               {imageScope},
+	"DisableImageDeprecation":              {imageScope},
 	// Source image is in SourceRegion, as with CopySnapshot.
 	"CopyImage": {imageNewScope},
 
@@ -180,8 +210,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	// Route tables.
 	"CreateRouteTable":             {routeTableNewScope, vpcScope},
 	"DeleteRouteTable":             {routeTableScope},
-	"CreateRoute":                  {routeTableScope, gatewayOptScope, natGatewayOptScope},
-	"ReplaceRoute":                 {routeTableScope, gatewayOptScope},
+	"CreateRoute":                  {routeTableScope, gatewayOptScope, natGatewayOptScope, tgwOptScope},
+	"ReplaceRoute":                 {routeTableScope, gatewayOptScope, tgwOptScope},
 	"DeleteRoute":                  {routeTableScope},
 	"AssociateRouteTable":          {routeTableScope, subnetOptScope, gatewayOptScope},
 	"ReplaceRouteTableAssociation": {routeTableScope},
@@ -197,11 +227,29 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DeleteEgressOnlyInternetGateway": {eigwScope},
 	"CreateNatGateway":                {natGatewayNewScope, subnetScope, addressOptScope},
 	"DeleteNatGateway":                {natGatewayScope},
+	// Accept's accepter VPC needs a lookup, which Dispatch adds.
+	"CreateVpcPeeringConnection":        {vpcPeeringNewScope, vpcScope},
+	"AcceptVpcPeeringConnection":        {vpcPeeringScope},
+	"RejectVpcPeeringConnection":        {vpcPeeringScope},
+	"DeleteVpcPeeringConnection":        {vpcPeeringScope},
+	"ModifyVpcPeeringConnectionOptions": {vpcPeeringScope},
+
+	"CreateTransitGateway":              {tgwNewScope},
+	"DeleteTransitGateway":              {tgwScope},
+	"CreateTransitGatewayVpcAttachment": {tgwAttachmentNewScope, tgwScope, vpcScope, subnetListScope},
+	"DeleteTransitGatewayVpcAttachment": {tgwAttachmentScope},
+
+	// VPC endpoints and the managed prefix list.
+	"CreateVpcEndpoint":           {vpcEndpointNewScope, vpcScope, routeTableListOpt},
+	"ModifyVpcEndpoint":           {vpcEndpointScope, routeTableAddOpt, routeTableRemoveOpt},
+	"DeleteVpcEndpoints":          {vpcEndpointListScope},
+	"GetManagedPrefixListEntries": {prefixListScope},
 
 	// Network interfaces.
 	"CreateNetworkInterface":          {eniNewScope, subnetScope, securityGroupsOptList},
 	"DeleteNetworkInterface":          {eniScope},
 	"ModifyNetworkInterfaceAttribute": {eniScope},
+	"ResetNetworkInterfaceAttribute":  {eniScope},
 	"AttachNetworkInterface":          {eniScope, instanceScope},
 	// Carries only an attachment id, which needs a lookup to reach the interface.
 	"DetachNetworkInterface": unscoped,
@@ -258,6 +306,11 @@ var ec2Scopes = map[string][]*resourceScope{
 	"EnableSerialConsoleAccess":     unscoped,
 	"DisableSerialConsoleAccess":    unscoped,
 	"GetSerialConsoleAccessStatus":  unscoped,
+	"GetDefaultCreditSpecification": unscoped,
+	"DescribeIdFormat":              unscoped,
+	"DescribeIdentityIdFormat":      unscoped,
+	"DescribeAggregateIdFormat":     unscoped,
+	"DescribePrincipalIdFormat":     unscoped,
 
 	// Describes. "*" is fidelity, not a stub: EC2 describe actions do not
 	// support resource-level permissions in AWS either.
@@ -281,6 +334,10 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeLaunchTemplateVersions":         unscoped,
 	"DescribeLaunchTemplates":                unscoped,
 	"DescribeNatGateways":                    unscoped,
+	"DescribeVpcPeeringConnections":          unscoped,
+	"DescribeTransitGateways":                unscoped,
+	"DescribeTransitGatewayVpcAttachments":   unscoped,
+	"DescribeNetworkInterfaceAttribute":      unscoped,
 	"DescribeNetworkInterfaces":              unscoped,
 	"DescribePlacementGroups":                unscoped,
 	"DescribeRegions":                        unscoped,
@@ -296,6 +353,9 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeVolumesModifications":           unscoped,
 	"DescribeVpcAttribute":                   unscoped,
 	"DescribeVpcEndpoints":                   unscoped,
+	"DescribeVpcEndpointServices":            unscoped,
+	"DescribeManagedPrefixLists":             unscoped,
+	"DescribePrefixLists":                    unscoped,
 	"DescribeVpcs":                           unscoped,
 }
 
@@ -346,6 +406,9 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 
 // resolve returns the ARNs one scope contributes, which may be none.
 func (s *resourceScope) resolve(region, accountID string, input any) ([]string, error) {
+	if s.owner != "" {
+		accountID = s.owner
+	}
 	if len(s.paths) == 0 {
 		if s.kind == "" {
 			return []string{anyResource}, nil

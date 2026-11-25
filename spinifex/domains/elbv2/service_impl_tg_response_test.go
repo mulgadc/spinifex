@@ -32,11 +32,30 @@ func TestTargetGroup_IpAddressTypeDefaultsToIPv4(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out.TargetGroups[0].IpAddressType)
 	assert.Equal(t, "ipv4", *out.TargetGroups[0].IpAddressType)
-	assert.Empty(t, out.TargetGroups[0].LoadBalancerArns)
 
 	tg := describeTG(t, svc, *out.TargetGroups[0].TargetGroupArn)
 	require.NotNil(t, tg.IpAddressType)
 	assert.Equal(t, "ipv4", *tg.IpAddressType)
+}
+
+// AWS omits LoadBalancerArns from CreateTargetGroup but returns an empty list
+// from DescribeTargetGroups; a nil slice is what drops the XML element.
+func TestCreateTargetGroup_OmitsLoadBalancerArns(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	input := &elbv2.CreateTargetGroupInput{Name: aws.String("omit-lbarns")}
+
+	out, err := svc.CreateTargetGroup(context.Background(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, out.TargetGroups[0].LoadBalancerArns)
+
+	again, err := svc.CreateTargetGroup(context.Background(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, again.TargetGroups[0].LoadBalancerArns)
+
+	lbArns := describeTG(t, svc, *out.TargetGroups[0].TargetGroupArn).LoadBalancerArns
+	assert.NotNil(t, lbArns)
+	assert.Empty(t, lbArns)
 }
 
 func TestCreateTargetGroup_IpAddressType(t *testing.T) {

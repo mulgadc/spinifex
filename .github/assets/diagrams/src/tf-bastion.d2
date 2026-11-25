@@ -1,0 +1,36 @@
+...@style
+direction: right
+
+operator: Operator {class: person}
+
+region: "Region" {
+  class: region
+
+  vpc: "VPC 10.20.0.0/16" {
+    class: vpc
+
+    igw: "Internet gateway" {class: igw}
+
+    az: Availability Zone {
+      class: az
+      public: "Public subnet\n10.20.1.0/24" {
+        class: public-subnet
+        bastion: "EC2 instance\nbastion host" {class: instance}
+      }
+      private: "Private subnet\n10.20.2.0/24" {
+        class: private-subnet
+        app: "EC2 instance\napp server" {class: instance}
+      }
+    }
+
+    vpce: "VPC endpoint\nS3 gateway" {class: endpoint}
+  }
+
+  s3: "S3 API\nPredastore" {class: bucket}
+}
+
+operator -> region.vpc.igw: "SSH" {class: flow}
+region.vpc.igw -> region.vpc.az.public.bastion: {class: flow}
+region.vpc.az.public.bastion -> region.vpc.az.private.app: "SSH" {class: flow}
+region.vpc.az.private.app -> region.vpc.vpce: "S3" {class: flow}
+region.vpc.vpce -> region.s3: {class: flow}

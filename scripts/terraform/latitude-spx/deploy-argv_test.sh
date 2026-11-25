@@ -11,6 +11,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin" "$work/home"
 real_python="$(command -v python3)"
+real_tofu="$(command -v tofu || true)"
 
 AUTH=FAKEAUTHTOKEN9
 NODE=FAKENODETOKEN7
@@ -26,6 +27,7 @@ if [ ! -t 0 ]; then
     [ -z "$in" ] || echo "$(basename "$0") stdin: $in" >> "$FAKE_STDIN"
 fi
 case "$(basename "$0")" in
+    tofu) case "$*" in *console*) printf '%s\n' "${FAKE_TF_COUNT-1}" ;; esac ;;
     curl) printf '{"data":[{"attributes":{"token_last_slice":"%s","read_only":false}}]}\n200' "$(printf '%s' "$FAKE_NODE" | tail -c 5)" ;;
     ssh)
         if [ -n "${FAKE_SSH_EVAL:-}" ]; then
@@ -100,10 +102,53 @@ check_result() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: wa
 check_result "three nodes without --distro stop" "$( (NODES=3 DISTRO="" require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
 check_result "three nodes with --distro go on" "$( (NODES=3 DISTRO=/tmp/x.tar.gz require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" ran
 check_result "one node without --distro goes on" "$( (NODES=1 DISTRO="" require_branch_build) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with one address goes on" "$( (NODES=1 TF_VAR_elastic_ip_count=1 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with no setting goes on" "$( (NODES=1 TF_VAR_elastic_ip_count="" require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
-check_result "one node with two addresses stops" "$( (NODES=1 TF_VAR_elastic_ip_count=2 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
-check_result "three nodes with three addresses go on" "$( (NODES=3 TF_VAR_elastic_ip_count=3 require_one_address) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+# The effective count is read from Terraform, and a count of 0 is refused before anything is applied.
+# shellcheck disable=SC2034 # read by the sourced functions
+TF_BIN=tofu SCRIPT_DIR="$work" TF_STATE="$work/x.tfstate" NAME=t1 SITE=DAL PLAN=p OS=o PROJECT="" PROJECT_ID="" SSH_KEY="$work/k"
+check_result "a count of 1 goes on" "$( (FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 3 goes on" "$( (FAKE_TF_COUNT=3 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "a count of 0 stops" "$( (FAKE_TF_COUNT=0 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "a count that cannot be read stops" "$( (FAKE_TF_COUNT="" require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "one node with one address goes on" "$( (NODES=1 FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+check_result "one node with two addresses stops" "$( (NODES=1 FAKE_TF_COUNT=2 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+check_result "three nodes with three addresses go on" "$( (NODES=3 FAKE_TF_COUNT=3 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" ran
+for v in TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply; do
+    check_result "$v set stops" "$( (export "$v=-var elastic_ip_count=0"; FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)" stopped
+done
+# preflight reads the count only while the terraform step is not recorded, and reads it before anything else.
+mkdir -p "$work/state"
+# shellcheck disable=SC2034 # read by the sourced functions
+STATE_DIR="$work/state" DISTRO=/tmp/x.tar.gz
+got="$( (FAKE_TF_COUNT=0 preflight) 2>&1 || true)"
+check_result "preflight stops on a count of 0" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 1
+got="$( (FAKE_TF_COUNT=1 preflight) 2>&1 || true)"
+check_result "preflight goes past a count of 1" "$(grep -c 'SSH key' <<<"$got" || true)" 1
+: > "$work/state/step.terraform"
+got="$( (FAKE_TF_COUNT=0 preflight) 2>&1 || true)"
+check_result "preflight does not read the count once the terraform step is recorded" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 0
+rm -f "$work/state/step.terraform"
+: > "$FAKE_ARGV"
+(FAKE_TF_COUNT=1 require_effective_count) >/dev/null 2>&1 || true
+check_result "the read adds no -var for the count" "$(grep -c 'elastic_ip_count' "$FAKE_ARGV" || true)" 0
+check_result "the read is a console and no apply" "$(grep -c '^tofu .*\(apply\|destroy\)' "$FAKE_ARGV" || true)" 0
+# A count set in terraform.tfvars is seen as Terraform sees it, which the stand-in cannot show: the real
+# binary reads the module copy. Skipped, and said so, where no tofu or no provider is available.
+if [ -n "$real_tofu" ]; then
+    mkdir "$work/mod"
+    cp "$here"/*.tf "$work/mod/"
+    if (cd "$work/mod" && "$real_tofu" init -backend=false -input=false >/dev/null 2>&1); then
+        echo 'elastic_ip_count = 0' > "$work/mod/terraform.tfvars"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_effective_count) 2>&1 || true)"
+        check_result "a count of 0 in terraform.tfvars stops" "$(grep -c 'elastic_ip_count is 0' <<<"$got" || true)" 1
+        echo 'elastic_ip_count = 2' > "$work/mod/terraform.tfvars"
+        got="$( (TF_BIN="$real_tofu" SCRIPT_DIR="$work/mod" TF_STATE="$work/mod/x.tfstate" require_effective_count) >/dev/null 2>&1 && echo ran || echo stopped)"
+        check_result "a count of 2 in terraform.tfvars goes on" "$got" ran
+    else
+        echo "skip a count in terraform.tfvars: tofu could not initialise the module here"
+    fi
+else
+    echo "skip a count in terraform.tfvars: no tofu on the PATH"
+fi
 printf 'binary with latitude_elastic_ip_ids inside\n' > "$work/spx-new"
 printf 'binary of a release\n' > "$work/spx-old"
 SPX_BIN="$work/spx-new"
@@ -224,5 +269,25 @@ check_result "three nodes get the latitude pool" "$(grep -c 'source             
 extract configure_latitude_pool | python3 -I - proj_1 eip_1,eip_2 node1=sv_1,node2=sv_2,node3=sv_3
 check_result "writing the config again changes nothing" "$(grep -c 'imds_host_meta_ip' "$cfg")" 1
 unset FAKE_SSH_EVAL
+
+# Node addresses and server IDs stay paired by index, in node order.
+node_field() {
+    case "$1" in
+        public_ip) printf '%s\n' 203.0.113.11 203.0.113.12 203.0.113.13 ;;
+        provider_host_id) printf '%s\n' sv_a sv_b sv_c ;;
+    esac
+}
+load_nodes
+check_result "three addresses are read in order" "${IPS[*]}" "203.0.113.11 203.0.113.12 203.0.113.13"
+check_result "server IDs are read in order" "${IDS[*]}" "sv_a sv_b sv_c"
+check_result "address and server ID stay paired" "${IPS[1]} ${IDS[1]}" "203.0.113.12 sv_b"
+check_result "the last address pairs with the last ID" "${IPS[2]} ${IDS[2]}" "203.0.113.13 sv_c"
+
+# A lower-case --site reaches Terraform in upper case.
+printf '#!/bin/sh\necho "$*" >> "%s/tfargs"\n' "$work" > "$work/bin/tofu"
+chmod +x "$work/bin/tofu"
+: > "$work/tfargs"
+(set -- up --site lon2; source "$here/deploy-latitude.sh"; tf plan) >/dev/null 2>&1 || true
+check_result "--site lon2 reaches Terraform as LON2" "$(grep -c -- '-var site=LON2' "$work/tfargs" || true)" 1
 
 [ "$fails" -eq 0 ]

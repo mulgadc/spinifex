@@ -58,6 +58,13 @@ func TestValidateDeleteRequest_FinalSnapshotChoiceMessages(t *testing.T) {
 	assert.EqualError(t, err, "Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified: InvalidParameterCombination")
 }
 
+// The handler leaves the tail of the teardown to the reconciler, so the end
+// state of a delete is the one after its next pass.
+func (h *lifecycleHarness) convergeDelete(t *testing.T) {
+	t.Helper()
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
+}
+
 func skipFinalSnapshot() *rds.DeleteDBInstanceInput {
 	return &rds.DeleteDBInstanceInput{
 		DBInstanceIdentifier: aws.String(testDBID),
@@ -78,6 +85,7 @@ func TestDeleteDBInstance_TearsDownEverythingItOwns(t *testing.T) {
 
 	out, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	// Answered with the last state it held, as AWS does.
 	assert.Equal(t, string(StatusDeleting), aws.StringValue(out.DBInstance.DBInstanceStatus))
@@ -171,6 +179,43 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 	assert.Equal(t, "vol-rdsdata01", snapshot.SourceVolumeID)
 }
 
+// AWS gives the final snapshot the instance's tags only under
+// CopyTagsToSnapshot; without it the snapshot's TagList is empty.
+func TestDeleteDBInstance_FinalSnapshotCopiesTagsOnlyUnderCopyTagsToSnapshot(t *testing.T) {
+	t.Parallel()
+	instanceTags := map[string]string{"awsdiff": "run", "Name": "orders-db"}
+	for _, copyTags := range []bool{false, true} {
+		t.Run(fmt.Sprintf("CopyTagsToSnapshot=%t", copyTags), func(t *testing.T) {
+			t.Parallel()
+			h := newLifecycleHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = instanceTags
+			rec.CopyTagsToSnapshot = copyTags
+			seedInstance(t, h.svc, rec)
+
+			_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+				DBInstanceIdentifier:      aws.String(testDBID),
+				FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+
+			out, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
+				DBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, out.DBSnapshots, 1)
+			got := out.DBSnapshots[0]
+			assert.Equal(t, SnapshotTypeManual, aws.StringValue(got.SnapshotType))
+			assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(got.Status))
+			if copyTags {
+				assert.Equal(t, tagsToAWS(instanceTags), got.TagList)
+			} else {
+				assert.Equal(t, []*rds.Tag{}, got.TagList, "AWS sends an empty TagList, not none")
+			}
+		})
+	}
+}
+
 func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
@@ -237,6 +282,7 @@ func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T)
 		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
 	}, testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	assert.Empty(t, h.volumes.deleted, "a volume a snapshot references must not be deleted")
 	retained, found := h.retainedVolume(t, "vol-rdsdata01")
@@ -322,6 +368,7 @@ func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *te
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	retained, found := h.retainedVolume(t, "vol-rdsdata01")
 	require.True(t, found, "a volume the store refused to delete must be recorded, not forgotten")
@@ -478,6 +525,7 @@ func TestDeleteDBInstance_TerminatesAStoppedVMFromItsRecord(t *testing.T) {
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	assert.Equal(t, []string{
 		"detach-stopped:" + testInstance + ":vol-rdsdata01",
@@ -622,4 +670,28 @@ func TestFailTransition_KeepsAnAcceptedDelete(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Equal(t, StatusDeleting, h.record(t).Status)
+}
+
+// A delete that handed off and then failed is retried with a final snapshot; a
+// reconciler pass inside the new handler's claim must not release the volume.
+func TestS7_RetriedDeleteKeepsTheVolumeUntilItsFinalSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusFailed
+	rec.TeardownHandedOff = true
+	seedInstance(t, h.svc, rec)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	h.snaps.beforeCreate = func() {
+		_, err := testReconciler(t, h.svc, "node-a").reconcileInstance(t.Context(), kv, testAccountID, testDBID)
+		assert.NoError(t, err)
+	}
+
+	_, err = h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, h.volumes.deleted, "the volume must outlive the cut of its final snapshot")
 }

@@ -302,7 +302,7 @@ NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh sc
 # suite rather than the first, and -Otarget keeps each suite's output together.
 SHELL_SUITES := $(addprefix shell-suite/,$(sort $(shell find build/scripts -name '*_test.sh'; \
 	find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh'; \
-	find scripts/terraform/latitude-spx .github/scripts -maxdepth 1 -name '*_test.sh')))
+	find scripts/terraform/latitude-spx scripts/terraform/oci-spx .github/scripts -maxdepth 1 -name '*_test.sh')))
 .PHONY: $(SHELL_SUITES)
 $(SHELL_SUITES): shell-suite/%:
 	@t=$*; log=$$(mktemp); trap 'rm -f "$$log"' EXIT; $(_RUNSH)
@@ -315,6 +315,9 @@ test-build-scripts:
 		.github/scripts/go-build-cache.sh \
 		.github/scripts/e2e-select.sh \
 		.github/scripts/e2e-shard.sh \
+		.github/scripts/e2e-suite-shard.sh \
+		.github/scripts/go-pkg-shard.sh \
+		.github/scripts/go-pkg-shard-union.sh \
 		.github/scripts/hv-lock.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
@@ -366,6 +369,14 @@ generate-aws-model-coverage:
 aws-model-coverage: generate-aws-model-coverage
 	@go run ./cmd/aws-model-coverage
 
+# Docs diagrams: render .github/assets/diagrams/src/*.d2 to SVG. Needs d2 v0.7.1
+# on PATH or in D2_BIN. diagrams-check fails when a committed SVG is stale.
+diagrams:
+	@scripts/render-diagrams.sh
+
+diagrams-check:
+	@scripts/render-diagrams.sh --check
+
 # Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
 # checked out alongside spinifex (see internal/testkit/segscanoracle), which
 # is not the default local or CI layout, so this is a separate target from
@@ -387,15 +398,32 @@ GOTESTFLAGS ?=
 
 # Run unit tests with coverage profile
 COVERPROFILE ?= coverage.out
+# The packages test-cover and test-race run; CI shards this same list.
+GO_TEST_PKGS := ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/...
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic $(GO_TEST_PKGS) $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
+
+# One CI shard of test-cover: the packages listed one per line in PKGS_FILE,
+# with no total-coverage gate, which runs once on the merged profile.
+test-cover-pkgs:
+	@test -s "$(PKGS_FILE)" || { echo "test-cover-pkgs: PKGS_FILE is empty or unset"; exit 1; }
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic $$(cat "$(PKGS_FILE)") $(_COVQ)
+
+# Print the package list test-cover runs, one import path per line.
+list-test-pkgs:
+	@go list $(GO_TEST_PKGS)
 
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s $(GO_TEST_PKGS) $(_RACEQ)
+
+# One CI shard of test-race: the packages listed one per line in PKGS_FILE.
+test-race-pkgs:
+	@test -s "$(PKGS_FILE)" || { echo "test-race-pkgs: PKGS_FILE is empty or unset"; exit 1; }
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s $$(cat "$(PKGS_FILE)") $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
@@ -460,23 +488,23 @@ fuzz:
 	done
 
 # Fast iteration: build + install binary + restart all services.
-# Microvm artifacts are reinstalled when they already exist on disk — the rule's
-# input timestamps drive a rebuild only if anything actually changed. On a fresh
-# checkout (no build/microvm/vmlinuz yet) the install step is skipped; run
-# `make install-microvm` explicitly the first time. They go in before the
-# preflight, which checks the microvm firmware.
+# Microvm artifacts are reinstalled when they already exist on disk; on a fresh
+# checkout run `make install-microvm` first. They go in before the gate, whose
+# firmware check needs them, so a rejected deploy may already have replaced them.
+# The gate runs the new bin/spx without the running-binary check, since every
+# service is on the old build until the restart; deploy-verify runs it after.
 deploy: build
-	sudo install -m 755 bin/spx /usr/local/bin/spx
 	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
 		$(MAKE) install-microvm; \
 	else \
 		echo "[deploy] microvm artifacts absent — run 'make install-microvm' for first-time setup"; \
 	fi
 	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
-		if ! sudo /usr/local/bin/spx admin preflight; then \
+		if ! sudo ./bin/spx admin preflight --skip-running-binaries; then \
 			echo ""; \
 			echo "[deploy] host-asset preflight failed: this node's helper scripts, sudoers"; \
-			echo "  grants, QEMU or microvm firmware don't match the binary just installed. Remediate with:"; \
+			echo "  grants, QEMU or microvm firmware don't match the binary being deployed."; \
+			echo "  /usr/local/bin/spx was not replaced and services were not restarted. Remediate with:"; \
 			echo "    scripts/update-nodes.sh   (from the mulga root)"; \
 			echo "  or:"; \
 			echo "    make reinstall"; \
@@ -486,8 +514,27 @@ deploy: build
 	else \
 		echo "[deploy] SKIP_ASSET_PREFLIGHT=1 — skipping host-asset preflight"; \
 	fi
+	sudo install -m 755 bin/spx /usr/local/bin/spx
 	sudo systemctl daemon-reload
 	sudo systemctl restart spinifex.target
+	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
+		if ! $(MAKE) --no-print-directory deploy-verify; then \
+			echo "[deploy] the new spx is installed and spinifex.target was restarted."; \
+			exit 1; \
+		fi; \
+	fi
+
+# Full preflight against the installed spx: after a restart, a Stale service row
+# means that service is still executing a replaced binary.
+deploy-verify:
+	@if ! sudo /usr/local/bin/spx admin preflight; then \
+		echo ""; \
+		echo "[deploy-verify] preflight against the installed spx found problems (table above)."; \
+		echo "  A Stale service row is still executing a replaced binary: restart spinifex.target,"; \
+		echo "  then check it with:"; \
+		echo "    systemctl status 'spinifex-*'"; \
+		exit 1; \
+	fi
 
 # Re-run setup.sh after changing systemd units, helper scripts, or logrotate config.
 # Not needed for code-only changes — use deploy for those.
@@ -606,7 +653,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm deploy deploy-verify go_build preflight test test-cover test-cover-pkgs list-test-pkgs test-race test-race-pkgs diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage diagrams diagrams-check test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

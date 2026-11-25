@@ -130,39 +130,7 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 // issuers, and the EKS NATS URL. Precedence: mgmt-dedicated AWSGW IP →
 // AdvertiseIP → br-mgmt IP → DevNetworking → AWSGW bind IP. Returns "".
 func (d *Daemon) resolveGatewayHost() string {
-	return gatewayHostForNode(*d.config, d.mgmtBridgeIP)
-}
-
-// gatewayHostForNode is resolveGatewayHost's precedence, factored out as a
-// pure function of one node's config plus a mgmt-bridge IP. resolveGatewayHost
-// supplies its own live-detected d.mgmtBridgeIP for the local node; the
-// service-endpoint desired-set builder calls this for every node in the
-// cluster (runtime/daemon/dns_reconcile.go), passing "" for peers since their
-// mgmt-bridge IP is host-local and never gossiped — the same limitation
-// NameserverSeeds and ResolverNameserverIPs already accept for peers.
-func gatewayHostForNode(node config.Config, mgmtBridgeIP string) string {
-	awsgwBindIP := ""
-	if node.AWSGW.Host != "" {
-		if h, _, splitErr := net.SplitHostPort(node.AWSGW.Host); splitErr == nil {
-			awsgwBindIP = h
-		}
-	}
-	advertiseIP := node.AdvertiseIP
-
-	switch {
-	case mgmtBridgeIP != "" && awsgwBindIP != "" && awsgwBindIP != "0.0.0.0" &&
-		!net.ParseIP(awsgwBindIP).IsLoopback() && awsgwBindIP != advertiseIP:
-		return awsgwBindIP
-	case advertiseIP != "" && advertiseIP != "0.0.0.0":
-		return advertiseIP
-	case mgmtBridgeIP != "":
-		return mgmtBridgeIP
-	case node.Daemon.DevNetworking:
-		return "10.0.2.2"
-	case awsgwBindIP != "" && awsgwBindIP != "0.0.0.0":
-		return awsgwBindIP
-	}
-	return ""
+	return config.GatewayHostForNode(*d.config, d.mgmtBridgeIP)
 }
 
 // resolveGatewayBaseURL returns the HTTPS AWSGW base URL for EKS OIDC.

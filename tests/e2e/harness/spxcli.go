@@ -56,6 +56,10 @@ func spxChildEnv() []string {
 		}
 		out = append(out, kv)
 	}
+	// Remote admin commands sign with the same profile the harness clients use.
+	if os.Getenv("AWS_PROFILE") == "" {
+		out = append(out, "AWS_PROFILE=spinifex")
+	}
 	return out
 }
 

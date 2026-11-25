@@ -597,6 +597,59 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Len(t, reg.deregistered, 1)
 }
 
+// StopTask records AWS's stop fields when it accepts the stop, and they survive
+// both agent reports: the exit-wait report carrying the exit code and the stop
+// reap's report that carries none.
+func TestService_StopTask_RecordsStopFieldsAndExitCode(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	task := &TaskRecord{
+		TaskID: "t-5", Cluster: "web", ContainerInstanceID: "i-1",
+		LastStatus: TaskStatusRunning, DesiredStatus: TaskStatusRunning,
+		Tags:       map[string]string{"env": "prod"},
+		Containers: []ContainerState{{Name: "app", Status: TaskStatusRunning}},
+	}
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-5"), task))
+
+	out, err := svc.StopTask(t.Context(), &ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-5"), Reason: aws.String("bye"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "bye", aws.StringValue(out.Task.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(out.Task.StopCode))
+	require.NotNil(t, out.Task.StoppingAt)
+	stoppingAt := *out.Task.StoppingAt
+	assert.Nil(t, out.Task.ExecutionStoppedAt)
+	assert.NotNil(t, out.Task.Tags)
+	assert.Empty(t, out.Task.Tags)
+
+	exit := 0
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "container app exited (0)",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
+	}))
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "bye",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped}},
+	}))
+
+	dt, err := svc.DescribeTasks(t.Context(), &ecs.DescribeTasksInput{
+		Cluster: aws.String("web"), Tasks: []*string{aws.String("t-5")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, dt.Tasks, 1)
+	got := dt.Tasks[0]
+	assert.Equal(t, "bye", aws.StringValue(got.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(got.StopCode))
+	assert.Equal(t, stoppingAt, aws.TimeValue(got.StoppingAt))
+	require.NotNil(t, got.ExecutionStoppedAt)
+	assert.False(t, got.ExecutionStoppedAt.Before(stoppingAt))
+	require.Len(t, got.Containers, 1)
+	assert.Equal(t, int64(0), aws.Int64Value(got.Containers[0].ExitCode))
+	assert.NotNil(t, got.Containers[0].ExitCode)
+}
+
 func TestService_StopTask_NotFound(t *testing.T) {
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
@@ -659,4 +712,62 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 		TaskID: "t-1", LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.5", 80)}, reg.deregistered)
+}
+
+func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T) {
+	cases := map[string]func(*ecs.CreateServiceInput){
+		"desiredCount":   func(in *ecs.CreateServiceInput) { in.DesiredCount = aws.Int64(3) },
+		"taskDefinition": func(in *ecs.CreateServiceInput) { in.TaskDefinition = aws.String("other") },
+		"tags":           func(in *ecs.CreateServiceInput) { in.Tags = nil },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, _, kv := serviceTestRig(t)
+			registerTaskDef(t, svc, "other", 128, 256)
+			input := func() *ecs.CreateServiceInput {
+				return &ecs.CreateServiceInput{
+					Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+					DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+					Tags: []*ecs.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+				}
+			}
+			_, err := svc.CreateService(t.Context(), input(), testAccountID)
+			require.NoError(t, err)
+			var before ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &before)
+			require.NoError(t, err)
+
+			repeat := input()
+			change(repeat)
+			_, err = svc.CreateService(t.Context(), repeat, testAccountID)
+			assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
+
+			var after ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &after)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
+}
+
+func TestService_CreateService_SameTokenAndParametersReplays(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	input := &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+	}
+	first, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	again, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, aws.StringValue(first.Service.ServiceArn), aws.StringValue(again.Service.ServiceArn))
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "s")
+	require.NoError(t, err)
+	assert.Len(t, tasks, 1, "a replay launches no further tasks")
+
+	// The same parameters under another token are a different request.
+	input.ClientToken = aws.String("tok-2")
+	_, err = svc.CreateService(t.Context(), input, testAccountID)
+	assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
 }

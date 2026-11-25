@@ -282,7 +282,7 @@ func (s *Service) DeleteHostedZone(ctx context.Context, in *route53.DeleteHosted
 	}
 	for _, set := range doc.Sets {
 		if set.Name != zone.Name || (set.Type != "SOA" && set.Type != "NS") {
-			return nil, awserrors.Errorf(awserrors.ErrorHostedZoneNotEmpty, "The specified hosted zone contains non-required resource record sets and so cannot be deleted.")
+			return nil, awserrors.Errorf(awserrors.ErrorHostedZoneNotEmpty, "The specified hosted zone contains resource record sets other than the default SOA and NS records and so cannot be deleted. Delete all non-default records and try again.")
 		}
 	}
 	if err := s.store.DeleteZone(ctx, zone, rev); err != nil {

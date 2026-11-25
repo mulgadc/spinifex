@@ -106,10 +106,15 @@ func ScopedActions() []string {
 	return slices.Sorted(maps.Keys(eksScopes))
 }
 
+// NodegroupARNLookup returns the ARN stored on a nodegroup's record, or "" when
+// the account holds no such nodegroup.
+type NodegroupARNLookup func(cluster, name string) (string, error)
+
 // ResourceARNs resolves the resources an EKS request authorizes against from
 // the path parameters and body the dispatcher already holds. params are the
-// route captures, already percent-decoded.
-func ResourceARNs(action, region, accountID string, params []string, body []byte) ([]string, error) {
+// route captures, already percent-decoded. nodegroups supplies the per-group
+// UUID that only the stored record knows.
+func ResourceARNs(action, region, accountID string, params []string, body []byte, nodegroups NodegroupARNLookup) ([]string, error) {
 	sources, ok := eksScopes[action]
 	if !ok {
 		slog.Error("EKS authz: action is served but absent from the scope table", "action", action)
@@ -118,7 +123,7 @@ func ResourceARNs(action, region, accountID string, params []string, body []byte
 
 	resources := make([]string, 0, len(sources))
 	for _, source := range sources {
-		resource, err := resolve(source, action, region, accountID, params, body)
+		resource, err := resolve(source, action, region, accountID, params, body, nodegroups)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +140,7 @@ func ResourceARNs(action, region, accountID string, params []string, body []byte
 	return resources, nil
 }
 
-func resolve(source resourceSource, action, region, accountID string, params []string, body []byte) (string, error) {
+func resolve(source resourceSource, action, region, accountID string, params []string, body []byte, nodegroups NodegroupARNLookup) (string, error) {
 	switch source {
 	case sourceAny:
 		return anyResource, nil
@@ -161,14 +166,15 @@ func resolve(source resourceSource, action, region, accountID string, params []s
 		return clusterARN(region, scope.String("accountId"), param(params, 0)), nil
 
 	case sourceNodegroup:
-		return nodegroupARN(region, accountID, param(params, 0), param(params, 1)), nil
+		return storedNodegroupARN(region, accountID, param(params, 0), param(params, 1), nodegroups)
 
 	case sourceNodegroupFromBody:
 		input := new(eks.CreateNodegroupInput)
 		if !unmarshalScope(action, body, input) {
 			return anyResource, nil
 		}
-		return nodegroupARN(region, accountID, param(params, 0), aws.StringValue(input.NodegroupName)), nil
+		// The group's UUID is not chosen until the handler creates it.
+		return nodegroupARN(region, accountID, param(params, 0), aws.StringValue(input.NodegroupName), "*"), nil
 
 	case sourceAddon:
 		return addonARN(region, accountID, param(params, 0), param(params, 1)), nil
@@ -191,7 +197,7 @@ func resolve(source resourceSource, action, region, accountID string, params []s
 		return accessEntryARN(region, accountID, param(params, 0), aws.StringValue(input.PrincipalArn)), nil
 
 	case sourceTagARN:
-		return tagARN(region, accountID, param(params, 0)), nil
+		return tagARN(region, accountID, param(params, 0), nodegroups)
 
 	default:
 		slog.Error("EKS authz: unhandled resource source, failing closed", "action", action, "source", source)
@@ -208,14 +214,31 @@ func clusterARN(region, accountID, cluster string) string {
 	return arn.FormatEKSCluster(region, accountID, cluster)
 }
 
-func nodegroupARN(region, accountID, cluster, nodegroup string) string {
+func nodegroupARN(region, accountID, cluster, nodegroup, discriminator string) string {
 	if region == "" || accountID == "" || cluster == "" || nodegroup == "" {
 		return anyResource
 	}
-	// The nodegroup ARN's trailing segment is derived from these same
-	// identifiers at create time, so this is the ARN on the record, exactly.
-	return arn.FormatEKSNodegroup(region, accountID, cluster, nodegroup,
-		arn.EKSNodegroupDiscriminator(accountID, cluster, nodegroup))
+	return arn.FormatEKSNodegroup(region, accountID, cluster, nodegroup, discriminator)
+}
+
+// storedNodegroupARN names the group by the UUID on its record, so a policy
+// naming the exact ARN DescribeNodegroup returned matches. An absent group has
+// no UUID; "*" still matches the documented nodegroup/<cluster>/<name>/* form.
+func storedNodegroupARN(region, accountID, cluster, nodegroup string, nodegroups NodegroupARNLookup) (string, error) {
+	if region == "" || accountID == "" || cluster == "" || nodegroup == "" {
+		return anyResource, nil
+	}
+	stored, err := nodegroups(cluster, nodegroup)
+	if err != nil {
+		slog.Error("EKS authz: nodegroup record lookup failed, failing closed",
+			"accountID", accountID, "cluster", cluster, "nodegroup", nodegroup, "err", err)
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	discriminator := "*"
+	if i := strings.LastIndex(stored, "/"); i >= 0 && i < len(stored)-1 {
+		discriminator = stored[i+1:]
+	}
+	return nodegroupARN(region, accountID, cluster, nodegroup, discriminator), nil
 }
 
 func addonARN(region, accountID, cluster, addon string) string {
@@ -234,24 +257,24 @@ func accessEntryARN(region, accountID, cluster, principalARN string) string {
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the
 // caller's account, because the tag handler ignores those segments and operates
-// in the caller's own account bucket. A nodegroup's discriminator is re-derived
-// for the same reason: the handler keys off (cluster, nodegroup) alone.
-func tagARN(region, accountID, resourceARN string) string {
+// in the caller's own account bucket. A nodegroup's discriminator is read from
+// its record for the same reason: the handler keys off (cluster, nodegroup) alone.
+func tagARN(region, accountID, resourceARN string, nodegroups NodegroupARNLookup) (string, error) {
 	kind, resource, ok := splitEKSARN(resourceARN)
 	if !ok || region == "" || accountID == "" {
-		return anyResource
+		return anyResource, nil
 	}
 	switch kind {
 	case arn.EKSCluster:
-		return clusterARN(region, accountID, resource)
+		return clusterARN(region, accountID, resource), nil
 	case arn.EKSNodegroup:
 		segments := strings.SplitN(resource, "/", 3)
 		if len(segments) < 2 {
-			return anyResource
+			return anyResource, nil
 		}
-		return nodegroupARN(region, accountID, segments[0], segments[1])
+		return storedNodegroupARN(region, accountID, segments[0], segments[1], nodegroups)
 	default:
-		return arn.FormatEKSResource(region, accountID, string(kind)+"/"+resource)
+		return arn.FormatEKSResource(region, accountID, string(kind)+"/"+resource), nil
 	}
 }
 

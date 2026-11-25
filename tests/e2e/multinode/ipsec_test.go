@@ -71,7 +71,7 @@ func runIPSec(t *testing.T, fix *Fixture) {
 	harness.EventuallyErr(t, func() error {
 		for _, n := range fix.Cluster.Nodes {
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			raw, err := ssh.Run(c, n.Addr, "sudo ip xfrm state")
+			raw, err := ssh.Run(c, n.Addr, "sudo ip xfrm state list nokeys")
 			cancel()
 			if err != nil {
 				return fmt.Errorf("%s ip xfrm state: %w", n.Name, err)
@@ -330,7 +330,7 @@ func readOutboundSAs(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg) map[string]
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	raw, err := ssh.Run(ctx, l.self.Addr,
-		fmt.Sprintf("sudo ip -s xfrm state list src %s dst %s proto esp", l.selfEncap, l.peerEncap))
+		fmt.Sprintf("sudo ip -s xfrm state list src %s dst %s proto esp nokeys", l.selfEncap, l.peerEncap))
 	if err != nil {
 		t.Fatalf("%s: ip -s xfrm state: %v", l, err)
 	}

@@ -235,8 +235,7 @@ func TestDescribeSnapshots_HonoursOwnerIds(t *testing.T) {
 		SnapshotIds: []*string{snap.SnapshotId},
 		OwnerIds:    []*string{aws.String(otherAccountID)},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+	assertSnapshotNotFound(t, err, aws.StringValue(snap.SnapshotId))
 }
 
 // An account the caller's prefix cannot contain is answered without a read at

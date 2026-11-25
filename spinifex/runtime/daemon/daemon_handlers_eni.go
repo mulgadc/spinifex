@@ -126,7 +126,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if record.InstanceId != instance.ID {
-		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidAttachmentIDNotFound)
+		return respondServiceErrorOutcome(d.node, msg, ec2vpc.AttachmentNotFoundError(attachmentID))
 	}
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {

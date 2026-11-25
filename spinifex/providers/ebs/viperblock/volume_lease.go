@@ -206,6 +206,10 @@ type volumeLease struct {
 	stop context.CancelFunc
 	done chan struct{}
 
+	// writeMu serialises this holder's writes to its entry: each is conditioned
+	// on the last revision, so two at once would fail each other.
+	writeMu sync.Mutex
+
 	mu sync.Mutex
 	// revision is the entry version this holder last wrote, and is what every
 	// subsequent write is conditioned on.
@@ -225,6 +229,10 @@ type volumeLease struct {
 	// always reports validity, so only a recovery can report a real length.
 	failures     int
 	failingSince time.Time
+	// unackedSince is when the first write after the last confirmation was sent
+	// whose acknowledgement never arrived, and zero when there is none. It is
+	// never before confirmed, and bounds when the server's TTL last restarted.
+	unackedSince time.Time
 }
 
 // acquire claims volumeName for this node, or reports who has it. Repeat
@@ -293,6 +301,7 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 			lease.revision = rev
 			lease.confirmed = publishSent
 		} else {
+			lease.unackedSince = publishSent
 			slog.Warn("volume lease: could not publish generation", "volume", volumeName, "err", uerr)
 		}
 	}
@@ -314,6 +323,48 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 
 	slog.Info("volume lease acquired", "volume", volumeName, "owner", l.owner, "generation", revision)
 	return lease, nil
+}
+
+// launchEpoch rewrites this holder's entry and returns the new revision. KV
+// revisions only rise across the bucket, so each launch's epoch is above
+// every earlier launch's, a shared open on this node and a takeover included.
+func (lease *volumeLease) launchEpoch(ctx context.Context) (uint64, error) {
+	lease.writeMu.Lock()
+	defer lease.writeMu.Unlock()
+	payload, err := json.Marshal(volumeLeaseRecord{Owner: lease.leases.owner, Generation: lease.generation, AcquiredAt: time.Now().UTC()})
+	if err != nil {
+		return 0, fmt.Errorf("marshal lease: %w", err)
+	}
+	lease.mu.Lock()
+	revision, lost := lease.revision, lease.lost
+	lease.mu.Unlock()
+	if lost {
+		return 0, fmt.Errorf("lease for %s is lost: %w", lease.volume, ErrLeaseStoreUnavailable)
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
+	defer cancel()
+	sent := lease.leases.clock()
+	rev, err := lease.leases.kv.Update(updateCtx, lease.key, payload, revision)
+	if err != nil {
+		return 0, fmt.Errorf("take a launch epoch for %s: %w", lease.volume, err)
+	}
+	lease.mu.Lock()
+	// As for a renewal: an acknowledgement that arrives after the lease was
+	// given up, or after its validity lapsed, authorises no launch.
+	if lease.lost {
+		lease.mu.Unlock()
+		return 0, fmt.Errorf("lease for %s was given up while taking a launch epoch: %w", lease.volume, ErrLeaseStoreUnavailable)
+	}
+	if lease.leases.clock().Sub(lease.confirmed) >= volumeLeaseValidity {
+		lease.mu.Unlock()
+		lease.surrender(ctx)
+		return 0, fmt.Errorf("lease for %s lapsed while taking a launch epoch: %w", lease.volume, ErrLeaseStoreUnavailable)
+	}
+	lease.revision = rev
+	lease.confirmed = sent
+	lease.unackedSince = time.Time{}
+	lease.mu.Unlock()
+	return rev, nil
 }
 
 // takeOver reclaims an entry this node left behind. A daemon restart abandons
@@ -518,6 +569,8 @@ func (lease *volumeLease) surrender(ctx context.Context) {
 // goroutine because fencing releases the lease, and releasing waits for this
 // one to exit.
 func (lease *volumeLease) renew(ctx context.Context) bool {
+	lease.writeMu.Lock()
+	defer lease.writeMu.Unlock()
 	record := volumeLeaseRecord{Owner: lease.leases.owner, Generation: lease.generation, AcquiredAt: time.Now().UTC()}
 	payload, err := json.Marshal(record)
 	if err != nil {
@@ -556,7 +609,7 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		lease.revision = renewed
 		lease.confirmed = sent
 		attempts, outage := lease.failures, time.Since(lease.failingSince)
-		lease.failures, lease.failingSince = 0, time.Time{}
+		lease.failures, lease.failingSince, lease.unackedSince = 0, time.Time{}, time.Time{}
 		lease.mu.Unlock()
 		if attempts > 0 {
 			slog.Warn("volume lease: renewals recovered, so the store was unwritable for this long",
@@ -578,6 +631,9 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		lease.mu.Lock()
 		if lease.failures == 0 {
 			lease.failingSince = time.Now()
+		}
+		if lease.unackedSince.IsZero() {
+			lease.unackedSince = sent
 		}
 		lease.failures++
 		attempts, failingFor := lease.failures, time.Since(lease.failingSince)
@@ -627,11 +683,46 @@ func (lease *volumeLease) readopt(ctx context.Context, cause error) bool {
 		return false
 	}
 
-	// This lease's own entry, at a revision it never saw acknowledged. Adopt it
-	// so the next renewal can succeed, but do not count it as a confirmation:
-	// only a write the server acknowledged proves the entry is still ours, and
-	// the validity clock is what bounds writing on a lease we cannot refresh.
+	// This lease's own entry, at a revision it never saw acknowledged.
 	lease.mu.Lock()
+	if lease.lost {
+		lease.mu.Unlock()
+		return false
+	}
+	// A lapsed lease is never revived, even before the watchdog has seen it.
+	if lease.leases.clock().Sub(lease.confirmed) >= volumeLeaseValidity {
+		lease.mu.Unlock()
+		slog.Warn("volume lease: re-read this node's own entry after validity lapsed, giving the volume up",
+			"volume", lease.volume, "generation", lease.generation)
+		lease.surrender(ctx)
+		return false
+	}
+	// Newer than the last acknowledged write, so one of this lease's own
+	// unacknowledged writes stored it, and the TTL restarted no earlier than
+	// that write was sent. That is all an acknowledgement proves too.
+	// A stale read can return an older revision; adopting it would let a later
+	// read of an acknowledged revision pass for a newer one.
+	if entry.Revision() <= lease.revision {
+		lease.mu.Unlock()
+		slog.Warn("volume lease: a renewal was rejected and the re-read returned no newer revision, so the lease is kept until its validity lapses",
+			"volume", lease.volume, "generation", lease.generation, "revision", entry.Revision())
+		return true
+	}
+	if !lease.unackedSince.IsZero() {
+		since := lease.unackedSince
+		lease.revision = entry.Revision()
+		lease.confirmed = since
+		attempts, outage := lease.failures, time.Since(lease.failingSince)
+		lease.failures, lease.failingSince, lease.unackedSince = 0, time.Time{}, time.Time{}
+		lease.mu.Unlock()
+		slog.Warn("volume lease: a write this node never saw acknowledged was stored, so the lease is confirmed from its send",
+			"volume", lease.volume, "generation", lease.generation, "revision", entry.Revision())
+		if attempts > 0 {
+			slog.Warn("volume lease: renewals recovered, so the store was unwritable for this long",
+				"volume", lease.volume, "attempts", attempts, "outage_ms", otelsetup.Millis(outage))
+		}
+		return true
+	}
 	lease.revision = entry.Revision()
 	lease.mu.Unlock()
 	slog.Warn("volume lease: adopted a revision this node wrote but never saw acknowledged",
@@ -711,4 +802,22 @@ func (cfg *Config) releaseVolumeLease(ctx context.Context, lease *volumeLease) {
 		return
 	}
 	cfg.leases.release(ctx, lease)
+}
+
+// creationEpoch claims a volume that does not exist yet and takes an epoch
+// for its creation. The caller releases the lease once VBState is written.
+func (cfg *Config) creationEpoch(ctx context.Context, volumeName string) (*volumeLease, uint64, error) {
+	if cfg.leases == nil {
+		return nil, 0, fmt.Errorf("%w: cannot take a creation epoch for %s", errNoVolumeLeaseStore, volumeName)
+	}
+	lease, err := cfg.leases.acquire(ctx, volumeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	epoch, err := lease.launchEpoch(ctx)
+	if err != nil {
+		cfg.leases.release(ctx, lease)
+		return nil, 0, err
+	}
+	return lease, epoch, nil
 }

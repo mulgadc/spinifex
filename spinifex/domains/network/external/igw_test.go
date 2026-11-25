@@ -242,6 +242,8 @@ func TestRebindGatewayIP_MovesLRPAndStamp(t *testing.T) {
 	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool,
 		fixedNexthopAllocator{ip: "192.168.1.115", prefix: 23, nexthop: "192.168.1.1"}, []string{"chassis-a"})
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	// The port is rebound before the barrier runs, so its failure is not a rebind failure.
+	mgr.(*igwManager).barrier = func() error { return errors.New("ovn-nbctl: timeout expired") }
 
 	require.NoError(t, mgr.RebindGatewayIP(ctx, "vpc-1", "192.168.1.146", 23))
 

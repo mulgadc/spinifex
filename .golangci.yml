@@ -27,6 +27,7 @@ linters:
     - errchkjson # checks types passed to json encoding functions, flags omittable error checks
     - errname # checks that sentinel errors are prefixed with Err, error types suffixed with Error
     - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
+    - exhaustive # flags a switch on an enum type that misses a member
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
     - forbidigo # blocks forbidden identifiers
@@ -91,6 +92,10 @@ linters:
       check-type-assertions: true # replaces forcetypeassert
       exclude-functions:
         - (*github.com/nats-io/nats.go.Subscription).Unsubscribe # cleanup-only, errors not actionable
+
+    exhaustive:
+      default-signifies-exhaustive: true # a default: clause is a deliberate catch-all
+      ignore-enum-types: '^(reflect\.Kind|regexp/syntax\.Op|go\.opentelemetry\.io/otel/.+)$' # third-party enums grow on upgrade
 
     forbidigo:
       analyze-types: true

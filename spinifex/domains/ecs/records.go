@@ -1,6 +1,7 @@
 package ecs
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -106,6 +107,18 @@ func ClusterARN(region, accountID, name string) string {
 // TaskARN returns the long-format task ARN, arn:aws:ecs:{region}:{account}:task/{cluster}/{taskID}.
 func TaskARN(region, accountID, cluster, taskID string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:task/%s/%s", region, accountID, cluster, taskID)
+}
+
+// ContainerARN returns a task container's ARN. The container ID is derived
+// from the task ID and container name, so every projection of the task reports
+// the same ARN without persisting it.
+func ContainerARN(region, accountID, cluster, taskID, name string) string {
+	h := sha256.Sum256([]byte(taskID + "/" + name))
+	var id uuid.UUID
+	copy(id[:], h[:16])
+	id[6] = id[6]&0x0f | 0x80 // version 8: custom
+	id[8] = id[8]&0x3f | 0x80 // RFC 9562 variant
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:container/%s/%s/%s", region, accountID, cluster, taskID, id)
 }
 
 // ContainerInstanceARN returns the long-format container-instance ARN, scoped under its cluster.
@@ -283,11 +296,14 @@ type TaskRecord struct {
 	CredID               string `json:"credId,omitempty"`
 	ContainerInstanceID  string `json:"containerInstanceId,omitempty"`
 	ContainerInstanceARN string `json:"containerInstanceArn,omitempty"`
-	DesiredStatus        string `json:"desiredStatus"`
-	LastStatus           string `json:"lastStatus"`
-	StoppedReason        string `json:"stoppedReason,omitempty"`
-	ReservedCPU          int    `json:"reservedCpu"`
-	ReservedMemoryMiB    int    `json:"reservedMemoryMiB"`
+	// AvailabilityZone is the placed instance's zone at placement time.
+	AvailabilityZone  string `json:"availabilityZone,omitempty"`
+	DesiredStatus     string `json:"desiredStatus"`
+	LastStatus        string `json:"lastStatus"`
+	StoppedReason     string `json:"stoppedReason,omitempty"`
+	StopCode          string `json:"stopCode,omitempty"`
+	ReservedCPU       int    `json:"reservedCpu"`
+	ReservedMemoryMiB int    `json:"reservedMemoryMiB"`
 	// GPU is the task-level whole-GPU total (sum of its container defs' GPU
 	// counts). Not yet reserved against instance capacity (Epic C placement).
 	GPU        int               `json:"gpu,omitempty"`
@@ -320,6 +336,10 @@ type TaskRecord struct {
 	CreatedAt          time.Time `json:"createdAt"`
 	StartedAt          time.Time `json:"startedAt,omitzero"`
 	StoppedAt          time.Time `json:"stoppedAt,omitzero"`
+	// StoppingAt is when a stop was first requested; ExecutionStoppedAt is when
+	// the agent first reported the task's containers stopped.
+	StoppingAt         time.Time `json:"stoppingAt,omitzero"`
+	ExecutionStoppedAt time.Time `json:"executionStoppedAt,omitzero"`
 }
 
 // LoadBalancerTarget is one ELBv2 target-group attachment on a service. On task
@@ -375,6 +395,10 @@ type ServiceRecord struct {
 	UpdatedAt time.Time      `json:"updatedAt"`
 	// CreatedBy is the IAM role or user ARN that created the service.
 	CreatedBy string `json:"createdBy,omitempty"`
+	// ClientToken and CreateFingerprint identify the creating request, so only
+	// its exact replay returns the existing service.
+	ClientToken       string `json:"clientToken,omitempty"`
+	CreateFingerprint string `json:"createFingerprint,omitempty"`
 }
 
 // primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil

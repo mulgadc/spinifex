@@ -176,6 +176,7 @@ var ovnNamePrefixes = []string{
 	"ext-port-",
 	"ts-",
 	"trp-",
+	"pcx-",
 }
 
 // awsIDPrefixes are AWS resource-IDs that share leading bytes with ovnNamePrefixes; excluded from hasOVNPrefix.

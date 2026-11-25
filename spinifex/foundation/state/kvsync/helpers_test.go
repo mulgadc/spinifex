@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
@@ -15,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testTTL is a lease's ttl in the fake-clock tests, where only its ratio to
+// testTTL is a lease's ttl in the synctest tests, where only its ratio to
 // the renewal and retry intervals matters.
 const testTTL = 60 * time.Second
 
@@ -51,27 +52,19 @@ func waitCtx(t *testing.T) context.Context {
 	return ctx
 }
 
-// waitForWaiters fails the test unless c has n pending waiters in time.
-func waitForWaiters(t *testing.T, c *kvsync.FakeClock, n int) {
-	t.Helper()
-	require.True(t, c.WaitForWaiters(waitCtx(t), n), "clock never reached %d waiters", n)
-}
-
-// renewOnce advances c by one renewal interval and waits for the renewal to
-// finish and schedule the next.
-func renewOnce(t *testing.T, c *kvsync.FakeClock) {
-	t.Helper()
-	waitForWaiters(t, c, 1)
-	c.Advance(testTTL / 3)
-	waitForWaiters(t, c, 1)
+// advance moves the bubble's clock on by d, then waits until every goroutine
+// that d woke, such as a renewal, has finished and blocked again.
+func advance(d time.Duration) {
+	time.Sleep(d)
+	synctest.Wait()
 }
 
 func requireClosed(t *testing.T, ch <-chan struct{}, msg string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-waitCtx(t).Done():
-		t.Fatal(msg)
+	default:
+		require.FailNow(t, msg)
 	}
 }
 
@@ -79,10 +72,69 @@ func requireOpen(t *testing.T, ch <-chan struct{}, msg string) {
 	t.Helper()
 	select {
 	case <-ch:
-		t.Fatal(msg)
+		require.FailNow(t, msg)
 	default:
 	}
 }
+
+// memBucket is an in-memory sync bucket for the lease timing tests, which run
+// in a synctest bubble that a JetStream server's network I/O would leave.
+type memBucket struct {
+	mu   sync.Mutex
+	rev  uint64
+	keys map[string]memEntry
+}
+
+type memEntry struct {
+	value []byte
+	rev   uint64
+}
+
+// memStore is one process's handle on a memBucket.
+type memStore struct{ b *memBucket }
+
+// memStores returns n distinct store values over one memBucket.
+func memStores(n int) []*memStore {
+	b := &memBucket{keys: map[string]memEntry{}}
+	out := make([]*memStore, n)
+	for i := range out {
+		out[i] = &memStore{b: b}
+	}
+	return out
+}
+
+func (m *memStore) Load(_ context.Context, key string) ([]byte, uint64, error) {
+	m.b.mu.Lock()
+	defer m.b.mu.Unlock()
+	e, ok := m.b.keys[key]
+	if !ok {
+		return nil, 0, kvsync.ErrNotFound
+	}
+	return e.value, e.rev, nil
+}
+
+func (m *memStore) CompareAndSwap(_ context.Context, key string, value []byte, rev uint64) (uint64, error) {
+	m.b.mu.Lock()
+	defer m.b.mu.Unlock()
+	if m.b.keys[key].rev != rev {
+		return 0, kvsync.ErrRevisionMismatch
+	}
+	m.b.rev++
+	m.b.keys[key] = memEntry{value: value, rev: m.b.rev}
+	return m.b.rev, nil
+}
+
+func (m *memStore) CompareAndDelete(_ context.Context, key string, rev uint64) error {
+	m.b.mu.Lock()
+	defer m.b.mu.Unlock()
+	if e, ok := m.b.keys[key]; !ok || e.rev != rev {
+		return kvsync.ErrRevisionMismatch
+	}
+	delete(m.b.keys, key)
+	return nil
+}
+
+var _ kvsync.KVStore = (*memStore)(nil)
 
 // faultyStore wraps a store, failing writes with ErrUnavailable while down is
 // set and counting every CompareAndSwap.
@@ -123,10 +175,6 @@ type barrier struct {
 	mu      sync.Mutex
 	pending int
 	all     chan struct{}
-}
-
-func newBarrier(ctx context.Context, n int) *barrier {
-	return &barrier{ctx: ctx, pending: n, all: make(chan struct{})}
 }
 
 func (b *barrier) wait() error {
@@ -183,19 +231,6 @@ func (s *slowStore) CompareAndSwap(ctx context.Context, key string, value []byte
 		s.afterSwap(n)
 	}
 	return next, err
-}
-
-// waitForSwaps fails the test unless s has seen n CompareAndSwap calls in time.
-func waitForSwaps(t *testing.T, s *slowStore, n int64) {
-	t.Helper()
-	ctx := waitCtx(t)
-	for s.swaps.Load() < n {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("only %d of %d swaps happened", s.swaps.Load(), n)
-		case <-time.After(time.Millisecond):
-		}
-	}
 }
 
 // staleStore answers its first Load with value at rev, as a replica behind the

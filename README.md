@@ -54,7 +54,7 @@ For Terraform, start from the [example workbooks](https://docs.mulgadc.com/docs/
 
 ## Services
 
-The platform serves **405 AWS API operations** across the services below. See exactly which ones in the [coverage report](https://docs.mulgadc.com/coverage).
+The platform serves **439 AWS API operations** across the services below. See exactly which ones in the [coverage report](https://docs.mulgadc.com/coverage).
 
 | Service | What it is | Built on | Status |
 | --- | --- | --- | --- |

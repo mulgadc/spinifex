@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,12 @@ func runKVReplication(t *testing.T, fix *Fixture) {
 		require.Truef(t, r.HasQuorum(),
 			"%s reports %d of %d replicas online on a single node", r.Bucket, r.Online, r.Replicas)
 	}
+
+	// The gateway opens its account-deletion job bucket before it serves, so the
+	// first audit holds it even on a cluster that has deleted no account.
+	require.Truef(t, slices.ContainsFunc(before, func(r kvstore.BucketReport) bool {
+		return r.Bucket == "spinifex-account-deletions"
+	}), "spinifex-account-deletions is missing from the first audit, so the bucket list can still grow under it")
 
 	// Twice, because --repair is documented as safe to run on a healthy cluster
 	// and safe to run twice. A repair that rewrote a stream would show up as a

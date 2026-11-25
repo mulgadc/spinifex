@@ -112,7 +112,116 @@ describe("networkMapQueryOptions", () => {
       DescribeNatGatewaysCommand: MAP_PAGE_SIZE,
       DescribeRouteTablesCommand: MAP_PAGE_SIZE,
       DescribeSubnetsCommand: MAP_PAGE_SIZE,
+      DescribeVpcEndpointsCommand: MAP_PAGE_SIZE,
+      DescribeVpcPeeringConnectionsCommand: MAP_PAGE_SIZE,
     })
+  })
+
+  it("reads the live peering connections at either end of the VPC", async () => {
+    mockSend.mockImplementation(
+      async (command: {
+        constructor: { name: string }
+        input: { Filters?: { Name: string }[] }
+      }) =>
+        await Promise.resolve(
+          command.constructor.name === "DescribeVpcPeeringConnectionsCommand"
+            ? {
+                VpcPeeringConnections: [
+                  { VpcPeeringConnectionId: command.input.Filters?.[0]?.Name },
+                ],
+              }
+            : {},
+        ),
+    )
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    const filters = mockSend.mock.calls
+      .filter(
+        ([c]) => c.constructor.name === "DescribeVpcPeeringConnectionsCommand",
+      )
+      .map(([c]): unknown => c.input.Filters)
+
+    const live = {
+      Name: "status-code",
+      Values: ["pending-acceptance", "provisioning", "active"],
+    }
+
+    expect(filters).toStrictEqual([
+      [{ Name: "requester-vpc-info.vpc-id", Values: ["vpc-1"] }, live],
+      [{ Name: "accepter-vpc-info.vpc-id", Values: ["vpc-1"] }, live],
+    ])
+    expect(
+      result.peeringConnections.map((p) => p.VpcPeeringConnectionId),
+    ).toStrictEqual(["requester-vpc-info.vpc-id", "accepter-vpc-info.vpc-id"])
+  })
+
+  it("names peering connections once when either end fails to read", async () => {
+    mockSend.mockImplementation(
+      async (command: {
+        constructor: { name: string }
+        input: { Filters?: { Name: string }[] }
+      }) => {
+        if (command.input.Filters?.[0]?.Name === "accepter-vpc-info.vpc-id") {
+          throw new Error("denied")
+        }
+
+        return await Promise.resolve({})
+      },
+    )
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    expect(result.failed).toStrictEqual(["peeringConnections"])
+    expect(result.peeringConnections).toStrictEqual([])
+  })
+
+  it("draws a pinned peering connection the read missed", async () => {
+    mockSend.mockResolvedValue({})
+
+    const pcx = { VpcPeeringConnectionId: "pcx-pinned" }
+
+    const result = await callQueryFn(
+      networkMapQueryOptions("vpc-1", { peeringConnection: pcx }),
+    )
+
+    expect(result.peeringConnections).toStrictEqual([pcx])
+  })
+
+  it("reads the VPC's endpoints by VPC, and names them when the read fails", async () => {
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "DescribeVpcEndpointsCommand") {
+          throw new Error("denied")
+        }
+
+        return await Promise.resolve({})
+      },
+    )
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    const read = mockSend.mock.calls.find(
+      ([c]) => c.constructor.name === "DescribeVpcEndpointsCommand",
+    )?.[0]
+
+    expect(read.input.Filters).toStrictEqual([
+      { Name: "vpc-id", Values: ["vpc-1"] },
+    ])
+    expect(result.failed).toStrictEqual(["vpcEndpoints"])
+    expect(result.vpcEndpoints).toStrictEqual([])
+  })
+
+  it("draws a pinned endpoint the read missed", async () => {
+    mockSend.mockResolvedValue({})
+
+    const vpce = { VpcEndpointId: "vpce-pinned" }
+
+    const result = await callQueryFn(
+      networkMapQueryOptions("vpc-1", { vpcEndpoint: vpce }),
+    )
+
+    expect(result.vpcEndpoints).toStrictEqual([vpce])
   })
 
   it("asks for addresses only by the instances and NAT gateways it read", async () => {

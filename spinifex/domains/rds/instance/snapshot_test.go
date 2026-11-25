@@ -907,6 +907,41 @@ func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "prod", "team": "payments"}, stored.Tags)
 }
 
+// Request tags replace the instance's; with none, the instance's are copied
+// only under CopyTagsToSnapshot.
+func TestCreateDBSnapshot_CopiesInstanceTagsOnlyWithoutRequestTags(t *testing.T) {
+	t.Parallel()
+	requestTags := []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
+	cases := []struct {
+		name     string
+		copyTags bool
+		request  []*rds.Tag
+		want     map[string]string
+	}{
+		{"flag off", false, nil, nil},
+		{"flag on", true, nil, map[string]string{"team": "payments"}},
+		{"flag on with request tags", true, requestTags, map[string]string{"env": "prod"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSnapshotHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = map[string]string{"team": "payments"}
+			rec.CopyTagsToSnapshot = tc.copyTags
+			seedInstance(t, h.svc, rec)
+
+			input := snapshotInput()
+			input.Tags = tc.request
+			out, err := h.svc.CreateDBSnapshot(t.Context(), input, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, append([]*rds.Tag{}, tagsToAWS(tc.want)...), out.DBSnapshot.TagList)
+			stored, _ := h.snapshot(t, testSnapshotID)
+			assert.Equal(t, tc.want, stored.Tags)
+		})
+	}
+}
+
 // The record has to survive a round trip through KV, because that is the only
 // copy a restore reads once the instance it came from is gone.
 func TestDBSnapshotRecord_SurvivesARoundTrip(t *testing.T) {
@@ -932,4 +967,34 @@ func TestDBSnapshotRecord_SurvivesARoundTrip(t *testing.T) {
 	var back DBSnapshotRecord
 	require.NoError(t, json.Unmarshal(payload, &back))
 	assert.Equal(t, rec, back)
+}
+
+// A manual snapshot that was never shared answers with the restore attribute and
+// an empty value list; anything else is not found.
+func TestDescribeDBSnapshotAttributes(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	require.NoError(t, err)
+	automated := h.seedBackup(t, time.Hour)
+
+	out, err := h.svc.DescribeDBSnapshotAttributes(t.Context(), &rds.DescribeDBSnapshotAttributesInput{
+		DBSnapshotIdentifier: aws.String(testSnapshotID),
+	}, testAccountID)
+	require.NoError(t, err)
+	result := out.DBSnapshotAttributesResult
+	require.NotNil(t, result)
+	assert.Equal(t, testSnapshotID, aws.StringValue(result.DBSnapshotIdentifier))
+	require.Len(t, result.DBSnapshotAttributes, 1)
+	assert.Equal(t, "restore", aws.StringValue(result.DBSnapshotAttributes[0].AttributeName))
+	assert.NotNil(t, result.DBSnapshotAttributes[0].AttributeValues, "an empty list, not an absent one")
+	assert.Empty(t, result.DBSnapshotAttributes[0].AttributeValues)
+
+	for _, id := range []string{"no-such-snapshot", automated} {
+		_, err := h.svc.DescribeDBSnapshotAttributes(t.Context(), &rds.DescribeDBSnapshotAttributesInput{
+			DBSnapshotIdentifier: aws.String(id),
+		}, testAccountID)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorDBSnapshotNotFound), "%s: %v", id, err)
+	}
 }

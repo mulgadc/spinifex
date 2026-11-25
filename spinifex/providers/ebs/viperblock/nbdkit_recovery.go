@@ -41,6 +41,9 @@ type discoveredNbdkit struct {
 	Port    int
 	Plugin  string
 	BaseDir string
+	// LeaseEpoch is the epoch the process launched with; an adopted nbdkit
+	// keeps writing under it.
+	LeaseEpoch uint64
 }
 
 // scanNbdkitProcs walks procRoot for nbdkit-comm processes, parsing each
@@ -89,7 +92,10 @@ func parseNbdkitCmdline(cmdline []byte) (disc discoveredNbdkit, ok bool) {
 		arg := string(args[i])
 		volume, isVolume := strings.CutPrefix(arg, "volume=")
 		baseDir, isBaseDir := strings.CutPrefix(arg, "base_dir=")
+		epoch, isEpoch := strings.CutPrefix(arg, "lease_epoch=")
 		switch {
+		case isEpoch:
+			disc.LeaseEpoch, _ = strconv.ParseUint(epoch, 10, 64)
 		case arg == "--unix" && i+1 < len(args):
 			disc.Socket = string(args[i+1])
 			i++
@@ -195,7 +201,7 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 	for _, disc := range scanNbdkitProcs(procRoot) {
 		if !corroborateNbdkit(cfg, disc) {
 			slog.Warn("recovery: nbdkit process is not this daemon's, skipping",
-				"pid", disc.PID, "volume", disc.Volume, "base_dir", disc.BaseDir, "plugin", disc.Plugin)
+				"pid", disc.PID, "volume", disc.Volume, "base_dir", disc.BaseDir, "plugin", disc.Plugin, "lease_epoch", disc.LeaseEpoch)
 			continue
 		}
 
@@ -204,7 +210,7 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 		if _, ok := findMountedVolume(cfg, disc.Volume); ok {
 			slog.Warn("recovery: volume already recovered from another nbdkit process, skipping",
 				"pid", disc.PID, "volume", disc.Volume)
-			reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate)
+			reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate, cfg.terminateProcess)
 			continue
 		}
 
@@ -212,7 +218,7 @@ func recoverMountedVolumes(ctx context.Context, cfg *Config, nc *nats.Conn, proc
 		if err != nil {
 			slog.Error("recovery: failed to rebuild mounted volume registry entry, skipping",
 				"pid", disc.PID, "volume", disc.Volume, "err", err)
-			reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+			reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable, cfg.terminateProcess)
 			continue
 		}
 
@@ -243,8 +249,8 @@ const (
 // only ever signalled once a scan of every other process on the host finds no
 // reference to its NBD endpoint. A referencing process, or a scan that could
 // not complete, both leave it running: the caller gets a loud log either way.
-// Reports whether disc was signalled.
-func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason) bool {
+// Reports whether disc was signalled through terminate.
+func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason, terminate func(pid int) error) bool {
 	if hidden, herr := procHidepidInvisible(procRoot); hidden {
 		slog.Warn("recovery: proc mount hides other users' process entries; a live referencer could be invisible to this scan, leaving unclaimed nbdkit running",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", herr)
@@ -263,13 +269,7 @@ func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReaso
 		return false
 	}
 
-	proc, err := os.FindProcess(disc.PID)
-	if err != nil {
-		slog.Error("recovery: failed to locate unclaimed nbdkit process to reap",
-			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
-		return false
-	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := terminate(disc.PID); err != nil {
 		slog.Error("recovery: failed to signal unclaimed nbdkit process",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
 		return false
@@ -285,6 +285,15 @@ func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReaso
 	slog.Info("recovery: reaped unclaimed nbdkit process with no live referencer",
 		"pid", disc.PID, "volume", disc.Volume, "reason", reason)
 	return true
+}
+
+// sigtermProcess sends the real process pid SIGTERM.
+func sigtermProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Signal(syscall.SIGTERM)
 }
 
 // procHidepidInvisible reports whether procRoot's mount hides another uid's
@@ -408,7 +417,7 @@ func reapUnregisteredNbdkit(ctx context.Context, cfg *Config, volumeName string)
 		}
 		slog.WarnContext(ctx, "ebs.unmount: found an nbdkit serving this volume with no registry entry",
 			"volume", volumeName, "pid", disc.PID, "socket", disc.Socket)
-		if reapOrphanedNbdkit(procRoot, disc, reapReasonUnregistered) {
+		if reapOrphanedNbdkit(procRoot, disc, reapReasonUnregistered, cfg.terminateProcess) {
 			reaped = true
 		}
 	}

@@ -36,7 +36,7 @@ func (g *daemonGPUClaimer) Claim(instanceID, profileName string, count int) ([]g
 	for range count {
 		dev, mig, err := mgr.Claim(instanceID, profileName)
 		if err != nil {
-			if rollbackErr := mgr.Release(instanceID); rollbackErr != nil &&
+			if rollbackErr := mgr.RollbackClaim(instanceID); rollbackErr != nil &&
 				!errors.Is(rollbackErr, gpu.ErrNoGPUClaimed) {
 				return nil, errors.Join(err, fmt.Errorf("roll back GPU claims: %w", rollbackErr))
 			}

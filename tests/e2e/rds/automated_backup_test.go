@@ -23,6 +23,10 @@ const (
 	// The retention reaper runs every two minutes. Three passes leave room for a
 	// pass already in flight when the snapshot ages are changed.
 	retentionSweepTimeout = 7 * time.Minute
+
+	// A backup of this suite's small volume returns its instance to available in
+	// about a minute; the harness default for available is sized for bootstrap.
+	postBackupTimeout = 5 * time.Minute
 )
 
 // TestAutomatedBackups drives what only a live cluster can prove about automated backups:
@@ -197,6 +201,7 @@ func TestAutomatedBackups(t *testing.T) {
 	// has to remove the set rather than leave it to expire.
 	t.Run("RetentionZeroSweepsTheSet", func(t *testing.T) {
 		requireSnapshot(t, snapshot)
+		waitForAvailableAfterBackup(t, f, id)
 		_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
 			DBInstanceIdentifier:  aws.String(id),
 			BackupRetentionPeriod: aws.Int64(0),
@@ -249,6 +254,7 @@ func requireSnapshot(t *testing.T, snapshot string) {
 // existing identifiers distinguish it from every earlier fired window.
 func waitForNextAutomatedSnapshot(t *testing.T, f *Fixture, id string) string {
 	t.Helper()
+	waitForAvailableAfterBackup(t, f, id)
 	before, err := automatedSnapshots(f, id)
 	require.NoError(t, err, "describe automated snapshots before moving the window")
 	beforeIDs := automatedSnapshotIDs(before)
@@ -277,15 +283,28 @@ func waitForNextAutomatedSnapshot(t *testing.T, f *Fixture, id string) string {
 		if err != nil {
 			return err
 		}
-		for _, candidate := range automatedSnapshotIDs(snapshots) {
-			if !slices.Contains(beforeIDs, candidate) {
-				created = candidate
-				return nil
+		for _, s := range snapshots {
+			candidate := aws.StringValue(s.DBSnapshotIdentifier)
+			if slices.Contains(beforeIDs, candidate) {
+				continue
 			}
+			if status := aws.StringValue(s.Status); status != harness.DBSnapshotAvailable {
+				return fmt.Errorf("automated snapshot %s of %s is %s", candidate, id, status)
+			}
+			created = candidate
+			return nil
 		}
 		return fmt.Errorf("no new automated snapshot of %s yet", id)
 	}, 8*time.Minute, 15*time.Second)
+	waitForAvailableAfterBackup(t, f, id)
 	return created
+}
+
+// A snapshot is listed while its instance is still backing-up, and a change sent
+// then is refused, so a step that changes the instance next waits here first.
+func waitForAvailableAfterBackup(t *testing.T, f *Fixture, id string) {
+	t.Helper()
+	harness.WaitForDBInstanceAvailable(t, f.AWS, id, harness.WithTimeout(postBackupTimeout))
 }
 
 func automatedSnapshotIDs(snapshots []*rds.DBSnapshot) []string {

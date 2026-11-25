@@ -1,0 +1,49 @@
+...@style
+direction: right
+
+internet: Internet {class: internet}
+
+region: Region {
+  class: region
+
+  vpc: VPC {
+    class: vpc
+
+    alb: "ALB\ntarget_type = ip" {class: lb}
+
+    az_a: az-a {
+      class: az
+      subnet_a: subnet_a {
+        class: public-subnet
+        ci: "Container instance" {
+          class: instance-contents
+          t1: "ECS task (web)\nawsvpc ENI" {class: ecs}
+          t2: "ECS task (web)\nawsvpc ENI" {class: ecs}
+        }
+      }
+    }
+
+    az_b: az-b {
+      class: az
+      subnet_b: subnet_b {
+        class: public-subnet
+        ci: "Container instance" {
+          class: instance-contents
+          t1: "ECS task (web)\nawsvpc ENI" {class: ecs}
+        }
+      }
+    }
+  }
+
+  gw: "Spinifex gateway\n:9999 control plane" {class: node}
+  ecr: "ECR\nregistry" {class: ecr}
+}
+
+internet -> region.vpc.alb: {class: flow}
+region.vpc.alb -> region.vpc.az_a.subnet_a.ci.t1: {class: flow}
+region.vpc.alb -> region.vpc.az_a.subnet_a.ci.t2: {class: flow}
+region.vpc.alb -> region.vpc.az_b.subnet_b.ci.t1: {class: flow}
+region.vpc.az_a.subnet_a.ci -> region.gw: "agent registers" {class: quiet}
+region.vpc.az_b.subnet_b.ci -> region.gw: "agent registers" {class: quiet}
+region.vpc.az_a.subnet_a.ci -> region.ecr: "image pull" {class: quiet}
+region.vpc.az_b.subnet_b.ci -> region.ecr: "image pull" {class: quiet}

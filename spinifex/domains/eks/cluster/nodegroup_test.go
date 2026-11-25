@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
@@ -394,12 +395,8 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	// The create accepts the request as CREATING; worker launch runs async.
 	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
 	assert.Equal(t, int64(2), aws.Int64Value(out.Nodegroup.ScalingConfig.DesiredSize))
-	// Full equality, not a prefix: the policy gate rebuilds this ARN from the
-	// identifiers alone, and a Deny naming it only fires if it matches exactly.
-	assert.Equal(t,
-		arn.FormatEKSNodegroup(f.svc.deps.Region, testAccountID, "c1", "ng1",
-			arn.EKSNodegroupDiscriminator(testAccountID, "c1", "ng1")),
-		aws.StringValue(out.Nodegroup.NodegroupArn))
+	assert.True(t, strings.HasPrefix(aws.StringValue(out.Nodegroup.NodegroupArn),
+		arn.FormatEKSNodegroup(f.svc.deps.Region, testAccountID, "c1", "ng1", "")))
 
 	f.svc.WaitLaunches()
 
@@ -743,6 +740,14 @@ func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
 	// and succeed on its next attempt instead of leaving the nodegroup stuck.
 	f.worker.runErr = errors.New("qmp: timeout waiting for launch")
 	f.worker.failNextN = 1
+	// The failed attempt is slow, as on a loaded host; it must still be retried.
+	slowFirst := true
+	f.worker.beforeRun = func(*ec2.RunInstancesInput) {
+		if slowFirst {
+			slowFirst = false
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 
 	markWorkersReady(t, f, "c1", "ng1", 1)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
@@ -775,8 +780,8 @@ func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
 	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
-	assert.Contains(t, rec.StatusReason, "worker launch shortfall after")
-	assert.Greater(t, len(f.worker.runCalls), 1, "must have retried at least once before giving up")
+	assert.Contains(t, rec.StatusReason, "worker launch shortfall after 3 attempt(s)")
+	assert.Len(t, f.worker.runCalls, 3, "must spend the whole attempt budget before giving up")
 }
 
 func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {

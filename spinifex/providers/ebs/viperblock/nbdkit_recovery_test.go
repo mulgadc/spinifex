@@ -87,6 +87,18 @@ func spawnLongRunningProcess(t *testing.T) int {
 	return pid
 }
 
+// recordTerminations replaces cfg's SIGTERM with a recorder, so a PID taken
+// from a fabricated /proc entry never reaches a real process. It returns the
+// PIDs recovery asked to signal.
+func recordTerminations(cfg *Config) *[]int {
+	var pids []int
+	cfg.terminateNbdkit = func(pid int) error {
+		pids = append(pids, pid)
+		return nil
+	}
+	return &pids
+}
+
 // writeReferencerFixture writes a /proc/<pid>/{comm,cmdline} pair for a
 // process whose argv carries volumeSocket's endpoint the way QEMU's -blockdev
 // does, so endpointReferencer has something positive to find. comm is
@@ -255,11 +267,13 @@ func TestRecoverMountedVolumes_DiscoverableMount_ResolvesAndSkipsReopen(t *testi
 	listenUnix(t, socket)
 
 	writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
+	signalled := recordTerminations(cfg)
 
 	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
 	mv, ok := findMountedVolume(cfg, volumeName)
 	require.True(t, ok, "recovery must register the surviving nbdkit process in MountedVolumes")
+	assert.Empty(t, *signalled, "an adopted nbdkit must never be signalled")
 	assert.Equal(t, pid, mv.PID)
 	assert.Equal(t, socket, mv.Socket)
 	t.Cleanup(func() {
@@ -324,16 +338,19 @@ func TestRecoverMountedVolumes_UncorroboratedProcessSkipped(t *testing.T) {
 
 	writeProcFixture(t, procRoot, 55555, "nbdkit",
 		nbdkitArgv(filepath.Join(t.TempDir(), "someone-elses-data-dir"), socket, 0, volumeName))
+	signalled := recordTerminations(cfg)
 
 	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
 	_, ok := findMountedVolume(cfg, volumeName)
 	assert.False(t, ok, "an nbdkit serving another daemon's base dir must never be adopted into MountedVolumes")
+	assert.Empty(t, *signalled, "another daemon's nbdkit must never be signalled")
 }
 
 // TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce proves two live nbdkits
 // for one volume — the double-mount hazard itself — yield a single registry
-// entry rather than two conflicting ones.
+// entry rather than two conflicting ones. Its PIDs are fabricated, so the
+// duplicate's SIGTERM must go to the recorder and never to a real process.
 func TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
@@ -349,17 +366,23 @@ func TestRecoverMountedVolumes_DuplicateVolumeAdoptedOnce(t *testing.T) {
 		listenUnix(t, socket)
 		writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(cfg.BaseDir, socket, 0, volumeName))
 	}
+	signalled := recordTerminations(cfg)
 
 	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
 	count := 0
+	adoptedPID := 0
 	for _, mv := range cfg.MountedVolumes {
 		if mv.Name == volumeName {
 			count++
+			adoptedPID = mv.PID
 			t.Cleanup(func() { mv.VB.StopWALSyncer() })
 		}
 	}
 	assert.Equal(t, 1, count, "two nbdkits for one volume must produce one registry entry, not two")
+	duplicatePID := 6001 + 6002 - adoptedPID
+	assert.Equal(t, []int{duplicatePID}, *signalled,
+		"only the fabricated duplicate may be signalled, and only through the injected signaller")
 }
 
 // --- orphan reaping ---
@@ -375,7 +398,7 @@ func TestReapOrphanedNbdkit_NoReferencer_SignalsAndRemovesSocket(t *testing.T) {
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-unreferenced1", Socket: socket}
-	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
+	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable, sigtermProcess)
 
 	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"an unreferenced orphan must be signalled and exit")
@@ -402,7 +425,7 @@ func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-referenced1", Socket: socket}
-	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate), "a referenced orphan must never be signalled")
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate, sigtermProcess), "a referenced orphan must never be signalled")
 	assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a referenced orphan must never be signalled")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "a live orphan's socket must not be removed")
@@ -424,7 +447,7 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 		"driver=nbd,node-name=vol0,server.type=inet,server.host=127.0.0.1,server.port=10899,export=")
 
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-tcp1", Port: 10899}
-	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "a referenced orphan must never be signalled")
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable, sigtermProcess), "a referenced orphan must never be signalled")
 	assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
 }
 
@@ -461,7 +484,7 @@ func TestReapOrphanedNbdkit_BootBlockdevReferencer_LeftRunning(t *testing.T) {
 			writeReferencerFixture(t, procRoot, referencerPID, tt.arg)
 
 			logs := captureLogs(t)
-			assert.False(t, reapOrphanedNbdkit(procRoot, tt.disc(pid), reapReasonUnadoptable), "a boot volume's nbdkit must never be signalled")
+			assert.False(t, reapOrphanedNbdkit(procRoot, tt.disc(pid), reapReasonUnadoptable, sigtermProcess), "a boot volume's nbdkit must never be signalled")
 			assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a boot volume's nbdkit must never be signalled")
 			assert.Contains(t, logs.String(), fmt.Sprintf("referencing_pid=%d", referencerPID))
 		})
@@ -535,7 +558,7 @@ func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-eacces1", Socket: socket}
-	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "an inconclusive scan must never result in a signal")
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable, sigtermProcess), "an inconclusive scan must never result in a signal")
 	assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "an inconclusive scan must never result in a signal")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because the scan was inconclusive must keep its socket")
@@ -607,7 +630,7 @@ func TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan(t *testing
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-hidepid1", Socket: socket}
-	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "hidepid=invisible must never be read as a clean scan")
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable, sigtermProcess), "hidepid=invisible must never be read as a clean scan")
 	assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "hidepid=invisible must never be read as a clean 'no referencer' scan")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because entries could be hidden must keep its socket")
@@ -895,4 +918,11 @@ func TestUnpublishVolume_ReportsAReapedUnregisteredExport(t *testing.T) {
 	assert.True(t, tornDown, "the export the unpublish reaped must be reported torn down")
 	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"unpublish must leave no nbdkit serving the volume")
+}
+
+func TestParseNbdkitCmdline_ReadsLeaseEpoch(t *testing.T) {
+	cmdline := []byte("nbdkit\x00--unix\x00/run/s.sock\x00/usr/lib/nbdkit-viperblock-plugin.so\x00volume=vol-1\x00lease_epoch=99\x00")
+	disc, ok := parseNbdkitCmdline(cmdline)
+	require.True(t, ok)
+	assert.Equal(t, uint64(99), disc.LeaseEpoch)
 }

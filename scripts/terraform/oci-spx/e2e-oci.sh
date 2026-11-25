@@ -8,10 +8,11 @@
 #
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm
-#                     vm-single-principal vm-single-ocibsd vm-multi-ocibsd". Set
-#                     one name to test one thing. The two ocibsd topologies back
-#                     EBS with OCI Block Volumes, need OCI_SOURCE=tree and an
-#                     external pool, and are recorded SKIPPED without them.
+#                     vm-single-principal". Set one name to test one thing.
+#                     Every topology backs EBS with OCI Block Volumes (ocibsd),
+#                     needs OCI_SOURCE=tree and an external pool, and is
+#                     recorded SKIPPED without them.
+#   OCI_EBS_PROVIDER  viperblockd for a one-off viperblock run; blank is ocibsd.
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
 #   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
 #                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
@@ -84,7 +85,8 @@ SPINIFEX_ROOT="$(cd "$HERE/../../.." && pwd)"
 # under the workspace. Deriving one from the other is only right in the first case.
 MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
-TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal vm-single-ocibsd vm-multi-ocibsd}"
+TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal}"
+EBS_PROVIDER="${OCI_EBS_PROVIDER:-ocibsd}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
 INSTALL_VERSION="${OCI_VERSION:-}"
@@ -325,20 +327,48 @@ sweep_ocibsd() {
 # It works from the state files rather than by name filter, so it can only ever
 # destroy what one of these runs created.
 sweep() {
-    local found=0 dir topology
+    local found=0 dir topology held
     local sweep_env=(env)
+    if [ "$DRY_RUN" = 1 ]; then
+        log "dry run: no sweep"
+        return
+    fi
     for dir in "$STATE_ROOT"/.validate-*; do
         [ -d "$dir" ] || continue
-        if [ ! -s "$dir/terraform.tfstate" ]; then
+        topology="${dir##*/.validate-}"
+        # A --keep deployment, existing infrastructure, a failure left up to inspect,
+        # or state from before the marker: none of it is this sweep's to remove.
+        if [ ! -e "$dir/disposable" ]; then
+            log "sweep: $topology is not marked disposable, leaving it"
+            continue
+        fi
+        if [ ! -e "$dir/terraform.tfstate" ]; then
             sweep_ocibsd "$dir"
             continue
         fi
+        # 1 only for state that parses and holds no instances; empty or odd state is 2.
         python3 -c '
 import json, sys
-state = json.load(open(sys.argv[1]))
-sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
-' "$dir/terraform.tfstate" 2>/dev/null || { sweep_ocibsd "$dir"; continue; }
-        topology="${dir##*/.validate-}"
+try:
+    resources = json.load(open(sys.argv[1]))["resources"]
+    if not isinstance(resources, list):
+        raise TypeError(resources)
+    held = any(r["instances"] for r in resources)
+except Exception:
+    sys.exit(2)
+sys.exit(0 if held else 1)
+' "$dir/terraform.tfstate" 2>/dev/null
+        held=$?
+        if [ "$held" = 1 ]; then
+            sweep_ocibsd "$dir"
+            continue
+        fi
+        # Its instances may still be running, so its volumes may still be in use.
+        if [ "$held" != 0 ]; then
+            log "sweep: cannot read $dir/terraform.tfstate, leaving its instances and volumes"
+            echo "sweep $topology: FAIL (unreadable Terraform state)" >> "$VERDICT"
+            continue
+        fi
         # The child reads OCI_STATE_ROOT from the environment, so it looks in the
         # same place this loop found the state rather than beside its own script.
         found=1
@@ -436,8 +466,8 @@ for topology in $TOPOLOGIES; do
     fi
     # ocibsd's files ship in the distro this checkout builds, and its volumes
     # need the credential the pool uses, so neither can be stood in for.
-    case "$topology" in
-        *-ocibsd)
+    case "$EBS_PROVIDER" in
+        ocibsd)
             if [ "$SOURCE" != tree ]; then
                 log "$topology: SKIPPED -- the ocibsd files ship only with a tree build"
                 echo "$topology: SKIPPED (OCI_SOURCE=$SOURCE)" >> "$VERDICT"
@@ -450,7 +480,7 @@ for topology in $TOPOLOGIES; do
             fi
             ;;
     esac
-    args=(--topology "$topology" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
+    args=(--topology "$topology" --ebs-provider "$EBS_PROVIDER" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
     [ "$DRY_RUN" = 1 ] && args+=(--dry-run)
     # Two separate choices. --no-external-pool is the one that forms without any
     # allocator, for a tenancy whose dynamic group does not exist yet; it records

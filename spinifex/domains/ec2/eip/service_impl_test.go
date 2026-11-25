@@ -17,7 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testAccountID = "123456789012"
+const (
+	testAccountID = "123456789012"
+	testRegion    = "ap-southeast-2"
+)
 
 func testPool() external.ExternalPoolConfig {
 	return external.ExternalPoolConfig{
@@ -45,7 +48,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *ec2vpc.ExternalIPAM, *ec2vpc.
 	require.NoError(t, err)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, vpcSvc)
+	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, vpcSvc, testRegion)
 	require.NoError(t, err)
 
 	return svc, ipam, vpcSvc
@@ -357,9 +360,10 @@ func TestEIP_ReleaseMissingParams(t *testing.T) {
 func TestEIP_ReleaseNotFound(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
-	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
+	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-03dd524cb8f0510e0")}, testAccountID)
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAllocationIDNotFound, code)
+	assert.Equal(t, "The allocation ID 'eipalloc-03dd524cb8f0510e0' does not exist", message)
 }
 
 func TestEIP_AssociateMissingAllocationId(t *testing.T) {
@@ -415,10 +419,11 @@ func TestEIP_DisassociateNotFound(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
-		AssociationId: aws.String("eipassoc-nonexistent"),
+		AssociationId: aws.String("eipassoc-04e037d9ee292cf2c"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAssociationID.NotFound")
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAssociationIDNotFound, code)
+	assert.Equal(t, "The association ID 'eipassoc-04e037d9ee292cf2c' does not exist", message)
 }
 
 func TestEIP_RecordToEC2_WithTags(t *testing.T) {
@@ -436,12 +441,14 @@ func TestEIP_RecordToEC2_WithTags(t *testing.T) {
 		Tags:          map[string]string{"Name": "my-eip", "env": "test"},
 	}
 
-	addr := svc.eipRecordToEC2(record)
+	addr := svc.eipRecordToEC2(record, testAccountID)
 	assert.Equal(t, "eipalloc-test", *addr.AllocationId)
 	assert.Equal(t, "1.2.3.4", *addr.PublicIp)
 	assert.Equal(t, "vpc", *addr.Domain)
+	assert.Equal(t, testRegion, aws.StringValue(addr.NetworkBorderGroup))
 	assert.Equal(t, "eipassoc-test", *addr.AssociationId)
 	assert.Equal(t, "eni-test", *addr.NetworkInterfaceId)
+	assert.Equal(t, testAccountID, aws.StringValue(addr.NetworkInterfaceOwnerId))
 	assert.Equal(t, "i-test", *addr.InstanceId)
 	assert.Equal(t, "10.0.0.5", *addr.PrivateIpAddress)
 	assert.Len(t, addr.Tags, 2)
@@ -458,11 +465,13 @@ func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
 		Tags:         map[string]string{},
 	}
 
-	addr := svc.eipRecordToEC2(record)
+	addr := svc.eipRecordToEC2(record, testAccountID)
 	assert.Equal(t, "eipalloc-notags", *addr.AllocationId)
 	assert.Equal(t, "5.6.7.8", *addr.PublicIp)
+	assert.Equal(t, testRegion, aws.StringValue(addr.NetworkBorderGroup))
 	assert.Nil(t, addr.AssociationId)
 	assert.Nil(t, addr.NetworkInterfaceId)
+	assert.Nil(t, addr.NetworkInterfaceOwnerId)
 	assert.Nil(t, addr.InstanceId)
 	assert.Nil(t, addr.PrivateIpAddress)
 	assert.Empty(t, addr.Tags)

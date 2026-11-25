@@ -204,7 +204,7 @@ func TestDescribeDBSubnetGroups_ReportsNetworkTypesAndAnEmptyOutpost(t *testing.
 	require.NoError(t, err)
 	var relayed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, json.Unmarshal(wire, &relayed))
-	body, err := awsxml.Marshal(awsxml.QueryResponsePayload("DescribeDBSubnetGroups", &relayed))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload("DescribeDBSubnetGroups", "", &relayed))
 	require.NoError(t, err)
 	var parsed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, xmlutil.UnmarshalXML(&parsed, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSubnetGroupsResult"))

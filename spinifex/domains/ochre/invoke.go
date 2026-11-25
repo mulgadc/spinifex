@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 )
 
 // resolveEndpointError maps a failed endpoint resolution onto the AWS code the
@@ -22,16 +23,42 @@ func resolveEndpointError(err error) error {
 }
 
 // selfHostInvokeAdapter selects the InvokeAdapter for a self-host catalog
-// entry by family: familyMeta serves through the Llama adapter (honouring a
-// PT-account scope); any other family is refused rather than mis-served.
-func selfHostInvokeAdapter(family string, endpointResolver EndpointResolver, ptAccountID string) (InvokeAdapter, error) {
-	if family != familyMeta {
+// entry: familyMeta serves through the Llama adapter (honouring a PT-account
+// scope), a TEI embedding entry through the TEI adapter; anything else is
+// refused rather than mis-served.
+func selfHostInvokeAdapter(entry catalogEntry, endpointResolver EndpointResolver, ptAccountID string) (InvokeAdapter, error) {
+	if isEmbeddingEntry(entry) && ptAccountID == "" {
+		return newTEIEmbeddingInvokeAdapter(endpointResolver), nil
+	}
+	if entry.Family != familyMeta {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 	if ptAccountID != "" {
 		return newLlamaInvokeAdapterForAccount(endpointResolver, ptAccountID), nil
 	}
 	return newLlamaInvokeAdapter(endpointResolver), nil
+}
+
+// refuseSystemEmbeddingCommitment refuses inference through a system-account
+// commitment on a group that shares the operator-reserved embedding bundle,
+// or whose group no longer resolves, before admission or endpoint lookup.
+func refuseSystemEmbeddingCommitment(ptAccountID, modelID string) error {
+	if ptAccountID != awsidentifiers.GlobalAccountID {
+		return nil
+	}
+	if has, known := coServeGroupHasEmbedding(modelID); has || !known {
+		return errors.New(awserrors.ErrorValidationException)
+	}
+	return nil
+}
+
+// refuseEmbeddingOperation refuses an embedding entry on an operation it does
+// not support, before admission or endpoint lookup.
+func refuseEmbeddingOperation(entry catalogEntry) error {
+	if isEmbeddingEntry(entry) {
+		return errors.New(awserrors.ErrorValidationException)
+	}
+	return nil
 }
 
 // InvokeAdapter translates a Bedrock InvokeModel raw request body into a
@@ -53,9 +80,16 @@ func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, bo
 	requestID := uuid.NewV4().String()
 	start := time.Now()
 	var backend string
+	var embedding bool
 	defer func() {
 		httpStatus, code := recordOutcome(err)
 		inputTokens, outputTokens, _ := extractTokenUsage(backend, respBody)
+		inputText, outputText := string(body), string(respBody)
+		if embedding {
+			// Vectors and their source text are never recorded; usage is.
+			inputTokens, _ = embeddingUsage(respBody)
+			outputTokens, inputText, outputText = 0, "", ""
+		}
 		rt.recorder.Record(ctx, InvocationRecord{
 			RequestID:    requestID,
 			AccountID:    accountID,
@@ -67,8 +101,8 @@ func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, bo
 			ErrorCode:    code,
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,
-			InputText:    string(body),
-			OutputText:   string(respBody),
+			InputText:    inputText,
+			OutputText:   outputText,
 		})
 	}()
 
@@ -82,14 +116,28 @@ func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, bo
 	if err != nil {
 		return nil, "", err
 	}
-
+	// Classified before the grant, so a denied embedding call records no body.
+	if known, ok := lookupCatalogEntry(modelID); ok {
+		embedding = isEmbeddingEntry(known)
+	}
 	// Assigns the named err, so the deferred closure records a denied
 	// invocation the same as any other failed one.
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, "", err
 	}
+	if err = refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, "", err
+	}
+
 	backend = entry.Provider
+
+	// Embedding models are on-demand only and support no guardrails, as AWS
+	// documents for its own; both are refused before admission.
+	if embedding && (ptAccountID != "" || guardrailIdent != "") {
+		err = errors.New(awserrors.ErrorValidationException)
+		return nil, "", err
+	}
 
 	var a InvokeAdapter
 	switch entry.Provider {
@@ -97,7 +145,7 @@ func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, bo
 		// Family validation first: a model this platform cannot serve at
 		// all must fail ValidationException outright, not consume (or be
 		// refused for) admission capacity it was never going to use.
-		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
+		a, err = selfHostInvokeAdapter(entry, rt.endpointResolver, ptAccountID)
 		if err != nil {
 			return nil, "", err
 		}
@@ -216,9 +264,16 @@ func (rt *Router) InvokeModelWithResponseStream(ctx context.Context, accountID, 
 	if err != nil {
 		return nil, err
 	}
-
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, err
+	}
+
+	// Embedding models do not stream; refused before admission.
+	if err := refuseEmbeddingOperation(entry); err != nil {
 		return nil, err
 	}
 
@@ -233,7 +288,7 @@ func (rt *Router) InvokeModelWithResponseStream(ctx context.Context, accountID, 
 		// Family validation first: a model this platform cannot serve at
 		// all must fail ValidationException outright, not consume (or be
 		// refused for) admission capacity it was never going to use.
-		a, err = selfHostInvokeAdapter(entry.Family, rt.endpointResolver, ptAccountID)
+		a, err = selfHostInvokeAdapter(entry, rt.endpointResolver, ptAccountID)
 		if err != nil {
 			return nil, err
 		}

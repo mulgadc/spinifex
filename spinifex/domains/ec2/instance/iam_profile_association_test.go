@@ -271,3 +271,48 @@ func TestStopOrTerminateInstance_AutoDisassociatesProfileOnTerminate(t *testing.
 	assert.Empty(t, v.IamInstanceProfileArn, "terminate must clear profile ARN")
 	assert.Empty(t, v.IamInstanceProfileAssociationId, "terminate must clear association ID")
 }
+
+// A customer stop or terminate records the reason AWS reports for it before
+// the lifecycle runs, so the stopping or shutting-down instance carries it.
+func TestStopOrTerminateInstance_RecordsUserInitiatedReason(t *testing.T) {
+	for name, attrs := range map[string]ec2v1.EC2CommandAttributes{
+		"stop":      {StopInstance: true},
+		"terminate": {TerminateInstance: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := vmWithAccount("i-reason-"+name, testIAMAccount)
+			v.Instance = &ec2.Instance{InstanceId: aws.String(v.ID)}
+			mgr := mgrWith(map[string]*vm.VM{v.ID: v})
+			svc := &InstanceServiceImpl{vmMgr: mgr}
+
+			err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: v.ID, Attributes: attrs})
+			require.NoError(t, err)
+
+			var reason *ec2.StateReason
+			var transition string
+			mgr.Inspect(v, func(v *vm.VM) {
+				reason = v.Instance.StateReason
+				transition = aws.StringValue(v.Instance.StateTransitionReason)
+			})
+			require.NotNil(t, reason)
+			assert.Equal(t, "Client.UserInitiatedShutdown", aws.StringValue(reason.Code))
+			assert.Regexp(t, `^User initiated \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT\)$`, transition)
+		})
+	}
+}
+
+// A stop racing a fence must not replace the fence's reason, which is what
+// keeps the guest out of automatic relaunch.
+func TestStopOrTerminateInstance_KeepsFenceReason(t *testing.T) {
+	v := vmWithAccount("i-fenced", testIAMAccount)
+	v.Instance = &ec2.Instance{StateReason: &ec2.StateReason{Code: aws.String("Server.VolumeFenced")}}
+	mgr := mgrWith(map[string]*vm.VM{v.ID: v})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
+		ID:         v.ID,
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
+	})
+	require.NoError(t, err)
+	mgr.Inspect(v, func(v *vm.VM) { assert.True(t, vm.VolumeFenced(v.Instance)) })
+}

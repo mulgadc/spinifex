@@ -12,6 +12,7 @@ import {
   InstancesPage,
   STATE_FILTERS,
 } from "../-components/instances-page"
+import { KEY_PAIR_FLOWS } from "../-components/key-pair-field"
 
 // Defaults keep every param optional to links; catch drops a mangled value.
 /* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
@@ -21,6 +22,10 @@ const searchSchema = z.object({
   sort: z.string().default("").catch(""),
   template: z.string().default("").catch(""),
   templateVersion: z.string().default("").catch(""),
+  keyPair: z
+    .enum(["", ...KEY_PAIR_FLOWS])
+    .default("")
+    .catch(""),
   ...panelSearchFields,
 })
 /* oxlint-enable promise/prefer-await-to-then */
@@ -90,7 +95,7 @@ function Ec2() {
   function onSearchChange(next: Partial<InstancesSearch>) {
     void navigate({
       search: (previous) => ({ ...previous, ...next }),
-      replace: !("selected" in next || "create" in next),
+      replace: !("selected" in next || "create" in next || "keyPair" in next),
     })
   }
 

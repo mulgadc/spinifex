@@ -21,8 +21,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
@@ -62,7 +65,8 @@ func newFlowsBarrier(nbAddr string) func() error {
 }
 
 // waitForFlowsHV runs `ovn-nbctl --wait=hv sync`, blocking until all chassis acknowledge the new NB sequence.
-// Bounded at 30 s; overruns log a Warn and return nil. Declared as a var so tests can stub it.
+// Bounded at 30 s; an overrun or failure is returned so callers that need
+// confirmation can retry. Declared as a var so tests can stub it.
 var waitForFlowsHV = func(nbAddr string) error {
 	start := time.Now()
 	cmd := sudoCommand("ovn-nbctl",
@@ -73,12 +77,13 @@ var waitForFlowsHV = func(nbAddr string) error {
 		"sync",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+		output := strings.TrimSpace(string(out))
+		slog.Warn("vpcd: OVN flows-ready barrier failed; chassis have not confirmed",
 			"elapsed_ms", otelsetup.Millis(time.Since(start)),
 			"err", err,
-			"output", strings.TrimSpace(string(out)),
+			"output", output,
 		)
-		return nil
+		return fmt.Errorf("ovn-nbctl --wait=hv sync: %w: %s", err, output)
 	}
 	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 	return nil
@@ -195,6 +200,16 @@ type Config struct {
 	// OpenInstanceRecords opens the shared instance record space over vpcd's
 	// NATS connection. Required: vpcd fails to start without it.
 	OpenInstanceRecords func(ctx context.Context, nc *nats.Conn) (guestmetadata.RecordLoader, error)
+	// Cluster is the node set loaded at start, from which the gateway endpoint
+	// prefix list derives as the daemon's does. Nil serves no endpoint proxy.
+	Cluster *config.ClusterConfig
+	// MgmtBridge is the management bridge whose address joins this node's
+	// prefix-list entry; empty is br-mgmt.
+	MgmtBridge string
+	// NodeTLSCert and NodeTLSKey are this node's certificate, which the
+	// endpoint proxy presents to a gate's endpoint listener.
+	NodeTLSCert string
+	NodeTLSKey  string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -538,11 +553,28 @@ func launchService(cfg *Config) error {
 			egressPolicy.ExemptVPCs[id] = true
 		}
 	}
-	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy)
-
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("get JetStream context: %w", err)
+	}
+
+	// Read before anything applies a security group: a level above this build
+	// refuses to start, and prefix-list peers grant only while level 2 holds.
+	level := &levelWatch{read: featureLevelRecord(js), changed: make(chan struct{}, 1)}
+	if err := level.start(ctx); err != nil {
+		slog.Error("vpcd: refusing to start", "err", err)
+		return err
+	}
+	s3Lists, s3ListID := s3PrefixLists(cfg.Region, cfg.Cluster)
+	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy,
+		policy.WithPrefixLists(s3Lists, s3ListID),
+		policy.WithPrefixListGrants(level.Granted))
+	grant := &prefixListGrant{
+		level:   level,
+		applies: sgMgr.GrantingApplies,
+		acls:    liveClient.ListACLs,
+		set:     nbPrefixListSet(liveClient),
+		id:      s3ListID,
 	}
 
 	natOpts := []policy.Option{
@@ -624,6 +656,10 @@ func launchService(cfg *Config) error {
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
+	}
+	endpoints, err := setupEndpointProxy(cfg, js, imdsSvc, grant)
+	if err != nil {
+		return err
 	}
 	go func() {
 		if err := imdsSvc.Run(imdsCtx); err != nil && !errors.Is(err, context.Canceled) {
@@ -731,6 +767,16 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	peeringStore, err := ec2vpcpeering.OpenStore(ctx, js)
+	if err != nil {
+		return fmt.Errorf("open VPC peering store: %w", err)
+	}
+
+	tgwStore, err := ec2tgw.OpenStore(ctx, js)
+	if err != nil {
+		return fmt.Errorf("open Transit Gateway store: %w", err)
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:            liveClient,
 		SG:             sgMgr,
@@ -765,6 +811,19 @@ func launchService(cfg *Config) error {
 			}
 			return ec2igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
+		FlowsBarrier:       flowsBarrier,
+		MarkPeeringActive:  peeringStore.MarkActive,
+		MarkPeeringCleaned: peeringStore.MarkCleaned,
+		TransitGateways: reconcile.TransitGatewayHooks{
+			PrepareAttachment: func(ctx context.Context, accountID, id string) error {
+				_, err := tgwStore.PrepareAttachment(ctx, accountID, id)
+				return err
+			},
+			MarkTransitGatewayAvailable: tgwStore.MarkTransitGatewayAvailable,
+			MarkTransitGatewayCleaned:   tgwStore.MarkTransitGatewayCleaned,
+			MarkAttachmentAvailable:     tgwStore.MarkAttachmentAvailable,
+			MarkAttachmentCleaned:       tgwStore.MarkAttachmentCleaned,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)
@@ -789,9 +848,18 @@ func launchService(cfg *Config) error {
 	// Periodic drift detection, leader-gated so only one vpcd scans at a time.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
+	// A level raised above this build while vpcd runs stops it, ending its
+	// security-group subscriptions and its drift loop.
+	fatal := make(chan error, 1)
+	go level.run(loopCtx, js, func(err error) {
+		select {
+		case fatal <- err:
+		default:
+		}
+	})
 	loopDone := make(chan struct{})
 	go func() {
-		reconcile.DriftLoop(loopCtx, rec, nc, leader, cfg.AZ, startupErr)
+		reconcile.DriftLoop(loopCtx, rec, nc, leader, cfg.AZ, startupErr, level.changed)
 		close(loopDone)
 	}()
 
@@ -832,17 +900,33 @@ func launchService(cfg *Config) error {
 	// physical uplinks have no host hop, so the loop only clears a stale table.
 	go runMSSClampLoop(loopCtx, host.NewExecRunner(), uplinkMode, topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled))
 
+	// Gateway endpoint capture, proxy view and status, on every node: the
+	// capture rules and the proxy serve this host's own guests.
+	if endpoints != nil {
+		statusSub, err := endpoints.run(loopCtx, nc, js)
+		if err != nil {
+			return err
+		}
+		if statusSub != nil {
+			defer func() { _ = statusSub.Unsubscribe() }()
+		}
+	}
+
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	slog.Info("vpcd service shutting down")
+	var stopErr error
+	select {
+	case <-sigChan:
+		slog.Info("vpcd service shutting down")
+	case stopErr = <-fatal:
+		slog.Error("vpcd: stopping; the cluster feature level is above this build", "err", stopErr)
+	}
 	loopCancel()
 	<-loopDone
-	return nil
+	return stopErr
 }
 
 // resolverDNSServer returns the OVN dhcp_options dns_server advertised to

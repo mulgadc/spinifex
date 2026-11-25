@@ -39,21 +39,31 @@ type frame struct {
 type TestStream struct {
 	rw    io.ReadWriter
 	conn  net.Conn // rw when it is a net.Conn; results are written only then
-	in    chan frame
 	wslot chan struct{}
 
 	// closed is set, under the write slot, once the connection was closed
 	// with a result possibly half sent.
 	closed atomic.Bool
 
+	// The reader never waits on the owner, so a closed connection always
+	// ends it; past maxUnread queued frames it stops with ErrTooManyUnread.
+	in  chan frame
 	err error // set before in is closed
 }
+
+// maxUnread bounds frames read ahead of the owner; request/response traffic
+// leaves at most an invoke and a shutdown unread.
+const maxUnread = 4
+
+// ErrTooManyUnread ends the stream when the peer sends more than maxUnread
+// frames the owner has not taken.
+var ErrTooManyUnread = errors.New("hostlink: too many unread frames")
 
 var _ Link = (*TestStream)(nil)
 
 // NewTestStream starts reading frames from rw.
 func NewTestStream(rw io.ReadWriter) *TestStream {
-	s := &TestStream{rw: rw, in: make(chan frame), wslot: make(chan struct{}, 1)}
+	s := &TestStream{rw: rw, in: make(chan frame, maxUnread), wslot: make(chan struct{}, 1)}
 	s.conn, _ = rw.(net.Conn)
 	go s.readLoop()
 	return s
@@ -67,7 +77,12 @@ func (s *TestStream) readLoop() {
 			s.err = err
 			return
 		}
-		s.in <- f
+		select {
+		case s.in <- f:
+		default:
+			s.err = ErrTooManyUnread
+			return
+		}
 	}
 }
 

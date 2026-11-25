@@ -891,6 +891,25 @@ func TestDeleteVpc_RejectsEgressOnlyInternetGateway(t *testing.T) {
 	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the gateway and retry")
 }
 
+// AWS refuses DeleteVpc while a NAT gateway is in the VPC, even once its subnet
+// is gone; deleting it anyway orphans the gateway and its EIP association.
+func TestDeleteVpc_RejectsNatGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.70.0.0/16")
+
+	_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc",
+		[]byte(`{"nat_gateway_id":"nat-0abc","vpc_id":"`+vpcID+`","subnet_id":"subnet-0gone","state":"available"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(t.Context(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	desc, err := svc.DescribeVpcs(t.Context(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the NAT gateway and retry")
+}
+
 // A gateway attached to some other VPC must not block this one.
 func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
 	t.Parallel()
@@ -2685,7 +2704,7 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 	_, err = svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
 		VpcId: aws.String(vpcID), CidrBlock: aws.String("10.0.1.0/24"), AvailabilityZone: aws.String("mulga-laba"),
 	}, testAccountID)
-	testutil.RequireAWSError(t, err, awserrors.ErrorServerInternal, "")
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServerInternal)
 
 	require.NoError(t, nc.Flush())
 	keys, err := svc.subnetKV.Keys(t.Context())
@@ -2696,4 +2715,138 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 		assert.Equal(t, kvstore.VersionKey, k, "no subnet record may exist")
 	}
 	assert.Zero(t, events.Load(), "no topology event may be published")
+}
+
+// TestDeleteSubnet_NatGateway asserts a NAT gateway pins its subnet with
+// AWS's DependencyViolation text while its record and subnet index key exist.
+func TestDeleteSubnet_NatGateway(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		idxOther bool // index the gateway under another subnet
+		noRecord bool // DeleteNatGateway removed the record, or a create failed after indexing
+		wantErr  bool
+	}{
+		{name: "available", wantErr: true},
+		{name: "record gone", noRecord: true},
+		{name: "other subnet", idxOther: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestVPCService(t)
+			vpcID := createTestVPC(t, svc, "10.67.0.0/16")
+			subnetID := createTestSubnet(t, svc, vpcID, "10.67.1.0/24")
+			idxSubnet := subnetID
+			if tc.idxOther {
+				idxSubnet = "subnet-0other"
+			}
+			_, err := svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, idxSubnet, "nat-0abc"), []byte("nat-0abc"))
+			require.NoError(t, err)
+			if !tc.noRecord {
+				rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":"available"}`, vpcID, idxSubnet)
+				_, err = svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte(rec))
+				require.NoError(t, err)
+			}
+
+			_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The subnet '"+subnetID+"' has dependencies and cannot be deleted.")
+
+			desc, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, desc.Subnets, 1)
+		})
+	}
+}
+
+// TestDeleteSubnet_NatGatewayCheckReadsOnlyItsSubnet asserts the check reads
+// no gateway outside the subnet's index, so an undecodable gateway elsewhere
+// in the bucket cannot fail it.
+func TestDeleteSubnet_NatGatewayCheckReadsOnlyItsSubnet(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.68.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.68.1.0/24")
+	_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte("{not json"))
+	require.NoError(t, err)
+	_, err = svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, "subnet-0other", "nat-0abc"), []byte("nat-0abc"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.NoError(t, err)
+}
+
+// failGetKV wraps a real KeyValue and fails every Get.
+type failGetKV struct {
+	jetstream.KeyValue
+}
+
+func (failGetKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
+	return nil, errors.New("simulated KV read failure")
+}
+
+// TestDeleteSubnet_NatGatewayCheckFailsClosedOnReadError asserts a failed read
+// of an indexed gateway blocks DeleteSubnet and keeps the subnet.
+func TestDeleteSubnet_NatGatewayCheckFailsClosedOnReadError(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.69.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.69.1.0/24")
+	_, err := svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, subnetID, "nat-0abc"), []byte("nat-0abc"))
+	require.NoError(t, err)
+	svc.natgwKV = failGetKV{KeyValue: svc.natgwKV}
+
+	_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorServerInternal)
+
+	desc, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1)
+}
+
+// AWS refuses DeleteVpc while a provisioning or active peering connection, or
+// an endpoint, needs the VPC, and keeps the VPC so the caller can retry.
+func TestDeleteVpc_RejectsOwnedDependencies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
+	var asked string
+	svc.SetDependencyCheck("vpc-peering-connection", func(_ context.Context, account, id string) (bool, error) {
+		asked = account + " " + id
+		return true, nil
+	})
+
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+	assert.Equal(t, testAccountID+" "+vpcID, asked)
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1)
+
+	svc.SetDependencyCheck("vpc-peering-connection", func(context.Context, string, string) (bool, error) { return false, nil })
+	svc.SetDependencyCheck("vpc-endpoint", func(context.Context, string, string) (bool, error) { return true, nil })
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	svc.SetDependencyCheck("vpc-endpoint", func(context.Context, string, string) (bool, error) { return false, nil })
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err, "a VPC with no linked connection or endpoint deletes")
+}
+
+// A failed peering check fails closed: the VPC is not deleted past a
+// dependency it could not see.
+func TestDeleteVpc_PeeringCheckErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
+	svc.SetDependencyCheck("vpc-peering-connection", func(context.Context, string, string) (bool, error) { return false, errors.New("bucket unavailable") })
+
+	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServerInternal)
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1)
 }

@@ -26,6 +26,11 @@ type ec2ErrorCatalogFile struct {
 	CommonClient   []string `json:"commonClient"`
 	SpecificClient []string `json:"specificClient"`
 	Server         []string `json:"server"`
+
+	// ObservedClient holds client codes AWS answered live that its error reference omits.
+	ObservedSource string   `json:"observedSource,omitempty"`
+	ObservedOn     string   `json:"observedOn,omitempty"`
+	ObservedClient []string `json:"observedClient,omitempty"`
 }
 
 type ec2ErrorCatalog struct {
@@ -78,6 +83,12 @@ var loadEC2ErrorCatalog = sync.OnceValues(func() (*ec2ErrorCatalog, error) {
 		return nil, err
 	}
 	if err := add("server", file.Server, ec2ErrorClassServer); err != nil {
+		return nil, err
+	}
+	if len(file.ObservedClient) > 0 && (file.ObservedSource == "" || file.ObservedOn == "") {
+		return nil, errors.New("awsmodel: EC2 error catalog observedClient requires observedSource and observedOn")
+	}
+	if err := add("observedClient", file.ObservedClient, ec2ErrorClassClient); err != nil {
 		return nil, err
 	}
 	return catalog, nil

@@ -42,7 +42,7 @@ func TestStoppedInstanceReportsNoPublicAddress(t *testing.T) {
 	})
 
 	assert.Nil(t, got.PublicIpAddress, "a stopped instance still advertises a released address")
-	assert.Nil(t, got.PublicDnsName)
+	assert.Empty(t, aws.StringValue(got.PublicDnsName))
 	require.Len(t, got.NetworkInterfaces, 1)
 	assert.Nil(t, got.NetworkInterfaces[0].Association,
 		"the primary NIC still advertises the released association")

@@ -64,7 +64,7 @@ func NewReranker(endpointResolver EndpointResolver, modelID string) *rerankProvi
 	return &rerankProvider{
 		modelID:          modelID,
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient:       newProviderHTTPClient(),
 	}
 }
 
@@ -78,7 +78,7 @@ func (p *rerankProvider) Rerank(ctx context.Context, query string, docs []string
 
 	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, p.modelID)
 	if err != nil {
-		slog.Debug("rerank: endpoint resolution failed", "model", p.modelID, "err", err)
+		slog.Debug("rerank: endpoint resolution failed", "model", p.modelID, "code", awserrors.ValidErrorCodeFromError(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	if !ok {
@@ -93,32 +93,34 @@ func (p *rerankProvider) Rerank(ctx context.Context, query string, docs []string
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+rerankPath, bytes.NewReader(reqBody))
 	if err != nil {
-		slog.Error("rerank: failed to build request", "err", err)
+		slog.Error("rerank: failed to build request", "endpoint", endpointLogID(baseURL))
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Debug("rerank: request failed", "endpoint", baseURL, "err", err)
+		slog.Debug("rerank: request failed", "endpoint", endpointLogID(baseURL), "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRerankResponseBytes))
-	if err != nil {
-		slog.Debug("rerank: failed to read response body", "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	// Status first, so an unreadable error or redirect body cannot change the
+	// mapped result. Neither body nor decoder error is logged: both can quote input.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Debug("rerank: upstream error", "status", resp.StatusCode)
+		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Debug("rerank: upstream error", "status", resp.StatusCode, "body", string(respBody))
-		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRerankResponseBytes))
+	if err != nil {
+		slog.Debug("rerank: failed to read response body", "failure", transportFailureClass(err))
+		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	var results []rerankResult
 	if err := json.Unmarshal(respBody, &results); err != nil {
-		slog.Debug("rerank: failed to parse response", "err", err)
+		slog.Debug("rerank: failed to parse response")
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 

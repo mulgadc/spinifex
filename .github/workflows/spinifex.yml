@@ -27,93 +27,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_and_test:
-    name: Build and Test
+  # The unit tests run as four shards of one package list; Build and Test
+  # merges their profiles and runs the coverage gates once, on the whole.
+  unit:
+    name: Unit Tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout Spinifex
         uses: actions/checkout@v7.0.1
         with:
           path: spinifex
-          fetch-depth: 2
 
-      - name: Resolve sibling refs
-        id: siblings
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/scripts/resolve-sibling-refs.sh
-        working-directory: spinifex
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
-
-      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
-      # the last go.sum change and never refreshed it. Both caches are managed
-      # below instead.
-      - name: Setup Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: "spinifex/go.mod"
-          cache: false
-
-      # Module contents follow the five go.sum files, so a content key is exact.
-      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
-      # dependencies out of the key and re-downloading on every run.
-      - name: Cache Go modules
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/go/pkg/mod
-          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
-          restore-keys: gomod-
-
-      # Build artifacts follow source, so the key rolls per run and falls back to
-      # this job's newest entry. Keyed per job because -race, -covermode=atomic
-      # and plain builds produce disjoint entries and would evict each other.
-      # Restore runs everywhere; the matching save is gated to dev and main, so
-      # a PR reads the base branch's entry without spending a minute uploading
-      # one only that PR would ever read.
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
-          restore-keys: gobuild-${{ github.job }}-
-
-      # Go refreshes an entry's mtime on use only when it is over an hour old, so
-      # restored entries are backdated past that before any Go command runs and
-      # the trim below can tell this run's working set from the last run's.
-      - name: Mark Go build cache
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-        run: spinifex/.github/scripts/go-build-cache.sh mark
-
-      - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
+          siblings: branch
+          cache: gobuild-unit-${{ matrix.shard }}
+          cache-fallback: gobuild-build_and_test
 
       # The EBS provider contract suite needs a real implementation on each
       # side of the boundary: qemu-img/qemu-nbd/qemu-io back qemunbdd, which
@@ -129,38 +64,41 @@ jobs:
       - name: Build viperblock nbdkit plugin
         run: make -C viperblock go_build_nbd
 
-      - name: Build Spinifex
-        run: make -C spinifex build
+      - name: Select Packages
+        run: |
+          set -euo pipefail
+          make -s -C spinifex list-test-pkgs > all-pkgs-${{ matrix.shard }}.txt
+          spinifex/.github/scripts/go-pkg-shard.sh ${{ matrix.shard }} 4 \
+            < all-pkgs-${{ matrix.shard }}.txt > pkgs-${{ matrix.shard }}.txt
+          echo "shard ${{ matrix.shard }}/4: $(wc -l < pkgs-${{ matrix.shard }}.txt) of $(wc -l < all-pkgs-${{ matrix.shard }}.txt) packages"
 
       - name: Run Tests with Coverage
         env:
           SPINIFEX_REQUIRE_CONFORMANCE_TOOLS: "1"
           VIPERBLOCK_NBDKIT_PLUGIN: ${{ github.workspace }}/viperblock/lib/nbdkit-viperblock-plugin.so
-        run: make -C spinifex test-cover GOTESTFLAGS=-count=1
+        run: >-
+          make -C spinifex test-cover-pkgs GOTESTFLAGS=-count=1
+          PKGS_FILE=${{ github.workspace }}/pkgs-${{ matrix.shard }}.txt
+          COVERPROFILE=${{ github.workspace }}/coverage-${{ matrix.shard }}.out
 
-      - name: Run Action Tests
-        run: make -C spinifex test-actions GOTESTFLAGS=-count=1
-
-      - name: Check Diff Coverage
-        run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
-
-      # Keeps what this run read or wrote and drops the rest, so the saved entry
-      # is one run's working set however often dev is pushed. A red run may have
-      # stopped early and used only part of the set, so it saves untrimmed.
-      - name: Trim Go build cache
-        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: spinifex/.github/scripts/go-build-cache.sh trim
+      - name: Upload Shard Results
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: unit-shard-${{ matrix.shard }}
+          path: |
+            all-pkgs-${{ matrix.shard }}.txt
+            pkgs-${{ matrix.shard }}.txt
+            coverage-${{ matrix.shard }}.out
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Save Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6.1.0
+        uses: $/.github/actions/go-build-cache-save
         with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          cache: gobuild-unit-${{ matrix.shard }}
 
-  race_detection:
-    name: Race Detection
-    if: ${{ github.event_name != 'pull_request' }}
+  build:
+    name: Build
     runs-on: ubuntu-26.04
 
     steps:
@@ -169,246 +107,243 @@ jobs:
         with:
           path: spinifex
 
-      - name: Resolve sibling refs
-        id: siblings
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/scripts/resolve-sibling-refs.sh
-        working-directory: spinifex
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
+          siblings: branch
+          cache: gobuild-${{ github.job }}
+          cache-fallback: gobuild-build_and_test
 
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
+      # The headers and nbdkit.pc that cgo needs to build viperblock's plugin.
+      - name: Install plugin build packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils nbdkit nbdkit-plugin-dev libnbd-bin
 
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
+      - name: Build viperblock nbdkit plugin
+        run: make -C viperblock go_build_nbd
 
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
+      - name: Build Spinifex
+        run: make -C spinifex build
 
-      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
-      # the last go.sum change and never refreshed it. Both caches are managed
-      # below instead.
-      - name: Setup Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: "spinifex/go.mod"
-          cache: false
-
-      # Module contents follow the five go.sum files, so a content key is exact.
-      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
-      # dependencies out of the key and re-downloading on every run.
-      - name: Cache Go modules
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/go/pkg/mod
-          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
-          restore-keys: gomod-
-
-      # Build artifacts follow source, so the key rolls per run and falls back to
-      # this job's newest entry. Keyed per job because -race, -covermode=atomic
-      # and plain builds produce disjoint entries and would evict each other.
-      # Restore runs everywhere; the matching save is gated to dev and main, so
-      # a PR reads the base branch's entry without spending a minute uploading
-      # one only that PR would ever read.
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
-          restore-keys: gobuild-${{ github.job }}-
-
-      # Go refreshes an entry's mtime on use only when it is over an hour old, so
-      # restored entries are backdated past that before any Go command runs and
-      # the trim below can tell this run's working set from the last run's.
-      - name: Mark Go build cache
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-        run: spinifex/.github/scripts/go-build-cache.sh mark
-
-      - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
-
-      - name: Run Tests with Race Detector
-        run: make -C spinifex test-race GOTESTFLAGS=-count=1
-
-      # Keeps what this run read or wrote and drops the rest, so the saved entry
-      # is one run's working set however often dev is pushed. A red run may have
-      # stopped early and used only part of the set, so it saves untrimmed.
-      - name: Trim Go build cache
-        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: spinifex/.github/scripts/go-build-cache.sh trim
+      - name: Run Action Tests
+        run: make -C spinifex test-actions GOTESTFLAGS=-count=1
 
       - name: Save Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6.1.0
+        uses: $/.github/actions/go-build-cache-save
         with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          cache: gobuild-${{ github.job }}
 
-  # Three parallel jobs: run serially, integration and the gated suites made
-  # this the longest PR check. lint_and_security_result reports all three.
-  lint_and_security:
-    name: ${{ matrix.name }}
+  # The required check. It passes only when every shard and the build passed,
+  # the shards' packages are exactly the full list, and both coverage gates
+  # pass on the merged profile.
+  build_and_test:
+    name: Build and Test
+    needs: [unit, build]
+    if: ${{ always() }}
     runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - check: lint
-            name: Lint and Govulncheck
-          - check: integration
-            name: Integration
-          - check: gated
-            name: Gated Suites
 
     steps:
+      - name: Require Every Shard and the Build
+        env:
+          UNIT: ${{ needs.unit.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          [ "$UNIT" = success ] || { echo "::error::Unit Tests: $UNIT"; exit 1; }
+          [ "$BUILD" = success ] || { echo "::error::Build: $BUILD"; exit 1; }
+
       - name: Checkout Spinifex
         uses: actions/checkout@v7.0.1
         with:
           path: spinifex
           fetch-depth: 2
 
-      - name: Resolve sibling refs
-        id: siblings
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/scripts/resolve-sibling-refs.sh
-        working-directory: spinifex
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
-
-      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
-      # the last go.sum change and never refreshed it. Both caches are managed
-      # below instead.
       - name: Setup Go
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@v7.1.0
         with:
-          go-version-file: "spinifex/go.mod"
+          go-version-file: spinifex/go.mod
           cache: false
 
-      # Module contents follow the five go.sum files, so a content key is exact.
-      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
-      # dependencies out of the key and re-downloading on every run.
-      - name: Cache Go modules
-        uses: actions/cache@v6.1.0
+      - name: Download Shard Results
+        uses: actions/download-artifact@v8.0.2
         with:
-          path: ~/go/pkg/mod
-          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
-          restore-keys: gomod-
+          pattern: unit-shard-*
+          merge-multiple: true
+          path: shards
 
-      # Build artifacts follow source, so the key rolls per run and falls back to
-      # this job's newest entry. Keyed per job because -race, -covermode=atomic
-      # and plain builds produce disjoint entries and would evict each other.
-      # Restore runs everywhere; the matching save is gated to dev and main, so
-      # a PR reads the base branch's entry without spending a minute uploading
-      # one only that PR would ever read.
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6.1.0
+      - name: Check the Shards Cover Every Package Once
+        run: spinifex/.github/scripts/go-pkg-shard-union.sh shards/all-pkgs-*.txt -- shards/pkgs-*.txt
+
+      - name: Merge Coverage Profiles
+        run: |
+          set -euo pipefail
+          # Every shard's profile, by number: a missing one must fail, not shrink the total.
+          for n in 1 2 3 4; do
+            [ "$(head -1 "shards/coverage-${n}.out" 2>/dev/null)" = "mode: atomic" ] ||
+              { echo "::error::shard ${n} has no atomic coverage profile"; exit 1; }
+          done
+          { echo "mode: atomic"; for n in 1 2 3 4; do tail -n +2 "shards/coverage-${n}.out"; done; } > spinifex/coverage.out
+          grep -c '' spinifex/coverage.out
+
+      - name: Check Total Coverage
+        run: cd spinifex && scripts/check-coverage.sh coverage.out
+
+      - name: Check Diff Coverage
+        run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
+
+  race:
+    name: Race Detection (${{ matrix.shard }}/4)
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
         with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ matrix.check }}-${{ github.run_id }}
-          restore-keys: |
-            gobuild-${{ github.job }}-${{ matrix.check }}-
-            gobuild-${{ github.job }}-
+          path: spinifex
 
-      # Go refreshes an entry's mtime on use only when it is over an hour old, so
-      # restored entries are backdated past that before any Go command runs and
-      # the trim below can tell this run's working set from the last run's.
-      - name: Mark Go build cache
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-        run: spinifex/.github/scripts/go-build-cache.sh mark
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-race-${{ matrix.shard }}
+          cache-fallback: gobuild-race_detection
 
-      - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
+      - name: Select Packages
+        run: |
+          set -euo pipefail
+          make -s -C spinifex list-test-pkgs > race-all-pkgs-${{ matrix.shard }}.txt
+          spinifex/.github/scripts/go-pkg-shard.sh ${{ matrix.shard }} 4 \
+            < race-all-pkgs-${{ matrix.shard }}.txt > race-pkgs-${{ matrix.shard }}.txt
+          echo "shard ${{ matrix.shard }}/4: $(wc -l < race-pkgs-${{ matrix.shard }}.txt) of $(wc -l < race-all-pkgs-${{ matrix.shard }}.txt) packages"
+
+      - name: Run Tests with Race Detector
+        run: >-
+          make -C spinifex test-race-pkgs GOTESTFLAGS=-count=1
+          PKGS_FILE=${{ github.workspace }}/race-pkgs-${{ matrix.shard }}.txt
+
+      - name: Upload Shard Packages
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: race-shard-${{ matrix.shard }}
+          path: |
+            race-all-pkgs-${{ matrix.shard }}.txt
+            race-pkgs-${{ matrix.shard }}.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Save Go build cache
+        uses: $/.github/actions/go-build-cache-save
+        with:
+          cache: gobuild-race-${{ matrix.shard }}
+
+  # Required on main. Passes only when every race shard passed and the shards'
+  # packages are exactly the full list.
+  race_detection:
+    name: Race Detection
+    needs: race
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Require Every Shard
+        env:
+          RACE: ${{ needs.race.result }}
+        run: '[ "$RACE" = success ] || { echo "::error::Race Detection shards: $RACE"; exit 1; }'
+
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+          sparse-checkout: .github/scripts
+
+      - name: Download Shard Packages
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: race-shard-*
+          merge-multiple: true
+          path: shards
+
+      - name: Check the Shards Cover Every Package Once
+        run: spinifex/.github/scripts/go-pkg-shard-union.sh shards/race-all-pkgs-*.txt -- shards/race-pkgs-*.txt
+
+  lint:
+    name: Lint and Govulncheck
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-${{ github.job }}
 
       - name: Lint
-        if: ${{ matrix.check == 'lint' }}
         uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.14.0
           working-directory: spinifex
 
       - name: Govulncheck
-        if: ${{ matrix.check == 'lint' && !cancelled() }}
+        if: ${{ !cancelled() }}
         run: make -C spinifex govulncheck
 
+      - name: Save Go build cache
+        uses: $/.github/actions/go-build-cache-save
+        with:
+          cache: gobuild-${{ github.job }}
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-${{ github.job }}
+
       - name: Run Integration Tests
-        if: ${{ matrix.check == 'integration' }}
         run: make -C spinifex test-integration
 
+      - name: Save Go build cache
+        uses: $/.github/actions/go-build-cache-save
+        with:
+          cache: gobuild-${{ github.job }}
+
+  gated:
+    name: Gated Suites
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-${{ github.job }}
+
       - name: Run Gated Suites
-        if: ${{ matrix.check == 'gated' }}
         run: make -C spinifex test-gated GOTESTFLAGS=-count=1
 
-      # Keeps what this run read or wrote and drops the rest, so the saved entry
-      # is one run's working set however often dev is pushed. A red run may have
-      # stopped early and used only part of the set, so it saves untrimmed.
-      - name: Trim Go build cache
-        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: spinifex/.github/scripts/go-build-cache.sh trim
-
       - name: Save Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6.1.0
+        uses: $/.github/actions/go-build-cache-save
         with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ matrix.check }}-${{ github.run_id }}
-
-  # The context main's ruleset requires, passing only when all three jobs pass.
-  lint_and_security_result:
-    name: Lint and Security
-    if: ${{ always() }}
-    needs: [lint_and_security]
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - name: Require lint, integration and gated suites
-        env:
-          RESULT: ${{ needs.lint_and_security.result }}
-        run: |
-          echo "lint, integration and gated suites: ${RESULT}"
-          [ "${RESULT}" = success ]
+          cache: gobuild-${{ github.job }}

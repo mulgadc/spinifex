@@ -81,6 +81,7 @@ func kitchenSinkIntent(t *testing.T) IntentState {
 }
 
 func TestScenario_KitchenSinkGolden_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	ctx := context.Background()
 	intent := kitchenSinkIntent(t)

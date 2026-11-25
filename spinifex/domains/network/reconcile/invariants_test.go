@@ -19,10 +19,12 @@ import (
 // port_security == "<MAC> <IP>". Without it a compromised guest can forge a
 // peer's source IP, breaking the IMDS (VPC-ID, source-IP) → ENI mapping.
 func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Live path: topology.EnsurePort.
 	t.Run("live", func(t *testing.T) {
+		t.Parallel()
 		m := mock.New()
 		mgr := topology.NewLiveManager(m)
 		vpc := topology.VPCSpec{VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16")}
@@ -50,6 +52,7 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 
 	// Reconciler path: applyPorts.
 	t.Run("reconciler", func(t *testing.T) {
+		t.Parallel()
 		rec, m := newTestReconciler(t)
 		intent := freshIntent(t)
 		if err := rec.Reconcile(ctx, intent); err != nil {
@@ -66,6 +69,7 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 // reconcile. Without it, guest LSPs leak across instance terminate and host
 // reinstall — the orphan-LSP capacity-drift root cause.
 func TestRLC5_OrphanLSPPrunedAfterReconcile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rec, m := newTestReconciler(t)
 	intent := freshIntent(t)

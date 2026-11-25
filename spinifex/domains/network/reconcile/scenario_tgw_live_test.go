@@ -58,6 +58,7 @@ func tgwNB(t *testing.T, ctx context.Context, cli ovn.Client) string {
 // Gateway router, a steady pass writes nothing, drift is rewritten, and
 // teardown leaves only the deleted attachment's route drop.
 func TestScenario_TransitGateway_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)

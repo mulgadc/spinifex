@@ -17,8 +17,10 @@ import (
 // reachable, repeated Reconcile calls converge. Two passes over N={1,3,8} VPCs;
 // state on pass 2 must equal state on pass 1.
 func TestL1_ReconcilerConverges(t *testing.T) {
+	t.Parallel()
 	for _, n := range []int{1, 3, 8} {
 		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
+			t.Parallel()
 			rec, m := newTestReconciler(t)
 			ctx := context.Background()
 			intent := scaledIntent(t, n)
@@ -53,6 +55,7 @@ func TestL1_ReconcilerConverges(t *testing.T) {
 // TestL2_DriftIntervalBounded pins PROP-REGIONLOCAL-006:L2 structurally: bounds
 // DriftInterval to (0, 30m]. Full coverage blocked on a clock-injectable DriftLoop.
 func TestL2_DriftIntervalBounded(t *testing.T) {
+	t.Parallel()
 	if DriftInterval <= 0 {
 		t.Fatalf("PROP-REGIONLOCAL-006:L2: DriftInterval must be > 0; got %v", DriftInterval)
 	}

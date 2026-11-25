@@ -129,6 +129,7 @@ func linkPortCount(m *mock.Client) int {
 // A provisioning connection gets its link and guards, is confirmed active only
 // after the flows barrier, and its routes deliver in the pass that confirms it.
 func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -178,6 +179,7 @@ func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
 // A link whose transaction fails withdraws its reroutes on the same pass, so
 // a route never forwards into a link whose guard may be missing.
 func TestReconcile_PeeringFailedLinkWithdrawsReroute(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -209,6 +211,7 @@ func TestReconcile_PeeringFailedLinkWithdrawsReroute(t *testing.T) {
 // next pass rewrite the whole link in one transaction, restoring both ends; a
 // converged pass then writes nothing.
 func TestReconcile_PeeringMissingRowRewritesLink(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -262,6 +265,7 @@ func TestReconcile_PeeringMissingRowRewritesLink(t *testing.T) {
 // When rewriting a link with a missing guard fails, the same pass withdraws
 // the link's reroutes on both routers and keeps the route drops.
 func TestReconcile_PeeringFailedRewriteWithdrawsReroutes(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -290,6 +294,7 @@ func TestReconcile_PeeringFailedRewriteWithdrawsReroutes(t *testing.T) {
 // A deleted connection loses its link, guards and reroutes and is reported
 // cleaned; a route still naming it keeps its drop, so it blackholes.
 func TestReconcile_PeeringTeardown(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -333,6 +338,7 @@ func TestReconcile_PeeringTeardown(t *testing.T) {
 // A teardown whose link delete fails is not reported cleaned, so the record
 // and its link address are kept until a later pass removes the link.
 func TestReconcile_PeeringFailedTeardownIsNotCleaned(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -366,6 +372,7 @@ func TestReconcile_PeeringFailedTeardownIsNotCleaned(t *testing.T) {
 
 // no route is withdrawn, and the pass reports itself incomplete.
 func TestReconcile_PeeringIncompleteIntentChangesNothing(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -390,6 +397,7 @@ func TestReconcile_PeeringIncompleteIntentChangesNothing(t *testing.T) {
 // Rows stamped with a connection that has no live record are swept by a
 // pruning pass and kept by an apply-only one.
 func TestReconcile_PeeringOrphanPrunedOnlyWhenPruning(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -422,6 +430,7 @@ func TestReconcile_PeeringOrphanPrunedOnlyWhenPruning(t *testing.T) {
 // A connection whose activation report fails keeps only its route drops, so
 // traffic never flows while the record still says provisioning.
 func TestReconcile_PeeringUnconfirmedLinkDoesNotDeliver(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -474,6 +483,7 @@ func TestApplyPeeringRoutes_RouterGoneMidPassIsSkipped(t *testing.T) {
 }
 
 func TestApplyPeeringRoutes_OtherSyncErrorFailsPass(t *testing.T) {
+	t.Parallel()
 	rec, _ := newTestReconciler(t)
 	rec.peeringRoutes = failingPeeringRoutes{err: errors.New("ovsdb transact failed")}
 	actual := ActualState{Routers: map[string]struct{}{topology.VPCRouter("vpc-a"): {}}}

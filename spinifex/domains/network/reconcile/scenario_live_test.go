@@ -85,6 +85,7 @@ func newReconcilerAt(t *testing.T, endpoint string) (*reconciler, ovn.Client) {
 // real NB DB, asserts the expected rows exist, then re-runs reconcile and
 // asserts the NB snapshot is byte-for-byte unchanged (idempotency).
 func TestScenario_VPCSubnetSGPort_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	ctx := context.Background()
 	intent := freshIntent(t)

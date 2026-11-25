@@ -96,6 +96,20 @@ func intentSource(js jetstream.JetStream) loop.Source {
 // a pass: that bootstrap pass is the startup scan, and running a second one here
 // would duplicate it and pull a scan forward on every clean boot.
 func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync.Lease, localAZ string, startup error, trigger <-chan struct{}) {
+	driftLoop(ctx, rec, nc, lease, localAZ, startup, trigger, defaultDriftTiming())
+}
+
+// driftTiming is the loop's schedule, passed in so a test can compress it
+// without changing the package defaults under other tests.
+type driftTiming struct {
+	interval, base, debounce time.Duration
+}
+
+func defaultDriftTiming() driftTiming {
+	return driftTiming{interval: DriftInterval, base: driftBackoffBase, debounce: driftDebounce}
+}
+
+func driftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync.Lease, localAZ string, startup error, trigger <-chan struct{}, tm driftTiming) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		slog.Error("reconcile/drift: JetStream context unavailable, drift loop disabled", "err", err)
@@ -105,17 +119,17 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync
 	loop.Run(ctx, loop.Config{
 		Name:      "vpcd/drift",
 		Sources:   []loop.Source{intentSource(js)},
-		Reconcile: driftPass(rec, lease, js, localAZ, startup),
+		Reconcile: driftPass(rec, lease, js, localAZ, startup, tm),
 		Trigger:   trigger,
-		Resync:    DriftInterval,
-		Debounce:  driftDebounce,
+		Resync:    tm.interval,
+		Debounce:  tm.debounce,
 	})
 }
 
 // driftPass returns the reconcile pass, closing over the backoff ladder and the
 // last pass time. Run never calls it concurrently with itself, which is why
 // neither needs a lock.
-func driftPass(rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, localAZ string, startup error) func(context.Context) (time.Duration, error) {
+func driftPass(rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, localAZ string, startup error, tm driftTiming) func(context.Context) (time.Duration, error) {
 	var backoff time.Duration
 	var lastPass time.Time
 	seeded := false
@@ -123,19 +137,19 @@ func driftPass(rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, loca
 	return func(ctx context.Context) (time.Duration, error) {
 		if !seeded {
 			seeded = true
-			backoff = nextDriftBackoff(0, startup)
+			backoff = tm.nextBackoff(0, startup)
 			return backoff, nil
 		}
 		// A change-driven pass is a repair check, not the apply path: the event
 		// subscriber has already applied the change, so coalescing a burst behind
 		// the floor the ladder starts at costs a scan nothing it would have
 		// found. Without it a launch storm scans continuously.
-		if wait := time.Until(lastPass.Add(driftBackoffBase)); wait > 0 {
+		if wait := time.Until(lastPass.Add(tm.base)); wait > 0 {
 			return wait, nil
 		}
 		previous := backoff
 		retry, err := runDriftCycle(ctx, rec, lease, js, localAZ)
-		backoff = nextDriftBackoff(backoff, err)
+		backoff = tm.nextBackoff(backoff, err)
 		// Stamped after the scan, not before: the floor is a gap between passes,
 		// and a pass slower than the floor would otherwise leave none at all.
 		lastPass = time.Now()
@@ -148,19 +162,18 @@ func driftPass(rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, loca
 	}
 }
 
-// nextDriftBackoff returns the requeue backoff after a pass: zero once a pass
-// converges, otherwise the previous backoff tripled from driftBackoffBase and
-// held at DriftInterval. Zero means no deadline, leaving a converged loop to the
-// resync rather than asking for a revisit it does not need.
-func nextDriftBackoff(current time.Duration, err error) time.Duration {
+// nextBackoff returns the requeue backoff after a pass: zero once a pass
+// converges, otherwise the previous backoff tripled from tm.base and held at
+// tm.interval. Zero means no deadline, so a converged loop waits for the resync.
+func (tm driftTiming) nextBackoff(current time.Duration, err error) time.Duration {
 	if !errors.Is(err, ErrPassIncomplete) {
 		return 0
 	}
-	next := driftBackoffBase
+	next := tm.base
 	if current > 0 {
 		next = current * driftBackoffFactor
 	}
-	return min(next, DriftInterval)
+	return min(next, tm.interval)
 }
 
 // runDriftCycle is one pass body, split out so tests can drive it directly.

@@ -45,6 +45,7 @@ func seedGuestPorts(t *testing.T, r *reconciler, eniIDs ...string) IntentState {
 }
 
 func TestPruneOrphanPorts_RefusesWhenIntentHoldsNoENIsAtAll(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	intent := seedGuestPorts(t, r, "eni-a")
@@ -65,6 +66,7 @@ func TestPruneOrphanPorts_RefusesWhenIntentHoldsNoENIsAtAll(t *testing.T) {
 // dropping a single VPC filters out every ENI in it without emptying the set, so
 // the count guard never fires and only the tap can save those guests.
 func TestPruneOrphanPorts_KeepsAPortWhoseTapIsPluggedInHere(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	intent := seedGuestPorts(t, r, "eni-a", "eni-b")
@@ -85,6 +87,7 @@ func TestPruneOrphanPorts_KeepsAPortWhoseTapIsPluggedInHere(t *testing.T) {
 // Without a tap the same port is a real orphan and must still go, or the sweep
 // stops reclaiming anything.
 func TestPruneOrphanPorts_SweepsAPortWithNoLocalTap(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	intent := seedGuestPorts(t, r, "eni-a", "eni-b")
@@ -107,6 +110,7 @@ func TestPruneOrphanPorts_SweepsAPortWithNoLocalTap(t *testing.T) {
 // An unreadable OVS is a lost liveness signal, so the sweep must stand down
 // rather than fall back to deciding on intent alone.
 func TestPruneOrphanPorts_SkipsWhenLocalOVSCannotBeRead(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	intent := seedGuestPorts(t, r, "eni-a", "eni-b")
@@ -129,6 +133,7 @@ func TestPruneOrphanPorts_SkipsWhenLocalOVSCannotBeRead(t *testing.T) {
 // A NAT gateway's snat row is not stamped with an owning port, so it must not
 // count toward the refusal and must never be swept by the dnat_and_snat pass.
 func TestPruneOrphanEIPs_RefusesWhenLiveSetIsEmpty(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	seedGuestPorts(t, r, "eni-a")

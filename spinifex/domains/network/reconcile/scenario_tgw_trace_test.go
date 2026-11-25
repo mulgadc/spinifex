@@ -113,6 +113,7 @@ func tgwRoute(dest string) ec2routetable.RouteRecord {
 // The datapath that northd compiles from the reconciler's rows forwards and
 // drops as AWS does for the Transit Gateway cases in the plan's test list.
 func TestScenario_TransitGatewayTrace(t *testing.T) {
+	t.Parallel()
 	lab := traceLab{t: t, nb: os.Getenv("SPINIFEX_OVN_TRACE_NB"), sb: os.Getenv("SPINIFEX_OVN_TRACE_SB")}
 	if lab.nb == "" || lab.sb == "" {
 		t.Skip("SPINIFEX_OVN_TRACE_NB and SPINIFEX_OVN_TRACE_SB name a lab NB and SB with ovn-northd")

@@ -1,4 +1,4 @@
-//test:in-package — intentSource, intentBuckets and driftBackoffBase are
+//test:in-package — intentSource, intentBuckets and driftTiming are
 //unexported, and the point of these tests is what the loop watches rather than
 //what it does once woken.
 
@@ -43,21 +43,12 @@ func bucketNames(t *testing.T, js jetstream.JetStream) []string {
 	return names
 }
 
-// shrinkDriftDebounce shortens how long the loop waits for writes to settle.
-// Call it before startDriftLoop so the loop is joined before it is restored.
-func shrinkDriftDebounce(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := driftDebounce
-	driftDebounce = d
-	t.Cleanup(func() { driftDebounce = old })
-}
-
 // waitForWatch writes probe keys until one of them wakes a pass, and returns the
 // call count once it has. Watchers attach asynchronously and are UpdatesOnly, so
 // a single write racing startup is lost for good; retrying is what makes a test
 // that needs a live watcher deterministic rather than dependent on how fast the
 // machine got there.
-func waitForWatch(t *testing.T, rec *stubReconciler, kv jetstream.KeyValue, prefix string) int {
+func waitForWatch(t *testing.T, rec *stubReconciler, kv jetstream.KeyValue, prefix string, debounce time.Duration) int {
 	t.Helper()
 	before := rec.callCount()
 	deadline := time.Now().Add(10 * time.Second)
@@ -67,7 +58,7 @@ func waitForWatch(t *testing.T, rec *stubReconciler, kv jetstream.KeyValue, pref
 		}
 		// Outlasting the debounce lets a probe that was seen wake its pass before
 		// another probe is written.
-		if got := waitForCalls(t, rec, before+1, 5*driftDebounce); got > before {
+		if got := waitForCalls(t, rec, before+1, 5*debounce); got > before {
 			return got
 		}
 	}
@@ -88,15 +79,16 @@ func streamExists(t *testing.T, js jetstream.JetStream, name string) bool {
 // loop long before DriftInterval, because that write is the repair signal a
 // dropped vpc.* event would otherwise leave for the next scan.
 func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv := createIntentBucket(t, js, ec2vpc.KVBucketVPCs)
 	// The interval is long so a pass can only have come from the watch, and the
 	// floor is short so the write is not merely deferred behind it.
-	shrinkDriftTiming(t, time.Minute, time.Millisecond)
-	shrinkDriftDebounce(t, 20*time.Millisecond)
+	tm := shrunkDriftTiming(time.Minute, time.Millisecond)
+	tm.debounce = 20 * time.Millisecond
 
 	rec := &stubReconciler{outcomes: []error{nil}}
-	startDriftLoop(t, rec, nc, nil)
+	startDriftLoop(t, rec, nc, nil, tm)
 
 	// After the startup seed the loop is armed at DriftInterval alone, so the
 	// watch has to be what brings the pass forward.
@@ -106,19 +98,20 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 	}
 
 	// Well inside DriftInterval, so the pass can only have come from the write.
-	waitForWatch(t, rec, kv, "vpc-watch-")
+	waitForWatch(t, rec, kv, "vpc-watch-", tm.debounce)
 }
 
 // A receive on the trigger wakes a pass well inside DriftInterval, which is how
 // a change no intent bucket records reaches the reconcile pass.
 func TestDriftLoop_TriggerWakesAPass(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, time.Minute, time.Millisecond)
-	shrinkDriftDebounce(t, 20*time.Millisecond)
 
+	// The production defaults: the trigger needs no compressed timing to beat
+	// a five-minute DriftInterval inside the wait below.
 	trigger := make(chan struct{}, 1)
 	rec := &stubReconciler{outcomes: []error{nil}}
-	startDriftLoopTriggered(t, rec, nc, nil, trigger)
+	startDriftLoopTriggered(t, rec, nc, nil, trigger, driftTiming{})
 
 	if got := rec.callCount(); got != 0 {
 		t.Fatalf("reconcile ran %d times before the trigger, want 0", got)
@@ -132,19 +125,20 @@ func TestDriftLoop_TriggerWakesAPass(t *testing.T) {
 // A burst is one pass, not one per key: the debounce coalesces it and the floor
 // keeps a launch storm from turning a five-minute OVN scan into a running one.
 func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv := createIntentBucket(t, js, ec2vpc.KVBucketENIs)
 	// The floor outlasts a probe window plus the debounce, so a late probe's
 	// pass is coalesced with the burst rather than counted as a second one.
-	shrinkDriftTiming(t, time.Minute, 300*time.Millisecond)
-	shrinkDriftDebounce(t, 20*time.Millisecond)
+	tm := shrunkDriftTiming(time.Minute, 300*time.Millisecond)
+	tm.debounce = 20 * time.Millisecond
 
 	rec := &stubReconciler{outcomes: []error{nil}}
-	startDriftLoop(t, rec, nc, nil)
+	startDriftLoop(t, rec, nc, nil, tm)
 
 	// The burst has to land on a watcher that is already attached, or the writes
 	// it is meant to coalesce are simply never seen.
-	base := waitForWatch(t, rec, kv, "eni-probe-")
+	base := waitForWatch(t, rec, kv, "eni-probe-", tm.debounce)
 
 	for i := range 20 {
 		if _, err := kv.Put(t.Context(), "eni-burst-"+strconv.Itoa(i), []byte(`{}`)); err != nil {
@@ -167,6 +161,7 @@ func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
 // place, and the handler's own get-or-create would then return it rather than
 // correct it.
 func TestIntentSource_DoesNotCreateMissingBuckets(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 
 	if got := bucketNames(t, js); len(got) != 0 {
@@ -184,6 +179,7 @@ func TestIntentSource_DoesNotCreateMissingBuckets(t *testing.T) {
 // Dynamic source: JetStream has no bucket-created event, so discovery rides the
 // resync.
 func TestIntentSource_PicksUpABucketThatAppearsLater(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	createIntentBucket(t, js, ec2vpc.KVBucketVPCs)
 
@@ -217,6 +213,7 @@ func bucketConstants(t *testing.T, path string) map[string]struct{} {
 // two lists are compared at the source rather than by name, so a load added to
 // intent.go and not to intentBuckets fails here instead of going quiet.
 func TestIntentSource_CoversEveryBucketTheIntentLoadReads(t *testing.T) {
+	t.Parallel()
 	read := bucketConstants(t, "intent.go")
 	if len(read) == 0 {
 		t.Fatal("no bucket constants found in intent.go — the scan is not matching what it should")
@@ -233,11 +230,12 @@ func TestIntentSource_CoversEveryBucketTheIntentLoadReads(t *testing.T) {
 // The floor is what stops a busy cluster scanning continuously, so it is pinned
 // on the pass rather than inferred from the loop's timing.
 func TestDriftPass_FloorsTheChangeDrivenRate(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, time.Minute, time.Hour)
+	tm := shrunkDriftTiming(time.Minute, time.Hour)
 
 	rec := &stubReconciler{outcomes: []error{nil}}
-	pass := driftPass(rec, vpcdLease(js, "node-1"), js, "us-east-1a", nil)
+	pass := driftPass(rec, vpcdLease(js, "node-1"), js, "us-east-1a", nil, tm)
 
 	// The seed pass does no work: the bootstrap ReconcileApplyOnly was the
 	// startup scan and this one must not repeat it.
@@ -262,8 +260,8 @@ func TestDriftPass_FloorsTheChangeDrivenRate(t *testing.T) {
 	if got := rec.callCount(); got != 1 {
 		t.Errorf("reconcile ran %d times inside the floor, want it deferred to 1", got)
 	}
-	if revisit <= 0 || revisit > driftBackoffBase {
+	if revisit <= 0 || revisit > tm.base {
 		t.Errorf("deferred pass asked to be revisited in %v, want a positive wait "+
-			"no longer than the floor (%v)", revisit, driftBackoffBase)
+			"no longer than the floor (%v)", revisit, tm.base)
 	}
 }

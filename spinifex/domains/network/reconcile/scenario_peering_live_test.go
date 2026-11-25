@@ -53,6 +53,7 @@ func peeringNB(t *testing.T, ctx context.Context, cli ovn.Client) string {
 // A peering connection reconciled into a real NB joins the two routers, a
 // steady-state pass writes nothing, and teardown leaves only the route drops.
 func TestScenario_PeeringLink_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)

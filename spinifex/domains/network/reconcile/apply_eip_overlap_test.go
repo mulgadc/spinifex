@@ -87,6 +87,7 @@ func seedAssociatedEIP(t *testing.T, js jetstream.JetStream, acct, suffix, publi
 // associating its own EIP must leave tenant A's public address, NAT row and
 // host binding alone, whether A's address is a user EIP or auto-assigned.
 func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		publicA string
@@ -97,6 +98,7 @@ func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			js := startKV(t)
 			seedOverlappingTenants(t, js, tc.publicA)
@@ -173,6 +175,7 @@ func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
 // The drop-gate exemption must name the EIP's own subnet, not a subnet in
 // another VPC whose CIDR happens to contain the same private IP.
 func TestSubnetIDForIP_ScopedToVPC(t *testing.T) {
+	t.Parallel()
 	subnets := map[string]topology.SubnetSpec{
 		"subnet-a": {SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/20")},
 		"subnet-b": {SubnetID: "subnet-b", VPCID: "vpc-b", CIDR: netip.MustParsePrefix("172.31.0.0/20")},
@@ -208,6 +211,7 @@ func (g *recordingIGW) EnsureEIPInstanceEgress(_ context.Context, vpcID, subnetI
 // An EIP's drop-gate exemption goes to its own VPC's subnet even when another
 // tenant's gated subnet has the same CIDR.
 func TestApplyPublicInstanceEgress_EIPExemptsOwnVPCSubnet(t *testing.T) {
+	t.Parallel()
 	cidr := netip.MustParsePrefix("172.31.0.0/20")
 	intent := IntentState{
 		Subnets: map[string]topology.SubnetSpec{

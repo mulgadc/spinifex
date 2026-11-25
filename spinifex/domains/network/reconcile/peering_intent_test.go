@@ -27,6 +27,7 @@ func peeringRec(id, status, req, reqCIDR, acc, accCIDR string) ec2vpcpeering.Pee
 // Each connection lands in exactly one of link, teardown or nothing, decided
 // by its state and by where its two VPCs live.
 func TestLoadIntentFromKV_PeeringClassification(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		"000000000001.vpc-a": mustJSON(t, ec2vpc.VPCRecord{VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a"}),
@@ -80,6 +81,7 @@ func TestLoadIntentFromKV_PeeringClassification(t *testing.T) {
 // A VPC whose record will not unmarshal is still present, so its links are
 // not torn down for want of a readable record.
 func TestLoadIntentFromKV_PeeringUnreadableVPCIsPresent(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		"000000000001.vpc-a": mustJSON(t, ec2vpc.VPCRecord{VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a"}),
@@ -100,6 +102,7 @@ func TestLoadIntentFromKV_PeeringUnreadableVPCIsPresent(t *testing.T) {
 // With the VPC bucket unreadable every VPC would look absent, so peering
 // intent is incomplete and no linked connection is marked for teardown.
 func TestLoadIntentFromKV_PeeringWithoutVPCBucketTearsNothingDown(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 	testutil.SeedKV(t, js, ec2vpcpeering.KVBucketPeeringConnections, map[string][]byte{
 		"pcx.pcx-1": mustJSON(t, peeringRec("pcx-1", ec2vpcpeering.StateActive, "vpc-a", "10.0.0.0/16", "vpc-b", "10.1.0.0/16")),
@@ -119,6 +122,7 @@ func TestLoadIntentFromKV_PeeringWithoutVPCBucketTearsNothingDown(t *testing.T) 
 // A peering route fans out over every subnet its table governs and excludes
 // the VPC range and each more specific gateway route inside its destination.
 func TestLoadPeeringRoutes_FanOutAndExclusions(t *testing.T) {
+	t.Parallel()
 	vpcs := map[string]topology.VPCSpec{"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16")}}
 	subnets := map[string]topology.SubnetSpec{
 		"subnet-1": {SubnetID: "subnet-1", VPCID: "vpc-a"},

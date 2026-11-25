@@ -55,6 +55,7 @@ func newTestReconciler(t *testing.T) (*reconciler, *mock.Client) {
 }
 
 func TestReconcile_TopoOrder_VPCThenSubnetThenPort(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -84,6 +85,7 @@ func TestReconcile_TopoOrder_VPCThenSubnetThenPort(t *testing.T) {
 // the drift/recreate path, distinct from EnsurePort's, that must not re-add
 // a lease the guest's dhcpcd would flush the static address on.
 func TestReconcile_PortSuppressDHCP(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -120,6 +122,7 @@ func TestReconcile_PortSuppressDHCP(t *testing.T) {
 // it. The next pass recreates the row under a new UUID and must re-link the
 // existing ports to it, leaving a SuppressDHCP port unlinked.
 func TestReconcile_ExistingPortRelinkedToRecreatedDHCPOptions(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -164,6 +167,7 @@ func TestReconcile_ExistingPortRelinkedToRecreatedDHCPOptions(t *testing.T) {
 }
 
 func TestReconcile_PortJoinsPortGroupAtomically(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -187,6 +191,7 @@ func TestReconcile_PortJoinsPortGroupAtomically(t *testing.T) {
 }
 
 func TestReconcile_Idempotent(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -253,6 +258,7 @@ func orphanPGIntent() IntentState {
 }
 
 func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -275,6 +281,7 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 // A sweep that would delete every managed port group is refused: intent holding
 // no SGs at all is an unreadable bucket, not a VPC without a default SG.
 func TestReconcile_OrphanPortGroupPruneRefusedOnEmptyIntent(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -295,6 +302,7 @@ func TestReconcile_OrphanPortGroupPruneRefusedOnEmptyIntent(t *testing.T) {
 // ReconcileApplyOnly must not prune sg_* PGs on empty intent (startup race);
 // full Reconcile must still prune.
 func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -325,6 +333,7 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 // teardown, so an apply-only pass that skipped it would leave a released public
 // address delivering to a guest until the resync.
 func TestReconcile_ApplyOnlyStillPrunesReleasedEIP(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -350,6 +359,7 @@ func TestReconcile_ApplyOnlyStillPrunesReleasedEIP(t *testing.T) {
 // ReconcileApplyOnly must not prune orphan ENI LSPs on startup (in-flight ports
 // before subscribers converge); full Reconcile must prune them.
 func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -386,6 +396,7 @@ func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
 }
 
 func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
@@ -501,6 +512,7 @@ func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
 }
 
 func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
@@ -555,6 +567,7 @@ func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 }
 
 func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -586,6 +599,7 @@ func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 // group, so a port in none of them is unrestricted. When a port's policy cannot
 // be programmed in full, applyPorts must refuse the port rather than create it.
 func TestReconcile_UnprogrammablePolicyDoesNotCreatePort(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -624,6 +638,7 @@ func TestReconcile_UnprogrammablePolicyDoesNotCreatePort(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec, m := newTestReconciler(t)
 			intent := freshIntent(t)
 			tc.mutate(&intent)
@@ -643,6 +658,7 @@ func TestReconcile_UnprogrammablePolicyDoesNotCreatePort(t *testing.T) {
 // gone missing keeps the memberships it has. Applying the diff would strip a
 // live guest bare, which is worse than leaving it on a stale policy.
 func TestReconcile_UnprogrammablePolicyKeepsExistingMemberships(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rec, m := newTestReconciler(t)
 
@@ -675,6 +691,7 @@ func TestReconcile_UnprogrammablePolicyKeepsExistingMemberships(t *testing.T) {
 // Once applySGs catches up, the next pass creates the port and joins it: the
 // refusal is a window that heals, not a permanent block.
 func TestReconcile_RefusedPortHealsOncePortGroupExists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rec, m := newTestReconciler(t)
 
@@ -708,6 +725,7 @@ func TestReconcile_RefusedPortHealsOncePortGroupExists(t *testing.T) {
 // goes dark post-reboot while every control-plane signal stays green. The reboot suite
 // drives this via auto-assigned public IPs (ENI records), not the EIP bucket.
 func TestReconcile_PublicInstanceExemptFromDropGate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rec, m := newTestReconciler(t)
 
@@ -758,6 +776,7 @@ func TestReconcile_PublicInstanceExemptFromDropGate(t *testing.T) {
 // /32 reroute — its priority-1000 subnet egress reroute already carries it, and an
 // extra policy would needlessly override routed/NATGW egress.
 func TestReconcile_PublicInstanceNoExemptionWithoutDropGate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rec, m := newTestReconciler(t)
 
@@ -784,6 +803,7 @@ func TestReconcile_PublicInstanceNoExemptionWithoutDropGate(t *testing.T) {
 }
 
 func TestDiffSets(t *testing.T) {
+	t.Parallel()
 	add, remove := diffSets([]string{"a", "b", "c"}, []string{"b", "c", "d"})
 	if !slices.Equal(sortedCopy(add), []string{"a"}) {
 		t.Errorf("add = %v, want [a]", add)
@@ -823,6 +843,7 @@ func freshIntent(t *testing.T) IntentState {
 // from intent (leaked across dead VPCs by a lost vpc.delete-nat), keying on the
 // union of intent port names and EIP port names, while leaving live rows intact.
 func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -869,6 +890,7 @@ func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
 // released public IP survive. Intent no longer carries the address, so the prune
 // must sweep it on the external-IP test alone.
 func TestReconcile_PruneOrphanEIPs_SweepsReleasedAddressOnLivePort(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -897,6 +919,7 @@ func TestReconcile_PruneOrphanEIPs_SweepsReleasedAddressOnLivePort(t *testing.T)
 // start-of-pass snapshot does not carry. When a fresh-intent loader is wired, the
 // prune must union its ports and spare that row, while still sweeping a genuine orphan.
 func TestReconcile_PruneOrphanEIPs_SparesMidPassLaunch(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -948,6 +971,7 @@ func TestReconcile_PruneOrphanEIPs_SparesMidPassLaunch(t *testing.T) {
 // When the fresh-intent re-read fails, the prune is skipped wholesale rather than
 // risk sweeping a live row against a snapshot known to be stale.
 func TestReconcile_PruneOrphanEIPs_SkipsOnReloadError(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -976,6 +1000,7 @@ func TestReconcile_PruneOrphanEIPs_SkipsOnReloadError(t *testing.T) {
 // ("port group not found"), so the prune must union a fresh re-read into the keep
 // set while still sweeping a genuine orphan.
 func TestReconcile_ApplySGs_SparesMidPassSecurityGroup(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -1009,6 +1034,7 @@ func TestReconcile_ApplySGs_SparesMidPassSecurityGroup(t *testing.T) {
 // When the fresh-intent re-read fails, the port group sweep is skipped wholesale
 // rather than risk deleting a live SG against a snapshot known to be stale.
 func TestReconcile_ApplySGs_SkipsPruneOnReloadError(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -1034,6 +1060,7 @@ func TestReconcile_ApplySGs_SkipsPruneOnReloadError(t *testing.T) {
 // Same window against guest LSPs: an ENI created mid-pass is absent from the
 // snapshot, and pruning its port strands the guest with no datapath.
 func TestReconcile_PruneOrphanPorts_SparesMidPassENI(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -1076,6 +1103,7 @@ func TestReconcile_PruneOrphanPorts_SparesMidPassENI(t *testing.T) {
 
 // A failed re-read skips the guest LSP sweep entirely, same as the SG and EIP paths.
 func TestReconcile_PruneOrphanPorts_SkipsOnReloadError(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -1138,6 +1166,7 @@ func (o *racingOVN) ListLogicalSwitchPorts(ctx context.Context) ([]nbdb.LogicalS
 // after the listing covers every row in it. Re-reading first reopens the window:
 // the new port is listed but absent from both snapshots and gets swept.
 func TestReconcile_PruneOrphanPorts_ReloadsAfterListing(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 
@@ -1202,6 +1231,7 @@ func sortedCopy(in []string) []string {
 // guest-port convergence) alongside user EIPs, deduped when a user EIP already
 // covers the same private IP.
 func TestFloatingIPSpecs(t *testing.T) {
+	t.Parallel()
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
 	r := &reconciler{}
 
@@ -1280,6 +1310,7 @@ func TestFloatingIPSpecs(t *testing.T) {
 // none, so an egressing private guest left with a source the host held no route
 // back to and the masquerade rule, which matches the transit /24 alone, never saw.
 func TestHostBindSpecs_CarriesNATGatewayAddresses(t *testing.T) {
+	t.Parallel()
 	r := &reconciler{}
 
 	intent := IntentState{
@@ -1332,6 +1363,7 @@ func TestHostBindSpecs_CarriesNATGatewayAddresses(t *testing.T) {
 // An address serving as both a user EIP and a NAT gateway's is bound once, and
 // keeps the EIP's port identity so it stays on the distributed path.
 func TestHostBindSpecs_DedupesAgainstAnExistingEIP(t *testing.T) {
+	t.Parallel()
 	r := &reconciler{}
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
 
@@ -1358,6 +1390,7 @@ func TestHostBindSpecs_DedupesAgainstAnExistingEIP(t *testing.T) {
 // create-time MTU in place forever. Going from off to on that means a subnet
 // still advertising 1442 on an ESP path, which blackholes large segments.
 func TestApplySubnets_ConvergesDriftedDHCPOptions(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 	intent := freshIntent(t)
@@ -1594,6 +1627,7 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 // a swallowed failure is indistinguishable from a converged pass, so nothing
 // retries it until the next drift tick.
 func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 	attachErr := errors.New("allocate gateway LRP IP: dhcp gw-lrp acquire: context deadline exceeded")
@@ -1623,6 +1657,7 @@ func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
 // The converged path must stay clean: a pass with the same intent and a working
 // AttachIGW returns nil, so the drift loop resets to DriftInterval.
 func TestReconcile_AttachedIGWReportsConverged(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 	rec.chassis = []string{"chassis-1"}
@@ -1656,6 +1691,7 @@ func (s *stubNAT) AddEIP(ctx context.Context, spec policy.EIPSpec) error {
 // The incomplete signal is a per-pass contract, not an IGW special case: a stage
 // other than applyIGWs failing must report itself the same way.
 func TestReconcile_FailedAddEIPReportsPassIncomplete(t *testing.T) {
+	t.Parallel()
 	rec, _ := newTestReconciler(t)
 	ctx := context.Background()
 	rec.nat = &stubNAT{NATManager: rec.nat, addErr: errors.New("ovsdb unreachable")}
@@ -1673,6 +1709,7 @@ func TestReconcile_FailedAddEIPReportsPassIncomplete(t *testing.T) {
 // The convergence summary counts failures per class, so an operator reading one
 // line knows which stage did not converge and how widely.
 func TestPassResult_SummaryCountsPerClass(t *testing.T) {
+	t.Parallel()
 	res := &passResult{}
 	res.fail(classIGW, "vpc-a", errors.New("x"))
 	res.fail(classEIP, "192.168.1.10", errors.New("y"))
@@ -1687,6 +1724,7 @@ func TestPassResult_SummaryCountsPerClass(t *testing.T) {
 // A gateway attached before gateway_mtu existed, or under a different IPsec
 // setting, must converge on the next reconcile pass.
 func TestReconcile_ConvergesGatewayMTUOnAnAttachedVPC(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
@@ -1761,6 +1799,7 @@ func TestReconcile_ConvergesGatewayMTUOnAnAttachedVPC(t *testing.T) {
 // The pass fills a prefix-list set a group's rule names, which a request only
 // creates empty, before applying that group.
 func TestReconcile_ApplySGs_ConvergesPrefixListSets(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	r.sg = policy.NewSecurityGroupManager(m, policy.EgressPolicy{}, policy.WithPrefixLists(
@@ -1785,6 +1824,7 @@ func TestReconcile_ApplySGs_ConvergesPrefixListSets(t *testing.T) {
 // A pass after the grant is withdrawn removes the prefix-list ACL an earlier
 // pass installed, though the intent is unchanged, so a rollback's drain clears.
 func TestReconcile_ApplySGs_WithdrawnGrantRemovesPrefixListACLs(t *testing.T) {
+	t.Parallel()
 	r, m := newTestReconciler(t)
 	ctx := context.Background()
 	var granted atomic.Bool

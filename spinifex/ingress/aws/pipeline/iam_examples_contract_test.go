@@ -16,6 +16,7 @@ import (
 )
 
 func TestIAMExamplesContract(t *testing.T) {
+	t.Parallel()
 	examples := loadIAMExamples(t)
 	covered := 0
 

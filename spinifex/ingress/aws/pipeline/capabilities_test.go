@@ -36,6 +36,7 @@ type fakeAdmission struct{ err error }
 func (f fakeAdmission) Admit(string, string) error { return f.err }
 
 func TestCheckPolicy_UsesTheSuppliedEvaluator(t *testing.T) {
+	t.Parallel()
 	policy := &fakePolicy{}
 	gw := &Config{Policy: policy}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
@@ -50,6 +51,7 @@ func TestCheckPolicy_UsesTheSuppliedEvaluator(t *testing.T) {
 }
 
 func TestCheckPolicy_ReturnsTheEvaluatorVerdict(t *testing.T) {
+	t.Parallel()
 	verdict := errors.New(awserrors.ErrorAccessDenied)
 	gw := &Config{Policy: &fakePolicy{err: verdict}}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
@@ -59,6 +61,7 @@ func TestCheckPolicy_ReturnsTheEvaluatorVerdict(t *testing.T) {
 }
 
 func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
+	t.Parallel()
 	gw := &Config{}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
 
@@ -68,6 +71,7 @@ func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
 }
 
 func TestCheckAccountActive_MapsAdmissionVerdicts(t *testing.T) {
+	t.Parallel()
 	src := authSource{}
 	cases := []struct {
 		name string

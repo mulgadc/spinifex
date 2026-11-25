@@ -16,6 +16,7 @@ import (
 )
 
 func TestOperatorQuery_GetInstanceMetrics_PolicyOnAnotherInstanceIsDenied(t *testing.T) {
+	t.Parallel()
 	otherARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/i-0fffffffffffffff0"
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(otherARN), nil)
 	answerWatches(t, gwfix.DepsOf(gw).NATS)
@@ -30,6 +31,7 @@ func TestOperatorQuery_GetInstanceMetrics_PolicyOnAnotherInstanceIsDenied(t *tes
 // Through the signed pipeline, a tenant's policy naming the instance's ARN is
 // enough, and the first sample arrives while the stream is still open.
 func TestOperatorQuery_GetInstanceMetrics_StreamsThroughThePipeline(t *testing.T) {
+	t.Parallel()
 	instanceARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/" + streamInstance
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(instanceARN), nil)
 	answerWatches(t, gwfix.DepsOf(gw).NATS)

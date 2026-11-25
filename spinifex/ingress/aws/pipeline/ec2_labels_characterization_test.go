@@ -19,6 +19,7 @@ import (
 // a caller the policy would refuse, an action that does not exist and a
 // gateway-local action all get the same 503, so none of them reach dispatch.
 func TestEC2Labels_ClusterUnavailableGateOrder(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		deny bool
@@ -49,6 +50,7 @@ func TestEC2Labels_ClusterUnavailableGateOrder(t *testing.T) {
 // caller allowed only ec2:<Action> is not refused, so the gate names no other
 // action and no other service.
 func TestEC2Labels_PolicyGateEvaluatesServiceAndAction(t *testing.T) {
+	t.Parallel()
 	for _, c := range ec2LabelCases {
 		t.Run(c.action, func(t *testing.T) {
 			app := ec2Pipeline(t, nil, statement("Allow", "ec2:"+c.action, "*"))
@@ -104,6 +106,7 @@ func TestEC2Labels_SpanAndAudit(t *testing.T) {
 // refused while a different action still passes, and the refusal is EC2's
 // RequestLimitExceeded in the XML envelope.
 func TestEC2Labels_ThrottleKeyIsAccountAndAction(t *testing.T) {
+	t.Parallel()
 	throttler := ratelimit.New(ratelimit.Config{Enabled: true, Rate: 1, Burst: 1})
 	defer throttler.Stop()
 	app := ec2Pipeline(t, func(e *ec2PipelineEnv) { e.Throttler = throttler }, allowEC2())

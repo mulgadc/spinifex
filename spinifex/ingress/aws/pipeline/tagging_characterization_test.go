@@ -16,6 +16,7 @@ import (
 )
 
 func TestTaggingActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, target, wantAction string
 	}{

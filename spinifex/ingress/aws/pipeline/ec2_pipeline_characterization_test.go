@@ -20,6 +20,7 @@ import (
 // TestEC2Pipeline_CheckOrder pins which refusal wins when a request earns
 // several: policy, then tag types, then DryRun, then MaxResults.
 func TestEC2Pipeline_CheckOrder(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		deny bool
@@ -47,6 +48,7 @@ func TestEC2Pipeline_CheckOrder(t *testing.T) {
 // TestEC2Pipeline_ErrorEnvelopes pins status, code and the EC2 error envelope
 // for each way a request can be refused before or at dispatch.
 func TestEC2Pipeline_ErrorEnvelopes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		noNATS bool
@@ -85,6 +87,7 @@ func TestEC2Pipeline_ErrorEnvelopes(t *testing.T) {
 // action: a replay returns the first result, changed parameters are refused,
 // and no token means no deduplication.
 func TestEC2Pipeline_IdempotentCreate(t *testing.T) {
+	t.Parallel()
 	app := ec2Pipeline(t, nil, allowEC2())
 	const subject = "ec2.CreateEgressOnlyInternetGateway"
 	create := func(vpc, token string) ec2Outcome {
@@ -119,6 +122,7 @@ func TestEC2Pipeline_IdempotentCreate(t *testing.T) {
 // doubly encoded trailing "==" is decoded before the key reaches the daemon,
 // and a single trailing "=" is not.
 func TestEC2Pipeline_ImportKeyPairPadding(t *testing.T) {
+	t.Parallel()
 	forwarded := func(t *testing.T, material string) string {
 		t.Helper()
 		app := ec2Pipeline(t, nil, allowEC2())
@@ -145,6 +149,7 @@ func TestEC2Pipeline_ImportKeyPairPadding(t *testing.T) {
 // that hands an instance profile over: a denied role is UnauthorizedOperation,
 // a permitted one reaches the daemon.
 func TestEC2Pipeline_PassRole(t *testing.T) {
+	t.Parallel()
 	const body = "Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web"
 	passRole := statement("Allow", "iam:PassRole", "*")
 	passRole.Condition = map[string]map[string]iamdomain.ConditionValue{
@@ -184,6 +189,7 @@ func TestEC2Pipeline_PassRole(t *testing.T) {
 // one is refused before iam:PassRole is consulted, and a resolved one is then
 // subject to PassRole on its role. This is the baseline for any parity change.
 func TestEC2Pipeline_RunInstancesInstanceProfile(t *testing.T) {
+	t.Parallel()
 	const body = runInstancesBase + "&ImageId=ami-1&IamInstanceProfile.Name=web"
 
 	t.Run("unknown profile is refused before PassRole", func(t *testing.T) {
@@ -211,6 +217,7 @@ func TestEC2Pipeline_RunInstancesInstanceProfile(t *testing.T) {
 // a launch template is expanded before the policy gate, so a resource the
 // template supplies is authorized and a Deny on it fires.
 func TestEC2Pipeline_RunInstancesLaunchTemplateAuthorizedAfterExpansion(t *testing.T) {
+	t.Parallel()
 	const subject = "ec2.DescribeLaunchTemplateVersions"
 	template := func(image string) string {
 		return `{"LaunchTemplateVersions":[{"LaunchTemplateData":{"ImageId":"` + image + `"}}]}`
@@ -246,6 +253,7 @@ func TestEC2Pipeline_RunInstancesLaunchTemplateAuthorizedAfterExpansion(t *testi
 // TestEC2Pipeline_Success pins the success envelope for a daemon-backed list
 // and for the gateway-local actions.
 func TestEC2Pipeline_Success(t *testing.T) {
+	t.Parallel()
 	app := ec2Pipeline(t, nil, allowEC2())
 
 	t.Run("daemon backed list", func(t *testing.T) {

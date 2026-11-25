@@ -190,6 +190,7 @@ func signDispatchRequest(t *testing.T, service string, body []byte) *http.Reques
 // --- a. request reaches the registered dispatcher with full context -------
 
 func TestDispatchSeam_RequestReachesDispatcherWithContext(t *testing.T) {
+	t.Parallel()
 	capt := &dispatchCapture{}
 	_, app := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
 
@@ -252,6 +253,7 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 // --- c. Authorize denies or allows ------------------------------------------
 
 func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
+	t.Parallel()
 	const allowedResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/widget1"
 	const otherResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/other"
 
@@ -292,6 +294,7 @@ func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
 // --- d. Actor returns the verified caller, ignoring the body ---------------
 
 func TestDispatchSeam_ActorReturnsVerifiedCallerIgnoringBody(t *testing.T) {
+	t.Parallel()
 	capt := &dispatchCapture{resolveActor: true}
 	_, app := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
 
@@ -311,6 +314,7 @@ func TestDispatchSeam_ActorReturnsVerifiedCallerIgnoringBody(t *testing.T) {
 // --- e. dispatcher error renders in the registration's declared envelope ---
 
 func TestDispatchSeam_DispatcherErrorRendersInDeclaredEnvelope(t *testing.T) {
+	t.Parallel()
 	t.Run("JSON envelope service", func(t *testing.T) {
 		capt := &dispatchCapture{dispatchErr: errors.New(awserrors.ErrorInternalError)}
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
@@ -337,6 +341,7 @@ func TestDispatchSeam_DispatcherErrorRendersInDeclaredEnvelope(t *testing.T) {
 // --- f. NATS down gets the same 503 a legacy service gets ------------------
 
 func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
+	t.Parallel()
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
@@ -362,6 +367,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 // nothing serves: the existing UnservedService characterization tests in
 // auth_test.go pin the same behaviour with a nil registry.
 func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T) {
+	t.Parallel()
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
@@ -405,6 +411,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 // --- h. ValidateServices overlap guard --------------------------------------
 
 func TestValidateServices(t *testing.T) {
+	t.Parallel()
 	t.Run("nil registry passes", func(t *testing.T) {
 		gw := &Config{}
 		assert.NoError(t, gw.ValidateServices())
@@ -422,6 +429,7 @@ func TestValidateServices(t *testing.T) {
 // request with no ctxAction (gateway.go's throttleKeyFuncs), exactly what an
 // unresolved legacy request leaves it at today.
 func TestDispatchSeam_NoResolverDispatchesWithLegacyFallback(t *testing.T) {
+	t.Parallel()
 	capt := &dispatchCapture{}
 	gw, _ := dispatchSeamApp(t, allowAllECRDocs(), fakeNoResolverRegistration(capt))
 

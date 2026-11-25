@@ -259,6 +259,7 @@ func (e *cbEnv) getSessionToken(t *testing.T, c cbCreds) cbCreds {
 
 // Pins CURRENT behaviour: how a valid long-lived key resolves to a principal and account.
 func TestCurrentBehaviour_Auth_LongLivedKeyResolvesPrincipal(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("iam_user", func(t *testing.T) {
@@ -297,6 +298,7 @@ func TestCurrentBehaviour_Auth_LongLivedKeyResolvesPrincipal(t *testing.T) {
 // Pins CURRENT behaviour: a long-lived key is bound to a user by name only, so
 // a key record orphaned from its user authenticates as a same-name replacement.
 func TestCurrentBehaviour_Revocation_OrphanedKeyAuthenticatesAsRecreatedUser(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	key, oldID := e.newUser(t, "erin")
 
@@ -343,6 +345,7 @@ func (e *cbEnv) orphanKeys(t *testing.T, user string) {
 // Pins CURRENT behaviour: identity-policy allow, implicit deny and explicit deny
 // on iam actions, evaluated after authentication and before the handler runs.
 func TestCurrentBehaviour_Policy_IdentityPolicyOutcomes(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	listUsers := cbForm("ListUsers")
 	denied := cbOutcome{status: http.StatusForbidden, code: awserrors.ErrorAccessDenied,
@@ -381,6 +384,7 @@ func TestCurrentBehaviour_Policy_IdentityPolicyOutcomes(t *testing.T) {
 // Pins CURRENT behaviour: credential lookup outcomes when IAM or STS backing
 // state cannot be read.
 func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
+	t.Parallel()
 	gci := cbForm("GetCallerIdentity")
 	internal := cbRegistry(awserrors.ErrorInternalError)
 

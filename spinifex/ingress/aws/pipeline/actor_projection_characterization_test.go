@@ -218,6 +218,7 @@ func roleObservation(accountID, roleName, roleID, session, akid string) actorObs
 //     user ARN, and shares the session name "root" with the global root;
 //   - a user principal's identity is its user name, a role session's its session name.
 func TestActorProjection_PrincipalKinds(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	h, seen := actorProbeGateway(t, e)
 	acct := e.accountID
@@ -263,6 +264,7 @@ func TestActorProjection_PrincipalKinds(t *testing.T) {
 // Pins CURRENT behaviour: the role name comes from the underlying role ARN,
 // never the session name the caller chose at AssumeRole time.
 func TestActorProjection_RoleNameFromRoleARN(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	h, seen := actorProbeGateway(t, e)
 
@@ -303,6 +305,7 @@ func TestActorProjection_RoleNameFromRoleARN(t *testing.T) {
 // session name it picks, and a same-named role in another account never
 // passes the global-account gate.
 func TestActorProjection_AgentRolesNotAssumableOverHTTPS(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	h, seen := actorProbeGateway(t, e)
 	global := awsidentifiers.GlobalAccountID

@@ -30,6 +30,7 @@ func mountsApp(t *testing.T) http.Handler {
 // OIDC discovery and the registry sit ahead of SigV4 and the throttle: an
 // unsigned caller is served, however many times, with a bucket of one.
 func TestMounts_PublicRoutesPrecedeSigV4AndThrottle(t *testing.T) {
+	t.Parallel()
 	app := mountsApp(t)
 	for _, tc := range []struct {
 		path string
@@ -49,6 +50,7 @@ func TestMounts_PublicRoutesPrecedeSigV4AndThrottle(t *testing.T) {
 
 // Only the exact /v2 subtree is the registry; a sibling path stays behind SigV4.
 func TestMounts_RegistryPrefixIsExact(t *testing.T) {
+	t.Parallel()
 	resp := doRequest(mountsApp(t), httptest.NewRequest(http.MethodGet, "/v20/x", nil))
 	assert.NotEqual(t, http.StatusTeapot, resp.StatusCode)
 	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest)
@@ -56,6 +58,7 @@ func TestMounts_RegistryPrefixIsExact(t *testing.T) {
 
 // Unsigned /admin is refused by SigV4, so the mount cannot be reached without it.
 func TestMounts_AdminSitsBehindSigV4(t *testing.T) {
+	t.Parallel()
 	resp := doRequest(mountsApp(t), httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil))
 	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest)
 }
@@ -63,6 +66,7 @@ func TestMounts_AdminSitsBehindSigV4(t *testing.T) {
 // Without an admin registration name the surface refuses, rather than
 // dispatching to whatever service the empty name selects.
 func TestAdmin_UnconfiguredSurfaceAnswersInternalError(t *testing.T) {
+	t.Parallel()
 	gw := withServices(&Config{DisableLogging: true})
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)

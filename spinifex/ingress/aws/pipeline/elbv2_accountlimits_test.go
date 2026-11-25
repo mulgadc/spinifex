@@ -14,6 +14,7 @@ import (
 // The service must accept the paging parameters the model defines and still
 // answer with the whole list.
 func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 
 	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits&Marker=2&PageSize=1")
@@ -28,6 +29,7 @@ func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
 // A disabled quota means "not enforced", not "nothing permitted", so the entries
 // report the AWS default rather than the unconsulted configured value.
 func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
+	t.Parallel()
 	disabled := quota.New(quota.Limits{LoadBalancers: 0}, nil)
 
 	for name, gw := range map[string]*Config{
@@ -45,6 +47,7 @@ func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
 // The limit must be resolved per request, so one account's override cannot be
 // served to another.
 func TestELBv2DescribeAccountLimitsIsPerAccount(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	const other = "000000000043"
 
@@ -60,6 +63,7 @@ func TestELBv2DescribeAccountLimitsIsPerAccount(t *testing.T) {
 // The reported cap must be the one CreateLoadBalancer enforces, including an
 // override an operator has stored since the gateway started.
 func TestELBv2DescribeAccountLimitsReportsStoredQuota(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 
 	byName := describeAccountLimits(t, gw, account)
@@ -77,6 +81,7 @@ func TestELBv2DescribeAccountLimitsReportsStoredQuota(t *testing.T) {
 // The limits Spinifex does not police are still advertised, so a caller does not
 // fall back to an assumption of its own.
 func TestELBv2DescribeAccountLimitsReportsUnenforcedLimits(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 
 	byName := describeAccountLimits(t, gw, account)
@@ -90,6 +95,7 @@ func TestELBv2DescribeAccountLimitsReportsUnenforcedLimits(t *testing.T) {
 // A sealed override must refuse the load balancer cap with Blocked rather
 // than the generic InternalError every other read failure maps to.
 func TestELBv2DescribeAccountLimitsBlockedOnSealedRecord(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	quotaFor(gw).SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
 	_, err := quotaFor(gw).SealAccountOverrides(t.Context(), account)

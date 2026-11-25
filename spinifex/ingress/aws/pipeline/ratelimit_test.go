@@ -67,6 +67,7 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 }
 
 func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
+	t.Parallel()
 	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
@@ -101,6 +102,7 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 }
 
 func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
+	t.Parallel()
 	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
@@ -148,6 +150,7 @@ func recordProbeFailures(rl *authlimit.AuthRateLimiter, ip, batch string, n int)
 // End to end: a client whose credential will never resolve keeps getting the
 // verdict that says so, and never the 503 that tells it to retry.
 func TestStaleCredentialNeverLocksTheAddressOut(t *testing.T) {
+	t.Parallel()
 	handler, _ := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	for range authlimit.MaxFailures * 3 {

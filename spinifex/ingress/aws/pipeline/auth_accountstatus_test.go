@@ -58,6 +58,7 @@ func statusGateService(t *testing.T, accountID, status string) *gwfix.IAM {
 }
 
 func TestAuthAllowsAnActiveAccount(t *testing.T) {
+	t.Parallel()
 	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusActive))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusOK {
@@ -68,6 +69,7 @@ func TestAuthAllowsAnActiveAccount(t *testing.T) {
 // The quiesce that makes teardown converge: a terminating account must not be
 // able to create resources the cascade has already walked past.
 func TestAuthDeniesATerminatingAccount(t *testing.T) {
+	t.Parallel()
 	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusTerminating))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
@@ -76,6 +78,7 @@ func TestAuthDeniesATerminatingAccount(t *testing.T) {
 }
 
 func TestAuthDeniesASuspendedAccount(t *testing.T) {
+	t.Parallel()
 	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusSuspended))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
@@ -95,6 +98,7 @@ func (s *missingAccountService) GetAccount(string) (*iamdomain.Account, error) {
 
 // A key whose account record is gone is denied: an absent account is not admitted.
 func TestAuthDeniesAMissingAccountRecord(t *testing.T) {
+	t.Parallel()
 	svc := &missingAccountService{statusGateService(t, "123456789012", iamdomain.AccountStatusActive)}
 	r, req := statusGateRouter(t, svc)
 
@@ -114,6 +118,7 @@ func (s *unreadableAccountService) GetAccount(string) (*iamdomain.Account, error
 
 // An account we cannot read is not evidence of an account in good standing.
 func TestAuthFailsClosedWhenTheAccountCannotBeRead(t *testing.T) {
+	t.Parallel()
 	svc := &unreadableAccountService{statusGateService(t, "123456789012", iamdomain.AccountStatusActive)}
 	r, req := statusGateRouter(t, svc)
 

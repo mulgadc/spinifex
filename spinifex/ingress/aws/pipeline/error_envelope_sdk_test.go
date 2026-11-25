@@ -103,6 +103,7 @@ func TestSDKv2_SQSDecodesJSON10QueryErrors(t *testing.T) {
 }
 
 func TestSDKv2_SQSInternalFailureIsServerFault(t *testing.T) {
+	t.Parallel()
 	cfg := sdkApp(t, errors.New(awserrors.ErrorInternalFailure))
 
 	_, err := sqs.NewFromConfig(cfg).GetQueueUrl(context.Background(), &sqs.GetQueueUrlInput{QueueName: aws.String("q")})
@@ -117,6 +118,7 @@ func TestSDKv2_SQSInternalFailureIsServerFault(t *testing.T) {
 }
 
 func TestSDKv2_SQSDecodesRequestThrottled(t *testing.T) {
+	t.Parallel()
 	_, err := sqs.NewFromConfig(throttleApp(t)).GetQueueUrl(context.Background(), &sqs.GetQueueUrlInput{QueueName: aws.String("q")})
 
 	var throttled *sqstypes.RequestThrottled
@@ -125,6 +127,7 @@ func TestSDKv2_SQSDecodesRequestThrottled(t *testing.T) {
 }
 
 func TestSDKv2_LambdaDecodesGatewayThrottle(t *testing.T) {
+	t.Parallel()
 	_, err := lambda.NewFromConfig(throttleApp(t)).GetFunction(context.Background(), &lambda.GetFunctionInput{FunctionName: aws.String("f")})
 
 	var throttled *lambdatypes.TooManyRequestsException
@@ -133,6 +136,7 @@ func TestSDKv2_LambdaDecodesGatewayThrottle(t *testing.T) {
 }
 
 func TestSDKv2_LambdaDecodesServiceException(t *testing.T) {
+	t.Parallel()
 	cfg := sdkApp(t, errors.New("not a registered code"))
 
 	_, err := lambda.NewFromConfig(cfg).GetFunction(context.Background(), &lambda.GetFunctionInput{FunctionName: aws.String("f")})
@@ -141,6 +145,7 @@ func TestSDKv2_LambdaDecodesServiceException(t *testing.T) {
 }
 
 func TestSDKv2_LambdaOversizeBodyDecodesRequestEntityTooLarge(t *testing.T) {
+	t.Parallel()
 	cfg := sdkApp(t, nil)
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 

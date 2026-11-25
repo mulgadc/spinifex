@@ -12,6 +12,7 @@ import (
 )
 
 func TestActorFor_User(t *testing.T) {
+	t.Parallel()
 	actor, err := pipeline.ActorFor(credential.Principal{
 		AccountID:     "123456789012",
 		Identity:      "alice",
@@ -32,6 +33,7 @@ func TestActorFor_User(t *testing.T) {
 }
 
 func TestActorFor_AssumedRoleKeepsSessionAndRole(t *testing.T) {
+	t.Parallel()
 	actor, err := pipeline.ActorFor(credential.Principal{
 		AccountID:         "123456789012",
 		Identity:          "session-1",
@@ -47,6 +49,7 @@ func TestActorFor_AssumedRoleKeepsSessionAndRole(t *testing.T) {
 }
 
 func TestActorFor_NoCallerARNReportsErrorButStaysPopulated(t *testing.T) {
+	t.Parallel()
 	actor, err := pipeline.ActorFor(credential.Principal{
 		AccountID:     "123456789012",
 		Identity:      "alice",

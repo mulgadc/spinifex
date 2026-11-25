@@ -22,6 +22,7 @@ import (
 // TestECRActionFromTarget_FormsAndTelemetryAgree pins how the ECR registration
 // resolves the X-Amz-Target header for dispatch, telemetry and throttle.
 func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		target     string
@@ -47,6 +48,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 // that nothing intercepts ahead of the handler table, i.e. what the HTTP
 // pipeline actually answers 501 for today.
 func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
+	t.Parallel()
 	reachableStubs := dispatch.AWSOperationInventory(ecrRegistrationInventory())["ecr"].Stubbed
 	want := []string{
 		"ListRepositories", "BatchCheckLayerAvailability", "GetDownloadUrlForLayer",
@@ -70,6 +72,7 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 // unsupported scanning action answers OperationNotSupportedException (400),
 // not NotImplemented (501).
 func TestECRInventory_ScanningActionsReturnOperationNotSupported(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	for _, action := range awsapi.UnsupportedActionNames() {
 		t.Run(action, func(t *testing.T) {
@@ -118,6 +121,7 @@ func TestECRPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 // carrying another service's prefix but naming an action outside awsapi.Actions
 // fails as an unrecognised ECR action, not as a cross-service error.
 func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerServiceV20141113.ListClusters", "{}"))
@@ -128,6 +132,7 @@ func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
 // TestECRRequest_TrailingDotIsMissingAction pins that a target ending in "."
 // resolves to an empty action, the same as an absent target.
 func TestECRRequest_TrailingDotIsMissingAction(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest(awsapi.TargetPrefix+".", "{}"))
@@ -139,6 +144,7 @@ func TestECRRequest_TrailingDotIsMissingAction(t *testing.T) {
 // any "<prefix>.<Action>" shape (not just the ECR prefix) dispatches on the
 // bare action name today.
 func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("a.b.ListRepositories", "{}"))
 	require.Error(t, err)
@@ -148,6 +154,7 @@ func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
 // A registryIds field naming a foreign account must not reach the token: its
 // account and subject come from the verified caller, never the body.
 func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
+	t.Parallel()
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(gwfix.WithDeps(&Config{

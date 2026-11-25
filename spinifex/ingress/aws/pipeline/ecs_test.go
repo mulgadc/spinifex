@@ -14,6 +14,7 @@ import (
 
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
@@ -24,6 +25,7 @@ func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 // A request that clears auth but carries no account ID in context is an internal
 // fault, not a client error.
 func TestECSRequest_MissingAccountID(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
 	req = withTestIdentity(req.WithContext(reqctx.WithService(req.Context(), "ecs")))
@@ -37,6 +39,7 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestECSRequest_MissingTarget(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(), setupECSRequest("", ""))
 	require.Error(t, err)
@@ -44,6 +47,7 @@ func TestECSRequest_MissingTarget(t *testing.T) {
 }
 
 func TestECSRequest_UnknownAction(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))

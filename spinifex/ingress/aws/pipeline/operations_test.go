@@ -10,6 +10,7 @@ import (
 )
 
 func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
+	t.Parallel()
 	registered := ecrRegistrationInventory()
 	maps.Copy(registered, rdsRegistrationInventory())
 	maps.Copy(registered, ec2RegistrationInventory())
@@ -41,6 +42,7 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 }
 
 func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
+	t.Parallel()
 	inventory := dispatch.AWSOperationInventory(ecrRegistrationInventory())
 
 	eks, err := awsmodel.CompareOperations(awsmodel.EKS, awsmodel.DispatchInventory{
@@ -65,6 +67,7 @@ func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
 }
 
 func TestAWSOperationInventoryStatusesAreDisjointSubsets(t *testing.T) {
+	t.Parallel()
 	for service, inventory := range dispatch.AWSOperationInventory(ecrRegistrationInventory()) {
 		t.Run(service, func(t *testing.T) {
 			registered := stringSet(inventory.Registered)

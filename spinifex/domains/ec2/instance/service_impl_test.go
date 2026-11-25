@@ -22,6 +22,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
@@ -3428,7 +3429,7 @@ func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.
 	if meta, ok := f.byID[id]; ok {
 		return meta, nil
 	}
-	return ebsmetadata.AMI{}, errors.New("not found")
+	return ebsmetadata.AMI{}, &objectstore.NoSuchKeyError{Key: id}
 }
 
 // GetAMISourceVolumeID defaults to the bundled system AMI convention, where the
@@ -3507,7 +3508,7 @@ func TestPrepareRunInstances_AMINotFound(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{
 		instanceTypes: types,
-		amiLoader:     &fakeAMILoader{err: errors.New("missing")},
+		amiLoader:     &fakeAMILoader{},
 	}
 	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),

@@ -475,6 +475,68 @@ func TestAggregateResults_PropagatesClientError(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
+// TestAggregateResults_AMIReadFailurePrecedence pins the answer for each mix of node results below
+// MinCount when one node cannot read the AMI. A client error from another node
+// still wins; a read failure is never reported as capacity or as not-found alone.
+func TestAggregateResults_AMIReadFailurePrecedence(t *testing.T) {
+	readFailed := func(node string) nodeLaunchResult {
+		return nodeLaunchResult{NodeID: node, Err: fmt.Errorf("launch on %s: %w", node, errors.New(awserrors.ErrorServerInternal))}
+	}
+	coded := func(node, code string) nodeLaunchResult {
+		return nodeLaunchResult{NodeID: node, Err: fmt.Errorf("launch on %s: %w", node, errors.New(code))}
+	}
+	noResponders := nodeLaunchResult{NodeID: "node-2", Err: fmt.Errorf("launch on node-2: %w", nats.ErrNoResponders)}
+	launched := nodeLaunchResult{NodeID: "node-2", Reservation: &ec2.Reservation{
+		Instances: []*ec2.Instance{{InstanceId: aws.String("i-0123456789abcdef0")}},
+	}}
+
+	cases := []struct {
+		name       string
+		results    []nodeLaunchResult
+		want       string
+		rolledBack bool
+	}{
+		{name: "every node fails the read", results: []nodeLaunchResult{readFailed("node-1"), readFailed("node-2")}, want: awserrors.ErrorServerInternal},
+		{name: "read failure with no responders", results: []nodeLaunchResult{readFailed("node-1"), noResponders}, want: awserrors.ErrorServerInternal},
+		{name: "read failure with a success", results: []nodeLaunchResult{readFailed("node-1"), launched}, want: awserrors.ErrorServerInternal, rolledBack: true},
+		{name: "read failure then capacity", results: []nodeLaunchResult{readFailed("node-1"), coded("node-2", awserrors.ErrorInsufficientInstanceCapacity)}, want: awserrors.ErrorInsufficientInstanceCapacity},
+		{name: "capacity then read failure", results: []nodeLaunchResult{coded("node-2", awserrors.ErrorInsufficientInstanceCapacity), readFailed("node-1")}, want: awserrors.ErrorInsufficientInstanceCapacity},
+		{name: "read failure then not-found", results: []nodeLaunchResult{readFailed("node-1"), coded("node-2", awserrors.ErrorInvalidAMIIDNotFound)}, want: awserrors.ErrorInvalidAMIIDNotFound},
+		{name: "not-found then read failure", results: []nodeLaunchResult{coded("node-2", awserrors.ErrorInvalidAMIIDNotFound), readFailed("node-1")}, want: awserrors.ErrorInvalidAMIIDNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := startTestNATSServer(t)
+			terminated := make(chan string, 1)
+			sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
+				var req terminateStoppedInstanceRequest
+				if json.Unmarshal(msg.Data, &req) == nil {
+					terminated <- req.InstanceID
+				}
+				_ = msg.Respond([]byte(`{}`))
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sub.Unsubscribe() })
+			require.NoError(t, nc.Flush())
+
+			_, err = aggregateResults(context.Background(), tc.results, 2, nc, "test-account")
+
+			require.Error(t, err)
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok, "unresolvable error: %v", err)
+			assert.Equal(t, tc.want, code)
+			if tc.rolledBack {
+				select {
+				case id := <-terminated:
+					assert.Equal(t, "i-0123456789abcdef0", id)
+				default:
+					t.Fatal("the launched sibling was not rolled back")
+				}
+			}
+		})
+	}
+}
+
 // --- distributeInstances integration tests (end-to-end with mock daemons) ---
 
 func TestDistributeInstances_SuccessfulSpread(t *testing.T) {

@@ -80,7 +80,9 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if !strings.HasPrefix(*input.ImageId, "ami-") {
+	// A path separator cannot name an AMI document, so the ID is malformed
+	// whatever capacity the cluster has.
+	if !strings.HasPrefix(*input.ImageId, "ami-") || strings.ContainsAny(*input.ImageId, `/\`) {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 

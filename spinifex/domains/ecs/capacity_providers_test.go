@@ -11,6 +11,7 @@ import (
 )
 
 func TestService_CreateCapacityProvider_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -49,6 +50,7 @@ func TestService_CreateCapacityProvider_Idempotent(t *testing.T) {
 }
 
 func TestService_CreateCapacityProvider_InvalidParameter(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -61,6 +63,7 @@ func TestService_CreateCapacityProvider_InvalidParameter(t *testing.T) {
 }
 
 func TestService_DescribeCapacityProviders_NamedAndMissing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -82,6 +85,7 @@ func TestService_DescribeCapacityProviders_NamedAndMissing(t *testing.T) {
 }
 
 func TestService_DeleteCapacityProvider(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -109,6 +113,7 @@ func TestService_DeleteCapacityProvider(t *testing.T) {
 // strategy round-trips onto the cluster record and is returned by
 // DescribeClusters, without any scheduler/placement coupling (inert in v1).
 func TestService_PutClusterCapacityProviders_PersistsStrategy(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -138,6 +143,7 @@ func TestService_PutClusterCapacityProviders_PersistsStrategy(t *testing.T) {
 }
 
 func TestService_PutClusterCapacityProviders_UnknownCluster(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.PutClusterCapacityProviders(context.Background(), &ecs.PutClusterCapacityProvidersInput{
 		Cluster:           aws.String("ghost"),

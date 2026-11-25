@@ -27,6 +27,7 @@ func listInstanceARNs(t *testing.T, svc *ecsdomain.Service, cluster, status stri
 // find one that can take work, and a cluster carrying a drained node reads as
 // if every node were live.
 func TestListContainerInstances_StatusSelectsOnlyThatStatus(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, ecsdomain.TestAccountID)
 	require.NoError(t, err)
@@ -52,6 +53,7 @@ func TestListContainerInstances_StatusSelectsOnlyThatStatus(t *testing.T) {
 // so asking for one is a valid question with an empty answer rather than an
 // error.
 func TestListContainerInstances_TransitionalStatusMatchesNothing(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, ecsdomain.TestAccountID)
 	require.NoError(t, err)
@@ -63,6 +65,7 @@ func TestListContainerInstances_TransitionalStatusMatchesNothing(t *testing.T) {
 }
 
 func TestListContainerInstances_UnknownStatusIsRefused(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, ecsdomain.TestAccountID)
 	require.NoError(t, err)
@@ -77,6 +80,7 @@ func TestListContainerInstances_UnknownStatusIsRefused(t *testing.T) {
 // A filtered list and a describe of what it returned have to agree, since the
 // status the filter selects on is the one describe reports.
 func TestListContainerInstances_FilterAgreesWithDescribe(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, ecsdomain.TestAccountID)
 	require.NoError(t, err)

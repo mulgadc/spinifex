@@ -34,6 +34,7 @@ func (e *stubEIPs) Release(_ context.Context, _, allocationID string) error {
 }
 
 func TestAssignTaskPublicIP_EnabledAssociatesAndPersists(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eips := &stubEIPs{publicIP: "192.0.2.50", allocID: "eipalloc-1"}
 	svc.eips = eips
@@ -61,6 +62,7 @@ func TestAssignTaskPublicIP_EnabledAssociatesAndPersists(t *testing.T) {
 }
 
 func TestAssignTaskPublicIP_DisabledNoOp(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	eips := &stubEIPs{publicIP: "192.0.2.50", allocID: "eipalloc-1"}
 	svc.eips = eips
@@ -79,6 +81,7 @@ func TestAssignTaskPublicIP_DisabledNoOp(t *testing.T) {
 }
 
 func TestReleaseTaskPublicIP_ReleasesAndClears(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	eips := &stubEIPs{}
 	svc.eips = eips
@@ -92,6 +95,7 @@ func TestReleaseTaskPublicIP_ReleasesAndClears(t *testing.T) {
 }
 
 func TestReleaseTaskPublicIP_NoAllocationNoOp(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	eips := &stubEIPs{}
 	svc.eips = eips

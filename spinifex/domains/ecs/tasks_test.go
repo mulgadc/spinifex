@@ -8,6 +8,7 @@ import (
 )
 
 func TestTaskToAWS_LifecycleTimestamps(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	created := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	started := created.Add(30 * time.Second)

@@ -13,6 +13,7 @@ import (
 )
 
 func TestParseResourceARN(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		arn         string
@@ -38,6 +39,7 @@ func TestParseResourceARN(t *testing.T) {
 }
 
 func TestParseResourceARN_Invalid(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"",
 		"not-an-arn",
@@ -60,6 +62,7 @@ func TestParseResourceARN_Invalid(t *testing.T) {
 // TestService_Tags_ClusterRoundTrip covers the flat ARN shape end to end via
 // the wired TagResource/ListTagsForResource/UntagResource actions.
 func TestService_Tags_ClusterRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -107,6 +110,7 @@ func TestService_Tags_ClusterRoundTrip(t *testing.T) {
 
 // TestService_Tags_ServiceRoundTrip covers the cluster-embedded ARN shape.
 func TestService_Tags_ServiceRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -147,6 +151,7 @@ func TestService_Tags_ServiceRoundTrip(t *testing.T) {
 
 // TestService_Tags_TaskDefinitionRoundTrip covers the flat family:rev ARN shape.
 func TestService_Tags_TaskDefinitionRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -180,6 +185,7 @@ func TestService_Tags_TaskDefinitionRoundTrip(t *testing.T) {
 // service resolve to their named NotFound errors; task, container instance and
 // task definition to InvalidParameter with a message naming what is missing.
 func TestService_Tags_MissingResource(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -218,6 +224,7 @@ func TestService_Tags_MissingResource(t *testing.T) {
 // TestService_RunTask_TagsPersisted confirms RunTask plumbs input.Tags onto
 // the persisted task record and DescribeTasks reflects them back.
 func TestService_RunTask_TagsPersisted(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -286,6 +293,7 @@ var tagBreaks = []struct {
 }
 
 func TestService_CreateCluster_RefusesTagBreaks(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	for _, tc := range tagBreaks {
@@ -309,6 +317,7 @@ func TestService_CreateCluster_RefusesTagBreaks(t *testing.T) {
 }
 
 func TestService_TagResource_RefusesTagBreaks(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -329,6 +338,7 @@ func TestService_TagResource_RefusesTagBreaks(t *testing.T) {
 // The limit counts the resource's tags after the merge: overwriting an
 // existing key does not add to it, a new key past 50 does.
 func TestService_TagResource_RefusesMergedTotalOver50(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tagN(50)}, testAccountID)
@@ -348,6 +358,7 @@ func TestService_TagResource_RefusesMergedTotalOver50(t *testing.T) {
 }
 
 func TestService_UntagResource_RefusesBadKey(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tagN(1)}, testAccountID)
@@ -369,6 +380,7 @@ func TestService_UntagResource_RefusesBadKey(t *testing.T) {
 
 // Every other call that takes tags refuses a break before acting on it.
 func TestService_TaggedCreates_RefuseTagBreaks(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	bad := []*ecs.Tag{{Key: aws.String("a*b"), Value: aws.String("v")}}

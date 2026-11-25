@@ -11,6 +11,7 @@ import (
 )
 
 func TestARNBuilders(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:cluster/web",
 		ClusterARN("ap-southeast-2", "123456789012", "web"))
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:task-definition/nginx:3",
@@ -22,6 +23,7 @@ func TestARNBuilders(t *testing.T) {
 }
 
 func TestTaskDefReservedSums(t *testing.T) {
+	t.Parallel()
 	td := &taskdefinition.Record{Containers: []taskdefinition.Container{
 		{CPU: 128, MemoryMiB: 256},
 		{CPU: 64, MemoryMiB: 128},
@@ -31,17 +33,20 @@ func TestTaskDefReservedSums(t *testing.T) {
 }
 
 func TestClusterShortName(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, defaultCluster, ClusterShortName(""))
 	assert.Equal(t, "web", ClusterShortName("web"))
 	assert.Equal(t, "web", ClusterShortName("arn:aws:ecs:r:a:cluster/web"))
 }
 
 func TestContainerInstanceShortID(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "i-1", ContainerInstanceShortID("i-1"))
 	assert.Equal(t, "i-1", ContainerInstanceShortID("arn:aws:ecs:r:a:container-instance/web/i-1"))
 }
 
 func TestAWSStringSlice(t *testing.T) {
+	t.Parallel()
 	got := awsStringSlice([]*string{aws.String("a"), nil, aws.String(""), aws.String("b")})
 	assert.Equal(t, []string{"a", "b"}, got)
 }
@@ -49,6 +54,7 @@ func TestAWSStringSlice(t *testing.T) {
 // containerDefsFromAWS → toAWS / toAssignContainer must preserve image, command,
 // env, and port mappings (the fields the agent actually runs on).
 func TestContainerDefRoundTrip(t *testing.T) {
+	t.Parallel()
 	in := []*ecs.ContainerDefinition{{
 		Name:         aws.String("web"),
 		Image:        aws.String("registry/web:1"),
@@ -84,6 +90,7 @@ func TestContainerDefRoundTrip(t *testing.T) {
 // TestContainerDefRoundTrip_PortNameOmittedWhenUnset covers the AWS-parity
 // path: a port mapping with no name must not grow one on the way back out.
 func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
+	t.Parallel()
 	in := []*ecs.ContainerDefinition{{
 		Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true),
 		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
@@ -96,6 +103,7 @@ func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
 }
 
 func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, containerDefsFromAWS([]*ecs.ContainerDefinition{nil}))
 }
 
@@ -103,6 +111,7 @@ func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
 // resourceRequirements entry of type=GPU is parsed as a whole-GPU count and
 // carried onto taskdefinition.Container, its AWS round trip, and the bus AssignContainer.
 func TestContainerDefsFromAWS_GPU(t *testing.T) {
+	t.Parallel()
 	in := []*ecs.ContainerDefinition{{
 		Name: aws.String("gpu-app"), Image: aws.String("registry/gpu-app:1"), Essential: aws.Bool(true),
 		ResourceRequirements: []*ecs.ResourceRequirement{
@@ -125,6 +134,7 @@ func TestContainerDefsFromAWS_GPU(t *testing.T) {
 // TestContainerDefsFromAWS_NoGPU_Regression covers the non-GPU path: no
 // resourceRequirements means GPU stays 0 and toAWS omits the field.
 func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
+	t.Parallel()
 	in := []*ecs.ContainerDefinition{{Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true)}}
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
@@ -137,6 +147,7 @@ func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
 // entries, non-GPU types, multiple GPU entries summed, and an invalid value
 // (non-numeric or negative) skipped rather than erroring.
 func TestGPUCountFromResourceRequirements(t *testing.T) {
+	t.Parallel()
 	assert.Zero(t, gpuCountFromResourceRequirements(nil))
 	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{nil}))
 	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
@@ -157,6 +168,7 @@ func TestGPUCountFromResourceRequirements(t *testing.T) {
 // TestTaskDefReservedGPU covers the task-level GPU aggregate (sum across
 // container defs), mirroring TestTaskDefReservedSums for CPU/memory.
 func TestTaskDefReservedGPU(t *testing.T) {
+	t.Parallel()
 	td := &taskdefinition.Record{Containers: []taskdefinition.Container{{GPU: 1}, {GPU: 3}}}
 	assert.Equal(t, 4, td.ReservedGPU())
 
@@ -167,6 +179,7 @@ func TestTaskDefReservedGPU(t *testing.T) {
 // AWS assumes a container is essential when the essential parameter is omitted,
 // so an omitted value must describe back as true while explicit values are kept.
 func TestContainerDefsFromAWS_EssentialDefaultsTrue(t *testing.T) {
+	t.Parallel()
 	defs := containerDefsFromAWS([]*ecs.ContainerDefinition{
 		{Name: aws.String("omitted"), Image: aws.String("registry/app:1")},
 		{Name: aws.String("sidecar"), Image: aws.String("registry/side:1"), Essential: aws.Bool(false)},

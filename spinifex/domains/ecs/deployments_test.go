@@ -59,6 +59,7 @@ func failPending(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, nam
 }
 
 func TestDeployment_CreateService_SeedsPrimary(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -84,6 +85,7 @@ func TestDeployment_CreateService_SeedsPrimary(t *testing.T) {
 }
 
 func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -139,6 +141,7 @@ func TestDeployment_RollingUpdate_ReplacesOldWithNew(t *testing.T) {
 }
 
 func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	// min=100, max=150: with desired=2 the rollout may run up to 3 tasks and must
 	// keep 2 healthy, so old tasks only drain as new ones become healthy.
@@ -170,6 +173,7 @@ func TestDeployment_MinimumHealthyPercent_GatesDrain(t *testing.T) {
 }
 
 func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -214,6 +218,7 @@ func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
 // genuinely informative event before anyone reads it. Emission must be
 // edge-triggered on the rollout-state transition, not the reconcile pass.
 func TestDeployment_Reconcile_RepeatedPassesDoNotGrowEventRing(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -239,6 +244,7 @@ func TestDeployment_Reconcile_RepeatedPassesDoNotGrowEventRing(t *testing.T) {
 // appends exactly one event, and a rollout that leaves steady state (a new
 // task definition) and completes again appends a second, distinct entry.
 func TestDeployment_SteadyState_EntersOnceLeavesAndReentersAppendsSecond(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -275,6 +281,7 @@ func TestDeployment_SteadyState_EntersOnceLeavesAndReentersAppendsSecond(t *test
 // required transition: a circuit-breaker trip appends an event, and the event
 // carries the same failure reason recorded on the deployment.
 func TestDeployment_CircuitBreaker_EventCarriesFailureReason(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -320,6 +327,7 @@ func TestDeployment_CircuitBreaker_EventCarriesFailureReason(t *testing.T) {
 }
 
 func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	// A record written before deployment tracking existed: no Deployments slice.
 	rec := &ServiceRecord{
@@ -343,6 +351,7 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 // hold while the circuit breaker is still counting, then doubling, then a cap so
 // a long-dead deployment does not wait forever to be retried.
 func TestLaunchBackoff_WidensWithFailuresAndCaps(t *testing.T) {
+	t.Parallel()
 	for failures := range circuitBreakerFailureThreshold {
 		assert.Zero(t, launchBackoff(failures), "held off at %d failures, below the breaker threshold", failures)
 	}
@@ -358,6 +367,7 @@ func TestLaunchBackoff_WidensWithFailuresAndCaps(t *testing.T) {
 // service whose node cannot run containers churns tasks forever — which is how
 // one env accumulated hundreds of STOPPED tasks at one every thirty seconds.
 func TestDeployment_RepeatedStartFailuresBackOffWithoutTheCircuitBreaker(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),

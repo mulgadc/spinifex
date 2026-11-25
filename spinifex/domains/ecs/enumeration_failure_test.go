@@ -26,6 +26,7 @@ func dropRevisit(pass func(context.Context) (time.Duration, error)) func(context
 // report a clean tick while every account went unswept — instances never
 // drained, services never relaunched, stopped tasks never pruned.
 func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	sc := testScheduler(t, nc, svc, "test-holder")
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)

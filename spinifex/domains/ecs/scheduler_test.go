@@ -65,6 +65,7 @@ func requireLeaseKeyAbsent(t *testing.T, nc *nats.Conn, msg string) {
 // that cannot converge instance roles holds the lease, writes no sts:AssumeRole
 // grant, and every agent's credentials lapse an hour later.
 func TestScheduler_StandsDownWithoutIAM(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "")
 	sc := testScheduler(t, nc, svc, "holder-a")
@@ -83,6 +84,7 @@ func TestScheduler_StandsDownWithoutIAM(t *testing.T) {
 // carries the grant to already-running clusters, which provisioning alone
 // never reaches once capacity has stopped changing.
 func TestConvergeInstanceRoles_RewritesProvisionedAccounts(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	iam := newStubIAM()
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: iam})
@@ -102,6 +104,7 @@ func TestConvergeInstanceRoles_RewritesProvisionedAccounts(t *testing.T) {
 // creating customer-visible IAM entities in an account that only ever created
 // a cluster: the bucket exists there, but nothing draws credentials.
 func TestConvergeInstanceRoles_SkipsAccountsWithoutTheRole(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	iam := newStubIAM()
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: iam})
@@ -119,6 +122,7 @@ func TestConvergeInstanceRoles_SkipsAccountsWithoutTheRole(t *testing.T) {
 // TestConvergeInstanceRoles_NilIAMIsAnError keeps the guard fail-closed for a
 // caller that reaches the pass without going through leader election.
 func TestConvergeInstanceRoles_NilIAMIsAnError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	sc := testScheduler(t, nc, NewService(nc, testRegion, ""), "holder-a")
 
@@ -131,6 +135,7 @@ func TestConvergeInstanceRoles_NilIAMIsAnError(t *testing.T) {
 // two-gate model for the agent: without it every task-role and execution-role
 // credential mint is denied about an hour after an upgrade.
 func TestECSInstanceRolePolicyDoc_GrantsAssumeRole(t *testing.T) {
+	t.Parallel()
 	doc := ecsInstanceRolePolicyDoc(testAccountID)
 
 	assert.Contains(t, doc, `{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::`+testAccountID+`:role/*"}`)
@@ -152,6 +157,7 @@ func containerInstanceStatus(t *testing.T, svc *Service) string {
 // nodes would mark instances DRAINING and stop their tasks at once. Re-elected,
 // it takes both back up.
 func TestScheduler_LosingTheLeaseDropsTheBusAndTheReaperUntilReElection(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)

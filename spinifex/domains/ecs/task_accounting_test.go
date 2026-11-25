@@ -40,6 +40,7 @@ func listTaskIDs(t *testing.T, svc *ecsdomain.Service, input *ecs.ListTasksInput
 }
 
 func TestListTasks_DesiredStatusFilters(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	seedTasks(t, svc, "web",
 		&ecsdomain.TaskRecord{TaskID: "run-1", DesiredStatus: ecsdomain.TaskStatusRunning, LastStatus: ecsdomain.TaskStatusRunning},
@@ -56,6 +57,7 @@ func TestListTasks_DesiredStatusFilters(t *testing.T) {
 // The default is the case that broke a caller: asking for nothing used to hand
 // back every task the cluster had ever run.
 func TestListTasks_OmittedDesiredStatusMeansRunning(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	seedTasks(t, svc, "web",
 		&ecsdomain.TaskRecord{TaskID: "run-1", DesiredStatus: ecsdomain.TaskStatusRunning, LastStatus: ecsdomain.TaskStatusRunning},
@@ -67,6 +69,7 @@ func TestListTasks_OmittedDesiredStatusMeansRunning(t *testing.T) {
 }
 
 func TestListTasks_FamilyStartedByServiceAndInstanceFilter(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	seedTasks(t, svc, "web",
 		&ecsdomain.TaskRecord{
@@ -92,6 +95,7 @@ func TestListTasks_FamilyStartedByServiceAndInstanceFilter(t *testing.T) {
 
 // Filters combine, so a task has to satisfy all of them rather than any.
 func TestListTasks_FiltersCombine(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	seedTasks(t, svc, "web",
 		&ecsdomain.TaskRecord{
@@ -112,6 +116,7 @@ func TestListTasks_FiltersCombine(t *testing.T) {
 // A task nobody asked to stop still has to leave the RUNNING filter when it
 // exits, or a caller polling for live tasks never stops seeing it.
 func TestRecordTaskState_SelfExitMovesDesiredStatusToStopped(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	seedTasks(t, svc, "web",
 		&ecsdomain.TaskRecord{TaskID: "t-1", DesiredStatus: ecsdomain.TaskStatusRunning, LastStatus: ecsdomain.TaskStatusRunning},
@@ -137,6 +142,7 @@ func TestRecordTaskState_SelfExitMovesDesiredStatusToStopped(t *testing.T) {
 }
 
 func TestDescribeContainerInstances_CountsComeFromTaskRecords(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	_, err := svc.RegisterContainerInstance(t.Context(), &ecs.RegisterContainerInstanceInput{
 		Cluster:                  aws.String("web"),
@@ -165,6 +171,7 @@ func TestDescribeContainerInstances_CountsComeFromTaskRecords(t *testing.T) {
 // names a task that stopped, so a count taken from it reports a task nobody is
 // running.
 func TestDescribeContainerInstances_StalePlacedTasksDoNotInflateCount(t *testing.T) {
+	t.Parallel()
 	svc, _ := ecsdomain.NewTestService(t)
 	kv, err := svc.Bucket(t.Context(), ecsdomain.TestAccountID)
 	require.NoError(t, err)

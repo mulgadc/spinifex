@@ -37,6 +37,7 @@ func (sc *Scheduler) subCount() int {
 }
 
 func TestService_CreateCluster_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	out, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -53,6 +54,7 @@ func TestService_CreateCluster_Idempotent(t *testing.T) {
 }
 
 func TestService_DescribeClusters_DefaultAndMissing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{}, testAccountID) // implicit "default"
 	require.NoError(t, err)
@@ -71,6 +73,7 @@ func TestService_DescribeClusters_DefaultAndMissing(t *testing.T) {
 }
 
 func TestService_CreateCluster_StoresSettings(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	setting := &ecs.ClusterSetting{Name: aws.String(ecs.ClusterSettingNameContainerInsights), Value: aws.String("enabled")}
 	created, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{
@@ -93,6 +96,7 @@ func TestService_CreateCluster_StoresSettings(t *testing.T) {
 }
 
 func TestService_CreateCluster_RejectsUnsupportedSetting(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for _, st := range []*ecs.ClusterSetting{
 		{Name: aws.String("unknownSetting"), Value: aws.String("enabled")},
@@ -110,6 +114,7 @@ func TestService_CreateCluster_RejectsUnsupportedSetting(t *testing.T) {
 }
 
 func TestService_DescribeClusters_ReturnsTagsUnderInclude(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{
 		ClusterName: aws.String("web"),
@@ -160,6 +165,7 @@ func registerTaskDef(t *testing.T, svc *Service, family string, cpu, mem int) *e
 }
 
 func TestService_RegisterTaskDefinition_RevisionBump(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	r1 := registerTaskDef(t, svc, "nginx", 128, 256)
 	assert.Equal(t, int64(1), aws.Int64Value(r1.TaskDefinition.Revision))
@@ -182,6 +188,7 @@ func TestService_RegisterTaskDefinition_RevisionBump(t *testing.T) {
 }
 
 func TestService_ListTaskDefinitions_StatusFilter(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "keep", 128, 256)
 	registerTaskDef(t, svc, "gone", 128, 256)
@@ -214,12 +221,14 @@ func TestService_ListTaskDefinitions_StatusFilter(t *testing.T) {
 }
 
 func TestService_RegisterTaskDefinition_NoFamily(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{}, testAccountID)
 	require.Error(t, err)
 }
 
 func TestService_DescribeTaskDefinition_Unknown(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String("ghost")}, testAccountID)
 	require.Error(t, err)
@@ -238,6 +247,7 @@ func registerInstance(t *testing.T, svc *Service, cluster, id string, cpu, mem i
 }
 
 func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -282,6 +292,7 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 }
 
 func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -317,6 +328,7 @@ func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
 // ID, distinct per task, stable on re-delivery, persisted on the task record and
 // absent from every API response. A role-less task gets none.
 func TestService_TaskCredIDIsMintedSecret(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -399,6 +411,7 @@ func TestService_TaskCredIDIsMintedSecret(t *testing.T) {
 // PollAssignments is at-least-once: re-poll without ack re-delivers the assign;
 // acking it (then STOPPED) drains the inbox so it is never re-delivered.
 func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -437,6 +450,7 @@ func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
 }
 
 func TestService_RunTask_ClusterNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 1, 1)
 	_, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("ghost"), TaskDefinition: aws.String("app")}, testAccountID)
@@ -444,6 +458,7 @@ func TestService_RunTask_ClusterNotFound(t *testing.T) {
 }
 
 func TestService_RunTask_NoCapacityFails(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -460,6 +475,7 @@ func TestService_RunTask_NoCapacityFails(t *testing.T) {
 
 // Task-state RUNNING then STOPPED updates the task and releases capacity.
 func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -504,6 +520,7 @@ func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
 // The AWS-API SubmitTaskStateChange path (gateway-routed agent) converges on the
 // same task record + capacity release as the bus path, and resolves a task ARN.
 func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -540,6 +557,7 @@ func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
 }
 
 func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	require.NoError(t, svc.recordHeartbeat(t.Context(), &ecsv1.Heartbeat{
@@ -554,6 +572,7 @@ func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {
 
 // The reaper marks a stale instance DRAINING and stops its tasks.
 func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
+	t.Parallel()
 	svc, nc := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -590,6 +609,7 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 // Leader election: the first holder wins; a second node, and a second attempt
 // in the same process, are both refused while it leads.
 func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	a := testScheduler(t, nc, svc, "holder-a")
@@ -608,6 +628,7 @@ func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 // Leadership owns the Layer-2 bus subscriptions. This pins the wiring: gaining
 // the lease subscribes, losing it unsubscribes.
 func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	sc := testScheduler(t, nc, svc, "holder-a")
@@ -625,6 +646,7 @@ func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 // A node that loses the election must not hold bus subscriptions: both leader
 // and loser writing the same KV records is the split-brain this lease prevents.
 func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	a := testScheduler(t, nc, svc, "holder-a")
@@ -639,6 +661,7 @@ func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 }
 
 func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	sc := testScheduler(t, nc, svc, "holder-a")
@@ -690,6 +713,7 @@ func registerInstanceGPU(t *testing.T, svc *Service, cluster, id string, cpu, me
 }
 
 func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -752,6 +776,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 }
 
 func TestService_RunTask_GPU_NoCapacityFails(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -767,6 +792,7 @@ func TestService_RunTask_GPU_NoCapacityFails(t *testing.T) {
 }
 
 func TestService_DescribeContainerInstances_NoGPUOmitsResource(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -789,6 +815,7 @@ func TestService_DescribeContainerInstances_NoGPUOmitsResource(t *testing.T) {
 // device UUIDs, matching real ECS's TotalResources shape; the count becomes the
 // instance's placement capacity.
 func TestRegisterContainerInstance_GPU_StringSetResource(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -828,6 +855,7 @@ func TestRegisterContainerInstance_GPU_StringSetResource(t *testing.T) {
 // discovered device UUIDs, mirroring the AWS-API RegisterContainerInstance
 // path (Epic C3 register report-back).
 func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	require.NoError(t, svc.recordRegister(t.Context(), &ecsv1.RegisterInstance{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
@@ -845,6 +873,7 @@ func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
 // instance/task/service records rather than any persisted counter. AWS returns
 // them unconditionally; Include=STATISTICS adds a separate key/value list.
 func TestService_DescribeClusters_CountsAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -882,6 +911,7 @@ func TestService_DescribeClusters_CountsAlwaysPresent(t *testing.T) {
 // sixteen string pairs AWS returns under Include=STATISTICS, in AWS's order,
 // and that ATTACHMENTS adds an empty attachments list.
 func TestService_DescribeClusters_IncludeStatisticsAndAttachments(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -937,6 +967,7 @@ func TestService_DescribeClusters_IncludeStatisticsAndAttachments(t *testing.T) 
 // response carries the four counts and the statistics and capacity-provider
 // lists as present empty lists, as AWS does, so they marshal as [].
 func TestService_ClusterResponses_AlwaysCarryCountsAndLists(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	assertShape := func(t *testing.T, op string, c *ecs.Cluster) {
@@ -988,6 +1019,7 @@ func TestService_ClusterResponses_AlwaysCarryCountsAndLists(t *testing.T) {
 // n) rather than append into a nil field.
 
 func TestService_ListClusters_EmptyIsPresentNotAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	out, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
@@ -996,6 +1028,7 @@ func TestService_ListClusters_EmptyIsPresentNotAbsent(t *testing.T) {
 }
 
 func TestService_ListTaskDefinitions_EmptyIsPresentNotAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	out, err := svc.ListTaskDefinitions(context.Background(), &ecs.ListTaskDefinitionsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -1004,6 +1037,7 @@ func TestService_ListTaskDefinitions_EmptyIsPresentNotAbsent(t *testing.T) {
 }
 
 func TestService_ListTasks_EmptyIsPresentNotAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -1014,12 +1048,14 @@ func TestService_ListTasks_EmptyIsPresentNotAbsent(t *testing.T) {
 }
 
 func TestService_ListTasks_ClusterNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("ghost")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorECSClusterNotFound)
 }
 
 func TestService_ListContainerInstances_EmptyIsPresentNotAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -1030,6 +1066,7 @@ func TestService_ListContainerInstances_EmptyIsPresentNotAbsent(t *testing.T) {
 }
 
 func TestAccountIDFromBucket(t *testing.T) {
+	t.Parallel()
 	id, ok := accountIDFromBucket(AccountBucketName(testAccountID))
 	assert.True(t, ok)
 	assert.Equal(t, testAccountID, id)
@@ -1038,6 +1075,7 @@ func TestAccountIDFromBucket(t *testing.T) {
 }
 
 func TestService_DescribeClusters_ListsAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)

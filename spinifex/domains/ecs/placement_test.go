@@ -28,6 +28,7 @@ func instGPU(id string, totalGPU, reservedGPU int) InstanceRecord {
 }
 
 func TestPlaceTask_Binpack_PicksTightest(t *testing.T) {
+	t.Parallel()
 	// remaining mem: a=900, b=300, c=600 → binpack picks b (least remaining).
 	instances := []InstanceRecord{
 		inst("a", 1000, 100),
@@ -40,6 +41,7 @@ func TestPlaceTask_Binpack_PicksTightest(t *testing.T) {
 }
 
 func TestPlaceTask_Spread_PicksWidest(t *testing.T) {
+	t.Parallel()
 	instances := []InstanceRecord{
 		inst("a", 1000, 100), // 900
 		inst("b", 1000, 700), // 300
@@ -51,6 +53,7 @@ func TestPlaceTask_Spread_PicksWidest(t *testing.T) {
 }
 
 func TestPlaceTask_Random_StableByID(t *testing.T) {
+	t.Parallel()
 	instances := []InstanceRecord{inst("z", 1000, 0), inst("a", 1000, 0), inst("m", 1000, 0)}
 	got, err := placeTask(instances, 100, 100, 0, 0, StrategyRandom)
 	require.NoError(t, err)
@@ -58,12 +61,14 @@ func TestPlaceTask_Random_StableByID(t *testing.T) {
 }
 
 func TestPlaceTask_NoCapacity(t *testing.T) {
+	t.Parallel()
 	instances := []InstanceRecord{inst("a", 100, 90)}
 	_, err := placeTask(instances, 0, 50, 0, 0, StrategyBinpack)
 	assert.ErrorIs(t, err, ErrNoCapacity)
 }
 
 func TestPlaceTask_SkipsDraining(t *testing.T) {
+	t.Parallel()
 	d := inst("drain", 1000, 0)
 	d.Status = InstanceStatusDraining
 	_, err := placeTask([]InstanceRecord{d}, 0, 100, 0, 0, StrategyBinpack)
@@ -71,6 +76,7 @@ func TestPlaceTask_SkipsDraining(t *testing.T) {
 }
 
 func TestNormalizeStrategy(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, StrategyBinpack, normalizeStrategy(""))
 	assert.Equal(t, StrategyBinpack, normalizeStrategy("binpack:memory"))
 	assert.Equal(t, StrategyBinpack, normalizeStrategy("BinPack:cpu"))
@@ -80,6 +86,7 @@ func TestNormalizeStrategy(t *testing.T) {
 }
 
 func TestInstanceRecord_Fits(t *testing.T) {
+	t.Parallel()
 	r := inst("a", 1000, 600) // remaining mem 400, cpu 10000
 	assert.True(t, r.fits(100, 400, 0, 0))
 	assert.False(t, r.fits(100, 401, 0, 0))
@@ -90,24 +97,28 @@ func TestInstanceRecord_Fits(t *testing.T) {
 // --- GPU placement dimension (Epic C2) ---
 
 func TestInstanceRecord_Fits_GPU(t *testing.T) {
+	t.Parallel()
 	r := instGPU("a", 2, 1) // 1 GPU free
 	assert.True(t, r.fits(0, 0, 1, 0))
 	assert.False(t, r.fits(0, 0, 2, 0))
 }
 
 func TestInstanceRecord_Fits_GPU_IgnoredForNonGPUTasks(t *testing.T) {
+	t.Parallel()
 	// An instance with zero free GPU still fits a task that requests none.
 	r := instGPU("a", 1, 1)
 	assert.True(t, r.fits(0, 0, 0, 0))
 }
 
 func TestPlaceTask_GPU_RejectsInsufficientInstances(t *testing.T) {
+	t.Parallel()
 	instances := []InstanceRecord{instGPU("a", 1, 1), instGPU("b", 2, 2)}
 	_, err := placeTask(instances, 0, 0, 1, 0, StrategyBinpack)
 	assert.ErrorIs(t, err, ErrNoCapacity)
 }
 
 func TestPlaceTask_GPU_PicksInstanceWithCapacity(t *testing.T) {
+	t.Parallel()
 	instances := []InstanceRecord{instGPU("a", 1, 1), instGPU("b", 2, 0)}
 	got, err := placeTask(instances, 0, 0, 2, 0, StrategyBinpack)
 	require.NoError(t, err)
@@ -115,6 +126,7 @@ func TestPlaceTask_GPU_PicksInstanceWithCapacity(t *testing.T) {
 }
 
 func TestPlaceTask_GPU_NonGPUTaskUnaffectedByExhaustedGPU(t *testing.T) {
+	t.Parallel()
 	// A task requesting no GPU still places on an instance with zero free GPU.
 	instances := []InstanceRecord{instGPU("a", 1, 1)}
 	got, err := placeTask(instances, 0, 0, 0, 0, StrategyBinpack)
@@ -123,6 +135,7 @@ func TestPlaceTask_GPU_NonGPUTaskUnaffectedByExhaustedGPU(t *testing.T) {
 }
 
 func TestInstanceRecord_RemainingGPUIDs(t *testing.T) {
+	t.Parallel()
 	r := InstanceRecord{TotalGPU: 3, ReservedGPU: 1, GPUIDs: []string{"gpu-0", "gpu-1", "gpu-2"}}
 	assert.Equal(t, []string{"gpu-1", "gpu-2"}, r.remainingGPUIDs())
 

@@ -72,6 +72,7 @@ func runOneTask(t *testing.T, svc *Service, kv jetstream.KeyValue) string {
 }
 
 func TestScheduler_ATaskStateTriggersAPassAndAHeartbeatDoesNot(t *testing.T) {
+	t.Parallel()
 	sc, svc, kv := schedulerRig(t)
 	taskID := runOneTask(t, svc, kv)
 
@@ -87,6 +88,7 @@ func TestScheduler_ATaskStateTriggersAPassAndAHeartbeatDoesNot(t *testing.T) {
 }
 
 func TestScheduler_ABurstOfTaskStatesLeavesOneSignal(t *testing.T) {
+	t.Parallel()
 	sc, svc, kv := schedulerRig(t)
 	taskID := runOneTask(t, svc, kv)
 
@@ -100,6 +102,7 @@ func TestScheduler_ABurstOfTaskStatesLeavesOneSignal(t *testing.T) {
 }
 
 func TestScheduler_AnIdleServiceIsNotRewritten(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -125,6 +128,7 @@ func TestScheduler_AnIdleServiceIsNotRewritten(t *testing.T) {
 }
 
 func TestScheduler_TheReaperAsksForTheSoonestHeartbeatWindow(t *testing.T) {
+	t.Parallel()
 	sc, _, kv := schedulerRig(t)
 	now := time.Now().UTC()
 
@@ -155,6 +159,7 @@ func TestScheduler_TheReaperAsksForTheSoonestHeartbeatWindow(t *testing.T) {
 }
 
 func TestScheduler_ConvergeIsDueAtItsIntervalAndNotBefore(t *testing.T) {
+	t.Parallel()
 	sc, _, _ := schedulerRig(t)
 
 	// Unstamped, so the first pass runs it and asks for the full interval.
@@ -175,6 +180,7 @@ func TestScheduler_ConvergeIsDueAtItsIntervalAndNotBefore(t *testing.T) {
 }
 
 func TestScheduler_AFollowerAsksAgainAtTheLeaseRate(t *testing.T) {
+	t.Parallel()
 	sc, _, _ := schedulerRig(t)
 	require.False(t, sc.lease.Held())
 
@@ -190,6 +196,7 @@ func TestScheduler_AFollowerAsksAgainAtTheLeaseRate(t *testing.T) {
 }
 
 func TestScheduler_TheTimerPassReturnsTheSoonestOfItsJobs(t *testing.T) {
+	t.Parallel()
 	sc, _, kv := schedulerRig(t)
 	now := time.Now().UTC()
 
@@ -219,6 +226,7 @@ func TestScheduler_TheTimerPassReturnsTheSoonestOfItsJobs(t *testing.T) {
 }
 
 func TestScheduler_AnInFlightServiceAsksToBeRevisited(t *testing.T) {
+	t.Parallel()
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -249,6 +257,7 @@ func TestScheduler_AnInFlightServiceAsksToBeRevisited(t *testing.T) {
 }
 
 func TestScheduler_AGatewayTaskStateReportWakesTheLeader(t *testing.T) {
+	t.Parallel()
 	sc, svc, kv := schedulerRig(t)
 	taskID := runOneTask(t, svc, kv)
 	require.NoError(t, sc.subscribeBus(t.Context()))

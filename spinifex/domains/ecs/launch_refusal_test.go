@@ -15,6 +15,7 @@ import (
 // container instance; RunTask and StartTask refuse an awsvpc task with no
 // networkConfiguration.
 func TestLaunch_RefusalsMatchAWS(t *testing.T) {
+	t.Parallel()
 	const (
 		noInstances = "No Container Instances were found in your cluster."
 		noNetConfig = "Network Configuration must be provided when networkMode 'awsvpc' is specified."

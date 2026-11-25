@@ -16,6 +16,7 @@ import (
 // The stored keys and field names outlive any move of the code that writes
 // them, so a revision written before a relocation must still resolve after it.
 func TestTaskDefinition_PersistedKeysAndFieldNames(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:                  aws.String("app"),
@@ -56,6 +57,7 @@ func TestTaskDefinition_PersistedKeysAndFieldNames(t *testing.T) {
 // Every reference form names the same revision, and one that names nothing is
 // the caller's InvalidParameterException.
 func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 128, 256)
 	registerTaskDef(t, svc, "app", 128, 256)
@@ -86,6 +88,7 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 // Deregister only marks the revision, so repeating it succeeds and an unknown
 // revision is refused.
 func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	registerTaskDef(t, svc, "app", 128, 256)
 
@@ -105,6 +108,7 @@ func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T
 // first deregistration, keeps that first time, and is absent from the
 // DeregisterTaskDefinition response itself, as on AWS.
 func TestTaskDefinition_RegisteredAndDeregisteredAt(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	reg := registerTaskDef(t, svc, "app", 128, 256)
 	registeredAt := aws.TimeValue(reg.TaskDefinition.RegisteredAt)
@@ -138,6 +142,7 @@ func TestTaskDefinition_RegisteredAndDeregisteredAt(t *testing.T) {
 // Present behaviour: resolution for a launch does not read the revision's
 // status, so a deregistered revision still starts tasks.
 func TestRunTask_AcceptsAnInactiveRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -158,6 +163,7 @@ func TestRunTask_AcceptsAnInactiveRevision(t *testing.T) {
 // A bare family is resolved again by the launch itself, so the task runs the
 // family's latest revision at the moment the daemon reads it.
 func TestRunTask_BareFamilyRunsTheLatestRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -176,6 +182,7 @@ func TestRunTask_BareFamilyRunsTheLatestRevision(t *testing.T) {
 // A service pins the revision it resolved at create, so a later register does
 // not change what it runs.
 func TestCreateService_PinsTheResolvedRevision(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"),
@@ -198,6 +205,7 @@ func TestCreateService_PinsTheResolvedRevision(t *testing.T) {
 // "TaskDefinition not found.", while a reference with no family stays
 // InvalidParameterException.
 func TestLaunches_UnknownTaskDefinitionIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
@@ -243,6 +251,7 @@ func TestLaunches_UnknownTaskDefinitionIsNotFound(t *testing.T) {
 // The container AWS returns from RegisterTaskDefinition and
 // DeregisterTaskDefinition for an awsvpc definition that sets no environment.
 func TestTaskDefinition_ContainerMatchesAWSResponse(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	reg, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family:                  aws.String("web"),

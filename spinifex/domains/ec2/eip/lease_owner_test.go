@@ -9,6 +9,7 @@ import (
 )
 
 func TestAllocationExists(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -21,6 +22,7 @@ func TestAllocationExists(t *testing.T) {
 // The lease store keys on the client-id alone, so the lookup has to work without
 // the owning account.
 func TestAllocationExistsIgnoresAccount(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, "210987654321")
 	require.NoError(t, err)
@@ -33,6 +35,7 @@ func TestAllocationExistsIgnoresAccount(t *testing.T) {
 // A released allocation is what the reaper acts on, so this answer costs an
 // address if it is wrong.
 func TestAllocationExistsFalseAfterRelease(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -45,6 +48,7 @@ func TestAllocationExistsFalseAfterRelease(t *testing.T) {
 }
 
 func TestAllocationExistsUnknownID(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	exists, err := svc.AllocationExists(t.Context(), "eipalloc-missing")
@@ -53,6 +57,7 @@ func TestAllocationExistsUnknownID(t *testing.T) {
 }
 
 func TestAllocationExistsRejectsEmptyID(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocationExists(t.Context(), "")

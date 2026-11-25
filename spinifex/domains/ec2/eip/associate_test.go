@@ -64,6 +64,7 @@ func describeEIP(t *testing.T, svc *EIPServiceImpl, allocID string) *ec2.Address
 // record. A field lost here leaves the record pointing at the right ENI with
 // the wrong private IP, and the NAT rule sends the traffic elsewhere.
 func TestEIP_AssociateByNetworkInterfaceID(t *testing.T) {
+	t.Parallel()
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	allocID, publicIP := allocateEIP(t, svc)
@@ -98,6 +99,7 @@ func TestEIP_AssociateByNetworkInterfaceID(t *testing.T) {
 // An explicit PrivateIpAddress overrides the ENI's primary address; the rest of
 // the ENI's identity still has to come from the lookup.
 func TestEIP_AssociateByNetworkInterfaceID_PrivateIPOverride(t *testing.T) {
+	t.Parallel()
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	allocID, _ := allocateEIP(t, svc)
@@ -115,6 +117,7 @@ func TestEIP_AssociateByNetworkInterfaceID_PrivateIPOverride(t *testing.T) {
 }
 
 func TestEIP_AssociateByNetworkInterfaceID_NotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	allocID, _ := allocateEIP(t, svc)
 
@@ -134,6 +137,7 @@ func TestEIP_AssociateByNetworkInterfaceID_NotFound(t *testing.T) {
 // Associating by instance id resolves the instance's primary ENI, which is the
 // path RunInstances-then-AssociateAddress takes.
 func TestEIP_AssociateByInstanceID(t *testing.T) {
+	t.Parallel()
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	const instanceID = "i-0123456789abcdef0"
@@ -162,6 +166,7 @@ func TestEIP_AssociateByInstanceID(t *testing.T) {
 }
 
 func TestEIP_AssociateByInstanceID_NoENI(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	allocID, _ := allocateEIP(t, svc)
 
@@ -176,6 +181,7 @@ func TestEIP_AssociateByInstanceID_NoENI(t *testing.T) {
 // An allocated-but-unassociated EIP is not a public IP for any instance, and
 // the empty instance id never matches a record.
 func TestEIP_AssociatedPublicIPForInstance_Misses(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	allocateEIP(t, svc)
 
@@ -191,6 +197,7 @@ func TestEIP_AssociatedPublicIPForInstance_Misses(t *testing.T) {
 // Disassociation withdraws the NAT rule with the MAC lookupENI resolves, then
 // returns the record to "allocated" without giving the address back.
 func TestEIP_DisassociateAfterAssociate(t *testing.T) {
+	t.Parallel()
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	allocID, publicIP := allocateEIP(t, svc)
@@ -244,6 +251,7 @@ func poolHolds(t *testing.T, ipam *ec2vpc.ExternalIPAM, ip string) bool {
 // associated with it. Keeping it leaves an address nothing refers to, which a
 // cloud-backed pool keeps billing for.
 func TestEIP_AssociateReleasesAutoAssignedPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, ipam, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	autoIP := autoAssignPublicIP(t, ipam, vpcSvc, eni)
@@ -273,6 +281,7 @@ func TestEIP_AssociateReleasesAutoAssignedPublicIP(t *testing.T) {
 // Associating a second Elastic IP to an interface that already holds one must
 // not free the first: it is the customer's allocation, not an auto address.
 func TestEIP_AssociateKeepsAnotherElasticIP(t *testing.T) {
+	t.Parallel()
 	svc, ipam, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	firstID, firstIP := allocateEIP(t, svc)
@@ -309,6 +318,7 @@ func presentMembers(v any) []string {
 // associate and disassociate, and NetworkInterfaceOwnerId only while it is on
 // an interface. The member sets are those real AWS returns at each step.
 func TestEIP_AddressMembersMatchAWS(t *testing.T) {
+	t.Parallel()
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	_, err := vpcSvc.AttachENI(testAccountID, *eni.NetworkInterfaceId, "i-0123456789abcdef0", 0)

@@ -17,6 +17,7 @@ import (
 // The SDK reuses amz-sdk-invocation-id across retries of one call, so a resend
 // must return the first allocation instead of drawing another address.
 func TestAllocateAddress_RetryReturnsFirstAllocation(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
@@ -35,6 +36,7 @@ func TestAllocateAddress_RetryReturnsFirstAllocation(t *testing.T) {
 
 // Distinct calls carry distinct invocation ids and must still get their own EIP.
 func TestAllocateAddress_DifferentKeysAllocateSeparately(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	first, err := svc.AllocateAddress(idempotency.WithKey(t.Context(), "invocation-1"), &ec2.AllocateAddressInput{}, testAccountID)
@@ -48,6 +50,7 @@ func TestAllocateAddress_DifferentKeysAllocateSeparately(t *testing.T) {
 // Callers that send no token (an older SDK, a raw HTTP client) keep the
 // pre-existing behaviour rather than colliding on an empty key.
 func TestAllocateAddress_WithoutKeyAllocatesEachTime(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	first, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -60,6 +63,7 @@ func TestAllocateAddress_WithoutKeyAllocatesEachTime(t *testing.T) {
 
 // One account's token must not answer another's call.
 func TestAllocateAddress_KeyIsScopedPerAccount(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
@@ -74,6 +78,7 @@ func TestAllocateAddress_KeyIsScopedPerAccount(t *testing.T) {
 // The retry usually arrives while the first DORA is still running, which the KV
 // record cannot cover — singleflight has to join it to the call in flight.
 func TestAllocateOnce_ConcurrentRetriesCollapse(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
@@ -113,6 +118,7 @@ func TestAllocateOnce_ConcurrentRetriesCollapse(t *testing.T) {
 // A failed allocation must not be cached: the caller is entitled to retry and
 // get a real address once the fault clears.
 func TestAllocateOnce_FailureIsNotCached(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
@@ -134,6 +140,7 @@ func TestAllocateOnce_FailureIsNotCached(t *testing.T) {
 // Without a bucket the dedupe degrades to the in-flight join only, which must
 // not turn into a nil dereference.
 func TestAllocateOnce_WithoutBucketStillAllocates(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	svc.idemKV = nil
 
@@ -146,6 +153,7 @@ func TestAllocateOnce_WithoutBucketStillAllocates(t *testing.T) {
 }
 
 func TestIdempotencyKeyHash_IsStableAndKVSafe(t *testing.T) {
+	t.Parallel()
 	got := idempotencyKeyHash("some/token with spaces.and*wildcards")
 
 	assert.Equal(t, got, idempotencyKeyHash("some/token with spaces.and*wildcards"))

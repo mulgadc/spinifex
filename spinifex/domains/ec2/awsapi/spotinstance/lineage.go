@@ -52,6 +52,12 @@ func stampSpotLineage(ctx context.Context, natsConn *nats.Conn, requests []*ec2.
 // A non-no-responders transport error or an owner-returned error code stops the
 // retry and is surfaced to the caller.
 func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID, sirID, accountID string) error {
+	return sendSpotLineageCommandWithWait(ctx, natsConn, instanceID, sirID, accountID, time.Sleep)
+}
+
+// sendSpotLineageCommandWithWait is sendSpotLineageCommand with the pause
+// between no-responders attempts supplied by the caller.
+func sendSpotLineageCommandWithWait(ctx context.Context, natsConn *nats.Conn, instanceID, sirID, accountID string, wait func(time.Duration)) error {
 	command := ec2v1.EC2InstanceCommand{
 		ID:              instanceID,
 		Attributes:      ec2v1.EC2CommandAttributes{SetSpotLineage: true},
@@ -81,7 +87,7 @@ func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID
 		}
 		lastErr = err
 		if attempt < spotLineageRetries-1 {
-			time.Sleep(spotLineageRetryDelay)
+			wait(spotLineageRetryDelay)
 		}
 	}
 	return lastErr

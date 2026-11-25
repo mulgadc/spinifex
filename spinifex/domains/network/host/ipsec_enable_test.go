@@ -309,9 +309,7 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 	recorder := &recordingSudo{activeOutput: "inactive\n"}
 	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
-	origTimeout := systemctlActiveTimeout
-	systemctlActiveTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { systemctlActiveTimeout = origTimeout })
+	shortenSystemctlActiveWait(t)
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -710,9 +708,7 @@ func TestEnableOVNIPSec_PublishesUnreadyWhenTheLocalHalfFails(t *testing.T) {
 	recorder := &recordingSudo{activeOutput: "inactive\n"}
 	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
-	origTimeout := systemctlActiveTimeout
-	systemctlActiveTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { systemctlActiveTimeout = origTimeout })
+	shortenSystemctlActiveWait(t)
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 	barrier := allReady()
@@ -850,4 +846,12 @@ func TestIsNBUnreachable(t *testing.T) {
 	assert.True(t, isNBUnreachable("ovn-nbctl: tcp:10.0.0.1:6641: database connection failed (Connection refused)"))
 	assert.False(t, isNBUnreachable("ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: permission denied"))
 	assert.False(t, isNBUnreachable("ovn-nbctl: transaction timed out"))
+}
+
+// shortenSystemctlActiveWait makes the is-active wait give up after a few polls.
+func shortenSystemctlActiveWait(t *testing.T) {
+	t.Helper()
+	origTimeout, origPoll := systemctlActiveTimeout, systemctlActivePollInterval
+	systemctlActiveTimeout, systemctlActivePollInterval = 10*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { systemctlActiveTimeout, systemctlActivePollInterval = origTimeout, origPoll })
 }

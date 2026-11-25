@@ -20,6 +20,9 @@ import (
 // systemctlActiveTimeout bounds the wait for openvswitch-ipsec.service to become active.
 var systemctlActiveTimeout = 5 * time.Second
 
+// systemctlActivePollInterval is the gap between is-active checks in that wait.
+var systemctlActivePollInterval = 250 * time.Millisecond
+
 // ipsecRetryDelay is the first gap after a failed pass; it doubles up to
 // ipsecReconcileInterval. Short, because until every chassis has finished its
 // local setup the cluster cannot require encryption at all.
@@ -431,7 +434,7 @@ func ensureOVSMonitorIPSecActive() error {
 		if lastOut == "active" {
 			return nil
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(systemctlActivePollInterval)
 	}
 	return fmt.Errorf("not active after %s: %s (provision via scripts/setup-ovn.sh)", systemctlActiveTimeout, lastOut)
 }

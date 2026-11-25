@@ -29,9 +29,12 @@ const (
 	ipsecCACertSymlink = "ca.pem"
 )
 
-// ipsecCertKeyBits is the RSA key size for IPsec peer certificates. It is a
-// seam so tests can lower it for faster key generation.
-var ipsecCertKeyBits = 4096
+// ipsecCertKeyBits is the RSA key size for IPsec peer certificates.
+const ipsecCertKeyBits = 4096
+
+// ipsecGenerateKey makes the peer key. It is a seam so tests can reuse a key
+// made once instead of paying for RSA key generation on every call.
+var ipsecGenerateKey = rsa.GenerateKey
 
 // id-kp-ipsecIKE per RFC 4945 §5.1.3.12. strongSwan accepts certs carrying
 // this EKU as IKEv2 peer credentials; ovs-monitor-ipsec's auto-generated
@@ -65,7 +68,7 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return err
 	}
 
-	peerKey, err := rsa.GenerateKey(rand.Reader, ipsecCertKeyBits)
+	peerKey, err := ipsecGenerateKey(rand.Reader, ipsecCertKeyBits)
 	if err != nil {
 		return fmt.Errorf("ipsec peer cert: generate key: %w", err)
 	}

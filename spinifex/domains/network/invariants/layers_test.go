@@ -1,8 +1,6 @@
 package invariants
 
 import (
-	"encoding/json"
-	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -211,19 +209,8 @@ type goListPackage struct {
 
 func listNetworkPackages(t *testing.T) []goListPackage {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-json", "./...")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
 	var pkgs []goListPackage
-	dec := json.NewDecoder(strings.NewReader(string(out)))
-	for dec.More() {
-		var p goListPackage
-		if err := dec.Decode(&p); err != nil {
-			t.Fatalf("decode go list output: %v", err)
-		}
+	for _, p := range goListNetwork(t) {
 		if !strings.HasPrefix(p.ImportPath, networkRoot) {
 			continue
 		}
@@ -236,21 +223,6 @@ func listNetworkPackages(t *testing.T) []goListPackage {
 		t.Fatalf("go list returned no packages under %s", networkRoot)
 	}
 	return pkgs
-}
-
-// repoRoot returns the spinifex module root via `go env GOMOD`.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	cmd := exec.Command("go", "env", "GOMOD")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go env GOMOD: %v", err)
-	}
-	gomod := strings.TrimSpace(string(out))
-	if gomod == "" || gomod == "/dev/null" {
-		t.Fatalf("not in a go module (GOMOD=%q)", gomod)
-	}
-	return strings.TrimSuffix(gomod, "/go.mod")
 }
 
 func shortPkg(p string) string {

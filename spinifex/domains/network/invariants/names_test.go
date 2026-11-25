@@ -2,7 +2,6 @@ package invariants
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
@@ -53,8 +52,7 @@ func TestS4_OVNNamesL2Owned(t *testing.T) {
 			if isS4Exempt(path) {
 				return nil
 			}
-			fset := token.NewFileSet()
-			file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			fset, file, perr := parseGoFile(path)
 			if perr != nil {
 				t.Fatalf("parse %s: %v", path, perr)
 			}

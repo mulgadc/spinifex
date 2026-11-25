@@ -2,7 +2,6 @@ package invariants
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
@@ -72,8 +71,7 @@ func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 			if strings.Contains(filepath.ToSlash(path), "/network/invariants/") {
 				return nil
 			}
-			fset := token.NewFileSet()
-			file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			fset, file, perr := parseGoFile(path)
 			if perr != nil {
 				t.Fatalf("parse %s: %v", path, perr)
 			}

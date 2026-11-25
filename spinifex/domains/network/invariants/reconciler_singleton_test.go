@@ -2,8 +2,6 @@ package invariants
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"path/filepath"
 	"regexp"
@@ -51,8 +49,7 @@ func TestS9_SingleReconcilerNoRetrofitPasses(t *testing.T) {
 		if strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fset := token.NewFileSet()
-		file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		fset, file, perr := parseGoFile(path)
 		if perr != nil {
 			t.Fatalf("parse %s: %v", path, perr)
 		}

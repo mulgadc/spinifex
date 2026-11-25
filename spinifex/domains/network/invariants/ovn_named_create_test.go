@@ -2,8 +2,6 @@ package invariants
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -45,6 +43,7 @@ func TestS4_OVNNamedCreatesUseEnsure(t *testing.T) {
 		replace string
 	}
 	var hits []hit
+	var paths []string
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -64,8 +63,16 @@ func TestS4_OVNNamedCreatesUseEnsure(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fset := token.NewFileSet()
-		file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	prewarmParse(paths)
+	for _, path := range paths {
+		fset, file, perr := parseGoFile(path)
 		if perr != nil {
 			t.Fatalf("parse %s: %v", path, perr)
 		}
@@ -83,10 +90,6 @@ func TestS4_OVNNamedCreatesUseEnsure(t *testing.T) {
 			hits = append(hits, hit{pos.Filename, pos.Line, tail, replace})
 			return true
 		})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
 	}
 
 	if len(hits) == 0 {

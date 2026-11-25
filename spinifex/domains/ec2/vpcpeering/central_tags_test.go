@@ -71,6 +71,7 @@ func nameTagSpec(name string) []*ec2.TagSpecification {
 // Create-time tags reach the index DescribeTags reads, for a pending
 // connection and for one that fails at create.
 func TestCreate_WritesTagSpecificationsToCentralStore(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	central := newMemTagStore()
 	f.svc.SetCentralTagStore(central)
@@ -94,6 +95,7 @@ func TestCreate_WritesTagSpecificationsToCentralStore(t *testing.T) {
 // A connection's central tags stay while its record is live or terminal and
 // go once the terminal record has aged out of its bucket.
 func TestSweep_DeletesCentralTagsOnceTheTerminalRecordIsGone(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	central := newMemTagStore()
 	f.svc.SetCentralTagStore(central)

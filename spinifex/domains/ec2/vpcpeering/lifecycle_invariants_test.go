@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 // countingKV records every key read and every listing a handler makes.
@@ -59,19 +60,29 @@ func (k *countingKV) reset() {
 
 // seedUnrelated writes n active connections between VPCs the test never names,
 // directly with their keys, so a handler that scans the bucket reads them.
+// The writes are independent, so several run at once to cut the round trips.
 func seedUnrelated(t *testing.T, f *fixture, n int) {
 	t.Helper()
+	g, ctx := errgroup.WithContext(t.Context())
+	g.SetLimit(32)
 	for i := range n {
-		rec := &PeeringRecord{
-			ID:                 fmt.Sprintf("pcx-%017x", 5000+i),
-			RequesterAccountID: "999999999999", RequesterVpcID: vpcID(10000 + 2*i), RequesterCIDR: "10.50.0.0/16",
-			AccepterAccountID: "999999999999", AccepterVpcID: vpcID(10001 + 2*i), AccepterCIDR: "10.51.0.0/16",
-			Status: StateActive, Generation: 2, RealizedGeneration: 2, CreatedAt: f.clock.now(),
-		}
-		require.NoError(t, f.svc.writeIndexes(t.Context(), rec))
-		require.NoError(t, putJSON(t.Context(), f.svc.live, recordKey(rec.ID), rec))
-		require.NoError(t, putJSON(t.Context(), f.svc.live, pairKey(rec.RequesterVpcID, rec.AccepterVpcID), claim{PcxID: rec.ID, ClaimedAt: f.clock.now()}))
+		g.Go(func() error {
+			rec := &PeeringRecord{
+				ID:                 fmt.Sprintf("pcx-%017x", 5000+i),
+				RequesterAccountID: "999999999999", RequesterVpcID: vpcID(10000 + 2*i), RequesterCIDR: "10.50.0.0/16",
+				AccepterAccountID: "999999999999", AccepterVpcID: vpcID(10001 + 2*i), AccepterCIDR: "10.51.0.0/16",
+				Status: StateActive, Generation: 2, RealizedGeneration: 2, CreatedAt: f.clock.now(),
+			}
+			if err := f.svc.writeIndexes(ctx, rec); err != nil {
+				return err
+			}
+			if err := putJSON(ctx, f.svc.live, recordKey(rec.ID), rec); err != nil {
+				return err
+			}
+			return putJSON(ctx, f.svc.live, pairKey(rec.RequesterVpcID, rec.AccepterVpcID), claim{PcxID: rec.ID, ClaimedAt: f.clock.now()})
+		})
 	}
+	require.NoError(t, g.Wait())
 }
 
 func instrument(f *fixture) (live, term *countingKV) {
@@ -84,6 +95,7 @@ func instrument(f *fixture) (live, term *countingKV) {
 // Accept records the link obligation and returns provisioning without waiting for the link.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_PeeringAcceptReturnsBeforeRealisation(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 
@@ -100,6 +112,7 @@ func TestADR0003S8_PeeringAcceptReturnsBeforeRealisation(t *testing.T) {
 // stays until the reconciler has removed the link.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_PeeringDeleteReturnsBeforeCleanup(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	f.activate(t, id)
@@ -115,6 +128,7 @@ func TestADR0003S8_PeeringDeleteReturnsBeforeCleanup(t *testing.T) {
 // two VPCs' index keys, the records and claims they name, and one request claim.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_PeeringCreateReadsOnlyIndexes(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	live, term := instrument(f)
@@ -132,6 +146,7 @@ func TestADR0003S8_PeeringCreateReadsOnlyIndexes(t *testing.T) {
 // Describe reads only the caller's account index in both buckets and the records it names.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_PeeringDescribeReadsOnlyCallerIndex(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	f.create(t, vpcA, vpcB)
@@ -185,6 +200,7 @@ func (k *writingKV) Delete(ctx context.Context, key string, opts ...jetstream.KV
 // and a pending connection does not block; it reads rejected once the VPC goes.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_DeleteVpcRecordsNoPeeringFanOut(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	pending := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId

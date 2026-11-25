@@ -55,6 +55,7 @@ func (f *fixture) stallCreate(t *testing.T, prefix string, check func(SweepResul
 }
 
 func TestCreate_StalledPastSweepBeforeRecordIsFullyIndexed(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := f.stallCreate(t, "pcx.", func(res SweepResult) {
 		assert.Positive(t, res.KeysRemoved, "the sweep removes the stalled create's indexes")
@@ -77,6 +78,7 @@ func TestCreate_StalledPastSweepBeforeRecordIsFullyIndexed(t *testing.T) {
 }
 
 func TestCreate_RecordSweptBeforeClaimFailsTheCreate(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := f.stallCreate(t, "req.", func(res SweepResult) {
 		assert.Equal(t, 1, res.DiscardedStale, "the sweep discards the unclaimed record")

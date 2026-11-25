@@ -509,6 +509,7 @@ func TestAggregateResults_AMIReadFailurePrecedence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc := startTestNATSServer(t)
 			terminated := make(chan string, 1)
 			sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {

@@ -117,6 +117,7 @@ func TestFilter_CompileEachOperator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			sql, args, next, err := tt.filter.compile(tt.startParam)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantSQL, sql)
@@ -251,6 +252,7 @@ func TestFilter_InjectionAttemptInKeyIsRejected(t *testing.T) {
 
 	for _, key := range maliciousKeys {
 		t.Run(key, func(t *testing.T) {
+			t.Parallel()
 			_, _, _, err := Equals(key, "x").compile(1)
 			require.Error(t, err, "key %q must be rejected", key)
 

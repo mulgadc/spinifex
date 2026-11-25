@@ -36,6 +36,8 @@ access_key = "{{.NorthstarAccessKey}}"
 secret_key = "{{.NorthstarSecretKey}}"
 
 # Forwarders for non-authoritative (recursive) queries. Empty => REFUSED.
+# At most 3, and interchangeable resolvers with one view and one policy: a
+# forwarder that fails or refuses without recursion is skipped for the next.
 [upstream]
 nameservers = [{{range $i, $s := .PoolDNSServers}}{{if $i}}, {{end}}"{{$s}}:53"{{end}}]
 

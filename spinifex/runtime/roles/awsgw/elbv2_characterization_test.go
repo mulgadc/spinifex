@@ -92,6 +92,7 @@ func respondELBv2(t *testing.T, nc *nats.Conn, subject, payload string) *int {
 // --- Full-pipeline error envelopes ---------------------------------------
 
 func TestELBv2Pipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body, code, message string
 		status                    int
@@ -102,6 +103,7 @@ func TestELBv2Pipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 			resp := doRequest(app, signELBv2Request(t, tc.body))
 
@@ -123,6 +125,7 @@ func TestELBv2Pipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 // A handler failure with no AWS code is a 500 InternalError, here because no
 // daemon answers the NATS subject.
 func TestELBv2Pipeline_NoResponder_500InternalError(t *testing.T) {
+	t.Parallel()
 	_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeSSLPolicies"))
 
@@ -134,6 +137,7 @@ func TestELBv2Pipeline_NoResponder_500InternalError(t *testing.T) {
 // --- Golden success responses ----------------------------------------------
 
 func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
+	t.Parallel()
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	listener := pipelineListener("web", "1", "2")
 	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeListeners",
@@ -156,6 +160,7 @@ func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
 }
 
 func TestELBv2Pipeline_DescribeLoadBalancers_GoldenXML(t *testing.T) {
+	t.Parallel()
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	calls := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers",
 		`{"LoadBalancers":[{"LoadBalancerName":"web","LoadBalancerArn":"`+pipelineLB("web", "abc")+`","Type":"application"}]}`)
@@ -180,6 +185,7 @@ func TestELBv2Pipeline_DescribeLoadBalancers_GoldenXML(t *testing.T) {
 }
 
 func TestELBv2Pipeline_DescribeAccountLimits_GoldenXML(t *testing.T) {
+	t.Parallel()
 	_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeAccountLimits"))
 
@@ -212,6 +218,7 @@ func TestELBv2Pipeline_DescribeAccountLimits_GoldenXML(t *testing.T) {
 // --- Account quota on CreateLoadBalancer -------------------------------------
 
 func TestELBv2Pipeline_CreateLoadBalancer_QuotaExceededStopsBeforeCreate(t *testing.T) {
+	t.Parallel()
 	quota := admissionquota.New(admissionquota.Limits{Enabled: true, LoadBalancers: 1}, nil)
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), quota)
 	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers",
@@ -226,6 +233,7 @@ func TestELBv2Pipeline_CreateLoadBalancer_QuotaExceededStopsBeforeCreate(t *test
 }
 
 func TestELBv2Pipeline_CreateLoadBalancer_QuotaDisabledReachesCreate(t *testing.T) {
+	t.Parallel()
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers", `{"LoadBalancers":[]}`)
 	creates := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.CreateLoadBalancer", `{}`)
@@ -240,6 +248,7 @@ func TestELBv2Pipeline_CreateLoadBalancer_QuotaDisabledReachesCreate(t *testing.
 
 // A denied caller is answered AccessDenied before any NATS handler runs.
 func TestELBv2Pipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
+	t.Parallel()
 	docs := scopedTaggingDocs("Allow", "elasticloadbalancing:DeleteLoadBalancer", pipelineLB("other", "zzz"))
 	gw, app := elbv2PipelineApp(t, docs, nil)
 	calls := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DeleteLoadBalancer", `{}`)
@@ -256,6 +265,7 @@ func TestELBv2Pipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
 // past the parser's cap is MalformedQueryString even for a caller who would be
 // denied.
 func TestELBv2Pipeline_Authz_ParseFailurePrecedesGate(t *testing.T) {
+	t.Parallel()
 	docs := scopedTaggingDocs("Allow", "ec2:DescribeTags", "*")
 	_, app := elbv2PipelineApp(t, docs, nil)
 	var b strings.Builder
@@ -272,6 +282,7 @@ func TestELBv2Pipeline_Authz_ParseFailurePrecedesGate(t *testing.T) {
 
 // An unrelated grant denies, and an unknown action is rejected before the gate.
 func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
+	t.Parallel()
 	_, app := elbv2PipelineApp(t, scopedTaggingDocs("Allow", "ec2:DescribeTags", "*"), nil)
 
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeLoadBalancers"))
@@ -286,6 +297,7 @@ func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) 
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	gw := withELBv2(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	req := elbv2Request(authzAccountID, "Action=DescribeLoadBalancers")
@@ -301,6 +313,7 @@ func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
 // --- Oversized body over HTTP -------------------------------------------------
 
 func TestELBv2Pipeline_OversizedBody_413OverHTTP(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
@@ -319,6 +332,7 @@ func TestELBv2Pipeline_OversizedBody_413OverHTTP(t *testing.T) {
 // --- Pipeline metadata ---------------------------------------------------------
 
 func TestELBv2Pipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
+	t.Parallel()
 	gw, _ := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 
 	var got *audit.Record

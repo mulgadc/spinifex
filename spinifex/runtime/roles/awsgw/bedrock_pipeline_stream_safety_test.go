@@ -88,6 +88,7 @@ func (e *readyEndpoints) Delete(context.Context, *ochre.DeleteEndpointInput, str
 }
 
 func TestBedrockPipeline_RedirectedReadyMemberIsNotReadyWithoutWaiting(t *testing.T) {
+	t.Parallel()
 	var sourceHits, destHits atomic.Int32
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		destHits.Add(1)

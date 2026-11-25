@@ -87,6 +87,7 @@ func rdsInstanceARN(id string) string {
 }
 
 func TestRDSPipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body, code, message string
 		status                    int
@@ -97,6 +98,7 @@ func TestRDSPipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 			resp := doRequest(app, signRDSRequest(t, tc.body))
 
@@ -117,6 +119,7 @@ func TestRDSPipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
 
 // An action RDS recognises but does not implement keeps its own wording.
 func TestRDSPipeline_UnsupportedAction_Envelope(t *testing.T) {
+	t.Parallel()
 	_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	resp := doRequest(app, signRDSRequest(t, "Action=CreateDBCluster"))
 
@@ -134,6 +137,7 @@ func TestRDSPipeline_UnsupportedAction_Envelope(t *testing.T) {
 }
 
 func TestRDSPipeline_NoResponder_500InternalError(t *testing.T) {
+	t.Parallel()
 	_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	resp := doRequest(app, signRDSRequest(t, "Action=DescribeDBInstances"))
 
@@ -143,6 +147,7 @@ func TestRDSPipeline_NoResponder_500InternalError(t *testing.T) {
 }
 
 func TestRDSPipeline_DescribeDBEngineVersions_Golden(t *testing.T) {
+	t.Parallel()
 	_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	resp := doRequest(app, signRDSRequest(t, "Action=DescribeDBEngineVersions"))
 
@@ -164,6 +169,7 @@ func TestRDSPipeline_DescribeDBEngineVersions_Golden(t *testing.T) {
 }
 
 func TestRDSPipeline_DescribeDBInstances_Golden(t *testing.T) {
+	t.Parallel()
 	gw, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds.DescribeDBInstances", `{"DBInstances":[]}`)
 	resp := doRequest(app, signRDSRequest(t, "Action=DescribeDBInstances"))
@@ -180,6 +186,7 @@ func TestRDSPipeline_DescribeDBInstances_Golden(t *testing.T) {
 }
 
 func TestRDSPipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
+	t.Parallel()
 	docs := scopedTaggingDocs("Allow", "rds:DeleteDBInstance", rdsInstanceARN("other"))
 	gw, app := rdsPipelineApp(t, docs)
 	calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds.DeleteDBInstance", `{}`)
@@ -193,9 +200,11 @@ func TestRDSPipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
 
 // rds:* is the natural admin grant and must not reach an internal agent action.
 func TestRDSPipeline_Authz_InternalActionDeniedToAdmin(t *testing.T) {
+	t.Parallel()
 	gw, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	for _, action := range rdsinstance.InternalAgentActions {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds."+action, `{}`)
 			resp := doRequest(app, signRDSRequest(t, "Action="+action))
 
@@ -207,6 +216,7 @@ func TestRDSPipeline_Authz_InternalActionDeniedToAdmin(t *testing.T) {
 }
 
 func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
+	t.Parallel()
 	_, app := rdsPipelineApp(t, scopedTaggingDocs("Allow", "ec2:DescribeTags", "*"))
 
 	resp := doRequest(app, signRDSRequest(t, "Action=DescribeDBInstances"))
@@ -218,6 +228,7 @@ func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
 }
 
 func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	withRDS(gw)
 
@@ -231,6 +242,7 @@ func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
 }
 
 func TestRDSPipeline_OversizedBody_413OverHTTP(t *testing.T) {
+	t.Parallel()
 	_, app := rdsPipelineApp(t, allowAllTaggingDocs())
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
@@ -245,6 +257,7 @@ func TestRDSPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 }
 
 func TestRDSPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
+	t.Parallel()
 	gw, _ := rdsPipelineApp(t, allowAllTaggingDocs())
 
 	var got *audit.Record

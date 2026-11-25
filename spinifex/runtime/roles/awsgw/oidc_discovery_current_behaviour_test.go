@@ -75,6 +75,7 @@ func getOIDC(t *testing.T, h http.Handler, path string) *httptest.ResponseRecord
 
 // The JWKS endpoint serves the stored bytes verbatim without validating them.
 func TestCurrentBehaviour_OIDCJWKSServesMalformedValueVerbatim(t *testing.T) {
+	t.Parallel()
 	e := newDiscoveryEnv(t)
 	e.putJWKS(t, `not-json`)
 
@@ -88,6 +89,7 @@ func TestCurrentBehaviour_OIDCJWKSServesMalformedValueVerbatim(t *testing.T) {
 // Discovery answers from the cluster record alone; JWKS answers from the JWKS
 // key alone. Neither consults the cluster status.
 func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
+	t.Parallel()
 	const jwks = `{"keys":[{"kty":"EC","kid":"abc"}]}`
 	for _, tc := range []struct {
 		name               string
@@ -104,6 +106,7 @@ func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
 		{name: "jwks_without_meta", withJWKS: true, wantDisc: 404, wantKeys: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			e := newDiscoveryEnv(t)
 			if tc.withMeta {
 				e.putMeta(t, tc.status, tc.issuer)
@@ -125,6 +128,7 @@ func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
 // Cluster deleted: after the EKS teardown sweeps clusters/{name}/, both
 // endpoints return the stock 404 body.
 func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
+	t.Parallel()
 	e := newDiscoveryEnv(t)
 	e.putMeta(t, ekscluster.ClusterStatusDeleting, testDiscIssuer)
 	e.putJWKS(t, `{"keys":[{"kty":"EC","kid":"abc"}]}`)
@@ -141,7 +145,9 @@ func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
 // KV unavailable (closed NATS connection or none wired) is a 500 with a
 // plain-text body on both endpoints; an absent account bucket is a 404.
 func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
+	t.Parallel()
 	t.Run("closed_connection", func(t *testing.T) {
+		t.Parallel()
 		e := newDiscoveryEnv(t)
 		e.putMeta(t, ekscluster.ClusterStatusActive, testDiscIssuer)
 		e.putJWKS(t, `{"keys":[]}`)
@@ -153,6 +159,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("no_connection", func(t *testing.T) {
+		t.Parallel()
 		h := (withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil, nil)}, gwfix.Deps{IAM: allowAllIAMService()}))).SetupRoutes()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
 			rec := getOIDC(t, h, p)
@@ -161,6 +168,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("account_bucket_missing", func(t *testing.T) {
+		t.Parallel()
 		e := newDiscoveryEnv(t)
 		for _, p := range []string{
 			"/oidc/eks/ap-southeast-2/999999999999/" + testDiscCluster + "/.well-known/openid-configuration",
@@ -176,6 +184,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 // An unsigned AssumeRoleWithWebIdentity whose issuer has no published JWKS
 // reaches the real STS service and is rendered as a 400 InvalidIdentityToken.
 func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	masterKey, err := iamdomain.GenerateMasterKey()

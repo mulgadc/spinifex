@@ -15,6 +15,7 @@ import (
 // The login page loads the branding before anyone has signed in, so the
 // route must answer an unsigned request through the full gateway chain.
 func TestConsoleBrandingRoute_ServedAheadOfSigV4(t *testing.T) {
+	t.Parallel()
 	cache := &consolebranding.Cache{}
 	cache.Set(&consolebranding.Record{ProductName: "Acme Cloud"}, 2)
 	branding := consolebranding.Handler{Cache: cache}

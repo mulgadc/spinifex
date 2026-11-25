@@ -10,6 +10,7 @@ import (
 )
 
 func TestParseBedrockEndpoints(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		raw  string
@@ -57,6 +58,7 @@ func TestParseBedrockEndpoints(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, parseBedrockEndpoints(tc.raw))
 		})
 	}
@@ -65,6 +67,7 @@ func TestParseBedrockEndpoints(t *testing.T) {
 // A typo in an optional tuning knob must not stop the gateway from serving,
 // so an unusable value falls back to the fail-fast default.
 func TestParseColdStartWait(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		raw  string
@@ -78,6 +81,7 @@ func TestParseColdStartWait(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, parseColdStartWait(tt.raw))
 		})
 	}

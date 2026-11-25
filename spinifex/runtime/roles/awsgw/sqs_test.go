@@ -29,6 +29,7 @@ func composeWithSQS(t *testing.T, host string) *dispatch.Registry {
 // The public service composes beside the worker's internal one and serves
 // exactly the actions its capability profile classifies as implemented.
 func TestSQSRegistration_ServesTheProfiledActionsBesideTheWorker(t *testing.T) {
+	t.Parallel()
 	services := composeWithSQS(t, "10.0.0.1")
 	assert.True(t, sqsServed(services), "status must report the composed SQS API")
 	inv := services.Inventory()
@@ -43,6 +44,7 @@ func TestSQSRegistration_ServesTheProfiledActionsBesideTheWorker(t *testing.T) {
 // Without a concrete host every queue URL would be undialable, so the public
 // service is left out rather than served with broken URLs.
 func TestSQSRegistration_NoConcreteHostRegistersNothing(t *testing.T) {
+	t.Parallel()
 	services := composeWithSQS(t, "")
 	assert.NotContains(t, services.Inventory(), sqsawsapi.ServiceName)
 	assert.False(t, sqsServed(services), "status must not report an API the gateway does not serve")
@@ -52,6 +54,7 @@ func TestSQSRegistration_NoConcreteHostRegistersNothing(t *testing.T) {
 // Queue URLs must parse back to the gateway's host and port, including an
 // IPv6 listen address, which needs brackets.
 func TestSQSEndpoint_IsADialableURL(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ host, port, want string }{
 		{"10.0.0.1", "9999", "https://10.0.0.1:9999"},
 		{"fd00::1", "9999", "https://[fd00::1]:9999"},

@@ -12,12 +12,14 @@ import (
 )
 
 func TestAdvertisedEndpoint(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "https://localhost:9999", advertisedEndpoint("", ""))
 	assert.Equal(t, "https://gw.example:8443", advertisedEndpoint("gw.example", "8443"))
 	assert.Equal(t, "https://gw.example", advertisedEndpoint("gw.example", "443"))
 }
 
 func TestNewEC2Registration(t *testing.T) {
+	t.Parallel()
 	reg := newEC2Registration(ec2Wiring{
 		Quota:         admissionquota.New(admissionquota.Limits{}, nil),
 		ExpectedNodes: 2,
@@ -31,6 +33,7 @@ func TestNewEC2Registration(t *testing.T) {
 }
 
 func TestStartInstanceStatus(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

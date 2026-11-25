@@ -15,6 +15,7 @@ import (
 )
 
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
+	t.Parallel()
 	gw := withContainers(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := reqctx.WithService(req.Context(), "eks")

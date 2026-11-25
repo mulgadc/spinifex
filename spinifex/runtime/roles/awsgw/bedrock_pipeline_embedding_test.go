@@ -104,6 +104,7 @@ func seedLegacySystemCommitment(t *testing.T, env *bedrockPipelineEnv, modelID s
 // the target was refused before the guardrail ran: no endpoint is resolved,
 // and the input never reaches an invocation record.
 func TestBedrockPipeline_ConverseStreamRefusesTargetBeforeGuardrail(t *testing.T) {
+	t.Parallel()
 	const embedModel = "nomic-embed-text-v1.5"
 	const marker = "blockedmarker"
 	cases := []struct {
@@ -142,6 +143,7 @@ func TestBedrockPipeline_ConverseStreamRefusesTargetBeforeGuardrail(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			endpoints := &countingEndpoints{}
 			recorder := &capturingRecorder{}
 			var target string

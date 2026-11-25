@@ -57,19 +57,23 @@ func (e *cbEnv) rawRequest(t *testing.T, c cbCreds, service, body string) *httpt
 }
 
 func TestIAMSTSPipeline_ErrorEnvelopes(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	e.putUserPolicy(t, "alice", cbAllowAll)
 
 	for _, service := range []string{"iam", "sts"} {
 		t.Run(service+"_missing_action", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.request(t, e.h, e.alice, service, url.Values{"Version": {"2011-06-15"}}))
 			assert.Equal(t, cbRegistry(awserrors.ErrorMissingAction), got)
 		})
 		t.Run(service+"_unknown_action", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.request(t, e.h, e.alice, service, cbForm("NoSuchAction")))
 			assert.Equal(t, cbRegistry(awserrors.ErrorInvalidAction), got)
 		})
 		t.Run(service+"_malformed_query", func(t *testing.T) {
+			t.Parallel()
 			got := cbOutcomeOf(e.rawRequest(t, e.alice, service, "Action=%zz"))
 			assert.Equal(t, cbRegistry(awserrors.ErrorMalformedQueryString), got)
 		})
@@ -79,14 +83,17 @@ func TestIAMSTSPipeline_ErrorEnvelopes(t *testing.T) {
 // CURRENT: IAM authorizes a request that parses, whatever else it omits, so the
 // denial is what the caller sees; STS names a missing RoleArn ahead of the gate.
 func TestIAMSTSPipeline_AuthorizationAndMissingParameterOrder(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("iam_create_user_without_name_and_no_policy_is_denied", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, e.alice, "iam", cbForm("CreateUser")))
 		assert.Equal(t, cbDenied("iam"), got)
 	})
 
 	t.Run("sts_assume_role_without_role_arn", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, e.alice, "sts", cbForm("AssumeRole", "RoleSessionName", "s")))
 		assert.Equal(t, cbRegistry(awserrors.ErrorMissingParameter), got)
 	})
@@ -216,9 +223,11 @@ func TestIAMSTSPipeline_AddRoleToInstanceProfileRequiresPassRole(t *testing.T) {
 // token the issuer registry does not know is refused, and no other STS action
 // is reachable without a signature.
 func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("unsigned_web_identity_reaches_the_handler", func(t *testing.T) {
+		t.Parallel()
 		rec := e.request(t, e.h, cbCreds{}, "sts", cbForm("AssumeRoleWithWebIdentity",
 			"RoleArn", "arn:aws:iam::"+e.accountID+":role/none", "RoleSessionName", "s", "WebIdentityToken", "not-a-jwt"))
 		got := cbOutcomeOf(rec)
@@ -226,6 +235,7 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 	})
 
 	t.Run("unsigned_get_caller_identity_is_stopped_by_sigv4", func(t *testing.T) {
+		t.Parallel()
 		got := cbOutcomeOf(e.request(t, e.h, cbCreds{}, "sts", cbForm("GetCallerIdentity")))
 		assert.Equal(t, cbRegistry(awserrors.ErrorMissingAuthenticationToken), got)
 	})

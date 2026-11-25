@@ -105,6 +105,7 @@ func taggingFixture() (*fakeTaggedLister, *fakeTaggedLister) {
 // --- Full-pipeline error envelopes ---------------------------------------
 
 func TestTaggingPipeline_MissingTarget_400MissingActionException(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, "", []byte("{}")))
 
@@ -115,6 +116,7 @@ func TestTaggingPipeline_MissingTarget_400MissingActionException(t *testing.T) {
 }
 
 func TestTaggingPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"TagResources", []byte("{}")))
 
@@ -126,6 +128,7 @@ func TestTaggingPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 
 // A malformed GetResources body reaches the aggregator and fails there.
 func TestTaggingPipeline_MalformedBody_ErrorEnvelope(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{not json")))
 
@@ -139,6 +142,7 @@ func TestTaggingPipeline_MalformedBody_ErrorEnvelope(t *testing.T) {
 // --- Golden GetResources responses ----------------------------------------
 
 func TestTaggingPipeline_GetResources_GoldenAllResources(t *testing.T) {
+	t.Parallel()
 	elb, ec2 := taggingFixture()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator(elb, ec2))
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
@@ -154,6 +158,7 @@ func TestTaggingPipeline_GetResources_GoldenAllResources(t *testing.T) {
 }
 
 func TestTaggingPipeline_GetResources_GoldenTagFilter(t *testing.T) {
+	t.Parallel()
 	elb, ec2 := taggingFixture()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator(elb, ec2))
 	body := []byte(`{"TagFilters":[{"Key":"env","Values":["dev"]}]}`)
@@ -166,6 +171,7 @@ func TestTaggingPipeline_GetResources_GoldenTagFilter(t *testing.T) {
 }
 
 func TestTaggingPipeline_GetResources_GoldenPagination(t *testing.T) {
+	t.Parallel()
 	elb, ec2 := taggingFixture()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator(elb, ec2))
 	body := []byte(`{"ResourcesPerPage":1}`)
@@ -179,6 +185,7 @@ func TestTaggingPipeline_GetResources_GoldenPagination(t *testing.T) {
 
 // A lister error surfaces with its own awserrors code through the envelope.
 func TestTaggingPipeline_GetResources_ListerErrorPropagates(t *testing.T) {
+	t.Parallel()
 	failing := &fakeTaggedLister{err: errors.New(awserrors.ErrorServerInternal)}
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator(failing))
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
@@ -191,6 +198,7 @@ func TestTaggingPipeline_GetResources_ListerErrorPropagates(t *testing.T) {
 // --- Target parsing and telemetry ------------------------------------------
 
 func TestTaggingPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
+	t.Parallel()
 	gw, _ := taggingPipelineApp(t, allowAllTaggingDocs(), tagging.NewAggregator())
 
 	var got *audit.Record
@@ -214,6 +222,7 @@ func TestTaggingPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // --- Oversized body over HTTP ----------------------------------------------
 
 func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
@@ -233,6 +242,7 @@ func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
+	t.Parallel()
 	gw := withTagging(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), tagging.NewAggregator())
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -250,6 +260,7 @@ func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
 
 // A connected gateway with no aggregator wired answers ServerInternal.
 func TestTaggingPipeline_NoAggregator_500ServerInternal(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, allowAllTaggingDocs(), nil)
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
 
@@ -263,6 +274,7 @@ func TestTaggingPipeline_NoAggregator_500ServerInternal(t *testing.T) {
 // Every tagging action is account-level: a grant scoped to a resource ARN does
 // not reach it, and a wildcard grant does.
 func TestTaggingPipeline_Authz_ScopedAllowDenied_WildcardPermitted(t *testing.T) {
+	t.Parallel()
 	scoped := scopedTaggingDocs("Allow", "tagging:GetResources", "arn:aws:ec2:"+gwfix.Region+":"+authzAccountID+":instance/i-dev")
 	lister := &fakeTaggedLister{}
 	_, app := taggingPipelineApp(t, scoped, tagging.NewAggregator(lister))
@@ -280,6 +292,7 @@ func TestTaggingPipeline_Authz_ScopedAllowDenied_WildcardPermitted(t *testing.T)
 // A Deny scoped to a resource ARN must not fire: every tagging action is
 // evaluated against "*".
 func TestTaggingPipeline_Authz_ScopedDenyDoesNotFire(t *testing.T) {
+	t.Parallel()
 	docs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -296,6 +309,7 @@ func TestTaggingPipeline_Authz_ScopedDenyDoesNotFire(t *testing.T) {
 // An unrelated action grant does not carry to GetResources, and an explicit
 // Deny on the action wins over a wildcard Allow.
 func TestTaggingPipeline_Authz_UnrelatedGrantAndExplicitDeny(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, scopedTaggingDocs("Allow", "ec2:DescribeTags", "*"), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -315,6 +329,7 @@ func TestTaggingPipeline_Authz_UnrelatedGrantAndExplicitDeny(t *testing.T) {
 // An unknown action is rejected before authorization: with no grant at all it
 // still answers InvalidAction rather than AccessDenied.
 func TestTaggingPipeline_Authz_UnknownActionRejectedBeforeGate(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, scopedTaggingDocs("Allow", "ec2:DescribeTags", "*"), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"TagResources", []byte("{}")))
 
@@ -325,6 +340,7 @@ func TestTaggingPipeline_Authz_UnknownActionRejectedBeforeGate(t *testing.T) {
 // A denied request is answered AccessDenied even when its body is also bad:
 // the gate runs before the body is read.
 func TestTaggingPipeline_Authz_DenyPrecedesBodyHandling(t *testing.T) {
+	t.Parallel()
 	_, app := taggingPipelineApp(t, scopedTaggingDocs("Allow", "ec2:DescribeTags", "*"), tagging.NewAggregator())
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte(strings.Repeat("{", 8))))
 

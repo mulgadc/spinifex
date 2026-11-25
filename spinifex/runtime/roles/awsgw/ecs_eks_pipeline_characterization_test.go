@@ -98,6 +98,7 @@ func eksClusterBody(role string) []byte {
 const reachedHandler = "InternalErrorException"
 
 func TestECSEKSPipeline_Outcomes(t *testing.T) {
+	t.Parallel()
 	ecsAll := statement("Allow", "ecs:*", "*")
 	eksAll := statement("Allow", "eks:*", "*")
 	pass := statement("Allow", "iam:PassRole", "*")
@@ -129,6 +130,7 @@ func TestECSEKSPipeline_Outcomes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got := probeContainer(t, c.app, c.req)
 			require.Equal(t, c.status, got.Status)
 			require.Equal(t, c.typ, got.Type)

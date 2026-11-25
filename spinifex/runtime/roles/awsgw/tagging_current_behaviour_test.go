@@ -126,6 +126,7 @@ func pageARNs(p getResourcesPage) []string {
 // no resource is reported as that resource. An ID with no recognised prefix
 // never reaches the index, because CreateTags rejects it as InvalidID.
 func TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs(t *testing.T) {
+	t.Parallel()
 	agg, tags := newTaggingCBAggregator(t)
 
 	_, err := tags.CreateTags(t.Context(), &ec2.CreateTagsInput{
@@ -146,6 +147,7 @@ func TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs(t *testing.T
 // DeleteTags with no Tag list clears every tag, and the resource then drops
 // out of GetResources even though it was tagged before.
 func TestCurrentBehaviour_Tagging_GetResourcesOmitsResourceWhoseTagsWereAllRemoved(t *testing.T) {
+	t.Parallel()
 	agg, tags := newTaggingCBAggregator(t)
 	const sg = "sg-0a1b2c3d4e5f60718"
 
@@ -164,6 +166,7 @@ func TestCurrentBehaviour_Tagging_GetResourcesOmitsResourceWhoseTagsWereAllRemov
 // call. A resource tagged between two page reads that sorts ahead of the
 // offset shifts the set, so the second page repeats the first page's resource.
 func TestCurrentBehaviour_Tagging_GetResourcesOffsetTokenRepeatsAfterInterleavedWrite(t *testing.T) {
+	t.Parallel()
 	agg, tags := newTaggingCBAggregator(t)
 
 	createTags(t, tags, []string{"sg-0000000000000000b", "sg-0000000000000000c"}, map[string]string{"env": "prod"})
@@ -184,6 +187,7 @@ func TestCurrentBehaviour_Tagging_GetResourcesOffsetTokenRepeatsAfterInterleaved
 // A token that is not a non-negative integer, and a page size outside 1 to
 // 100, are both refused with InvalidParameterException, as AWS does.
 func TestCurrentBehaviour_Tagging_GetResourcesPaginationValidation(t *testing.T) {
+	t.Parallel()
 	agg, tags := newTaggingCBAggregator(t)
 	createTags(t, tags, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 
@@ -208,11 +212,13 @@ func TestCurrentBehaviour_Tagging_GetResourcesPaginationValidation(t *testing.T)
 // and target groups. A type filter naming any other service returns an empty
 // list without error, whatever that service holds.
 func TestCurrentBehaviour_Tagging_GetResourcesAggregatesOnlyEC2AndELBv2(t *testing.T) {
+	t.Parallel()
 	agg, tags := newTaggingCBAggregator(t)
 	createTags(t, tags, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 
 	for _, filter := range []string{"rds", "ecs:cluster", "eks:cluster", "ecr:repository", "acm:certificate", "iam:role", "elasticloadbalancing:listener"} {
 		t.Run(filter, func(t *testing.T) {
+			t.Parallel()
 			page, err := getResources(t, agg, `{"ResourceTypeFilters":["`+filter+`"]}`)
 			require.NoError(t, err)
 			assert.Empty(t, page.ResourceTagMappingList)

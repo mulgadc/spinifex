@@ -18,6 +18,7 @@ func (f *fakeAccountLister) ListAccounts() ([]*iamdomain.Account, error) {
 }
 
 func TestActiveAccountIDs_FiltersActive(t *testing.T) {
+	t.Parallel()
 	lister := &fakeAccountLister{accounts: []*iamdomain.Account{
 		{AccountID: "000000000001", Status: iamdomain.AccountStatusActive},
 		{AccountID: "000000000002", Status: "SUSPENDED"},
@@ -30,12 +31,14 @@ func TestActiveAccountIDs_FiltersActive(t *testing.T) {
 }
 
 func TestActiveAccountIDs_Empty(t *testing.T) {
+	t.Parallel()
 	ids, err := activeAccountIDs(&fakeAccountLister{})()
 	require.NoError(t, err)
 	assert.Empty(t, ids)
 }
 
 func TestActiveAccountIDs_Error(t *testing.T) {
+	t.Parallel()
 	ids, err := activeAccountIDs(&fakeAccountLister{err: assert.AnError})()
 	require.Error(t, err)
 	assert.Nil(t, ids)

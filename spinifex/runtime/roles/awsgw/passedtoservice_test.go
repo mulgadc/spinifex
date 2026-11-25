@@ -114,6 +114,7 @@ func assertNotUnauthorized(t *testing.T, err error) {
 // Each EC2 action that hands over an instance profile builds its own PassRole
 // check, so every one is pinned to ec2.amazonaws.com.
 func TestPassedToService_EC2(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		action string
 		body   string
@@ -127,6 +128,7 @@ func TestPassedToService_EC2(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
+			t.Parallel()
 			assertNotUnauthorized(t, passRoleToGateway(t,
 				gwtest.Statement("Allow", "ec2:*", "*"),
 				gwtest.PassRoleTo("Allow", iampolicy.OpStringEquals, "ec2.amazonaws.com"),
@@ -140,6 +142,7 @@ func TestPassedToService_EC2(t *testing.T) {
 }
 
 func TestPassedToService_ECS(t *testing.T) {
+	t.Parallel()
 	gwtest.AssertNotDenied(t, passRoleToGateway(t,
 		gwtest.Statement("Allow", "ecs:*", "*"),
 		gwtest.PassRoleTo("Allow", iampolicy.OpStringLike, "ecs-tasks.*"),
@@ -153,6 +156,7 @@ func TestPassedToService_ECS(t *testing.T) {
 // AWS reports a nodegroup's node role as passed to EKS, not to the EC2
 // instances that end up running under it.
 func TestPassedToService_EKS(t *testing.T) {
+	t.Parallel()
 	allowed := eksPassRoleGateway(t,
 		gwtest.Statement("Allow", "eks:*", "*"),
 		gwtest.PassRoleTo("Allow", iampolicy.OpStringEquals, "eks.amazonaws.com"),
@@ -173,6 +177,7 @@ func TestPassedToService_EKS(t *testing.T) {
 // A Deny scoped to one service fences that service and leaves the others to
 // the unconditional grant.
 func TestPassedToService_DenyFencesOneService(t *testing.T) {
+	t.Parallel()
 	statements := []iamdomain.Statement{
 		gwtest.Statement("Allow", "ec2:*", "*"),
 		gwtest.Statement("Allow", "ecs:*", "*"),
@@ -186,6 +191,7 @@ func TestPassedToService_DenyFencesOneService(t *testing.T) {
 // The key exists only on a PassRole check, so a condition on it attached to
 // any other action does not hold.
 func TestPassedToService_AbsentOutsidePassRole(t *testing.T) {
+	t.Parallel()
 	grant := gwtest.Statement("Allow", "ec2:*", "*")
 	grant.Condition = map[string]map[string]iamdomain.ConditionValue{
 		iampolicy.OpStringEquals: {iampolicy.KeyPassedToService: {"ec2.amazonaws.com"}},

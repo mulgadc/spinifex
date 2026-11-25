@@ -68,6 +68,7 @@ func newCodeStoreIAM(t *testing.T) (*iamdomain.IAMServiceImpl, *stsdomain.STSSer
 // Provisioning through the real IAM adapter yields a role the in-process STS
 // entry point can assume, so the role name, trust and tags agree end to end.
 func TestLambdaCodeStoreRole_ProvisionThenAssume(t *testing.T) {
+	t.Parallel()
 	iamSvc, stsSvc := newCodeStoreIAM(t)
 	role := &codeStoreRole{iam: iamSvc, name: stsdomain.CodeStoreRoleName(codeStoreTestRegion)}
 
@@ -82,6 +83,7 @@ func TestLambdaCodeStoreRole_ProvisionThenAssume(t *testing.T) {
 }
 
 func TestLambdaCodeStoreRole_RetriesOwnCrashAndRefusesUntagged(t *testing.T) {
+	t.Parallel()
 	iamSvc, _ := newCodeStoreIAM(t)
 	name := stsdomain.CodeStoreRoleName(codeStoreTestRegion)
 	role := &codeStoreRole{iam: iamSvc, name: name}
@@ -135,6 +137,7 @@ func s3Responder(t *testing.T, create, tagging int, createCode string) (*codeSto
 }
 
 func TestLambdaCodeStoreBucket_MapsCreateOutcomes(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 
 	b, calls := s3Responder(t, http.StatusOK, http.StatusOK, "")
@@ -150,6 +153,7 @@ func TestLambdaCodeStoreBucket_MapsCreateOutcomes(t *testing.T) {
 }
 
 func TestLambdaCodeStoreBucket_ReadsTags(t *testing.T) {
+	t.Parallel()
 	b, _ := s3Responder(t, http.StatusOK, http.StatusOK, "")
 	tags, err := b.Tags(t.Context())
 	require.NoError(t, err)
@@ -164,6 +168,7 @@ func TestLambdaCodeStoreBucket_ReadsTags(t *testing.T) {
 // Composing the store at gateway start makes no IAM or S3 call; the first use
 // provisions the role and bucket and opens a session through the real STS path.
 func TestNewLambdaCodeStore_ProvisionsOnlyOnFirstUse(t *testing.T) {
+	t.Parallel()
 	iamSvc, stsSvc := newCodeStoreIAM(t)
 	var s3Calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

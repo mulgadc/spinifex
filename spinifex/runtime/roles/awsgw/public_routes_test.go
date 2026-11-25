@@ -13,6 +13,7 @@ import (
 )
 
 func TestOCIRegistry_StubReturns501(t *testing.T) {
+	t.Parallel()
 	r := chi.NewRouter()
 	awsgw.PublicRoutes(nil, nil, nil)(r)
 

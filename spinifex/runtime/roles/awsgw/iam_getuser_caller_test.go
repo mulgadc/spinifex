@@ -15,6 +15,7 @@ import (
 // GetUser with no UserName describes the user whose key signed the request,
 // authorized against that user's own path-qualified ARN.
 func TestIAMGetUser_NoUserName_UserCaller(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	_, err := e.iam.CreateUser(e.accountID, &iam.CreateUserInput{UserName: aws.String("dave"), Path: aws.String("/teams/")})
 	require.NoError(t, err)
@@ -37,6 +38,7 @@ func TestIAMGetUser_NoUserName_UserCaller(t *testing.T) {
 // A Deny on the caller's own ARN applies to the implicit form, while the same
 // caller can still read another user, so the denial is scoped and not blanket.
 func TestIAMGetUser_NoUserName_DenyOnSelf(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	carol, _ := e.newUser(t, "carol")
 	e.putUserPolicy(t, "carol", `{"Version":"2012-10-17","Statement":[`+
@@ -51,6 +53,7 @@ func TestIAMGetUser_NoUserName_DenyOnSelf(t *testing.T) {
 // Root gets the account root back: account ID as UserId, the root ARN, and no
 // UserName or Path.
 func TestIAMGetUser_NoUserName_RootCaller(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	rec := e.request(t, e.h, cbCreds{akid: cbRootAKID, secret: cbRootSecret}, "iam", cbForm("GetUser"))
 	require.Equalf(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
@@ -65,6 +68,7 @@ func TestIAMGetUser_NoUserName_RootCaller(t *testing.T) {
 
 // A role session has no user to default to, and is told to name one.
 func TestIAMGetUser_NoUserName_RoleSessionCaller(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	roleARN, _ := e.createAssumableRole(t, "reader")
 	_, err := e.iam.PutRolePolicy(e.accountID, &iam.PutRolePolicyInput{

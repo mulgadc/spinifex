@@ -98,6 +98,7 @@ func seedEC2Tags(t *testing.T, svc *ec2tags.TagsServiceImpl, accountID string, i
 }
 
 func TestEC2IndexLister_ListsCallerIndexEntriesAsRegionalARNs(t *testing.T) {
+	t.Parallel()
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod", "Name": "web"})
 	seedEC2Tags(t, svc, listerAccount, []string{"subnet-0000000000000000b"}, map[string]string{"env": "dev"})
@@ -122,6 +123,7 @@ func TestEC2IndexLister_ListsCallerIndexEntriesAsRegionalARNs(t *testing.T) {
 }
 
 func TestEC2IndexLister_TypeFilters(t *testing.T) {
+	t.Parallel()
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 	seedEC2Tags(t, svc, listerAccount, []string{"subnet-0000000000000000b"}, map[string]string{"env": "prod"})
@@ -139,6 +141,7 @@ func TestEC2IndexLister_TypeFilters(t *testing.T) {
 		{map[string]bool{"ec2:instance": true}, []string{}},
 	} {
 		t.Run(fmt.Sprint(tc.filters), func(t *testing.T) {
+			t.Parallel()
 			got, err := lister.ListTagged(t.Context(), listerAccount, tc.filters)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, sortedARNs(got))
@@ -147,6 +150,7 @@ func TestEC2IndexLister_TypeFilters(t *testing.T) {
 }
 
 func TestEC2IndexLister_ReturnsFreshTagMapsPerCall(t *testing.T) {
+	t.Parallel()
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 	lister := newEC2IndexLister(nc, listerRegion)
@@ -163,6 +167,7 @@ func TestEC2IndexLister_ReturnsFreshTagMapsPerCall(t *testing.T) {
 }
 
 func TestEC2IndexLister_PropagatesOwnerError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	failSubject(t, nc, "ec2.DescribeTags", errors.New(awserrors.ErrorServerInternal))
 
@@ -172,6 +177,7 @@ func TestEC2IndexLister_PropagatesOwnerError(t *testing.T) {
 }
 
 func TestEC2TaggedResources(t *testing.T) {
+	t.Parallel()
 	tags := []*ec2.TagDescription{
 		{ResourceId: aws.String("subnet-1"), ResourceType: aws.String("subnet"), Key: aws.String("Name"), Value: aws.String("a")},
 		{ResourceId: aws.String("subnet-1"), ResourceType: aws.String("subnet"), Key: aws.String("env"), Value: aws.String("prod")},
@@ -192,6 +198,7 @@ func TestEC2TaggedResources(t *testing.T) {
 }
 
 func TestEC2ARN(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t,
 		"arn:aws:ec2:us-east-1:123456789012:subnet/subnet-abc",
 		ec2ARN("us-east-1", "123456789012", "ec2:subnet", "subnet-abc"))
@@ -274,6 +281,7 @@ func (f *elbv2Fixture) putTG(t *testing.T, accountID, name, id string, tags map[
 }
 
 func TestELBv2Lister_ListsCallerLoadBalancersAndTargetGroupsTaggedOrNot(t *testing.T) {
+	t.Parallel()
 	f := newELBv2Fixture(t)
 	taggedLB := f.putLB(t, listerAccount, "tagged", "00000000000000a1", map[string]string{"env": "prod", "team": "web"})
 	untaggedLB := f.putLB(t, listerAccount, "untagged", "00000000000000a2", nil)
@@ -320,6 +328,7 @@ func TestELBv2Lister_TypeFilters(t *testing.T) {
 }
 
 func TestELBv2Lister_BatchesDescribeTagsByTwenty(t *testing.T) {
+	t.Parallel()
 	f := newELBv2Fixture(t)
 	want := make([]string, 0, 45)
 	for i := range 45 {
@@ -335,8 +344,10 @@ func TestELBv2Lister_BatchesDescribeTagsByTwenty(t *testing.T) {
 }
 
 func TestELBv2Lister_PropagatesOwnerErrors(t *testing.T) {
+	t.Parallel()
 	for _, subject := range []string{"elbv2.DescribeLoadBalancers", "elbv2.DescribeTargetGroups", "elbv2.DescribeTags"} {
 		t.Run(subject, func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			ok := func(out any) func(*nats.Msg) {
 				return func(msg *nats.Msg) {
@@ -373,6 +384,7 @@ func (unreadableVolumes) VolumeTags(context.Context, string, []string) (map[stri
 }
 
 func TestEC2IndexLister_InstanceOnlyRequestDoesNotReadVolumes(t *testing.T) {
+	t.Parallel()
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"i-0000000000000000a"}, map[string]string{"env": "prod"})
 	svc.SetVolumeTagReader(unreadableVolumes{})

@@ -125,6 +125,7 @@ func startDiscoveryNATS(t *testing.T) *nats.Conn {
 }
 
 func TestDiscoverActiveNodes_NilNATS(t *testing.T) {
+	t.Parallel()
 	gw := &awsgw.NodeDiscovery{
 		Expected: 3,
 		NATS:     nil,

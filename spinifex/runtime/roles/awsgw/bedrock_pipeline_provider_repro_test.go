@@ -27,6 +27,7 @@ func pipelineConverseBody(text string) []byte {
 }
 
 func TestBedrockPipeline_ConverseRedirectDoesNotForwardPrompt(t *testing.T) {
+	t.Parallel()
 	var sourceHits, destHits atomic.Int32
 	var forwarded atomic.Bool
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

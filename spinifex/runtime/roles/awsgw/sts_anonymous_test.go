@@ -18,6 +18,7 @@ import (
 // TestAnonymousSTS_WebIdentityNoAuthReachesHandler proves an unsigned
 // AssumeRoleWithWebIdentity is routed to the STS dispatcher before SigV4, not rejected.
 func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
+	t.Parallel()
 	var seenToken string
 	gw := withSTS(withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,

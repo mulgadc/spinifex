@@ -95,6 +95,7 @@ func signECRRequest(t *testing.T, target string, body []byte) *http.Request {
 // request with no X-Amz-Target fails at dispatch, not at auth, with the
 // MissingAction envelope.
 func TestECRPipeline_MissingTarget_400MissingActionException(t *testing.T) {
+	t.Parallel()
 	_, app := ecrPipelineApp(t, allowAllECRDocs())
 	resp := doRequest(app, signECRRequest(t, "", []byte("{}")))
 
@@ -108,6 +109,7 @@ func TestECRPipeline_MissingTarget_400MissingActionException(t *testing.T) {
 // TestECRPipeline_UnknownAction_400InvalidActionException pins that a target
 // naming an action absent from awsapi.Actions fails with InvalidAction.
 func TestECRPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
+	t.Parallel()
 	_, app := ecrPipelineApp(t, allowAllECRDocs())
 	target := awsapi.TargetPrefix + ".MadeUpAction"
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
@@ -123,6 +125,7 @@ func TestECRPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 // registered-but-stubbed action (ListRepositories) still answers 501 through
 // the full pipeline.
 func TestECRPipeline_StubbedAction_501NotImplementedException(t *testing.T) {
+	t.Parallel()
 	_, app := ecrPipelineApp(t, allowAllECRDocs())
 	target := awsapi.TargetPrefix + ".ListRepositories"
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
@@ -140,6 +143,7 @@ func TestECRPipeline_StubbedAction_501NotImplementedException(t *testing.T) {
 // successful ECR action answers 200 with the AWS JSON 1.1 content type
 // through the full pipeline.
 func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
+	t.Parallel()
 	iss, _ := newECRAuth(t)
 	gw, app := ecrPipelineApp(t, allowAllECRDocs())
 	withECR(gw, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
@@ -161,6 +165,7 @@ func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
 // bound to awsapi.NotImplemented, independent of whether a composed capability
 // intercepts them before dispatch reaches that stub.
 func TestECRInventory_StubbedSetIsPinned(t *testing.T) {
+	t.Parallel()
 	want := []string{
 		"GetAuthorizationToken", "CreateRepository", "DeleteRepository", "DescribeRepositories",
 		"ListRepositories", "BatchGetImage", "BatchCheckLayerAvailability", "BatchDeleteImage",
@@ -178,6 +183,7 @@ func TestECRInventory_StubbedSetIsPinned(t *testing.T) {
 // whose body exceeds the SigV4 cap is rejected inside SigV4AuthMiddleware,
 // before ECR dispatch ever runs, with the JSON error envelope.
 func TestECRPipeline_OversizedBody_413OverHTTP(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
@@ -232,6 +238,7 @@ func (s *recordingRepoStore) DeleteRepo(context.Context, string, string) error {
 // ECR dispatch runs, and denies, before a composed capability (here
 // RepositoryActionService backing CreateRepository) is ever invoked.
 func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
+	t.Parallel()
 	scopedDocs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -264,8 +271,10 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 // Stub and composed ECR actions alike fail at the NATS gate, before dispatch
 // reads the action.
 func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"ListRepositories", "CreateRepository"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			gw := withECR(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -291,6 +300,7 @@ func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 // record's action field carries the resolved ECR action once a real request
 // runs through audit.Middleware, SigV4AuthMiddleware and Request.
 func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
+	t.Parallel()
 	gw, _ := ecrPipelineApp(t, allowAllECRDocs())
 
 	var got *audit.Record
@@ -317,6 +327,7 @@ func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // Pins the ECR inventory so a refactor that drops or adds an action, including
 // by changing which capability intercepts it, fails here.
 func TestECRInventory_RegisteredStubbedUnsupportedArePinned(t *testing.T) {
+	t.Parallel()
 	ecr := dispatch.AWSOperationInventory(ecrRegistrationInventory())["ecr"]
 
 	wantRegistered := []string{

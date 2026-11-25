@@ -142,7 +142,7 @@ func TestDynamicEndpointResolver_NotLiveReadyMemberStillWaits(t *testing.T) {
 			}))
 			defer srv.Close()
 			svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
-			r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute), WithLivenessCacheTTL(time.Nanosecond))
+			r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute), WithLivenessCacheTTL(time.Nanosecond), withColdStartPoll(testColdStartPoll))
 
 			baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
 			require.NoError(t, err)

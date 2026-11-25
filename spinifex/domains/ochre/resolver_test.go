@@ -19,6 +19,24 @@ import (
 
 const resolverTestModel = "meta.llama3-2-1b-instruct-v1:0"
 
+// testColdStartPoll spaces cold-start describes in tests well below the
+// production interval, so a wait test does not idle between polls.
+const testColdStartPoll = 20 * time.Millisecond
+
+func withColdStartPoll(d time.Duration) ResolverOption {
+	return func(r *DynamicEndpointResolver) { r.coldStartPoll = d }
+}
+
+// launchLandsOnDescribe makes the nth Describe, and every one after it, see
+// rec, so a wait test lands the launch at a set poll and not after a sleep.
+func launchLandsOnDescribe(svc *fakeEndpointService, n int64, rec EndpointRecord) {
+	svc.beforeDescribe = func() {
+		if svc.describeCalls.Load() == n {
+			svc.setRecord(rec)
+		}
+	}
+}
+
 // fakeEndpointService is an EndpointService returning a scripted record and
 // counting the calls, so a resolver test can assert both the answer and how
 // many NATS round trips producing it would have cost.
@@ -307,12 +325,8 @@ func TestDynamicEndpointResolver_ColdStartWaitDefaultsToNoWait(t *testing.T) {
 func TestDynamicEndpointResolver_ColdStartWaitResolvesWhenReady(t *testing.T) {
 	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
-	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(5*time.Second))
-
-	go func() {
-		time.Sleep(600 * time.Millisecond)
-		svc.setRecord(readyRecord("http://10.0.0.20:8000"))
-	}()
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(5*time.Second), withColdStartPoll(testColdStartPoll))
+	launchLandsOnDescribe(svc, 3, readyRecord("http://10.0.0.20:8000"))
 
 	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
 
@@ -326,14 +340,14 @@ func TestDynamicEndpointResolver_ColdStartWaitResolvesWhenReady(t *testing.T) {
 func TestDynamicEndpointResolver_ColdStartWaitGivesUpAtTheBudget(t *testing.T) {
 	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
-	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(600*time.Millisecond))
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(150*time.Millisecond), withColdStartPoll(testColdStartPoll))
 
 	started := time.Now()
 	_, ok, err := r.Endpoint(context.Background(), resolverTestModel)
 
 	require.NoError(t, err)
 	assert.False(t, ok)
-	assert.GreaterOrEqual(t, time.Since(started), 500*time.Millisecond)
+	assert.GreaterOrEqual(t, time.Since(started), 150*time.Millisecond)
 	assert.Less(t, time.Since(started), 3*time.Second)
 }
 
@@ -342,9 +356,9 @@ func TestDynamicEndpointResolver_ColdStartWaitGivesUpAtTheBudget(t *testing.T) {
 func TestDynamicEndpointResolver_ColdStartWaitStopsOnClientCancel(t *testing.T) {
 	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
-	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute), withColdStartPoll(testColdStartPoll))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*testColdStartPoll)
 	defer cancel()
 
 	started := time.Now()
@@ -360,12 +374,8 @@ func TestDynamicEndpointResolver_ColdStartWaitStopsOnClientCancel(t *testing.T) 
 func TestDynamicEndpointResolver_ColdStartWaitIsSharedAcrossCallers(t *testing.T) {
 	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
-	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(3*time.Second))
-
-	go func() {
-		time.Sleep(600 * time.Millisecond)
-		svc.setRecord(readyRecord("http://10.0.0.30:8000"))
-	}()
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(3*time.Second), withColdStartPoll(testColdStartPoll))
+	launchLandsOnDescribe(svc, 3, readyRecord("http://10.0.0.30:8000"))
 
 	var wg sync.WaitGroup
 	for range 8 {

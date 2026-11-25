@@ -40,11 +40,11 @@ const (
 	// lands just before TEI's listener binds, without turning one cold
 	// request into a multi-second stall.
 	embedTransportRetries = 3
-
-	// embedTransportRetryBackoff is the fixed pause between embedBatch's
-	// transport-error retries.
-	embedTransportRetryBackoff = 500 * time.Millisecond
 )
+
+// embedTransportRetryBackoff is the fixed pause between embedBatch's
+// transport-error retries. A var only so tests can shorten it.
+var embedTransportRetryBackoff = 500 * time.Millisecond
 
 // DefaultEmbeddingModel is Ochre's GPU-served embedding model, co-resident in
 // the demo bundle. Callers pin a dimension per vector index; the adapter

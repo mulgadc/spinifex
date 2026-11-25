@@ -56,8 +56,10 @@ func deleteCommitment(store *ProvisionedStore, accountID, id string) error {
 }
 
 func TestCreateProvisionedModelThroughput_SystemAccountRefusedForEmbeddingGroups(t *testing.T) {
+	t.Parallel()
 	for _, modelID := range embeddingGroupMembers {
 		t.Run(modelID, func(t *testing.T) {
+			t.Parallel()
 			stub := newStubEndpointProvisioner()
 			store := newProvisionedTestStore(t, stub)
 
@@ -74,6 +76,7 @@ func TestCreateProvisionedModelThroughput_SystemAccountRefusedForEmbeddingGroups
 }
 
 func TestCreateProvisionedModelThroughput_SystemAccountUnrelatedGroupUnchanged(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 
@@ -84,8 +87,10 @@ func TestCreateProvisionedModelThroughput_SystemAccountUnrelatedGroupUnchanged(t
 }
 
 func TestProvisionedModelThroughput_TenantEmbeddingGroupUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, modelID := range embeddingGroupMembers {
 		t.Run(modelID, func(t *testing.T) {
+			t.Parallel()
 			stub := newStubEndpointProvisioner()
 			store := newProvisionedTestStore(t, stub)
 
@@ -102,9 +107,11 @@ func TestProvisionedModelThroughput_TenantEmbeddingGroupUnchanged(t *testing.T) 
 }
 
 func TestDeleteProvisionedModelThroughput_LegacySystemConflictsWhileSharedEndpointExists(t *testing.T) {
+	t.Parallel()
 	for _, modelID := range embeddingGroupMembers {
 		for _, state := range []EndpointState{StateStarting, StateReady, StateDraining} {
 			t.Run(modelID+"/"+string(state), func(t *testing.T) {
+				t.Parallel()
 				stub := newStubEndpointProvisioner()
 				store := newProvisionedTestStore(t, stub)
 				_, id := seedLegacySystemCommitment(t, store, modelID)
@@ -125,8 +132,10 @@ func TestDeleteProvisionedModelThroughput_LegacySystemConflictsWhileSharedEndpoi
 // With the shared endpoint absent only the record goes, and an endpoint an
 // operator starts between that check and the removal is left alone.
 func TestDeleteProvisionedModelThroughput_LegacySystemAbsentRemovesRecordOnly(t *testing.T) {
+	t.Parallel()
 	for _, modelID := range embeddingGroupMembers {
 		t.Run(modelID, func(t *testing.T) {
+			t.Parallel()
 			stub := newStubEndpointProvisioner()
 			store := newProvisionedTestStore(t, stub)
 			_, id := seedLegacySystemCommitment(t, store, modelID)
@@ -142,6 +151,7 @@ func TestDeleteProvisionedModelThroughput_LegacySystemAbsentRemovesRecordOnly(t 
 }
 
 func TestDeleteProvisionedModelThroughput_LegacySystemUnknownGroupFailsClosed(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	_, id := seedLegacySystemCommitment(t, store, "retired.model-v1:0")
@@ -154,6 +164,7 @@ func TestDeleteProvisionedModelThroughput_LegacySystemUnknownGroupFailsClosed(t 
 }
 
 func TestDeleteProvisionedModelThroughput_LegacySystemUnrelatedGroupUnchanged(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	_, id := seedLegacySystemCommitment(t, store, selfHostTestModel3B)

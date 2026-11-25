@@ -55,9 +55,9 @@ func (l *keyLog) waitFor(t *testing.T, n int, why string) {
 	}
 }
 
-func (l *keyLog) stillAt(t *testing.T, n int, why string) {
+func (l *keyLog) stillAt(t *testing.T, n int, window time.Duration, why string) {
 	t.Helper()
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(window)
 	assert.Len(t, l.seen(), n, why)
 }
 
@@ -72,6 +72,7 @@ func TestRun_AnUpdateReconcilesTheKeyThatChanged(t *testing.T) {
 		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
+		Debounce:     quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -79,7 +80,7 @@ func TestRun_AnUpdateReconcilesTheKeyThatChanged(t *testing.T) {
 
 	keys.waitFor(t, 1, "the key that changed")
 	assert.Equal(t, []string{"one"}, keys.seen())
-	p.stillAt(t, 1, "a per-key loop must not also run the whole set on a change")
+	p.stillAt(t, 1, settleWindow, "a per-key loop must not also run the whole set on a change")
 }
 
 // The burst case the whole-set path collapses into one pass becomes one pass
@@ -95,7 +96,7 @@ func TestRun_ABurstReconcilesEachKeyOnce(t *testing.T) {
 		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
-		Debounce:     200 * time.Millisecond,
+		Debounce:     writeBurstDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -123,7 +124,7 @@ func TestRun_RepeatedWritesToOneKeyReconcileItOnce(t *testing.T) {
 		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
-		Debounce:     200 * time.Millisecond,
+		Debounce:     writeBurstDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -132,7 +133,7 @@ func TestRun_RepeatedWritesToOneKeyReconcileItOnce(t *testing.T) {
 	}
 
 	keys.waitFor(t, 1, "the reconcile covering the burst")
-	keys.stillAt(t, 1, "five writes to one key in one burst must reconcile it once")
+	keys.stillAt(t, 1, writeBurstWindow, "five writes to one key in one burst must reconcile it once")
 }
 
 // The case dedup must not swallow: a key taken off the queue is no longer
@@ -150,7 +151,7 @@ func TestRun_AChangeDuringAKeysReconcileIsNotLost(t *testing.T) {
 		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
-		Debounce:     50 * time.Millisecond,
+		Debounce:     quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -159,7 +160,7 @@ func TestRun_AChangeDuringAKeysReconcileIsNotLost(t *testing.T) {
 
 	// This write lands while the reconcile above is still in flight.
 	require.NoError(t, store.Set(t.Context(), "hot", &record{Name: "second"}))
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	close(keys.block)
 
 	keys.waitFor(t, 2, "the second reconcile, for the change that arrived mid-pass")
@@ -181,7 +182,7 @@ func TestRun_KeyForMapsUpdatesOntoTheCallersUnitOfWork(t *testing.T) {
 			return []string{"account-1"}, true
 		},
 		Resync:   time.Hour,
-		Debounce: 200 * time.Millisecond,
+		Debounce: writeBurstDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -190,7 +191,7 @@ func TestRun_KeyForMapsUpdatesOntoTheCallersUnitOfWork(t *testing.T) {
 	}
 
 	keys.waitFor(t, 1, "the account the three instances belong to")
-	keys.stillAt(t, 1, "three instances in one account are one unit of work")
+	keys.stillAt(t, 1, writeBurstWindow, "three instances in one account are one unit of work")
 	assert.Equal(t, []string{"account-1"}, keys.seen())
 }
 
@@ -214,7 +215,7 @@ func TestRun_AnUnattributableUpdateFallsBackToTheWholeSet(t *testing.T) {
 			return nil, false
 		},
 		Resync:   time.Hour,
-		Debounce: 100 * time.Millisecond,
+		Debounce: quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -223,7 +224,7 @@ func TestRun_AnUnattributableUpdateFallsBackToTheWholeSet(t *testing.T) {
 
 	require.NoError(t, store.Delete(t.Context(), "gone"))
 	p.waitFor(t, 2, "the whole-set pass covering an update that could not be attributed")
-	keys.stillAt(t, 1, "the delete must not be reconciled as a key")
+	keys.stillAt(t, 1, settleWindow, "the delete must not be reconciled as a key")
 }
 
 // The backstop is the reason ReconcileKey is an addition rather than a
@@ -239,7 +240,8 @@ func TestRun_TheResyncStillRunsTheWholeSet(t *testing.T) {
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
-		Resync:       150 * time.Millisecond,
+		Resync:       shortResync,
+		Debounce:     quickDebounce,
 	})
 
 	p.waitFor(t, 4, "repeated whole-set resync passes with ReconcileKey set")
@@ -260,7 +262,7 @@ func TestRun_AFailedKeyDoesNotStopTheLoop(t *testing.T) {
 			return 0, assert.AnError
 		},
 		Resync:   time.Hour,
-		Debounce: 50 * time.Millisecond,
+		Debounce: quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 

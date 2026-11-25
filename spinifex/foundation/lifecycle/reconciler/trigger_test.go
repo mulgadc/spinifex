@@ -25,6 +25,7 @@ func TestRun_ATriggerWakesTheLoopWithNoWatchTraffic(t *testing.T) {
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Trigger:   trigger,
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 1, "the startup pass")
@@ -47,10 +48,11 @@ func TestRun_AQuietTriggerAddsNoPasses(t *testing.T) {
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Trigger:   trigger,
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 1, "the startup pass")
-	p.stillAt(t, 1, "a trigger nobody signalled must not produce passes")
+	p.stillAt(t, 1, settleWindow, "a trigger nobody signalled must not produce passes")
 }
 
 // A burst of triggers is one pass, the same as a burst of watch updates. The
@@ -68,7 +70,7 @@ func TestRun_ABurstOfTriggersCoalescesIntoOnePass(t *testing.T) {
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Trigger:   trigger,
 		Resync:    time.Hour,
-		Debounce:  100 * time.Millisecond,
+		Debounce:  triggerBurstDebounce,
 	})
 
 	p.waitFor(t, 1, "the startup pass")
@@ -77,7 +79,7 @@ func TestRun_ABurstOfTriggersCoalescesIntoOnePass(t *testing.T) {
 	}
 
 	p.waitFor(t, 2, "one pass for the burst")
-	p.stillAt(t, 2, "eight triggers inside one debounce window are one pass")
+	p.stillAt(t, 2, settleWindow, "eight triggers inside one debounce window are one pass")
 }
 
 // A trigger names no key, so a per-key loop has to be served by the whole-set
@@ -96,6 +98,7 @@ func TestRun_ATriggerRunsTheWholeSetOnAPerKeyLoop(t *testing.T) {
 		ReconcileKey: func(context.Context, string) (time.Duration, error) { keyed.record(); return 0, nil },
 		Trigger:      trigger,
 		Resync:       time.Hour,
+		Debounce:     quickDebounce,
 	})
 
 	whole.waitFor(t, 1, "the startup pass")
@@ -116,8 +119,9 @@ func TestRun_ATriggeredPassStillArmsItsDeadline(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "trigger-deadline",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 80 * time.Millisecond, nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return shortDeadline, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 		Trigger:   trigger,
 	})
 
@@ -141,6 +145,7 @@ func TestRun_AClosedTriggerDoesNotSpin(t *testing.T) {
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Trigger:   trigger,
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 1, "the startup pass")
@@ -148,7 +153,7 @@ func TestRun_AClosedTriggerDoesNotSpin(t *testing.T) {
 
 	// One pass is allowed for the close itself; what must not happen is the
 	// forwarder reading a closed channel forever and passing on every read.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(settleWindow)
 	require.LessOrEqual(t, p.now(), 2, "a closed trigger must not drive a pass loop")
 
 	// Still alive: a write after the close is still reconciled.

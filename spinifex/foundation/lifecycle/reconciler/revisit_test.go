@@ -22,8 +22,9 @@ func TestRun_ARevisitDeadlineFiresWithNoWatchTraffic(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "deadline",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 80 * time.Millisecond, nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return shortDeadline, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 4, "repeated deadline passes against a bucket nobody is writing to")
@@ -41,7 +42,8 @@ func TestRun_ARevisitDeadlineIsClampedToTheResync(t *testing.T) {
 		Name:      "clamped",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return time.Hour, nil },
-		Resync:    150 * time.Millisecond,
+		Resync:    shortResync,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 4, "resync passes despite a pass asking for an hour")
@@ -62,15 +64,16 @@ func TestRun_DroppingTheDeadlineStopsTheEarlyPasses(t *testing.T) {
 		Reconcile: func(context.Context) (time.Duration, error) {
 			p.record()
 			if calls.Add(1) == 1 {
-				return 50 * time.Millisecond, nil
+				return shortDeadline, nil
 			}
 			return 0, nil
 		},
-		Resync: time.Hour,
+		Resync:   time.Hour,
+		Debounce: quickDebounce,
 	})
 
 	p.waitFor(t, 2, "the pass the first deadline asked for")
-	p.stillAt(t, 2, "a pass that asks for no deadline must not be revisited")
+	p.stillAt(t, 2, settleWindow, "a pass that asks for no deadline must not be revisited")
 }
 
 // TestRun_AFailedPassKeepsItsRevisitDeadline stops a failure demoting a loop to
@@ -86,9 +89,10 @@ func TestRun_AFailedPassKeepsItsRevisitDeadline(t *testing.T) {
 		Sources: []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) {
 			p.record()
-			return 80 * time.Millisecond, assert.AnError
+			return shortDeadline, assert.AnError
 		},
-		Resync: time.Hour,
+		Resync:   time.Hour,
+		Debounce: quickDebounce,
 	})
 
 	p.waitFor(t, 4, "deadline passes after each one failed")
@@ -107,6 +111,7 @@ func TestRun_AChangeBeforeTheDeadlineStillTriggersAPass(t *testing.T) {
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return time.Minute, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -125,11 +130,12 @@ func TestRun_ADeadlinePassRunsTheWholeSet(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "whole-set",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 80 * time.Millisecond, nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return shortDeadline, nil },
 		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
+		Debounce:     quickDebounce,
 	})
 
 	p.waitFor(t, 4, "deadline passes on the whole-set path")
-	keys.stillAt(t, 0, "a deadline with nothing changed must not reconcile a key")
+	keys.stillAt(t, 0, settleWindow, "a deadline with nothing changed must not reconcile a key")
 }

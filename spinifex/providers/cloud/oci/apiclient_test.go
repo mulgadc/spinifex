@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -42,9 +43,19 @@ func testClient(t *testing.T, h http.HandlerFunc) (oci.Client, *[]capture) {
 	return c, seen
 }
 
+// signingKeyPEM generates one RSA key for the whole package. The SDK refuses
+// to build a client without one, and nothing verifies the signature here.
+var signingKeyPEM = sync.OnceValues(func() ([]byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}), nil
+})
+
 // testEndpoint serves h over TLS and returns a configuration provider for it.
-// The signing key is generated per test — the SDK refuses to build a client
-// without one, and nothing verifies the signature here.
 func testEndpoint(t *testing.T, h http.HandlerFunc) (common.ConfigurationProvider, string, *http.Client, *[]capture) {
 	t.Helper()
 	var seen []capture
@@ -59,11 +70,8 @@ func testEndpoint(t *testing.T, h http.HandlerFunc) (common.ConfigurationProvide
 	}))
 	t.Cleanup(srv.Close)
 
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	pemKey, err := signingKeyPEM()
 	require.NoError(t, err)
-	pemKey := pem.EncodeToMemory(&pem.Block{
-		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
-	})
 	provider := common.NewRawConfigurationProvider(
 		"ocid1.tenancy.oc1..t", "ocid1.user.oc1..u", "ap-sydney-1",
 		"aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99", string(pemKey), nil)

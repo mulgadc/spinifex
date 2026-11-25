@@ -663,7 +663,8 @@ func (p *testPKI) issue(t *testing.T, name string) (certFile, keyFile string) {
 	require.NoError(t, err)
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	require.NoError(t, err)
-	certFile, keyFile = filepath.Join(p.dir, name+".pem"), filepath.Join(p.dir, name+".key")
+	dir := t.TempDir() // per caller, so parallel subtests sharing p never collide
+	certFile, keyFile = filepath.Join(dir, name+".pem"), filepath.Join(dir, name+".key")
 	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
 	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
 	return certFile, keyFile
@@ -706,9 +707,14 @@ func startGate(t *testing.T, p *testPKI, maxVersion uint8) uint16 {
 	return uint16(ln.Addr().(*net.TCPAddr).Port)
 }
 
+// waitedOutVerdict replaces the verdict wait only on probes that wait it out;
+// a probe expecting a refusal keeps the production wait.
+const waitedOutVerdict = 200 * time.Millisecond
+
 // The gate probe succeeds only when the gate accepts this node's certificate,
 // which under TLS 1.3 is decided after the client's handshake returns.
 func TestGateAccepts_OnlyAFormationCertificateIsAccepted(t *testing.T) {
+	t.Parallel()
 	formation := newTestPKI(t)
 	port := startGate(t, formation, endpointproxy.ContractVersion2)
 	loopback := netip.MustParseAddr("127.0.0.1")
@@ -716,7 +722,7 @@ func TestGateAccepts_OnlyAFormationCertificateIsAccepted(t *testing.T) {
 	cert, key := formation.issue(t, "node")
 	dial, err := newEndpointDialer(cert, key, formation.caFile, port)
 	require.NoError(t, err)
-	require.NoError(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1))
+	require.NoError(t, gateAcceptsWithin(dial, waitedOutVerdict)(t.Context(), loopback, endpointproxy.ContractVersion1))
 
 	rogue := newTestPKI(t)
 	rogueCert, rogueKey := rogue.issue(t, "rogue")
@@ -733,6 +739,7 @@ func TestGateAccepts_OnlyAFormationCertificateIsAccepted(t *testing.T) {
 // A gate that reads the header and answers nothing has not shown it accepted
 // it, so a slow refusal is never read as version 2.
 func TestGateAccepts_Version2NeedsTheGateToAnswer(t *testing.T) {
+	t.Parallel()
 	formation := newTestPKI(t)
 	certFile, keyFile := formation.issue(t, "gate")
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -758,12 +765,13 @@ func TestGateAccepts_Version2NeedsTheGateToAnswer(t *testing.T) {
 	nodeCert, nodeKey := formation.issue(t, "node")
 	dial, err := newEndpointDialer(nodeCert, nodeKey, formation.caFile, uint16(ln.Addr().(*net.TCPAddr).Port))
 	require.NoError(t, err)
-	require.Error(t, gateAccepts(dial)(t.Context(), netip.MustParseAddr("127.0.0.1"), endpointproxy.ContractVersion2))
+	require.Error(t, gateAcceptsWithin(dial, waitedOutVerdict)(t.Context(), netip.MustParseAddr("127.0.0.1"), endpointproxy.ContractVersion2))
 }
 
 // The version 2 check passes only on a gate that reads a version 2 header and
 // answers the session inside it, and a gate that closes it reads as version 1.
 func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
+	t.Parallel()
 	formation := newTestPKI(t)
 	loopback := netip.MustParseAddr("127.0.0.1")
 	cert, key := formation.issue(t, "node")
@@ -776,9 +784,10 @@ func TestGateAccepts_Version2OnlyOnAGateThatReadsIt(t *testing.T) {
 		{name: "a gate at version 2", maxVersion: endpointproxy.ContractVersion2, wantV2: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dial, err := newEndpointDialer(cert, key, formation.caFile, startGate(t, formation, tc.maxVersion))
 			require.NoError(t, err)
-			require.NoError(t, gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion1))
+			require.NoError(t, gateAcceptsWithin(dial, waitedOutVerdict)(t.Context(), loopback, endpointproxy.ContractVersion1))
 			err = gateAccepts(dial)(t.Context(), loopback, endpointproxy.ContractVersion2)
 			if tc.wantV2 {
 				require.NoError(t, err)

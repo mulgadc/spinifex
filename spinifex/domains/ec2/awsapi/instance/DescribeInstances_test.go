@@ -365,7 +365,7 @@ func TestDescribeInstances_TimeoutCollection(t *testing.T) {
 
 	// Node responds after a delay (but within timeout)
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{
 				{ReservationId: aws.String("r-delayed"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-delayed")}}},
@@ -377,7 +377,7 @@ func TestDescribeInstances_TimeoutCollection(t *testing.T) {
 	input := &ec2.DescribeInstancesInput{}
 	// 0 expected nodes = timeout-based collection: the whole window is waited out.
 	output, err := DescribeInstances(context.Background(), input, nc, 0, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(150*time.Millisecond))
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -573,7 +573,7 @@ func TestDescribeInstancesChecked_ExplicitID_NodeTimeout_ReturnsRetryableUnavail
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-on-the-slow-node")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, nil, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assert.Nil(t, output)
 	assertIncompleteSweepUnavailable(t, err, "i-on-the-slow-node")
@@ -599,7 +599,7 @@ func TestDescribeInstancesChecked_Identity_MissingNode_ReturnsRetryableUnavailab
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assert.Nil(t, output)
 	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
@@ -643,7 +643,7 @@ func TestDescribeInstancesChecked_Identity_ErroringNode_ReturnsRetryableUnavaila
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assert.Nil(t, output)
 	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
@@ -662,7 +662,7 @@ func TestDescribeInstancesChecked_Identity_UndecodablePayload_ReturnsRetryableUn
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assert.Nil(t, output)
 	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
@@ -701,7 +701,7 @@ func TestDescribeInstancesChecked_Identity_EmptyNodeIDsFallsBack_ReturnsRetryabl
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, nil, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assert.Nil(t, output)
 	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
@@ -980,7 +980,7 @@ func TestDescribeAccountInstancesComplete_MissingNodeRefuses(t *testing.T) {
 	nc.Flush()
 
 	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assertIncompleteListing(t, output, err)
 }
@@ -1013,7 +1013,7 @@ func TestDescribeAccountInstancesComplete_UnknownNodeSetRefuses(t *testing.T) {
 	nc.Flush()
 
 	output, err := DescribeAccountInstancesComplete(context.Background(), nc, nil, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assertIncompleteListing(t, output, err)
 }
@@ -1029,7 +1029,7 @@ func TestDescribeAccountInstancesComplete_UnattributedFrameRefuses(t *testing.T)
 	nc.Flush()
 
 	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	assertIncompleteListing(t, output, err)
 }
@@ -1060,12 +1060,12 @@ func TestDescribeInstances_ExplicitIDOnSilentNode_IsAnEmptySuccess(t *testing.T)
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-on-the-silent-node")}}
 	output, err := DescribeInstances(context.Background(), input, nc, 2, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 
 	require.NoError(t, err)
 	assert.Empty(t, output.Reservations)
 
 	_, err = DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
-		WithFanoutTimeout(300*time.Millisecond))
+		WithFanoutTimeout(silentNodeWindow))
 	assertIncompleteSweepUnavailable(t, err, "i-on-the-silent-node")
 }

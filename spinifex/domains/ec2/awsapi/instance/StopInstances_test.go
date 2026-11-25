@@ -186,7 +186,7 @@ func TestStopInstances_SlowOwnerIsServerError(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	previous := instanceCmdTimeout
-	instanceCmdTimeout = 50 * time.Millisecond
+	instanceCmdTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { instanceCmdTimeout = previous })
 
 	instanceID := "i-0dd1ee2ff30415263"

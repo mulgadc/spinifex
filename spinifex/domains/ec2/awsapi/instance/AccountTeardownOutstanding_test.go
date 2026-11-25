@@ -78,7 +78,7 @@ func TestAccountTeardownOutstanding_TimeoutIsAnError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 	previous := accountTeardownOutstandingTimeout
-	accountTeardownOutstandingTimeout = 200 * time.Millisecond
+	accountTeardownOutstandingTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { accountTeardownOutstandingTimeout = previous })
 
 	got, err := AccountTeardownOutstanding(context.Background(), nc, "123456789012")

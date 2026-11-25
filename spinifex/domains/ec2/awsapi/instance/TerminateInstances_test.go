@@ -112,6 +112,7 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 }
 
 func TestTerminateInstances_NATSRequestFails(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-d2d5fe795b6b57882"
@@ -128,6 +129,7 @@ func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 }
 
 func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	goodID := "i-fd00438116c1f2ce2"
@@ -175,6 +177,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 }
 
 func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-b727f5c80b8852641"
@@ -206,6 +209,7 @@ func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 }
 
 func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	runningID := "i-eedceec2e5f2de227"
@@ -251,6 +255,7 @@ func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 // reporting "terminated" for it would strand a record the caller believes is
 // gone and leave a Terraform destroy waiting on it forever.
 func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-7488538f97c0a8654"
@@ -388,6 +393,7 @@ func TestTerminateInstances_MixedBatchWithUnknownIDFails(t *testing.T) {
 
 // A running instance's daemon refusal reaches the caller with its message.
 func TestTerminateInstances_RunningRefusalKeepsDaemonMessage(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	nc.Subscribe("ec2.cmd.i-0669dd059c6c9d8cd", func(msg *nats.Msg) {
 		msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorOperationNotPermitted, "protected"))

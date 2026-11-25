@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// silentNodeWindow bounds a fan-out that must time out because a node stays
+// silent. A late reply from an answering node leaves the result the same.
+const silentNodeWindow = 100 * time.Millisecond
+
 // startTestNATSServer starts an embedded NATS server for testing.
 func startTestNATSServer(t *testing.T) (*server.Server, *nats.Conn) {
 	t.Helper()

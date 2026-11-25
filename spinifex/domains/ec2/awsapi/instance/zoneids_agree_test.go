@@ -16,6 +16,7 @@ import (
 // With a non-default override in force, the three calls that report a zone ID
 // read one source and so cannot disagree.
 func TestZoneIDs_ThreeProducersAgreeUnderAnOverride(t *testing.T) {
+	t.Parallel()
 	const region, az, account = "mulga-lab", "mulga-laba", "123456789012"
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)

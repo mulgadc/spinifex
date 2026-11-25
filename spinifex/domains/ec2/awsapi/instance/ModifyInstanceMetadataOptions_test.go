@@ -80,6 +80,7 @@ func metaOutputJSON(t *testing.T, hop int64) []byte {
 }
 
 func TestModifyInstanceMetadataOptions_OwnerAnswerReturnedAsIs(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var owner, queue atomic.Int32
 	ownerReply(t, nc, true, metaOutputJSON(t, 3), &owner)
@@ -93,6 +94,7 @@ func TestModifyInstanceMetadataOptions_OwnerAnswerReturnedAsIs(t *testing.T) {
 }
 
 func TestModifyInstanceMetadataOptions_OwnerErrorWithHeaderIsNotRetried(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var owner, queue atomic.Int32
 	ownerReply(t, nc, true, awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal), &owner)
@@ -105,6 +107,7 @@ func TestModifyInstanceMetadataOptions_OwnerErrorWithHeaderIsNotRetried(t *testi
 }
 
 func TestModifyInstanceMetadataOptions_OwnerValidationErrorRelayed(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var owner, queue atomic.Int32
 	ownerReply(t, nc, true, awserrors.GenerateErrorPayload(awserrors.ErrorUnsupportedOperation), &owner)
@@ -117,6 +120,7 @@ func TestModifyInstanceMetadataOptions_OwnerValidationErrorRelayed(t *testing.T)
 }
 
 func TestModifyInstanceMetadataOptions_HeaderlessOtherErrorReturnedAsIs(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var owner, queue atomic.Int32
 	ownerReply(t, nc, false, awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound), &owner)
@@ -129,6 +133,7 @@ func TestModifyInstanceMetadataOptions_HeaderlessOtherErrorReturnedAsIs(t *testi
 }
 
 func TestS9_N1OwnerRejectionFallsBackOnceToQueueGroup(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var owner, queue atomic.Int32
 	ownerReply(t, nc, false, awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal), &owner)
@@ -159,6 +164,7 @@ func TestModifyInstanceMetadataOptions_NoOwnerUsesQueueGroupAfterThreeAttempts(t
 }
 
 func TestModifyInstanceMetadataOptions_AbsentIsNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var queue atomic.Int32
 	queueReply(t, nc, awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound), &queue)

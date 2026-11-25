@@ -129,7 +129,7 @@ func TestRebootInstances_SlowDaemonIsNotAMissingInstance(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	previous := rebootInstancesTimeout
-	rebootInstancesTimeout = 50 * time.Millisecond
+	rebootInstancesTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { rebootInstancesTimeout = previous })
 
 	instanceID := "i-6ed2716331719b275"

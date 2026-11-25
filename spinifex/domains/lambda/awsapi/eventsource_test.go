@@ -152,7 +152,6 @@ func TestEventSourceMapping_ListIsRefusedWithoutReadingTheStore(t *testing.T) {
 }
 
 func TestEventSourceMapping_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
-	t.Parallel()
 	e, store, _ := newMappingEnv(t)
 	cases := map[string]func(map[string]any){
 		"FIFO queue":      func(b map[string]any) { b["EventSourceArn"] = queueARN + ".fifo" },

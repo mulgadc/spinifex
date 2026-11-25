@@ -802,7 +802,6 @@ func TestGetFunction_DecryptsEnvAndLocatesStoredCode(t *testing.T) {
 }
 
 func TestGetFunction_AcceptsSameAccountARNForms(t *testing.T) {
-	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)
@@ -992,7 +991,6 @@ func TestGetFunctionConfiguration_ReturnsTheSameConfigurationAsGetFunction(t *te
 }
 
 func TestGetFunctionConfiguration_MissingAndUnsupportedMatchGetFunction(t *testing.T) {
-	t.Parallel()
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
 	require.NoError(t, err)

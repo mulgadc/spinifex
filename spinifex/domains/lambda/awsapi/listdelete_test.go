@@ -179,7 +179,6 @@ func TestListFunctions_AccountsAreIsolated(t *testing.T) {
 }
 
 func TestListFunctions_ParameterValidation(t *testing.T) {
-	t.Parallel()
 	e := newUpdateEnv(t)
 	for name, query := range map[string]string{
 		"MaxItems zero":           "MaxItems=0",

@@ -137,7 +137,6 @@ func TestUpdateFunctionCode_SwapsTheCodeAndKeepsEverythingElse(t *testing.T) {
 }
 
 func TestUpdateFunctionCode_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
-	t.Parallel()
 	cases := map[string]func(map[string]any){
 		"S3 bucket":           func(b map[string]any) { delete(b, "ZipFile"); b["S3Bucket"] = "code" },
 		"S3 key":              func(b map[string]any) { b["S3Key"] = "fn.zip" },

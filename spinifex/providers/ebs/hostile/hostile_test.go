@@ -240,7 +240,7 @@ func TestLatencyRespectsCancellation(t *testing.T) {
 	provider := hostile.New(nullprovider.New(), hostile.Config{
 		Seed: 1, LatencyRate: 1, MaxLatency: time.Hour,
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 
 	started := time.Now()

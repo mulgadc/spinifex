@@ -3,6 +3,7 @@ package hostile_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"sync"
@@ -16,18 +17,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// soakDuration keeps the default short enough for CI while letting a real
+// soakBudget bounds a run by a fixed volume count per worker, or by wall-clock
+// time when duration is set. A count gives the same coverage on a loaded or
+// slow machine, where a deadline gives less.
+type soakBudget struct {
+	volumesPerWorker int
+	duration         time.Duration
+	maxLatency       time.Duration
+}
+
+// countBudget keeps latency faults short: a soak with no caller deadline only
+// needs them to perturb the interleaving, not to wait out real time.
+func countBudget(volumesPerWorker int) soakBudget {
+	return soakBudget{volumesPerWorker: volumesPerWorker, maxLatency: 50 * time.Microsecond}
+}
+
+// soakFromEnv keeps the default short enough for CI while letting a real
 // soak run for hours from the same code. A fault injector only earns its
 // keep over a long run, but a long run must not be the only way to use it.
-func soakDuration(t *testing.T) time.Duration {
+func soakFromEnv(t *testing.T) soakBudget {
 	t.Helper()
 	raw := os.Getenv("EBS_SOAK_DURATION")
 	if raw == "" {
-		return 2 * time.Second
+		return countBudget(leakSoakVolumesPerWorker)
 	}
 	parsed, err := time.ParseDuration(raw)
 	require.NoError(t, err, "EBS_SOAK_DURATION")
-	return parsed
+	return soakBudget{duration: parsed, maxLatency: 2 * time.Millisecond}
 }
 
 // belief is what the caller was told about a volume, which is all a control
@@ -45,7 +61,7 @@ type soakResult struct {
 	held       []string
 }
 
-func runSoak(t *testing.T, seed uint64, workers int, duration time.Duration) soakResult {
+func runSoak(t *testing.T, seed uint64, workers int, budget soakBudget) soakResult {
 	t.Helper()
 	inner := nullprovider.New()
 	provider := hostile.New(inner, hostile.Config{
@@ -55,28 +71,37 @@ func runSoak(t *testing.T, seed uint64, workers int, duration time.Duration) soa
 		LatencyRate:        0.05,
 		UnavailableRate:    0.05,
 		LieRate:            0.10,
-		MaxLatency:         2 * time.Millisecond,
+		MaxLatency:         budget.maxLatency,
 	})
 
-	var mu sync.Mutex
-	beliefs := map[string]belief{}
-	deadline := time.Now().Add(duration)
+	perWorker := make([]map[string]belief, workers)
+	deadline := time.Now().Add(budget.duration)
+	more := func(i int) bool {
+		if budget.volumesPerWorker > 0 {
+			return i < budget.volumesPerWorker
+		}
+		return time.Now().Before(deadline)
+	}
 
 	var wg sync.WaitGroup
 	for worker := range workers {
+		local := map[string]belief{}
+		perWorker[worker] = local
 		wg.Go(func() {
-			for i := 0; time.Now().Before(deadline); i++ {
+			for i := 0; more(i); i++ {
 				// Each worker owns its own ID space, so faults drawn per
 				// volume never depend on how the workers interleave.
 				volumeID := fmt.Sprintf("vol-soak%04d%07d", worker, i)
-				state := soakOneVolume(t.Context(), provider, volumeID)
-				mu.Lock()
-				beliefs[volumeID] = state
-				mu.Unlock()
+				local[volumeID] = soakOneVolume(t.Context(), provider, volumeID)
 			}
 		})
 	}
 	wg.Wait()
+
+	beliefs := map[string]belief{}
+	for _, local := range perWorker {
+		maps.Copy(beliefs, local)
+	}
 
 	return soakResult{
 		beliefs:    beliefs,
@@ -163,7 +188,7 @@ func explainedTargets(injections []hostile.Injection) map[string]bool {
 // its own, which is the bug worth finding.
 func TestSoak_EveryLeakIsAttributable(t *testing.T) {
 	t.Parallel()
-	result := runSoak(t, 20260811, 8, soakDuration(t))
+	result := runSoak(t, 20260811, 8, soakFromEnv(t))
 	require.NotEmpty(t, result.injections, "the run injected nothing, so it proves nothing")
 	require.NotEmpty(t, result.beliefs)
 
@@ -194,14 +219,13 @@ func TestSoak_EveryLeakIsAttributable(t *testing.T) {
 func TestSoak_ConcurrentRunsWithTheSameSeedMatch(t *testing.T) {
 	t.Parallel()
 	const seed = 99
-	const duration = 500 * time.Millisecond
+	budget := countBudget(matchSoakVolumesPerWorker)
 
-	first := runSoak(t, seed, 4, duration)
-	second := runSoak(t, seed, 4, duration)
+	first := runSoak(t, seed, 4, budget)
+	second := runSoak(t, seed, 4, budget)
 
-	// The runs cover different volumes, since each stops on a deadline. Only
-	// the volumes both reached can be compared, and for those the faults must
-	// be identical despite the interleaving being different.
+	// Only the volumes both runs reached can be compared, and for those the
+	// faults must be identical despite the interleaving being different.
 	shared := 0
 	firstByVolume := indexInjections(first.injections)
 	secondByVolume := indexInjections(second.injections)

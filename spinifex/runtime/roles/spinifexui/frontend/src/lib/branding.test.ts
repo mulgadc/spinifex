@@ -65,7 +65,7 @@ describe("loadBranding", () => {
     expect(productName()).toBe("Spinifex")
   })
 
-  it("applies the product name, the title and a hidden Docs link", async () => {
+  it("applies the product name and a hidden Docs link", async () => {
     mockBranding({
       enabled: true,
       revision: 4,

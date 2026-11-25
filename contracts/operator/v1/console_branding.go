@@ -21,11 +21,10 @@ type BrandingImageInfo struct {
 	Size        int    `json:"size"`
 }
 
-// PutConsoleBrandingRequest replaces the branding record. Each image field is
-// tri-state: absent keeps the stored image, null removes it, and an object
-// sets it. Revision is the one the caller read; 0 means no record exists yet.
+// PutConsoleBrandingRequest replaces the branding record; the last save wins.
+// Each image field is tri-state: absent keeps the stored image, null removes
+// it, and an object sets it.
 type PutConsoleBrandingRequest struct {
-	Revision    uint64          `json:"revision"`
 	ProductName string          `json:"productName,omitempty"`
 	DocsURL     *string         `json:"docsUrl,omitempty"`
 	Primary     BrandingColors  `json:"primary,omitzero"`

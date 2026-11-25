@@ -82,7 +82,7 @@ export function BrandingPage() {
         <BrandingForm
           key={query.data.revision}
           onReset={async () => {
-            await reset.mutateAsync(resetBrandingRequest(query.data.revision))
+            await reset.mutateAsync(resetBrandingRequest())
           }}
           resetPending={reset.isPending}
           save={save}
@@ -165,7 +165,7 @@ function BrandingForm({
 
   async function onSubmit(form: BrandingFormData) {
     try {
-      await save.mutateAsync(brandingRequest(stored.revision, form, images))
+      await save.mutateAsync(brandingRequest(form, images))
     } catch {
       // Shown beside the button.
     }
@@ -177,7 +177,7 @@ function BrandingForm({
         <PanelSection title="Name and links">
           <div className="space-y-6">
             <TextField
-              description={`Shown in the sidebar, on the login page and in every page title. Empty uses ${DEFAULT_PRODUCT_NAME}.`}
+              description={`Shown in the sidebar and on the login page. Empty uses ${DEFAULT_PRODUCT_NAME}.`}
               error={errors.productName}
               id="branding-product-name"
               label="Product name"

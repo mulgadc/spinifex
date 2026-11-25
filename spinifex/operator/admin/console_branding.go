@@ -58,13 +58,10 @@ func (d Deps) putConsoleBranding(ctx context.Context, caller dispatch.Actor, bod
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidRequest, "request body is not a branding record")
 	}
 
-	stored, rev, err := b.Store.Get(ctx)
+	stored, _, err := b.Store.Get(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "PutConsoleBranding: failed to read record", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
-	}
-	if req.Revision != rev {
-		return nil, stalePrecondition()
 	}
 	next, err := consolebranding.Apply(stored, req)
 	if ve, ok := errors.AsType[*consolebranding.ValidationError](err); ok {
@@ -81,10 +78,7 @@ func (d Deps) putConsoleBranding(ctx context.Context, caller dispatch.Actor, bod
 	next.UpdatedBy = actorName(caller)
 	next.UpdatedAt = now().UTC().Format(time.RFC3339)
 
-	newRev, err := b.Store.Put(ctx, next, rev)
-	if errors.Is(err, consolebranding.ErrStaleRevision) {
-		return nil, stalePrecondition()
-	}
+	newRev, err := b.Store.Put(ctx, next)
 	if err != nil {
 		slog.ErrorContext(ctx, "PutConsoleBranding: failed to store record", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -95,9 +89,4 @@ func (d Deps) putConsoleBranding(ctx context.Context, caller dispatch.Actor, bod
 	slog.InfoContext(ctx, "Console branding updated", "updatedBy", next.UpdatedBy,
 		"revision", newRev, "changed", consolebranding.ChangedFields(stored, next))
 	return next.Response(true, newRev), nil
-}
-
-func stalePrecondition() error {
-	return awserrors.Errorf(awserrors.ErrorPreconditionFailedException,
-		"the branding has changed since it was read; reload it and save again")
 }

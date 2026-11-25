@@ -75,19 +75,6 @@ const pathPrefix = "/admin/"
 // megabytes.
 const maxBodyBytes = 8 << 10
 
-// methodBodyBytes raises the cap for a method that carries more. A branding
-// save holds its images base64-encoded, under the record's stored cap.
-var methodBodyBytes = map[string]int{
-	"PutConsoleBranding": 720 << 10,
-}
-
-func bodyLimit(method string) int {
-	if n, ok := methodBodyBytes[method]; ok {
-		return n
-	}
-	return maxBodyBytes
-}
-
 // clusterUnavailableMsg is the 503 body when NATS is disconnected.
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
 
@@ -140,7 +127,11 @@ func (d Deps) dispatchREST(w http.ResponseWriter, inv dispatch.Invocation) error
 		return awserrors.Errorf(awserrors.ErrorServiceUnavailable, "%s", clusterUnavailableMsg)
 	}
 
-	limit := bodyLimit(method)
+	// A branding save carries its images base64-encoded, so it gets more room.
+	limit := maxBodyBytes
+	if method == "PutConsoleBranding" {
+		limit = 720 << 10
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "Admin: failed to read request body", "method", method, "err", err)

@@ -90,13 +90,12 @@ func TestAdminWire_AdminMethodNames(t *testing.T) {
 // request must keep the two apart on the wire.
 func TestAdminWire_PutConsoleBrandingRequest(t *testing.T) {
 	var req PutConsoleBrandingRequest
-	require.NoError(t, json.Unmarshal([]byte(`{"revision":3,"docsUrl":"","logo":null}`), &req))
-	require.Equal(t, uint64(3), req.Revision)
+	require.NoError(t, json.Unmarshal([]byte(`{"docsUrl":"","logo":null}`), &req))
 	require.NotNil(t, req.DocsURL)
 	require.Equal(t, "null", string(req.Logo))
 	require.Nil(t, req.LogoDark)
 
-	goldenJSON(t, PutConsoleBrandingRequest{Revision: 3}, `{"revision":3}`)
+	goldenJSON(t, PutConsoleBrandingRequest{}, `{}`)
 }
 
 func TestAdminWire_ConsoleBrandingResponse(t *testing.T) {

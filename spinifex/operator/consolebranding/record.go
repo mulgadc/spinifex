@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"unicode"
 	"unicode/utf8"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 )
+
+var hexColorRE = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
 // SchemaVersion is the version of the stored record.
 const SchemaVersion = 1
@@ -128,12 +131,12 @@ func (r *Record) validate() error {
 			return err
 		}
 	}
-	// The operator owns the colour, so only its shape is checked, not its contrast.
+	// Only the shape is checked: it keeps the generated stylesheet free of other CSS.
 	for _, p := range []struct{ field, value string }{
 		{"primary.light", r.Primary.Light},
 		{"primary.dark", r.Primary.Dark},
 	} {
-		if p.value != "" && !validHex(p.value) {
+		if p.value != "" && !hexColorRE.MatchString(p.value) {
 			return invalid(p.field, "must be a #RRGGBB colour")
 		}
 	}

@@ -20,9 +20,6 @@ const (
 	Key    = "config"
 )
 
-// ErrStaleRevision reports a write whose revision is not the stored one.
-var ErrStaleRevision = errors.New("branding record has changed since it was read")
-
 // OpenBucket opens, or creates, the branding bucket.
 func OpenBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
 	return kvstore.GetOrCreateBucket(ctx, js, Bucket, 1)
@@ -31,8 +28,7 @@ func OpenBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.Ke
 // KV is the part of a jetstream.KeyValue the store uses.
 type KV interface {
 	Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error)
-	Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error)
-	Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error)
+	Put(ctx context.Context, key string, value []byte) (uint64, error)
 }
 
 var _ KV = (jetstream.KeyValue)(nil)
@@ -75,20 +71,12 @@ func (b *LazyBucket) Get(ctx context.Context, key string) (jetstream.KeyValueEnt
 	return kv.Get(ctx, key)
 }
 
-func (b *LazyBucket) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+func (b *LazyBucket) Put(ctx context.Context, key string, value []byte) (uint64, error) {
 	kv, err := b.bucket(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return kv.Create(ctx, key, value, opts...)
-}
-
-func (b *LazyBucket) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
-	kv, err := b.bucket(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return kv.Update(ctx, key, value, revision)
+	return kv.Put(ctx, key, value)
 }
 
 // Store reads and writes the branding record.
@@ -112,22 +100,13 @@ func (s Store) Get(ctx context.Context) (*Record, uint64, error) {
 	return &rec, entry.Revision(), nil
 }
 
-// Put writes rec if the stored revision is still revision, where 0 means no
-// record exists. It returns the new revision, or ErrStaleRevision.
-func (s Store) Put(ctx context.Context, rec Record, revision uint64) (uint64, error) {
+// Put writes rec over any stored record and returns the new revision.
+func (s Store) Put(ctx context.Context, rec Record) (uint64, error) {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return 0, fmt.Errorf("encode branding record: %w", err)
 	}
-	var next uint64
-	if revision == 0 {
-		next, err = s.KV.Create(ctx, Key, data)
-	} else {
-		next, err = s.KV.Update(ctx, Key, data, revision)
-	}
-	if kvstore.IsRevisionConflict(err) {
-		return 0, ErrStaleRevision
-	}
+	next, err := s.KV.Put(ctx, Key, data)
 	if err != nil {
 		return 0, fmt.Errorf("write branding record: %w", err)
 	}

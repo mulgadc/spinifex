@@ -85,7 +85,6 @@ describe("BrandingPage", () => {
       expect(puts).toHaveLength(1)
     })
     expect(puts[0]).toStrictEqual({
-      revision: 4,
       productName: "Acme",
       docsUrl: "",
       primary: { light: "#0A4A8F", dark: undefined },
@@ -203,7 +202,7 @@ describe("BrandingPage", () => {
 
     await waitFor(() => {
       expect(puts).toStrictEqual([
-        { revision: 4, logo: null, logoDark: null, favicon: null },
+        { logo: null, logoDark: null, favicon: null },
       ])
     })
   })

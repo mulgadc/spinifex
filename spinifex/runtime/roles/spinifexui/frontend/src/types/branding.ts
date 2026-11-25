@@ -37,7 +37,6 @@ export interface ConsoleBrandingResponse {
 // An image field is left out to keep the stored image, null to remove it, and
 // set to replace it.
 export interface PutConsoleBrandingRequest {
-  revision: number
   productName?: string
   docsUrl?: string
   primary?: BrandingColors
@@ -59,7 +58,7 @@ export const MAX_PRODUCT_NAME_LENGTH = 40
 
 export type DocsLink = "default" | "custom" | "hidden"
 
-// The operator owns the colour, so only its shape is checked, not its contrast.
+// Only the shape is checked; the gateway writes the colour into a stylesheet.
 const colorField = z
   .string()
   .trim()
@@ -148,7 +147,6 @@ function imageField(change: ImageChange): BrandingImage | null | undefined {
 // The whole record for one PutConsoleBranding: a field left empty takes the
 // default, and an image nobody changed is left out so it is not resent.
 export function brandingRequest(
-  revision: number,
   form: BrandingFormData,
   images: BrandingImageChanges,
 ): PutConsoleBrandingRequest {
@@ -159,7 +157,6 @@ export function brandingRequest(
   }
 
   return {
-    revision,
     productName: form.productName || undefined,
     docsUrl: docsUrl[form.docs],
     primary: {
@@ -173,8 +170,6 @@ export function brandingRequest(
 }
 
 // A reset removes every value, the images too, in one revision.
-export function resetBrandingRequest(
-  revision: number,
-): PutConsoleBrandingRequest {
-  return { revision, logo: null, logoDark: null, favicon: null }
+export function resetBrandingRequest(): PutConsoleBrandingRequest {
+  return { logo: null, logoDark: null, favicon: null }
 }

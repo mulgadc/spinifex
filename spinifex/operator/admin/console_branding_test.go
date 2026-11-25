@@ -112,7 +112,7 @@ func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
 	assert.Equal(t, saved, read)
 
 	reset, err := runBranding(t, d, "PutConsoleBranding", map[string]any{
-		"revision": read.Revision, "logo": nil, "logoDark": nil, "favicon": nil,
+		"logo": nil, "logoDark": nil, "favicon": nil,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, reset.ProductName)
@@ -121,15 +121,12 @@ func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
 	assert.Greater(t, reset.Revision, read.Revision, "a reset is a new revision, so every asset URL changes")
 }
 
-func TestConsoleBranding_StaleRevisionLeavesRecordUnchanged(t *testing.T) {
+func TestConsoleBranding_LastSaveWins(t *testing.T) {
 	d, _ := brandingDeps(t, true)
-	first, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "First"})
+	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "First"})
 	require.NoError(t, err)
-	_, err = runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Revision: first.Revision, ProductName: "Second"})
+	_, err = runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "Second"})
 	require.NoError(t, err)
-
-	_, err = runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Revision: first.Revision, ProductName: "Lost"})
-	assert.Equal(t, awserrors.ErrorPreconditionFailedException, errorCode(t, err))
 
 	got, err := runBranding(t, d, "GetConsoleBranding", struct{}{})
 	require.NoError(t, err)

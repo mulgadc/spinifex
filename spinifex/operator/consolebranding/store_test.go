@@ -26,7 +26,7 @@ func newStore(t *testing.T) consolebranding.Store {
 	return consolebranding.Store{KV: kv}
 }
 
-func TestStore_RevisionGuardsEveryWrite(t *testing.T) {
+func TestStore_LastSaveWins(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
 
@@ -35,22 +35,16 @@ func TestStore_RevisionGuardsEveryWrite(t *testing.T) {
 	assert.Nil(t, rec)
 	assert.Zero(t, rev)
 
-	rev1, err := s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"}, 0)
+	rev1, err := s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"})
 	require.NoError(t, err)
-
-	_, err = s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Second create"}, 0)
-	require.ErrorIs(t, err, consolebranding.ErrStaleRevision, "a create over an existing record is stale")
-
-	rev2, err := s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Acme Cloud"}, rev1)
+	rev2, err := s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Acme Cloud"})
 	require.NoError(t, err)
-
-	_, err = s.Put(ctx, consolebranding.Record{SchemaVersion: 1, ProductName: "Lost update"}, rev1)
-	require.ErrorIs(t, err, consolebranding.ErrStaleRevision)
+	assert.Greater(t, rev2, rev1, "each save is a new revision, so every asset URL changes")
 
 	rec, rev, err = s.Get(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, rev2, rev)
-	assert.Equal(t, "Acme Cloud", rec.ProductName, "a stale write leaves the record unchanged")
+	assert.Equal(t, "Acme Cloud", rec.ProductName)
 }
 
 // failingKV stands in for a NATS connection that has gone away.
@@ -62,7 +56,7 @@ func (failingKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
 
 func TestCache_KeepsLastRecordWhenStoreFails(t *testing.T) {
 	s := newStore(t)
-	rev, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"}, 0)
+	rev, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"})
 	require.NoError(t, err)
 
 	var c consolebranding.Cache
@@ -92,7 +86,7 @@ func TestCache_RunPicksUpAPutWithoutARestart(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx, s, 20*time.Millisecond)
 
-	rev, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"}, 0)
+	rev, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"})
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -227,7 +221,7 @@ func TestLazyBucket_RetriesAFailedOpen(t *testing.T) {
 	assert.Zero(t, rev)
 
 	down = false
-	rev1, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"}, 0)
+	rev1, err := s.Put(t.Context(), consolebranding.Record{SchemaVersion: 1, ProductName: "Acme"})
 	require.NoError(t, err)
 	require.NoError(t, c.Refresh(t.Context(), s))
 	rec, rev = c.Snapshot()

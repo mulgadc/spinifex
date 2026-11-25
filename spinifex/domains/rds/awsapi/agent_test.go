@@ -49,6 +49,7 @@ func newIndexedNATS(t *testing.T) *nats.Conn {
 }
 
 func TestAuthorizeAgent_ResolvesInstanceFromIndex(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	id, err := authorizeAgent(t.Context(), nc, agentCaller(), "")
 	require.NoError(t, err)
@@ -61,6 +62,7 @@ func TestAuthorizeAgent_ResolvesInstanceFromIndex(t *testing.T) {
 // The agent's own credentials are minted under the system account, so the
 // customer account it acts for can only come from the index.
 func TestAuthorizeAgent_IgnoresRequestedIdentifierWhenItMatches(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	id, err := authorizeAgent(t.Context(), nc, agentCaller(), testDBID)
 	require.NoError(t, err)
@@ -68,6 +70,7 @@ func TestAuthorizeAgent_IgnoresRequestedIdentifierWhenItMatches(t *testing.T) {
 }
 
 func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	tests := []struct {
 		name   string
@@ -82,6 +85,7 @@ func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := authorizeAgent(t.Context(), nc, tt.caller, "")
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
@@ -92,6 +96,7 @@ func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
 // A session name that is not in the index is not an RDS VM, whatever role it
 // holds. This is the case a forged RoleSessionName lands in.
 func TestAuthorizeAgent_RejectsUnindexedInstance(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	caller := agentCaller()
 	caller.SessionName = "i-0notadatabase"
@@ -103,6 +108,7 @@ func TestAuthorizeAgent_RejectsUnindexedInstance(t *testing.T) {
 
 // One agent must not be able to act on another instance by naming it.
 func TestAuthorizeAgent_RejectsCrossInstanceIdentifier(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	_, err := authorizeAgent(t.Context(), nc, agentCaller(), "someone-elses-db")
 	require.Error(t, err)
@@ -112,6 +118,7 @@ func TestAuthorizeAgent_RejectsCrossInstanceIdentifier(t *testing.T) {
 // Before any DB instance exists the system bucket is absent. That is a denial,
 // not an internal error, so a probe cannot distinguish the two.
 func TestAuthorizeAgent_RejectsWhenNoInstancesExist(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := authorizeAgent(t.Context(), nc, agentCaller(), "")
 	require.Error(t, err)
@@ -130,9 +137,19 @@ func TestInternalActions_GateBeforeDispatch(t *testing.T) {
 	}
 }
 
+// shortPollWindow closes every poll window after a few milliseconds. Callers
+// must not be parallel tests, because the window is a package variable.
+func shortPollWindow(t *testing.T) {
+	t.Helper()
+	orig := pollWindow
+	pollWindow = func(int64) time.Duration { return 20 * time.Millisecond }
+	t.Cleanup(func() { pollWindow = orig })
+}
+
 // An empty poll is the steady state: the agent gets no command and no error.
 func TestPollDBCommands_ReturnsEmptyOnTimeout(t *testing.T) {
 	nc := newIndexedNATS(t)
+	shortPollWindow(t)
 	out, err := PollDBCommands(t.Context(),
 		&PollDBCommandsInput{WaitTimeSeconds: 1}, nc, agentCaller())
 	require.NoError(t, err)
@@ -140,6 +157,7 @@ func TestPollDBCommands_ReturnsEmptyOnTimeout(t *testing.T) {
 }
 
 func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	subject := rdsinstance.BusCommandSubject(testAccountID, testDBID)
 
@@ -181,6 +199,7 @@ func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
 // The agent's replies ride the next poll and are republished for the issuer,
 // which correlates them by command ID.
 func TestPublishReplies_ReturnsNATSPublishFailure(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	closed, err := nats.Connect(nc.ConnectedUrl())
 	require.NoError(t, err)
@@ -195,6 +214,7 @@ func TestPublishReplies_ReturnsNATSPublishFailure(t *testing.T) {
 }
 
 func TestPublishReplies_StopsAtFirstPublicationFailure(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 	replySub, err := nc.SubscribeSync(rdsinstance.BusCommandReplySubject(testAccountID, testDBID))
 	require.NoError(t, err)
@@ -221,6 +241,7 @@ func TestPublishReplies_StopsAtFirstPublicationFailure(t *testing.T) {
 }
 
 func TestPollDBCommands_FailsWhenReplyPublicationFails(t *testing.T) {
+	t.Parallel()
 	nc := newIndexedNATS(t)
 
 	out, err := PollDBCommands(t.Context(), &PollDBCommandsInput{
@@ -238,6 +259,7 @@ func TestPollDBCommands_FailsWhenReplyPublicationFails(t *testing.T) {
 
 func TestPollDBCommands_RepublishesReplies(t *testing.T) {
 	nc := newIndexedNATS(t)
+	shortPollWindow(t)
 	replySub, err := nc.SubscribeSync(rdsinstance.BusCommandReplySubject(testAccountID, testDBID))
 	require.NoError(t, err)
 	defer func() { _ = replySub.Unsubscribe() }()

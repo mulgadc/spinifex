@@ -76,6 +76,7 @@ func TestDispatch_DescribeDBEngineVersionsRendersTheNestedList(t *testing.T) {
 }
 
 func TestDispatch_DescribeOrderableDBInstanceOptionsRendersTheNestedList(t *testing.T) {
+	t.Parallel()
 	options := describeOrderable(t, newStubbedNATS(t), map[string]string{"Engine": "postgres"})
 	require.Len(t, options, len(rdsengine.SupportedInstanceClasses()))
 	assert.Equal(t, rdsengine.SupportedInstanceClasses(), classNames(options))
@@ -129,6 +130,7 @@ func TestDescribeDBEngineVersions_AppliesTypedParametersAndFilters(t *testing.T)
 }
 
 func TestDescribeOrderableDBInstanceOptions_AppliesTypedParametersAndFilters(t *testing.T) {
+	t.Parallel()
 	nc := newStubbedNATS(t)
 	all := rdsengine.SupportedInstanceClasses()
 
@@ -171,6 +173,7 @@ func TestDescribeOrderableDBInstanceOptions_AppliesTypedParametersAndFilters(t *
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tc.query["Engine"] = "postgres"
 			assert.Equal(t, tc.want, classNames(describeOrderable(t, nc, tc.query)))
 		})
@@ -180,6 +183,7 @@ func TestDescribeOrderableDBInstanceOptions_AppliesTypedParametersAndFilters(t *
 // The two actions take disjoint typed parameters, so each has its own closed
 // filter vocabulary and a name valid on the other one is still rejected.
 func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		action string
 		filter string
@@ -196,6 +200,7 @@ func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, tc := range cases {
 		t.Run(tc.action+"/"+tc.filter, func(t *testing.T) {
+			t.Parallel()
 			_, err := Dispatch(t.Context(), tc.action, "", map[string]string{
 				"Action": tc.action, "Engine": "postgres",
 				"Filters.Filter.1.Name": tc.filter, "Filters.Filter.1.Values.Value.1": "anything",
@@ -210,8 +215,10 @@ func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
 // A value the typed parameter would have refused outright is refused here too,
 // rather than narrowing the catalog to nothing and reporting that as the answer.
 func TestDescribeOrderableDBInstanceOptions_RejectANonBooleanVpcFilter(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"yes", "", "2"} {
 		t.Run(value, func(t *testing.T) {
+			t.Parallel()
 			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", map[string]string{
 				"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres",
 				"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": value,
@@ -255,6 +262,7 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 // Following each Marker returns the whole catalog once, in the unpaged order,
 // with the Marker surviving the XML round trip.
 func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
+	t.Parallel()
 	nc := newStubbedNATS(t)
 	var classes []string
 	marker := ""
@@ -278,9 +286,11 @@ func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
 }
 
 func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {
+	t.Parallel()
 	nc := newStubbedNATS(t)
 	for _, action := range []string{"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			_, err := Dispatch(t.Context(), action, "", map[string]string{
 				"Action": action, "Engine": "postgres", "Marker": "page-two",
 			}, nc, testCaller, testEnv)
@@ -291,6 +301,7 @@ func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {
 }
 
 func TestDescribeOrderableDBInstanceOptions_RequiresAKnownEngine(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		query map[string]string
@@ -308,6 +319,7 @@ func TestDescribeOrderableDBInstanceOptions_RequiresAKnownEngine(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tc.query["Action"] = "DescribeOrderableDBInstanceOptions"
 			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", tc.query, nc, testCaller, testEnv)
 			require.Error(t, err)
@@ -357,6 +369,7 @@ func TestDescribeDBEngineVersions_TheFourBooleansAreProvableNoOps(t *testing.T) 
 // A stubbed cluster that answers nothing must not fall back to the static class
 // list: reporting classes that cannot launch is the failure this probe prevents.
 func TestDescribeOrderableDBInstanceOptions_ASilentClusterIsServerInternal(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", map[string]string{
@@ -369,6 +382,7 @@ func TestDescribeOrderableDBInstanceOptions_ASilentClusterIsServerInternal(t *te
 // A cluster whose nodes answered but run none of the db.* types is an empty
 // option list, which is the truthful answer and not the same case as above.
 func TestDescribeOrderableDBInstanceOptions_AnArmOnlyClusterOffersNothing(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	respondWith(t, nc, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesOutput{
 		InstanceTypes: instanceTypeInfo("t4g.micro", "t4g.small", "m6g.large"),
@@ -380,6 +394,7 @@ func TestDescribeOrderableDBInstanceOptions_AnArmOnlyClusterOffersNothing(t *tes
 // Only the classes the nodes report are offered, so a class that would fail at
 // launch is never in the answer.
 func TestDescribeOrderableDBInstanceOptions_OffersOnlyWhatTheNodesRun(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	respondWith(t, nc, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesOutput{
 		InstanceTypes: instanceTypeInfo("t3.micro", "t3.small", "t4g.micro", "m6g.large"),

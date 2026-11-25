@@ -243,7 +243,7 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 		}
 	}()
 
-	pollCtx, cancel := context.WithTimeout(ctx, pollWait(input.WaitTimeSeconds))
+	pollCtx, cancel := context.WithTimeout(ctx, pollWindow(input.WaitTimeSeconds))
 	defer cancel()
 
 	msg, err := sub.NextMsgWithContext(pollCtx)
@@ -268,6 +268,10 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 	}
 	return &PollDBCommandsOutput{Commands: []rdsinstance.Command{cmd}}, nil
 }
+
+// pollWindow is the clamp PollDBCommands applies; tests replace it to close
+// the window without waiting out the one-second floor.
+var pollWindow = pollWait
 
 func pollWait(requested int64) time.Duration {
 	if requested <= 0 {

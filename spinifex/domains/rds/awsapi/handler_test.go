@@ -133,6 +133,7 @@ func TestDispatch_MalformedScalarIsInvalidParameterValue(t *testing.T) {
 }
 
 func TestDispatch_OversizedListIsMalformedQueryString(t *testing.T) {
+	t.Parallel()
 	query := make(map[string]string, 1025)
 	for i := 1; i <= 1025; i++ {
 		query["Tags.Tag."+strconv.Itoa(i)+".Key"] = "key"
@@ -254,9 +255,11 @@ func respondWith(t *testing.T, nc *nats.Conn, subject string, output any) {
 // one of the two deliberate rejections. Anything else means an action was wired
 // to a handler that fails for an unrelated reason.
 func TestDispatch_EveryActionResolves(t *testing.T) {
+	t.Parallel()
 	nc := newStubbedNATS(t)
 	for action := range actions {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			body, err := Dispatch(t.Context(), action, "", dispatchQuery(action), nc, testCaller, testEnv)
 			if err == nil {
 				assert.NotEmpty(t, body, "a successful action must return an XML body")
@@ -274,6 +277,7 @@ func TestDispatch_EveryActionResolves(t *testing.T) {
 
 // The actions this phase implements must have left the pending stub behind.
 func TestDispatch_LiveActionsAreNotPending(t *testing.T) {
+	t.Parallel()
 	nc := newStubbedNATS(t)
 	for _, action := range liveActions {
 		body, err := Dispatch(t.Context(), action, "", dispatchQuery(action), nc, testCaller, testEnv)
@@ -291,6 +295,7 @@ func TestDispatch_OutOfScopeActionIsNotSupported(t *testing.T) {
 }
 
 func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
+	t.Parallel()
 	body, err := Dispatch(t.Context(), "DescribeDBInstances", "req-1",
 		map[string]string{"Action": "DescribeDBInstances", "Version": "2014-10-31"}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
@@ -304,6 +309,7 @@ func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 // AWS nests each tag inside the list rather than flattening it, and the SDK's
 // unmarshaler will not find a tag any other way.
 func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
+	t.Parallel()
 	body, err := Dispatch(t.Context(), "ListTagsForResource", "", map[string]string{
 		"Action":       "ListTagsForResource",
 		"ResourceName": rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
@@ -322,6 +328,7 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 // An unshared snapshot's restore attribute carries an empty value list, which
 // AWS renders as an empty element rather than omitting it.
 func TestDispatch_DescribeDBSnapshotAttributesRendersTheEmptyRestoreList(t *testing.T) {
+	t.Parallel()
 	body, err := Dispatch(t.Context(), "DescribeDBSnapshotAttributes", "", map[string]string{
 		"Action":               "DescribeDBSnapshotAttributes",
 		"DBSnapshotIdentifier": "orders-db-pre-upgrade",
@@ -341,6 +348,7 @@ func TestDispatch_DescribeDBSnapshotAttributesRendersTheEmptyRestoreList(t *test
 // arrive as Tags.Tag.N.Key. Parsing them as anything else would drop the tags
 // and report a success that tagged nothing.
 func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	requests := make(chan rds.AddTagsToResourceInput, 1)
 	sub, err := nc.Subscribe(rdsinstance.SubjectAddTagsToResource, func(msg *nats.Msg) {
@@ -378,6 +386,7 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 // TagKeys carries no locationNameList, so it keeps the default member wrapper
 // even though the sibling tag list does not.
 func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	requests := make(chan rds.RemoveTagsFromResourceInput, 1)
 	sub, err := nc.Subscribe(rdsinstance.SubjectRemoveTagsFromResource, func(msg *nats.Msg) {
@@ -408,6 +417,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 // A filtered describe is still an empty result set, not a parse failure: the
 // query params have to survive QueryParamsToStruct into the typed input.
 func TestDispatch_DescribeDBInstancesWithFilters(t *testing.T) {
+	t.Parallel()
 	body, err := Dispatch(t.Context(), "DescribeDBInstances", "", map[string]string{
 		"Action":               "DescribeDBInstances",
 		"DBInstanceIdentifier": "orders-db",

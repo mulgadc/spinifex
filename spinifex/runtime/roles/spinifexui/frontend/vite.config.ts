@@ -23,9 +23,9 @@ logger.warn = (msg, options) => {
   warn(msg, options)
 }
 
-// /api and /proxy (the AWS gateway and S3 routes) are served by the Go console,
-// so dev forwards them there. Its certificate is signed by the cluster CA,
-// which Node does not trust by default.
+// /api, /proxy and /branding are served by the Go console, so dev forwards
+// them there. Its certificate is signed by the cluster CA, which Node does not
+// trust by default.
 const clusterCaPath = process.env.SPINIFEX_CA ?? "/etc/spinifex/ca.pem"
 
 // A build or test run needs no CA. Without one the proxy still verifies, and
@@ -49,7 +49,7 @@ export default defineConfig(({ mode }) => ({
   customLogger: logger,
   envDir: "../",
   server: {
-    proxy: { "^/(?:api|proxy)/": consoleProxy },
+    proxy: { "^/(?:api|proxy|branding)/": consoleProxy },
   },
   build: {
     target: "es2023",

@@ -112,7 +112,7 @@ func applyImage(field string, stored *operatorv1.BrandingImage, raw json.RawMess
 	return &img, nil
 }
 
-func (r Record) validate() error {
+func (r *Record) validate() error {
 	if r.ProductName != "" {
 		if n := utf8.RuneCountInString(r.ProductName); n > maxProductNameLen {
 			return invalid("productName", "is %d characters; at most %d are allowed", n, maxProductNameLen)

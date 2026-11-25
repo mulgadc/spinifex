@@ -150,15 +150,23 @@ describe("ADR-0016:S5 switches set and checkboxes select rows", () => {
   })
 })
 
+// Forms for a setting that no CLI command or AWS API changes.
+const NO_CLI = {
+  "src/routes/_auth/settings/-components/branding-page.tsx":
+    "the console is the only editor of the branding",
+} satisfies Allowlist
+
+function formWithoutCli(source: string): boolean {
+  return has(source, /<FormActions\b/u) && !has(source, /<CliCommandPanel\b/u)
+}
+
 describe("ADR-0016:S6 every form shows its AWS CLI equivalent", () => {
   it("shows CLI commands beside every form's submit actions", () => {
-    expect(
-      offenders(
-        ALL,
-        (source) =>
-          has(source, /<FormActions\b/u) && !has(source, /<CliCommandPanel\b/u),
-      ),
-    ).toStrictEqual([])
+    expect(offenders(ALL, formWithoutCli, NO_CLI)).toStrictEqual([])
+  })
+
+  it("allows only forms that still have no CLI equivalent", () => {
+    expect(stale(ALL, formWithoutCli, NO_CLI)).toStrictEqual([])
   })
 })
 
@@ -219,6 +227,10 @@ const RAW_FIELDS = {
     "the hidden file input behind the Upload button",
   "src/components/choice-tile.tsx":
     "a visually hidden radio inside a labelled tile, which the tile draws",
+  "src/components/color-field.tsx":
+    "the native colour picker beside the hex field; no primitive draws one",
+  "src/components/image-upload-field.tsx":
+    "the hidden file input behind the Choose file button",
 } satisfies Allowlist
 
 function rawField(source: string): boolean {

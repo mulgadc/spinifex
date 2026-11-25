@@ -3,6 +3,7 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import {
   ec2InternetGatewaysQueryOptions,
@@ -41,7 +42,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: `${params.id} | Route Table | Mulga`,
+        title: pageTitle(`${params.id} | Route Table`),
       },
     ],
   }),

@@ -38,6 +38,7 @@ import {
   setSessionCredentials,
 } from "@/lib/auth"
 import { clearClients } from "@/lib/aws-client"
+import { productName } from "@/lib/branding"
 import { startConsoleHandoff } from "@/lib/console-handoff"
 import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"
@@ -149,7 +150,7 @@ function LoginPage() {
           <CardHeader>
             <CardTitle>Signing you in…</CardTitle>
             <CardDescription>
-              Connecting your new Spinifex account to the console.
+              Connecting your new account to the console.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -166,9 +167,9 @@ function LoginPage() {
     <Veil leaving={leaving}>
       <Card>
         <CardHeader>
-          <CardTitle>Spinifex Credentials</CardTitle>
+          <CardTitle>{productName()} credentials</CardTitle>
           <CardDescription>
-            Use the credentials provided with your Spinifex account.
+            Use the credentials provided with your account.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -276,7 +277,7 @@ function CertificateInstallBanner() {
             </p>
             <p className="text-xs text-muted-foreground">
               To avoid browser certificate warnings, download and install the
-              Spinifex CA as a trusted root on your OS.
+              cluster CA as a trusted root on your OS.
             </p>
           </div>
           <a

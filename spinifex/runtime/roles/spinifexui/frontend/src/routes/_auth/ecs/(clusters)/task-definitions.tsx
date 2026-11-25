@@ -1,6 +1,7 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -21,7 +22,7 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/task-definitions")({
     })
   },
   head: () => ({
-    meta: [{ title: "Task Definitions | ECS | Mulga" }],
+    meta: [{ title: pageTitle("Task Definitions | ECS") }],
   }),
   component: TaskDefinitions,
 })

@@ -32,8 +32,8 @@ func ptr(s string) *string { return &s }
 
 func requireInvalid(t *testing.T, err error, field, reasonPart string) {
 	t.Helper()
-	ve, ok := err.(*consolebranding.ValidationError)
-	require.True(t, ok, "want a ValidationError, got %v", err)
+	var ve *consolebranding.ValidationError
+	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, field, ve.Field)
 	assert.Contains(t, ve.Reason, reasonPart)
 }

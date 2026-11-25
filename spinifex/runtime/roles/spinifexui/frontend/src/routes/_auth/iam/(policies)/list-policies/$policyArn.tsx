@@ -3,6 +3,7 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import {
@@ -39,7 +40,7 @@ export const Route = createFileRoute(
   head: ({ loaderData }) => ({
     meta: [
       {
-        title: `${loaderData?.Policy?.PolicyName ?? "Policy"} | IAM | Mulga`,
+        title: pageTitle(`${loaderData?.Policy?.PolicyName ?? "Policy"} | IAM`),
       },
     ],
   }),

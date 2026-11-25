@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -24,7 +25,7 @@ export const Route = createFileRoute("/_auth/eks/(clusters)/list-clusters/")({
     })
   },
   head: () => ({
-    meta: [{ title: "Clusters | EKS | Mulga" }],
+    meta: [{ title: pageTitle("Clusters | EKS") }],
   }),
   component: Clusters,
 })

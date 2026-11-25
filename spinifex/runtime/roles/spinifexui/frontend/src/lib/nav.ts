@@ -23,6 +23,7 @@ import {
   LayoutList,
   MapPin,
   MessageSquare,
+  Palette,
   Network,
   Package,
   Plug,
@@ -45,6 +46,8 @@ import type { LucideIcon } from "lucide-react"
 // One typed source for the sidebar, breadcrumbs and command palette.
 export interface NavItem {
   admin?: boolean
+  // Shown only while the operator has turned branding on.
+  branding?: boolean
   // Highlighted when the path equals `to`, rather than starting with a prefix.
   exact?: boolean
   icon: LucideIcon
@@ -469,6 +472,18 @@ export const NAV: readonly NavGroup[] = [
       },
     ],
   },
+  {
+    label: "Settings",
+    items: [
+      {
+        label: "Branding",
+        icon: Palette,
+        to: "/settings/branding",
+        admin: true,
+        branding: true,
+      },
+    ],
+  },
 ]
 
 // The item a path belongs to. The longest matching prefix wins, so a nested
@@ -517,16 +532,20 @@ function isPathPrefix(prefix: string, pathname: string): boolean {
 export function visibleNav({
   isAdmin,
   ochreEnabled,
+  brandingEnabled,
 }: {
   isAdmin: boolean
   ochreEnabled: boolean
+  brandingEnabled: boolean
 }): NavGroup[] {
   return NAV.flatMap((group) => {
     if (group.ochre && !ochreEnabled) {
       return []
     }
 
-    const items = group.items.filter((item) => !item.admin || isAdmin)
+    const items = group.items.filter(
+      (item) => (!item.admin || isAdmin) && (!item.branding || brandingEnabled),
+    )
 
     return items.length > 0 ? [{ ...group, items }] : []
   })

@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -22,7 +23,7 @@ export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/")({
     })
   },
   head: () => ({
-    meta: [{ title: "Roles | IAM | Mulga" }],
+    meta: [{ title: pageTitle("Roles | IAM") }],
   }),
   component: Roles,
 })

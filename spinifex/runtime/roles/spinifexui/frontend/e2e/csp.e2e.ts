@@ -1,4 +1,4 @@
-import { CONSOLE_CSP, ec2, expect, liveMetrics, test } from "./console"
+import { CONSOLE_CSP, ec2, expect, json, liveMetrics, test } from "./console"
 
 // Vite dev applies no CSP, so a library that injects inline script or style
 // works there and breaks in the shipped console. This runs the built dist with
@@ -64,6 +64,30 @@ test("the built console renders under its CSP", async ({ api, page }) => {
   )
   await expect(
     page.getByRole("figure", { name: "CPU utilization (%)" }).locator("canvas"),
+  ).toBeVisible()
+
+  // The branding stylesheet is a same-origin link, and the preview sets each
+  // theme's tokens through React's style prop.
+  await page.route("**/branding/branding.json", async (route) => {
+    await route.fulfill({
+      json: { enabled: true, revision: 1, stylesheet: "branding.css?rev=1" },
+    })
+  })
+  await page.route("**/branding/branding.css*", async (route) => {
+    await route.fulfill({
+      contentType: "text/css",
+      body: ":root:not(.dark){--primary:#0A4A8F;--ring:#0A4A8F}\n",
+    })
+  })
+  api.handle("POST /proxy/awsgw/admin/GetConsoleBranding", () =>
+    json({ enabled: true, revision: 1 }),
+  )
+  await page.goto("/settings/branding")
+  await page
+    .getByLabel("Primary colour, light theme", { exact: true })
+    .fill("#0A4A8F")
+  await expect(
+    page.getByRole("figure").filter({ hasText: "Light theme" }),
   ).toBeVisible()
 
   expect(api.unhandled).toStrictEqual([])

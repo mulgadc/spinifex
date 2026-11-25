@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 
+import { pageTitle } from "@/lib/branding"
 import { requireAdmin } from "@/lib/require-admin"
 
 import { ModelAccessPage } from "../-components/model-access-page"
@@ -9,7 +10,7 @@ export const Route = createFileRoute(
 )({
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: "Model Access | Ochre | Mulga" }],
+    meta: [{ title: pageTitle("Model Access | Ochre") }],
   }),
   component: ModelAccessPage,
 })

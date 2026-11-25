@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { ec2SnapshotsQueryOptions } from "@/queries/ec2"
 
@@ -33,7 +34,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Snapshots | EC2 | Mulga",
+        title: pageTitle("Snapshots | EC2"),
       },
     ],
   }),

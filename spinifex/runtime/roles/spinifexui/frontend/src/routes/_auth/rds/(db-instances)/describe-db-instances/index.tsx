@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -26,7 +27,7 @@ export const Route = createFileRoute(
   head: () => ({
     meta: [
       {
-        title: "Databases | RDS | Mulga",
+        title: pageTitle("Databases | RDS"),
       },
     ],
   }),

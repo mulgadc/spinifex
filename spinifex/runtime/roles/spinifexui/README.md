@@ -56,8 +56,15 @@ For development use:
    pnpm dev
    ```
 
-Vite serves the UI from `src/` and forwards `/api` and `/proxy` to the console on `https://localhost:3000`, so the dev UI acts on the live cluster.
+Vite serves the UI from `src/` and forwards `/api`, `/proxy` and `/branding` to the console on `https://localhost:3000`, so the dev UI acts on the live cluster.
 The forwarder trusts the cluster CA at `/etc/spinifex/ca.pem`; set `SPINIFEX_CA` to use another path.
+
+## Branding route
+
+The console proxies `/branding/<name>` to the gateway's public `/console/branding/<name>` route, for `branding.json`, `branding.css`, `logo`, `logo-dark` and `favicon` only.
+It allows GET and HEAD, strips `Authorization` and `Cookie`, and answers 502 when the gateway takes more than 2 seconds.
+The gateway serves the record from memory, so the route needs no NATS access here.
+Branding is off until `branding_enabled = true` is set under `[console]` in `spinifex.toml` on every node.
 
 ## UI conventions
 

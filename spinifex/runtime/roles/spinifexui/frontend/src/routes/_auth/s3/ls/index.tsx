@@ -21,6 +21,7 @@ import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
+import { pageTitle } from "@/lib/branding"
 import { CLOSED_PANEL, panelSearchFields } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteBucket } from "@/mutations/s3"
@@ -41,7 +42,7 @@ export const Route = createFileRoute("/_auth/s3/ls/")({
   head: () => ({
     meta: [
       {
-        title: "Buckets | Object Storage | Mulga",
+        title: pageTitle("Buckets | Object Storage"),
       },
     ],
   }),

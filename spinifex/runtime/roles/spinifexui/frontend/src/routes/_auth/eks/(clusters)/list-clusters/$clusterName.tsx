@@ -1,6 +1,7 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import {
   eksAccessEntriesQueryOptions,
@@ -32,7 +33,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: `${params.clusterName} | EKS | Mulga` }],
+    meta: [{ title: pageTitle(`${params.clusterName} | EKS`) }],
   }),
   component: ClusterDetail,
 })

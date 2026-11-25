@@ -3,6 +3,7 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import {
   iamAccessKeysQueryOptions,
@@ -48,7 +49,7 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
       ])
     },
     head: ({ params }) => ({
-      meta: [{ title: `${params.userName} | IAM | Mulga` }],
+      meta: [{ title: pageTitle(`${params.userName} | IAM`) }],
     }),
     component: UserDetail,
   },

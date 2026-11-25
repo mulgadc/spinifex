@@ -203,6 +203,11 @@ async function installConsole(page: Page): Promise<ConsoleApi> {
     localStorage.setItem("spinifex:v2:aws-session", JSON.stringify(session))
   }, FAKE_SESSION)
 
+  // The built-in brand, as a gateway with branding off answers it.
+  await page.route("**/branding/**", async (route) => {
+    await route.fulfill({ json: { enabled: false } })
+  })
+
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       json: { region: "ap-southeast-2", ochreEnabled: false },

@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { ec2KeyPairsQueryOptions } from "@/queries/ec2"
 
@@ -32,7 +33,7 @@ export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/")({
   head: () => ({
     meta: [
       {
-        title: "Key Pairs | EC2 | Mulga",
+        title: pageTitle("Key Pairs | EC2"),
       },
     ],
   }),

@@ -1,6 +1,7 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
+import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -21,7 +22,7 @@ export const Route = createFileRoute("/_auth/s3/ls/$bucket/")({
   head: ({ params }) => ({
     meta: [
       {
-        title: `${params.bucket} | Object Storage | Mulga`,
+        title: pageTitle(`${params.bucket} | Object Storage`),
       },
     ],
   }),

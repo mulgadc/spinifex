@@ -9,18 +9,26 @@ import {
   commandFlag,
   optionalFlag,
 } from "@/components/cli-command-panel"
+import { ColorField } from "@/components/color-field"
 import { CreatePanel } from "@/components/create-panel"
 import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import { FormPanel } from "@/components/form-panel"
+import { ImageUploadField } from "@/components/image-upload-field"
 import { SwitchList } from "@/components/switch-list"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { tokenHex } from "@/lib/brand-contrast"
+import {
+  BRANDING_IMAGE_TYPES,
+  type ImageChange,
+  MAX_LOGO_BYTES,
+} from "@/types/branding"
 
 import { CatalogueSection, Specimen, unwired } from "./catalogue-section"
 
@@ -181,6 +189,45 @@ function SampleCreateForm({ onClose }: { onClose: () => void }) {
   )
 }
 
+// An empty colour means the default, which the picker shows as its placeholder.
+function SampleColorField() {
+  const { control } = useForm({ defaultValues: { primary: "" } })
+
+  return (
+    <ColorField
+      control={control}
+      description="Empty keeps the default colour."
+      id="sample-primary"
+      label="Primary colour"
+      name="primary"
+      placeholder={tokenHex("light", "--primary")}
+    />
+  )
+}
+
+// Checks type and size in the browser; keep, remove and replace are separate
+// changes, and nothing is sent until the form is saved.
+function SampleImageUpload() {
+  const [change, setChange] = useState<ImageChange>({ kind: "keep" })
+
+  return (
+    <ImageUploadField
+      accept={BRANDING_IMAGE_TYPES}
+      description="PNG, WebP or SVG, up to 128 KiB."
+      id="sample-logo"
+      label="Logo"
+      maxBytes={MAX_LOGO_BYTES}
+      onChange={setChange}
+      stored={{
+        contentType: "image/svg+xml",
+        size: 2150,
+        src: "/mulga-logo.svg",
+      }}
+      value={change}
+    />
+  )
+}
+
 export function FormsSection() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
@@ -237,6 +284,16 @@ export function FormsSection() {
           pendingLabel="Creating…"
           submitLabel="Create"
         />
+      </Specimen>
+      <Specimen label="Colour field">
+        <div className="w-full max-w-md">
+          <SampleColorField />
+        </div>
+      </Specimen>
+      <Specimen label="Image upload">
+        <div className="w-full max-w-md">
+          <SampleImageUpload />
+        </div>
       </Specimen>
       <Specimen label="Multi-select picker">
         <div className="w-full max-w-md">

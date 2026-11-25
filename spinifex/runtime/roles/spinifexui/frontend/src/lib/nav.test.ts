@@ -70,22 +70,42 @@ describe("activeNavItem", () => {
 
 describe("visibleNav", () => {
   it("hides admin items from a tenant", () => {
-    const labels = visibleNav({ isAdmin: false, ochreEnabled: true }).flatMap(
-      (group) => group.items.map((item) => item.label),
-    )
+    const labels = visibleNav({
+      isAdmin: false,
+      ochreEnabled: true,
+      brandingEnabled: true,
+    }).flatMap((group) => group.items.map((item) => item.label))
 
     expect(labels).not.toContain("Nodes")
+    expect(labels).not.toContain("Branding")
     expect(labels).not.toContain("Model Catalog")
     expect(labels).toContain("Instances")
   })
 
   it("hides the Ochre group while the flag is off", () => {
-    const groups = visibleNav({ isAdmin: true, ochreEnabled: false }).map(
-      (group) => group.label,
-    )
+    const groups = visibleNav({
+      isAdmin: true,
+      ochreEnabled: false,
+      brandingEnabled: true,
+    }).map((group) => group.label)
 
     expect(groups).not.toContain("Ochre")
     expect(groups).toContain("Compute")
+  })
+})
+
+function operatorLabels(brandingEnabled: boolean): string[] {
+  return visibleNav({
+    isAdmin: true,
+    ochreEnabled: true,
+    brandingEnabled,
+  }).flatMap((group) => group.items.map((item) => item.label))
+}
+
+describe("visibleNav branding", () => {
+  it("offers Branding to the operator only while branding is on", () => {
+    expect(operatorLabels(true)).toContain("Branding")
+    expect(operatorLabels(false)).not.toContain("Branding")
   })
 })
 

@@ -10,6 +10,7 @@ import { Header } from "@/components/header"
 import { NotFound } from "@/components/not-found"
 import { ErrorBoundary } from "@/layouts/error-boundary"
 import { SidebarLayout } from "@/layouts/sidebar-layout"
+import { pageTitle } from "@/lib/branding"
 
 interface RouterContext {
   queryClient: QueryClient
@@ -19,7 +20,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   head: () => ({
     meta: [
       {
-        title: "Mulga",
+        title: pageTitle(),
       },
     ],
   }),

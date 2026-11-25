@@ -64,6 +64,22 @@ type volumeParams struct {
 	deleteOnTermination bool
 }
 
+// amiLookupError answers a failed AMI read: not-found only when the document
+// is absent. Any other failure, a corrupt document included, is a server error
+// the client can retry, never a sign that the image is gone.
+func amiLookupError(ctx context.Context, imageID string, err error) error {
+	if _, keyErr := ebsmetadata.AMIKey(imageID); keyErr != nil {
+		slog.WarnContext(ctx, "PrepareRunInstances: malformed AMI ID", "imageId", imageID, "err", keyErr)
+		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+	}
+	if objectstore.IsNoSuchKeyError(err) {
+		slog.WarnContext(ctx, "PrepareRunInstances: AMI not found", "imageId", imageID)
+		return errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+	slog.ErrorContext(ctx, "PrepareRunInstances: failed to read AMI metadata", "imageId", imageID, "err", err)
+	return errors.New(awserrors.ErrorServerInternal)
+}
+
 // floorVolumeSizeToAMI ensures the requested size is at least the AMI's snapshot
 // size. Under-sizing hangs the guest in dracut; we round up silently rather than
 // returning InvalidParameterValue, since a slightly larger volume is less harmful.
@@ -688,8 +704,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	}
 	amiMeta, err := s.amiLoader.GetAMIConfig(ctx, *input.ImageId)
 	if err != nil {
-		slog.ErrorContext(ctx, "PrepareRunInstances: AMI not found", "imageId", *input.ImageId, "err", err)
-		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		return nil, nil, nil, amiLookupError(ctx, *input.ImageId, err)
 	}
 	// Caller must own the AMI or the owner alias must be non-account-ID (e.g. "self", "spinifex", "").
 	amiOwner := amiMeta.ImageOwnerAlias

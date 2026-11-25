@@ -116,7 +116,10 @@ type LoadBalancerRecord struct {
 	Name            string `json:"name"`
 	Scheme          string `json:"scheme"` // "internet-facing" or "internal"
 	Type            string `json:"type"`   // Always "application"
-	State           string `json:"state"`  // "provisioning", "active", "failed"
+	// Realization names how the data path of the load balancer is built. Empty
+	// keeps the retained VM realization; the value is persisted as is.
+	Realization string `json:"realization,omitempty"`
+	State       string `json:"state"` // "provisioning", "active", "failed"
 	// StateReason explains a failed state; surfaced as State.Reason so API
 	// consumers see why provisioning gave up (e.g. sys.micro capacity exhausted).
 	StateReason    string   `json:"state_reason,omitempty"`

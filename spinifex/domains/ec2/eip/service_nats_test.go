@@ -57,6 +57,7 @@ func setupNATSEIPServiceTest(t *testing.T) (EIPService, *EIPServiceImpl) {
 }
 
 func TestNATSEIPService_AllocateAddress(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	out, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -68,6 +69,7 @@ func TestNATSEIPService_AllocateAddress(t *testing.T) {
 }
 
 func TestNATSEIPService_DescribeAddresses(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	_, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -79,6 +81,7 @@ func TestNATSEIPService_DescribeAddresses(t *testing.T) {
 }
 
 func TestNATSEIPService_ReleaseAddress(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	allocOut, err := client.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -91,6 +94,7 @@ func TestNATSEIPService_ReleaseAddress(t *testing.T) {
 }
 
 func TestNATSEIPService_AssociateAddress_MissingParams(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Missing AllocationId should return error through NATS
@@ -99,6 +103,7 @@ func TestNATSEIPService_AssociateAddress_MissingParams(t *testing.T) {
 }
 
 func TestNATSEIPService_DisassociateAddress_MissingParams(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Missing AssociationId should return error through NATS
@@ -107,6 +112,7 @@ func TestNATSEIPService_DisassociateAddress_MissingParams(t *testing.T) {
 }
 
 func TestNATSEIPService_AllocateAndDescribeRoundTrip(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSEIPServiceTest(t)
 
 	// Allocate two EIPs

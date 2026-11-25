@@ -11,6 +11,7 @@ import (
 )
 
 func TestDisabledEIPService_DescribeReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	s := NewDisabledEIPService()
 
 	out, err := s.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{}, "123456789012")
@@ -25,6 +26,7 @@ func TestDisabledEIPService_DescribeReturnsEmpty(t *testing.T) {
 }
 
 func TestDisabledEIPService_MutationsUnsupported(t *testing.T) {
+	t.Parallel()
 	s := NewDisabledEIPService()
 
 	_, err := s.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, "123456789012")

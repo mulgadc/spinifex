@@ -20,6 +20,7 @@ func eipTagVal(tags []*ec2.Tag, key string) string {
 }
 
 func TestEIPRecordTagsMirror(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	alloc, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -59,6 +60,7 @@ func TestEIPRecordTagsMirror(t *testing.T) {
 }
 
 func TestEIPRecordTagsMirror_UnownedNoError(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String("eipalloc-missing"), aws.String("nat-other")},

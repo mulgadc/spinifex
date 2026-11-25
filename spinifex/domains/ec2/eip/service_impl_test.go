@@ -55,6 +55,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *ec2vpc.ExternalIPAM, *ec2vpc.
 }
 
 func TestEIP_Allocate(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -69,6 +70,7 @@ func TestEIP_Allocate(t *testing.T) {
 }
 
 func TestEIP_AllocateFromSpecificPool(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
@@ -86,6 +88,7 @@ func TestEIP_AllocateFromSpecificPool(t *testing.T) {
 // rather than a flat capacity code, so an upstream fault is not misreported
 // as a genuinely exhausted pool.
 func TestEIP_AllocateFromNamedPoolThatDoesNotExist(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
@@ -98,6 +101,7 @@ func TestEIP_AllocateFromNamedPoolThatDoesNotExist(t *testing.T) {
 // allocation must still resolve to InsufficientAddressCapacity — the wrap
 // added around the allocator's error must not swallow the AWS error code.
 func TestEIP_AllocateFromExhaustedDefaultPool(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	for range 10 {
@@ -111,6 +115,7 @@ func TestEIP_AllocateFromExhaustedDefaultPool(t *testing.T) {
 }
 
 func TestEIP_Release(t *testing.T) {
+	t.Parallel()
 	svc, ipam, _ := setupTestEIP(t)
 
 	// Allocate
@@ -144,6 +149,7 @@ func TestEIP_Release(t *testing.T) {
 }
 
 func TestEIP_ReleaseWhileAssociated(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Allocate
@@ -180,6 +186,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 }
 
 func TestEIP_ReleaseAllocationOnENI_ReclaimsAssociatedEIP(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -235,6 +242,7 @@ func associateToENI(t *testing.T, svc *EIPServiceImpl, allocID, eniID string) {
 // TestEIP_DisassociateByENI is the teardown path the zombie ENIs needed: the
 // association goes with the interface, and the allocation stays behind.
 func TestEIP_DisassociateByENI(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -270,6 +278,7 @@ func TestEIP_DisassociateByENI(t *testing.T) {
 // overwhelmingly common case on terminate — leaves other accounts' associations
 // alone and reports no error.
 func TestEIP_DisassociateByENI_NoMatchIsNoOp(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -297,6 +306,7 @@ func TestEIP_DisassociateByENI_NoMatchIsNoOp(t *testing.T) {
 // account prefix: a cluster-wide sweep passes the account the key was found
 // under, and matching across accounts would disassociate a stranger's address.
 func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -313,6 +323,7 @@ func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
 // "no EIP" answer, and the association would then be stranded with nothing
 // left that could find it.
 func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.eipKV.Put(t.Context(), testAccountID+".eipalloc-corrupt", []byte("{"))
@@ -328,6 +339,7 @@ func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
 }
 
 func TestEIP_ReleaseAllocationOnENI_NoMatchIsNoOp(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -346,6 +358,7 @@ func TestEIP_ReleaseAllocationOnENI_NoMatchIsNoOp(t *testing.T) {
 }
 
 func TestEIP_ReleaseMissingParams(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Nil AllocationId
@@ -358,6 +371,7 @@ func TestEIP_ReleaseMissingParams(t *testing.T) {
 }
 
 func TestEIP_ReleaseNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-03dd524cb8f0510e0")}, testAccountID)
@@ -367,6 +381,7 @@ func TestEIP_ReleaseNotFound(t *testing.T) {
 }
 
 func TestEIP_AssociateMissingAllocationId(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Nil AllocationId
@@ -379,6 +394,7 @@ func TestEIP_AssociateMissingAllocationId(t *testing.T) {
 }
 
 func TestEIP_AssociateInvalidAllocationId(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
@@ -390,6 +406,7 @@ func TestEIP_AssociateInvalidAllocationId(t *testing.T) {
 }
 
 func TestEIP_AssociateMissingTarget(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Allocate first
@@ -404,6 +421,7 @@ func TestEIP_AssociateMissingTarget(t *testing.T) {
 }
 
 func TestEIP_DisassociateMissingParams(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Nil AssociationId
@@ -416,6 +434,7 @@ func TestEIP_DisassociateMissingParams(t *testing.T) {
 }
 
 func TestEIP_DisassociateNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
@@ -427,6 +446,7 @@ func TestEIP_DisassociateNotFound(t *testing.T) {
 }
 
 func TestEIP_RecordToEC2_WithTags(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	record := &EIPRecord{
@@ -455,6 +475,7 @@ func TestEIP_RecordToEC2_WithTags(t *testing.T) {
 }
 
 func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	record := &EIPRecord{
@@ -478,6 +499,7 @@ func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
 }
 
 func TestEIP_FindByAssociationID_NotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, _, _, err := svc.findByAssociationID(t.Context(), testAccountID, "eipassoc-nonexistent")
@@ -486,6 +508,7 @@ func TestEIP_FindByAssociationID_NotFound(t *testing.T) {
 }
 
 func TestEIP_DescribeAddressesAttribute(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
@@ -526,6 +549,7 @@ func TestEIP_DescribeAddressesAttribute(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
@@ -563,6 +587,7 @@ func TestEIP_DescribeAddresses(t *testing.T) {
 // AWS answers a named public IP the account does not hold with
 // InvalidAddress.NotFound, including one it has just released.
 func TestEIP_DescribeAddresses_PublicIpNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	kept, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -588,6 +613,7 @@ func TestEIP_DescribeAddresses_PublicIpNotFound(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_AllocationIdNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	kept, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -607,6 +633,7 @@ func TestEIP_DescribeAddresses_AllocationIdNotFound(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -625,6 +652,7 @@ func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -643,6 +671,7 @@ func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -667,6 +696,7 @@ func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -699,6 +729,7 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -718,6 +749,7 @@ func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -747,6 +779,7 @@ func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
@@ -758,6 +791,7 @@ func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -774,6 +808,7 @@ func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -789,6 +824,7 @@ func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
@@ -819,6 +855,7 @@ func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 // uses topology.Port(eniID) as PortName. A raw ENI id mismatch creates a
 // dnat_and_snat row pointing at a nonexistent OVN port, black-holing the EIP.
 func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	sub, err := svc.natsConn.SubscribeSync("vpc.add-nat")
@@ -844,6 +881,7 @@ func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 // associated to an interface being deleted, with their host routes installed
 // and nothing remaining that could find them.
 func TestEIP_DisassociateByENI_ClearsEveryEIPOnTheInterface(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestEIP(t)
 
 	var allocIDs []string

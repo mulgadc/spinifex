@@ -67,6 +67,7 @@ func pass(t *testing.T, v *route53.Verifier) {
 }
 
 func TestVerifierActivatesOnlyAFullDelegationToUs(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	cases := map[string]struct {
 		parent []string
@@ -94,6 +95,7 @@ func TestVerifierActivatesOnlyAFullDelegationToUs(t *testing.T) {
 }
 
 func TestVerifierFirstMatchWins(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["example.com"] = ours()
 	first := createZone(t, svc, acctA, "example.com")
@@ -113,6 +115,7 @@ func TestVerifierFirstMatchWins(t *testing.T) {
 }
 
 func TestVerifierScheduleBacksOffAfterTheFirstTwoDays(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	createZone(t, svc, acctA, "slow.example")
 	pass(t, v)
@@ -133,6 +136,7 @@ func TestVerifierScheduleBacksOffAfterTheFirstTwoDays(t *testing.T) {
 }
 
 func TestVerifierLosesAZoneOnlyAfterThreeDaysOfFailure(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["moved.example"] = ours()
 	id := createZone(t, svc, acctA, "moved.example")
@@ -164,6 +168,7 @@ func TestVerifierLosesAZoneOnlyAfterThreeDaysOfFailure(t *testing.T) {
 }
 
 func TestVerifierTreatsAnUnreachableParentAsUnknown(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["flaky.example"] = ours()
 	id := createZone(t, svc, acctA, "flaky.example")
@@ -183,6 +188,7 @@ func TestVerifierTreatsAnUnreachableParentAsUnknown(t *testing.T) {
 // A lookup that never answers, as on a cluster with no route to the roots, is
 // cut off so "Check now" reports the zone pending instead of timing out.
 func TestVerifierBoundsAPublicLookupThatHangs(t *testing.T) {
+	t.Parallel()
 	svc, v, _, _ := newVerifier(t)
 	v.Public = func(ctx context.Context, _ string) (route53.Delegation, error) {
 		<-ctx.Done()
@@ -200,6 +206,7 @@ func TestVerifierBoundsAPublicLookupThatHangs(t *testing.T) {
 // A subdomain of an active zone is decided by that zone's records, never by
 // public DNS, so account B cannot take a name under account A's domain.
 func TestVerifierReadsAnActiveParentZoneLocally(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["example.com"] = ours()
 	dns.parents["shop.example.com"] = ours() // what a lookup would wrongly accept
@@ -224,6 +231,7 @@ func TestVerifierReadsAnActiveParentZoneLocally(t *testing.T) {
 }
 
 func TestVerifierReadsAPlatformZoneLocally(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	v.Platform = func(_ context.Context, name string) (route53.Delegation, bool, error) {
 		if !strings.HasSuffix(name, ".spx3.net.") {
@@ -238,6 +246,7 @@ func TestVerifierReadsAPlatformZoneLocally(t *testing.T) {
 }
 
 func TestVerifierLeavesOverriddenZonesAlone(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["held.example"] = ours()
 	id := createZone(t, svc, acctA, "held.example")
@@ -254,6 +263,7 @@ func TestVerifierLeavesOverriddenZonesAlone(t *testing.T) {
 }
 
 func TestVerifyChecksImmediately(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	id := createZone(t, svc, acctA, "now.example")
 	pass(t, v)
@@ -271,6 +281,7 @@ func TestVerifyChecksImmediately(t *testing.T) {
 // publishes fewer name servers later neither fails an existing delegation nor
 // lets a new zone accept a server it was never handed.
 func TestVerifierChecksTheZonesOwnDelegationSet(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	dns.parents["before.example"] = ours()
 	dns.parents["after.example"] = ours()
@@ -293,6 +304,7 @@ func TestVerifierChecksTheZonesOwnDelegationSet(t *testing.T) {
 }
 
 func TestActivatedZoneChangesWaitForSync(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	dns.parents["sync.example"] = ours()
 	id := createZone(t, svc, acctA, "sync.example")
@@ -309,6 +321,7 @@ func TestActivatedZoneChangesWaitForSync(t *testing.T) {
 // pending on the next pass, and the change it took while ACTIVE, which
 // northstar will never load, is settled rather than left PENDING for good.
 func TestDuplicateActiveZoneReturnsToPendingAndItsChangesSettle(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	dns.parents["race.example"] = ours()
 	first := createZone(t, svc, acctA, "race.example")
@@ -337,6 +350,7 @@ func TestDuplicateActiveZoneReturnsToPendingAndItsChangesSettle(t *testing.T) {
 // looks nothing up and changes no zone, and it asks to come back once a dead
 // holder's lease could be taken over.
 func TestVerifierChecksNothingWhileAPeerHoldsTheLease(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	svc := route53.NewService(route53.NewStore(js))
 	svc.Nameservers = ours

@@ -29,6 +29,7 @@ func newCanaryBucket(t *testing.T) (jetstream.KeyValue, jetstream.JetStream) {
 }
 
 func TestCanaryRoundTrip_HealthyBucketPasses(t *testing.T) {
+	t.Parallel()
 	kv, _ := newCanaryBucket(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -41,6 +42,7 @@ func TestCanaryRoundTrip_HealthyBucketPasses(t *testing.T) {
 // stopped accepting writes would still read back the previous run's value and
 // the probe would pass while JetStream was wedged.
 func TestCanaryRoundTrip_WritesADistinctValueEachRun(t *testing.T) {
+	t.Parallel()
 	kv, _ := newCanaryBucket(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -77,6 +79,7 @@ func TestCanaryRoundTrip_FailsWhenBucketIsGone(t *testing.T) {
 // The canary key is namespaced so it cannot collide with a real control-plane
 // key in the shared cluster-state bucket.
 func TestCanaryKeyIsNamespaced(t *testing.T) {
+	t.Parallel()
 	require.True(t, len(canaryKey) > 0 && canaryKey[0] == '_')
 }
 

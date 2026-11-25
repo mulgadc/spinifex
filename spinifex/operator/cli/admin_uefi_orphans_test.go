@@ -29,6 +29,7 @@ func putKeys(t *testing.T, js jetstream.JetStream, bucket string, keys ...string
 // Every key space an instance record has lived in counts, and the node
 // blobs and presence markers name nodes rather than instances.
 func TestKVInstanceIndex_CountsEveryInstanceKeySpace(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	putKeys(t, js, daemon.InstanceStateBucket, "i.i-running", "instance.i-frozenstopped", "node.node-1", "nodepresence.node-1")
 	putKeys(t, js, daemon.TerminatedInstanceBucket, "i.i-terminated", "terminated.i-frozenterminated")
@@ -43,6 +44,7 @@ func TestKVInstanceIndex_CountsEveryInstanceKeySpace(t *testing.T) {
 // The report attaches to the buckets rather than creating them, so a cluster
 // missing one fails the scan instead of reporting every store as unowned.
 func TestReportUEFIStoreOrphans_FailsWhenABucketIsMissing(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	objects := objectstore.NewMemoryObjectStore()
 

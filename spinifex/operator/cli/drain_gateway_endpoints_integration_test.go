@@ -62,6 +62,7 @@ func serveVpcdStatus(t *testing.T, nc *nats.Conn, node string, store *featurelev
 // a rule names the S3 prefix list, and the same command finishes it once both
 // are gone.
 func TestRollback_GatewayEndpointDrainHoldsUntilEndpointsAndPrefixListRulesAreGone(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "cluster-config-drain-it", History: 1})
 	require.NoError(t, err)

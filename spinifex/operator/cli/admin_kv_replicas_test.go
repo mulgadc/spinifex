@@ -90,6 +90,7 @@ func TestUnderReplicatedCount(t *testing.T) {
 // that makes --repair usable mid-growth: the buckets it can raise are raised,
 // and the one it cannot is named rather than aborting the run.
 func TestRepairReplicaReports_KeepsGoingPastABucketItCannotPlace(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -115,6 +116,7 @@ func TestRepairReplicaReports_KeepsGoingPastABucketItCannotPlace(t *testing.T) {
 // TestRepairReplicaReports_RaisesWhatItCan covers the success side against a real
 // server, so the in-place report update is proved rather than assumed.
 func TestRepairReplicaReports_RaisesWhatItCan(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	defer nc.Close()
 	clustersize.DeclareForTest(t, 1)

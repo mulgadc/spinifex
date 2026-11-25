@@ -56,6 +56,7 @@ func digestOf(t *testing.T, storeDir string, withSeqs bool) []streamDigest {
 }
 
 func TestKVDigest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	parent := t.TempDir()
 	kv, stop := kvServer(t, parent, "test")
@@ -78,11 +79,13 @@ func TestKVDigest(t *testing.T) {
 	require.Len(t, live[0].Seqs, 4)
 
 	t.Run("stable across reads and a stopped server", func(t *testing.T) {
+		t.Parallel()
 		again := digestOf(t, store, false)
 		assert.Equal(t, live[0].Digest, again[0].Digest)
 	})
 
 	t.Run("source store is left untouched", func(t *testing.T) {
+		t.Parallel()
 		_, err := os.Stat(filepath.Join(store, "$G", "streams", "KV_test"))
 		assert.NoError(t, err)
 	})
@@ -90,6 +93,7 @@ func TestKVDigest(t *testing.T) {
 	// Same keys and values written separately differ in timestamps, which is
 	// exactly what separates two nodes' pre-formation writes.
 	t.Run("independently written store differs", func(t *testing.T) {
+		t.Parallel()
 		other := t.TempDir()
 		kv2, stop2 := kvServer(t, other, "test")
 		for _, kvp := range [][2]string{{"a", "1"}, {"b", "2"}, {"a", "3"}} {
@@ -114,6 +118,7 @@ func TestKVDigest(t *testing.T) {
 	})
 
 	t.Run("report lines", func(t *testing.T) {
+		t.Parallel()
 		var buf bytes.Buffer
 		writeDigests(&buf, "node1", store, time.Unix(0, 0), []string{"ACC/S"}, live)
 		out := buf.String()
@@ -312,6 +317,7 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 }
 
 func TestCopyStreamTree(t *testing.T) {
+	t.Parallel()
 	store := seedStore(t, "KV_a")
 	require.NoError(t, os.MkdirAll(filepath.Join(store, "$G", "streams", "KV_a", "obs", "c1"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(store, "$G", "streams", "KV_a", "obs", "c1", "o.dat"), []byte("x"), 0o600))

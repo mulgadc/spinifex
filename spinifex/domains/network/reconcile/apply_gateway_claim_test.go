@@ -179,6 +179,7 @@ func withFastClaimBounds(t *testing.T) {
 }
 
 func TestEnsureGatewayClaimed_NoVerifierIsNoop(t *testing.T) {
+	t.Parallel()
 	r := &reconciler{} // gwClaim nil
 	r.ensureGatewayClaimed(context.Background(), "gw-vpc-a")
 	// Reaching here without panic is the assertion.
@@ -276,12 +277,14 @@ func TestEnsureGatewayClaimed_ContextCancelStops(t *testing.T) {
 }
 
 func TestEnsureGatewayDatapath_NoVerifierIsNoop(t *testing.T) {
+	t.Parallel()
 	r := &reconciler{} // gwClaim nil
 	r.ensureGatewayDatapath(context.Background(), "vpc-a", "cr-gw-vpc-a", "192.168.1.241", "")
 	// Reaching here without panic is the assertion.
 }
 
 func TestEnsureGatewayDatapath_EmptyIPIsNoop(t *testing.T) {
+	t.Parallel()
 	f := &fakeClaimVerifier{}
 	r := &reconciler{gwClaim: f}
 
@@ -474,12 +477,14 @@ func TestEnsureGatewayDatapath_EIPUnreachableRepairs(t *testing.T) {
 }
 
 func TestEnsureGuestPortDatapath_NoVerifierIsNoop(t *testing.T) {
+	t.Parallel()
 	r := &reconciler{} // gwClaim nil
 	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 	// Reaching here without panic is the assertion.
 }
 
 func TestEnsureGuestPortDatapath_EmptyLSPIsNoop(t *testing.T) {
+	t.Parallel()
 	f := &fakeClaimVerifier{}
 	r := &reconciler{gwClaim: f}
 
@@ -689,6 +694,7 @@ func TestEnsureGuestPortDatapath_ConnectedSBNeverResets(t *testing.T) {
 // A distributed-NAT gateway LRP is link-local, so the host cannot route to it.
 // Probing it would fail forever and report external connectivity as degraded.
 func TestGatewayLRPIP_LinkLocalIsNotAProbeTarget(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		lrp  *nbdb.LogicalRouterPort
@@ -701,6 +707,7 @@ func TestGatewayLRPIP_LinkLocalIsNotAProbeTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := gatewayLRPIP(tc.lrp); got != tc.want {
 				t.Errorf("gatewayLRPIP() = %q, want %q", got, tc.want)
 			}

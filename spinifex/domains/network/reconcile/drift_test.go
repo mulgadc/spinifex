@@ -1,5 +1,5 @@
-//test:in-package — the backoff ladder is unexported state (driftBackoffBase,
-//nextDriftBackoff) and the tests drive runDriftCycle directly to pin what
+//test:in-package — the backoff ladder is unexported state (driftTiming,
+//nextBackoff) and the tests drive runDriftCycle directly to pin what
 //DriftLoop does with its return value.
 
 package reconcile
@@ -53,31 +53,34 @@ func incompleteErr() error {
 	return fmt.Errorf("reconcile: 1 resource(s) unconverged: %w", ErrPassIncomplete)
 }
 
-// shrinkDriftTiming compresses the loop's timings so a test observes several
+// shrunkDriftTiming compresses the loop's timings so a test observes several
 // requeues in milliseconds. The interval stays long so that a loop which
 // wrongly falls back to it registers as silence rather than as a fast requeue.
-func shrinkDriftTiming(t *testing.T, interval, base time.Duration) {
-	t.Helper()
-	oldInterval, oldBase := DriftInterval, driftBackoffBase
-	DriftInterval, driftBackoffBase = interval, base
-	t.Cleanup(func() { DriftInterval, driftBackoffBase = oldInterval, oldBase })
+func shrunkDriftTiming(interval, base time.Duration) driftTiming {
+	tm := defaultDriftTiming()
+	tm.interval, tm.base = interval, base
+	return tm
 }
 
-// startDriftLoop runs the loop and joins it on cleanup. Call it after
-// shrinkDriftTiming: cleanups run LIFO, so the join then happens first and no
-// loop is still reading the timing vars when they are restored.
-func startDriftLoop(t *testing.T, rec Reconciler, nc *nats.Conn, startup error) {
+// startDriftLoop runs the loop on tm and joins it on cleanup. A zero tm runs
+// the exported DriftLoop on the package defaults.
+func startDriftLoop(t *testing.T, rec Reconciler, nc *nats.Conn, startup error, tm driftTiming) {
 	t.Helper()
-	startDriftLoopTriggered(t, rec, nc, startup, nil)
+	startDriftLoopTriggered(t, rec, nc, startup, nil, tm)
 }
 
-func startDriftLoopTriggered(t *testing.T, rec Reconciler, nc *nats.Conn, startup error, trigger <-chan struct{}) {
+func startDriftLoopTriggered(t *testing.T, rec Reconciler, nc *nats.Conn, startup error, trigger <-chan struct{}, tm driftTiming) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		DriftLoop(ctx, rec, nc, vpcdLease(testutil.NewJetStream(t, nc), "node-1"), "us-east-1a", startup, trigger)
+		lease := vpcdLease(testutil.NewJetStream(t, nc), "node-1")
+		if tm == (driftTiming{}) {
+			DriftLoop(ctx, rec, nc, lease, "us-east-1a", startup, trigger)
+			return
+		}
+		driftLoop(ctx, rec, nc, lease, "us-east-1a", startup, trigger, tm)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -107,11 +110,12 @@ func waitForCalls(t *testing.T, rec *stubReconciler, want int, within time.Durat
 // DriftLoop is what pins timer.Reset to the computed wait — a loop that resets
 // to DriftInterval instead still satisfies every pure-function test below.
 func TestDriftLoop_IncompletePassRequeuesFast(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
+	tm := shrunkDriftTiming(10*time.Second, time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	startDriftLoop(t, rec, nc, incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr(), tm)
 
 	if got := waitForCalls(t, rec, 4, 5*time.Second); got < 4 {
 		t.Fatalf("reconcile called %d times, want >= 4 — an incomplete pass is waiting "+
@@ -123,12 +127,13 @@ func TestDriftLoop_IncompletePassRequeuesFast(t *testing.T) {
 // happens. Its outcome must seed the loop, or the resource it failed to converge
 // waits a full DriftInterval for its first retry — the original bug, on boot.
 func TestDriftLoop_SeedsBackoffFromStartupOutcome(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
+	tm := shrunkDriftTiming(10*time.Second, time.Millisecond)
 
 	// Converged from here on: only the seed can bring the first pass forward.
 	rec := &stubReconciler{outcomes: []error{nil}}
-	startDriftLoop(t, rec, nc, incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr(), tm)
 
 	if got := waitForCalls(t, rec, 1, 5*time.Second); got < 1 {
 		t.Fatalf("reconcile never ran: a failed startup pass must seed the backoff "+
@@ -139,11 +144,12 @@ func TestDriftLoop_SeedsBackoffFromStartupOutcome(t *testing.T) {
 // The converse: a clean startup must not pull the first pass forward, or every
 // vpcd reconciles immediately on boot regardless of need.
 func TestDriftLoop_ConvergedStartupWaitsFullInterval(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
+	tm := shrunkDriftTiming(10*time.Second, time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	startDriftLoop(t, rec, nc, nil)
+	startDriftLoop(t, rec, nc, nil, tm)
 
 	time.Sleep(100 * time.Millisecond)
 	if got := rec.callCount(); got != 0 {
@@ -155,12 +161,13 @@ func TestDriftLoop_ConvergedStartupWaitsFullInterval(t *testing.T) {
 // A converged pass must clear the backoff so the loop drops back to its routine
 // cadence, rather than staying on the fast requeue forever.
 func TestDriftLoop_ConvergedPassReturnsToDriftInterval(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
+	tm := shrunkDriftTiming(10*time.Second, time.Millisecond)
 
 	// Pass 1 incomplete (requeues in ~3ms), pass 2 converged (must requeue at 10s).
 	rec := &stubReconciler{outcomes: []error{incompleteErr(), nil}}
-	startDriftLoop(t, rec, nc, incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr(), tm)
 
 	if got := waitForCalls(t, rec, 2, 5*time.Second); got < 2 {
 		t.Fatalf("reconcile called %d times, want 2 before the loop settles", got)
@@ -176,6 +183,7 @@ func TestDriftLoop_ConvergedPassReturnsToDriftInterval(t *testing.T) {
 // win must not be reported as converged-or-broken; it reports nil and the caller
 // leaves the cadence alone.
 func TestRunDriftCycle_ReportsReconcileOutcome(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
@@ -192,6 +200,7 @@ func TestRunDriftCycle_ReportsReconcileOutcome(t *testing.T) {
 
 // A cycle this node loses the election for must not run a pass at all.
 func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 
 	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "other-node"))
@@ -218,13 +227,14 @@ func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
 // Zero is the converged value and means no deadline, which leaves the next pass
 // to the resync the loop configures at DriftInterval.
 func TestDrift_IncompletePassBacksOffThenResets(t *testing.T) {
+	t.Parallel()
 	incomplete := incompleteErr()
 	outcomes := []error{incomplete, incomplete, incomplete, incomplete, incomplete, incomplete, nil}
 
 	var backoff time.Duration
 	var got []time.Duration
 	for _, outcome := range outcomes {
-		backoff = nextDriftBackoff(backoff, outcome)
+		backoff = defaultDriftTiming().nextBackoff(backoff, outcome)
 		got = append(got, backoff)
 	}
 
@@ -244,6 +254,7 @@ func TestDrift_IncompletePassBacksOffThenResets(t *testing.T) {
 // (e.g. a scan failure), must not shorten the interval — only an incomplete
 // pass has a known-transient resource worth retrying early.
 func TestDrift_NonIncompleteOutcomesKeepDriftInterval(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -253,9 +264,10 @@ func TestDrift_NonIncompleteOutcomesKeepDriftInterval(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Start from a backoff already in force, so a reset is observable.
-			if got := nextDriftBackoff(45*time.Second, tt.err); got != 0 {
-				t.Errorf("nextDriftBackoff(45s, %v) = %v, want 0", tt.err, got)
+			if got := defaultDriftTiming().nextBackoff(45*time.Second, tt.err); got != 0 {
+				t.Errorf("nextBackoff(45s, %v) = %v, want 0", tt.err, got)
 			}
 		})
 	}
@@ -264,10 +276,11 @@ func TestDrift_NonIncompleteOutcomesKeepDriftInterval(t *testing.T) {
 // The backoff must never exceed DriftInterval: a permanently broken resource
 // degrades to today's behaviour instead of hammering the reconcile loop.
 func TestDrift_BackoffCapsAtDriftInterval(t *testing.T) {
+	t.Parallel()
 	incomplete := incompleteErr()
 	backoff := DriftInterval
 	for range 3 {
-		backoff = nextDriftBackoff(backoff, incomplete)
+		backoff = defaultDriftTiming().nextBackoff(backoff, incomplete)
 		if backoff > DriftInterval {
 			t.Fatalf("backoff = %v, want <= DriftInterval (%v)", backoff, DriftInterval)
 		}

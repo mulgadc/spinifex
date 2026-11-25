@@ -96,6 +96,7 @@ func TestEnsureGuestPortDatapath_BackoffClearsOnConverge(t *testing.T) {
 // TestEniIDFromPort pins the attribution added to the failure log: the LSP name
 // alone cannot be mapped back to a guest.
 func TestEniIDFromPort(t *testing.T) {
+	t.Parallel()
 	if got := eniIDFromPort("port-eni-6b9b6e142f20ed708"); got != "eni-6b9b6e142f20ed708" {
 		t.Errorf("eniIDFromPort = %q, want %q", got, "eni-6b9b6e142f20ed708")
 	}

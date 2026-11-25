@@ -25,6 +25,7 @@ func vpcdLease(js jetstream.JetStream, holder string) *kvsync.Lease {
 }
 
 func TestAcquireLeader_OneHolderAtATimeAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	node1, node2 := vpcdLease(js, "node-1"), vpcdLease(js, "node-2")
 
@@ -44,6 +45,7 @@ func TestAcquireLeader_OneHolderAtATimeAcrossProcesses(t *testing.T) {
 // The two vpcd sites share one Lease, so they exclude each other on one node
 // as well as across nodes.
 func TestAcquireLeader_SitesSharingALeaseExcludeEachOther(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	shared := vpcdLease(js, "node-1")
 
@@ -62,6 +64,7 @@ func TestAcquireLeader_SitesSharingALeaseExcludeEachOther(t *testing.T) {
 // Shutdown cancels the acquiring context first and then releases, so a release
 // bound to that context would no-op and leave the next leader waiting a TTL.
 func TestAcquireLeader_ReleaseSurvivesCancelledContext(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	node1, node2 := vpcdLease(js, "node-1"), vpcdLease(js, "node-2")
 
@@ -133,6 +136,7 @@ func shrinkStartRetry(t *testing.T, retryFor, step time.Duration) {
 // follower that first saw a dead holder's revision sees it a TTL later and takes
 // over about 4*TTL/3 after the last renewal rather than up to 2*TTL.
 func TestElectPass_AHeldLeaseAsksForATakeoverRevisit(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "node-1"))
 	require.True(t, ok)
@@ -145,6 +149,7 @@ func TestElectPass_AHeldLeaseAsksForATakeoverRevisit(t *testing.T) {
 }
 
 func TestElectPass_AWonPassAsksForNoRevisit(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	release, revisit, ok := ElectPass(t.Context(), vpcdLease(js, "node-1"))
 	require.True(t, ok)

@@ -66,6 +66,7 @@ func vpcSpecs(cidrs map[string]string) map[string]topology.VPCSpec {
 // Of two attachments with identical ranges the earlier holds the route, in
 // either read order; a range that only overlaps is propagated as well.
 func TestClassifyTransitGateways_OverlappingRanges(t *testing.T) {
+	t.Parallel()
 	vpcs := vpcSpecs(map[string]string{"vpc-a": "10.0.0.0/16", "vpc-b": "10.0.0.0/16", "vpc-c": "10.0.1.0/24"})
 	atts := []ec2projection.TransitGatewayAttachment{
 		linkedAttachment("tgw-attach-b", "vpc-b", 2, 1),
@@ -85,6 +86,7 @@ func TestClassifyTransitGateways_OverlappingRanges(t *testing.T) {
 // When the holder is deleted, the next earliest live attachment takes the
 // range; a later reattachment of the first VPC does not take it back.
 func TestClassifyTransitGateways_HolderDeleted(t *testing.T) {
+	t.Parallel()
 	vpcs := vpcSpecs(map[string]string{"vpc-a": "10.0.0.0/16", "vpc-b": "10.0.0.0/16"})
 	first := linkedAttachment("tgw-attach-a", "vpc-a", 1, 1)
 	first.Available, first.CleanupPending = false, true
@@ -106,6 +108,7 @@ func TestClassifyTransitGateways_HolderDeleted(t *testing.T) {
 
 // Each record lands in the one stage that acts on it.
 func TestClassifyTransitGateways_States(t *testing.T) {
+	t.Parallel()
 	vpcs := vpcSpecs(map[string]string{"vpc-a": "10.0.0.0/16"})
 	unlinked := linkedAttachment("tgw-attach-new", "vpc-a", 0, 0)
 	unlinked.VPCAddr, unlinked.TGWAddr, unlinked.Available, unlinked.Pending = netip.Addr{}, netip.Addr{}, false, true
@@ -142,6 +145,7 @@ func TestClassifyTransitGateways_States(t *testing.T) {
 // Routes fan out over the governed subnets with the VPC range and more
 // specific gateway routes excluded; other targets are ignored.
 func TestLoadTGWRoutes_FanOutAndExclusions(t *testing.T) {
+	t.Parallel()
 	vpcs := vpcSpecs(map[string]string{"vpc-a": "10.0.0.0/16"})
 	subnets := map[string]topology.SubnetSpec{
 		"subnet-1": {SubnetID: "subnet-1", VPCID: "vpc-a"},
@@ -168,6 +172,7 @@ func TestLoadTGWRoutes_FanOutAndExclusions(t *testing.T) {
 // Records read from KV become a link with its subnet zones and the route that
 // targets it; another AZ's VPC is not realised here.
 func TestLoadIntentFromKV_TransitGateway(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		testAcct + ".vpc-a": mustJSON(t, ec2vpc.VPCRecord{VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a"}),

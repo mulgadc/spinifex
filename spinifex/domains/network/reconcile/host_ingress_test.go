@@ -189,6 +189,7 @@ func assertRoutes(t *testing.T, name string, got, want map[string]string) {
 // still get the route from intent, or a host that neither handled the event
 // nor won a drift lease has no path into the VPC until a full resync.
 func TestHostIngress_AttachHandledOnOneNodeConvergesEveryNode(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	intent := newClusterIntent()
 	seedRouter(t, m, "vpc-1", "10.1.0.0/16")
@@ -216,6 +217,7 @@ func TestHostIngress_AttachHandledOnOneNodeConvergesEveryNode(t *testing.T) {
 // Detach has the same reach as attach, so the route must leave every node, not
 // only the one that ran DetachIGW.
 func TestHostIngress_DetachPrunesOnEveryNode(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	intent := newClusterIntent()
 	seedRouter(t, m, "vpc-1", "10.1.0.0/16")
@@ -248,6 +250,7 @@ func TestHostIngress_DetachPrunesOnEveryNode(t *testing.T) {
 // for one host route. Each node must pick the same holder whatever route it
 // had before and whichever order it met the VPCs in.
 func TestHostIngress_SharedCIDRPicksTheSameHolderOnEveryNode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		preferred string
@@ -259,6 +262,7 @@ func TestHostIngress_SharedCIDRPicksTheSameHolderOnEveryNode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			m := mock.New()
 			intent := newClusterIntent()
 			for vpcID, gw := range map[string]string{"vpc-a": "100.127.0.16", "vpc-b": "100.127.0.17"} {
@@ -289,6 +293,7 @@ func TestHostIngress_SharedCIDRPicksTheSameHolderOnEveryNode(t *testing.T) {
 // Until the winning VPC's gateway exists the route is left alone: switching it
 // to the loser and back would cut the CIDR over twice for nothing.
 func TestHostIngress_PendingWinnerHoldsTheRouteAndRevisits(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	intent := newClusterIntent()
 	seedRouter(t, m, "vpc-a", "172.31.0.0/16")
@@ -316,6 +321,7 @@ func TestHostIngress_PendingWinnerHoldsTheRouteAndRevisits(t *testing.T) {
 // rebuild the table from intent: repoint a route left on a stale gateway, add
 // one it never had, and prune one whose VPC detached while it was down.
 func TestHostIngress_RestartConvergesFromIntent(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	intent := newClusterIntent()
 	for vpcID, v := range map[string][2]string{
@@ -342,6 +348,7 @@ func TestHostIngress_RestartConvergesFromIntent(t *testing.T) {
 // An unreadable store is not an empty one: reading it as empty would strip
 // every VPC's ingress route from every node at once.
 func TestHostIngress_IntentReadFailureNeverPrunes(t *testing.T) {
+	t.Parallel()
 	m := mock.New()
 	intent := newClusterIntent()
 	intent.err = errors.New("kv unavailable")
@@ -358,6 +365,7 @@ func TestHostIngress_IntentReadFailureNeverPrunes(t *testing.T) {
 // while another node holds the drift lease and no event arrives, well inside
 // its resync.
 func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 	vpcs, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 1)
@@ -414,16 +422,22 @@ func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *test
 	}
 	// Watchers attach asynchronously and see updates only, so the write is
 	// repeated until one lands rather than racing the loop's startup.
+	// Convergence is polled often so the test ends once a write has landed.
 	deadline := time.Now().Add(10 * time.Second)
+	var nextPut time.Time
 	for !converged() {
-		if time.Now().After(deadline) {
+		now := time.Now()
+		if now.After(deadline) {
 			for i, n := range nodes {
 				t.Errorf("node %d routes = %v 10s after the attach was written, want %v", i, n.snapshot(), want)
 			}
 			t.FailNow()
 		}
-		put(t, igws, "acct/igw-1", ec2igw.IGWRecord{InternetGatewayId: "igw-1", VpcId: "vpc-1", State: "available"})
-		time.Sleep(500 * time.Millisecond)
+		if !now.Before(nextPut) {
+			put(t, igws, "acct/igw-1", ec2igw.IGWRecord{InternetGatewayId: "igw-1", VpcId: "vpc-1", State: "available"})
+			nextPut = now.Add(500 * time.Millisecond)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 // behind it. Built from ENI and user EIPs alone it read as absent from intent,
 // so every drift pass tore down the ingress of every live NAT gateway.
 func TestAddLiveCountsANATGatewayAddressAsLive(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestReconciler(t)
 
 	intent := freshIntent(t)
@@ -33,6 +34,7 @@ func TestAddLiveCountsANATGatewayAddressAsLive(t *testing.T) {
 
 // A released gateway is still swept: the set is intent, not history.
 func TestAddLiveOmitsANATGatewayIntentNoLongerCarries(t *testing.T) {
+	t.Parallel()
 	r, _ := newTestReconciler(t)
 
 	live := policy.LiveEIPs{Ports: map[string]struct{}{}, ExternalIPs: map[string]struct{}{}}

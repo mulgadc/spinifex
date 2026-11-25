@@ -22,6 +22,7 @@ import (
 // reconcile leaves the NB unchanged. This is the post-reboot regression shape
 // from TestReconcile_PublicInstanceExemptFromDropGate, driven against real OVN.
 func TestScenario_IGWDropGatePublicInstance_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	ctx := context.Background()
 

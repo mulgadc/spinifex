@@ -144,6 +144,7 @@ func reroutedSubnets(t *testing.T, m *mock.Client, router string) []string {
 // A pending Transit Gateway gets its router and is then confirmed at its
 // generation; an available one is not confirmed again.
 func TestReconcile_TransitGatewayRouterThenAvailable(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -174,6 +175,7 @@ func TestReconcile_TransitGatewayRouterThenAvailable(t *testing.T) {
 // the flows barrier, and delivers in the pass that confirms it. A steady
 // pass writes nothing.
 func TestReconcile_TransitGatewayLinkPendingThenAvailable(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -223,6 +225,7 @@ func TestReconcile_TransitGatewayLinkPendingThenAvailable(t *testing.T) {
 
 // A source subnet in a zone with no attachment subnet keeps only its drop.
 func TestReconcile_TransitGatewayRouteNeedsAttachmentZone(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	if err := rec.Reconcile(context.Background(), tgwIntent(true)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -248,6 +251,7 @@ func TestReconcile_TransitGatewayRouteNeedsAttachmentZone(t *testing.T) {
 // An attachment whose confirmation fails stays pending and fails the pass, so
 // the next pass confirms it again.
 func TestReconcile_TransitGatewayUnconfirmedLinkStaysPending(t *testing.T) {
+	t.Parallel()
 	rec, _ := newTestReconciler(t)
 	p := &tgwRecorder{failActive: errors.New("kv down")}
 	p.wire(rec)
@@ -284,6 +288,7 @@ func (f tgwRoutesFailFor) SyncTransitGatewayRoutes(ctx context.Context, vpcID st
 // so no route that names it describes as active while the datapath drops.
 // An attachment of another VPC is confirmed in the same pass.
 func TestReconcile_TransitGatewayRouteSyncFailureLeavesPending(t *testing.T) {
+	t.Parallel()
 	rec, _ := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -300,6 +305,7 @@ func TestReconcile_TransitGatewayRouteSyncFailureLeavesPending(t *testing.T) {
 // A VPC router that is gone at route sync leaves its attachment pending, as a
 // failed sync does; a later pass writes the rows and confirms it.
 func TestReconcile_TransitGatewayRouterGoneLeavesPending(t *testing.T) {
+	t.Parallel()
 	rec, _ := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -316,6 +322,7 @@ func TestReconcile_TransitGatewayRouterGoneLeavesPending(t *testing.T) {
 // reports it cleaned; the route that targeted it keeps its drop, so it is a
 // blackhole and not a fall-through to a less specific route.
 func TestReconcile_TransitGatewayTeardownLeavesBlackhole(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -354,6 +361,7 @@ func TestReconcile_TransitGatewayTeardownLeavesBlackhole(t *testing.T) {
 // A summary route gets one entry route; a default route gets one only when
 // no internet gateway's default route already carries it.
 func TestReconcile_TransitGatewayEntryRoutes(t *testing.T) {
+	t.Parallel()
 	summary := netip.MustParsePrefix("10.0.0.0/8")
 	for _, tc := range []struct {
 		name string
@@ -366,6 +374,7 @@ func TestReconcile_TransitGatewayEntryRoutes(t *testing.T) {
 		{"default with gateway", defaultRoute, true, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec, m := newTestReconciler(t)
 			intent := tgwIntent(true)
 			intent.TGWRoutes[2].Dest = tc.dest
@@ -385,6 +394,7 @@ func TestReconcile_TransitGatewayEntryRoutes(t *testing.T) {
 
 // A deleting Transit Gateway loses its router and is reported cleaned.
 func TestReconcile_TransitGatewayTeardownDeletesRouter(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -411,6 +421,7 @@ func TestReconcile_TransitGatewayTeardownDeletesRouter(t *testing.T) {
 
 // A pending attachment with no link is prepared and not realised.
 func TestReconcile_TransitGatewayPrepareBeforeLink(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	p := &tgwRecorder{}
 	p.wire(rec)
@@ -430,6 +441,7 @@ func TestReconcile_TransitGatewayPrepareBeforeLink(t *testing.T) {
 
 // The prune removes rows and routers whose record is gone and keeps live ones.
 func TestReconcile_TransitGatewayPruneOrphans(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 	if err := rec.Reconcile(ctx, tgwIntent(true)); err != nil {
@@ -463,6 +475,7 @@ func TestReconcile_TransitGatewayPruneOrphans(t *testing.T) {
 
 // An unreadable Transit Gateway bucket changes nothing and fails the pass.
 func TestReconcile_TransitGatewayIncompleteChangesNothing(t *testing.T) {
+	t.Parallel()
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
 	if err := rec.Reconcile(ctx, tgwIntent(true)); err != nil {

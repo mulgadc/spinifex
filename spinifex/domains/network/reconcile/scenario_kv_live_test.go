@@ -37,6 +37,7 @@ func seedKV(t *testing.T, js jetstream.JetStream, bucket, key string, rec any) {
 // control-plane KV, loads intent from it, reconciles into a real NB DB, and
 // asserts the expected rows plus idempotency.
 func TestScenario_LoadIntentFromKV_Live(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	seedKV(t, js, vpc.KVBucketVPCs, "vpc-a", vpc.VPCRecord{

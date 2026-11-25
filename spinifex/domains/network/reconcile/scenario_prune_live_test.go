@@ -18,6 +18,7 @@ import (
 )
 
 func TestScenario_OrphanPrune_Live(t *testing.T) {
+	t.Parallel()
 	rec, cli := newLiveReconciler(t)
 	ctx := context.Background()
 

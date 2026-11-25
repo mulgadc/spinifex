@@ -28,6 +28,7 @@ func startKV(t *testing.T) jetstream.JetStream {
 }
 
 func TestMatchesLocalAZ(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		vpcAZ, localAZ string
 		want           bool
@@ -45,6 +46,7 @@ func TestMatchesLocalAZ(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_AZFilter(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	localVPC := ec2vpc.VPCRecord{
@@ -79,6 +81,7 @@ func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -116,6 +119,7 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 // record's SuppressDHCP flag into the intent PortSpec, so a delete+recreate
 // (drift) of a statically-addressed customer ENI's LSP never re-adds DHCP.
 func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -160,6 +164,7 @@ func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -192,6 +197,7 @@ func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -233,6 +239,7 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 // state instead would mean nothing is ever attached, so nothing is ever
 // confirmed — a total IGW outage that no other test would catch.
 func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -267,6 +274,7 @@ func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
 // specs for associated *private* subnets, not the NATGW's own public home subnet.
 // Wrong CIDR corrupts conntrack reverse-NAT and causes 100% packet loss.
 func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -318,6 +326,7 @@ func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 // TestLoadIntentFromKV_NATGWNoAssociationSkips guards against SNAT install for
 // a NATGW with no route-table association; emitting the home-subnet CIDR would corrupt the SNAT table.
 func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -345,6 +354,7 @@ func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
 }
 
 func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
@@ -360,6 +370,7 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 // dropped before subscribers attach; reconcile must re-derive per-subnet egress
 // intent from the main RT, including implicit-main subnets.
 func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -412,6 +423,7 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 // TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet with no
 // 0.0.0.0/0 route in an IGW-attached VPC must produce a DropGates intent.
 func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -468,6 +480,7 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 // TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC with no IGW has no router-wide
 // default static route; lr_in_ip_routing already drops, so no drop policy needed.
 func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -495,6 +508,7 @@ func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 // field dropped or transposed here would silently ship an ACL that opens or
 // closes the wrong port.
 func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -561,6 +575,7 @@ func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
 // stop is relaunched by restore, and a missing record is unknown, so both stay
 // probed; a port with no public IP is never read at all.
 func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
@@ -664,6 +679,7 @@ func TestSGRulesToPolicyRules_CarriesPrefixList(t *testing.T) {
 // rows. A record that does not unmarshal is a poison record, not an unhealthy
 // store, so it is skipped — failing on it would wedge reconcile forever.
 func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	good := ec2vpc.VPCRecord{
@@ -690,6 +706,7 @@ func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
 // the amplifier that turns one unreadable VPC into every guest port in it being
 // swept. Its VPC failing to read now fails the pass instead.
 func TestLoadIntentFromKV_ENIsFollowTheirVPC(t *testing.T) {
+	t.Parallel()
 	js := startKV(t)
 
 	vpc := ec2vpc.VPCRecord{

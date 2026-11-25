@@ -78,6 +78,10 @@ func newAgent(cfg Config, id identity, cp controlPlane, rt ctrruntime.Runtime, r
 	return a
 }
 
+// dialContainerd connects to the containerd socket. Tests replace it so New does
+// not wait out the real client's serving probe on an absent socket.
+var dialContainerd = ctrruntime.New
+
 // New builds an Agent from config: it resolves the host identity from IMDS,
 // builds the gateway control-plane client, the ECR resolver and (best-effort)
 // the containerd runtime. A containerd connect failure is logged, not fatal —
@@ -111,7 +115,7 @@ func New(cfg Config) (*Agent, error) {
 	// A dial that fails here is not fatal and not final: the node starts the
 	// container daemon and the agent back to back, so the socket is often not
 	// accepting yet. Run's watch loop keeps dialling.
-	rt, perr := ctrruntime.New(cfg.ContainerdSocket)
+	rt, perr := dialContainerd(cfg.ContainerdSocket)
 	if perr != nil {
 		slog.Warn("ecs-agent: containerd unavailable at boot, will keep retrying", "err", perr)
 	}
@@ -124,7 +128,7 @@ func New(cfg Config) (*Agent, error) {
 	a := newAgent(cfg, id, cp, rt, resolver)
 	a.cred = newCredEndpoint(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA,
 		cfg.CredEndpointIP, cfg.CredEndpointPort, execNetRunner{})
-	a.dialRuntime = func() (ctrruntime.Runtime, error) { return ctrruntime.New(cfg.ContainerdSocket) }
+	a.dialRuntime = func() (ctrruntime.Runtime, error) { return dialContainerd(cfg.ContainerdSocket) }
 	return a, nil
 }
 

@@ -880,6 +880,7 @@ func assertRunningThenStopped(t *testing.T, cp *orderingCP, taskID string) {
 // A container that exits the instant it starts must not let RUNNING be
 // reported after its STOPPED: the gateway would revive a dead task.
 func TestRunTask_InstantExitStoppedNeverPrecedesRunning(t *testing.T) {
+	t.Parallel()
 	rt := &ctrruntime.FakePuller{WaitCode: 7}
 	cp := newOrderingCP(rt)
 	a := newRunAgent(cp, rt)
@@ -892,6 +893,7 @@ func TestRunTask_InstantExitStoppedNeverPrecedesRunning(t *testing.T) {
 // The re-adopt path has the same ordering rule for a container that exits
 // right after the agent re-attaches to it.
 func TestReconcile_InstantExitStoppedNeverPrecedesRunning(t *testing.T) {
+	t.Parallel()
 	rt := &ctrruntime.FakePuller{
 		Containers: []ctrruntime.Container{
 			adoptedContainer("t-live", "web", "default", "t-live", testTaskRole, "", true),

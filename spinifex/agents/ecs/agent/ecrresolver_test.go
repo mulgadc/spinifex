@@ -84,6 +84,7 @@ func TestECRResolver_CredsError(t *testing.T) {
 }
 
 func TestECRResolver_GatewayError(t *testing.T) {
+	t.Parallel()
 	srv := gatewayStub(t, "", "", http.StatusInternalServerError)
 	creds := stubCreds{c: aws.Credentials{AccessKeyID: "A", SecretAccessKey: "B"}}
 	r := newECRResolver(creds, "us-east-1", srv.URL, trusting(srv))

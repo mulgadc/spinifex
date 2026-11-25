@@ -14,7 +14,7 @@ import (
 
 func setupTestExternalIPAM(t *testing.T, pools []external.ExternalPoolConfig) *ExternalIPAM {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc := acquireJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
 	ipam, err := NewExternalIPAM(t.Context(), js, pools)
@@ -290,7 +290,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	t.Parallel()
 	pool := testPool()
 	// Create IPAM twice — second init should be idempotent
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc := acquireJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
 	// First init

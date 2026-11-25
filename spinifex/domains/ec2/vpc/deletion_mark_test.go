@@ -263,8 +263,8 @@ func TestDeleteSubnet_OwnedDependencyRefusesBeforeMark(t *testing.T) {
 
 func TestMarkDeleting_KeepsUnknownFields(t *testing.T) {
 	t.Parallel()
-	_, _, js := testutil.StartTestJetStream(t)
-	kv := testutil.SeedKV(t, js, "mark-test", map[string][]byte{
+	_, nc := acquireJetStream(t)
+	kv := testutil.SeedKV(t, testutil.NewJetStream(t, nc), "mark-test", map[string][]byte{
 		"a.vpc-1": []byte(`{"vpc_id":"vpc-1","future_field":{"n":1}}`),
 	})
 	entry, err := kv.Get(t.Context(), "a.vpc-1")

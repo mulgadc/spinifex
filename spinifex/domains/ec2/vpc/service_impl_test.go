@@ -27,10 +27,7 @@ const testAccountID = "123456789012"
 
 func setupTestVPCServiceWithNC(t *testing.T) (*VPCServiceImpl, *nats.Conn) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
+	svc, nc := newPooledTestVPCService(t, nil)
 	testutil.StubVpcdSGResponder(t, nc)
 	return svc, nc
 }
@@ -46,9 +43,7 @@ func setupTestVPCService(t *testing.T) *VPCServiceImpl {
 // API caller.
 func setupTestVPCServiceWithFailingVpcd(t *testing.T, errMsg string) (*VPCServiceImpl, *nats.Conn) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
+	svc, nc := newPooledTestVPCService(t, nil)
 	testutil.StubVpcdSGFailingResponder(t, nc, errMsg)
 	return svc, nc
 }
@@ -1067,9 +1062,7 @@ func TestDeleteSubnet_ResidentCheckFailsClosedOnCorruptENI(t *testing.T) {
 // so subnet and RTB must still land in KV when vpcd is absent.
 func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
+	svc, _ := newPooledTestVPCService(t, nil)
 	// Intentionally NOT calling StubVpcdSGResponder — vpc.create-sg has no
 	// responder, mirroring the bootstrap race.
 
@@ -1327,14 +1320,11 @@ func TestDeleteSubnet_PublishesEvent(t *testing.T) {
 func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
 	t.Parallel()
 	// Create a service with custom config that has AZ set
-	_, nc, _ := testutil.StartTestJetStream(t)
+	cfg := &config.Config{AZ: "us-west-2b"}
+	svc, nc := newPooledTestVPCService(t, cfg)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	cfg := &config.Config{AZ: "us-west-2b"}
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
-	require.NoError(t, err)
-
-	_, err = svc.EnsureDefaultVPC(testAccountID)
+	_, err := svc.EnsureDefaultVPC(testAccountID)
 	require.NoError(t, err)
 
 	// Verify the subnet uses the configured AZ
@@ -2607,11 +2597,8 @@ func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
 
 func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
 	t.Parallel()
-	_, nc, js := testutil.StartTestJetStream(t)
-	testutil.StubVpcdSGResponder(t, nc)
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
-	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	svc, nc := setupTestVPCServiceWithNC(t)
+	ids, err := zoneid.NewResolver(testutil.NewJetStream(t, nc), "mulga-lab", "")
 	require.NoError(t, err)
 	svc.SetZoneIDSource(ids)
 
@@ -2649,11 +2636,8 @@ func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
 
 func TestCreateSubnet_RefusesA65thDistinctZone(t *testing.T) {
 	t.Parallel()
-	_, nc, js := testutil.StartTestJetStream(t)
-	testutil.StubVpcdSGResponder(t, nc)
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
-	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	svc, nc := setupTestVPCServiceWithNC(t)
+	ids, err := zoneid.NewResolver(testutil.NewJetStream(t, nc), "mulga-lab", "")
 	require.NoError(t, err)
 	svc.SetZoneIDSource(ids)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

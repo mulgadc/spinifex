@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,22 +19,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newNodeServices starts one JetStream and returns n VPC services, each on its
-// own connection, standing in for the daemons of an n-node cluster.
+// newNodeServices returns n VPC services on one JetStream, each on its own
+// connection, standing in for the daemons of an n-node cluster.
 func newNodeServices(t *testing.T, n int) ([]*ec2vpc.VPCServiceImpl, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	ns, nc, js := testutil.StartTestJetStream(t)
-	testutil.StubVpcdSGResponder(t, nc)
-
-	svcs := make([]*ec2vpc.VPCServiceImpl, n)
-	for i := range n {
-		conn, err := nats.Connect(ns.ClientURL())
-		require.NoError(t, err)
-		t.Cleanup(conn.Close)
-		svcs[i], err = ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, conn)
-		require.NoError(t, err)
-	}
+	svcs, nc, js, _ := newNodeServicesWithConns(t, n)
 	return svcs, nc, js
+}
+
+func newNodeServicesWithConns(t *testing.T, n int) ([]*ec2vpc.VPCServiceImpl, *nats.Conn, jetstream.JetStream, []*nats.Conn) {
+	t.Helper()
+	nc, svcs, conns := ec2vpc.NewPooledTestNodes(t, n)
+	testutil.StubVpcdSGResponder(t, nc)
+	return svcs, nc, testutil.NewJetStream(t, nc), conns
 }
 
 // accountRecords decodes every record the account holds in bucket.
@@ -81,10 +77,9 @@ type mainRouteTable struct {
 
 func TestEnsureDefaultVPC_RacingNodesBuildOneSetPerAccount(t *testing.T) {
 	t.Parallel()
-	svcs, nc, js := newNodeServices(t, 4)
+	svcs, nc, js, conns := newNodeServicesWithConns(t, 4)
 
-	var vpcCreates atomic.Int32
-	sub, err := nc.Subscribe("vpc.create", func(*nats.Msg) { vpcCreates.Add(1) })
+	sub, err := nc.SubscribeSync("vpc.create")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	require.NoError(t, nc.Flush())
@@ -136,9 +131,15 @@ func TestEnsureDefaultVPC_RacingNodesBuildOneSetPerAccount(t *testing.T) {
 		assert.Len(t, rtbs, 1, "account %s", accountID)
 	}
 
-	require.Eventually(t, func() bool { return vpcCreates.Load() >= int32(len(accounts)) }, 5*time.Second, 10*time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
-	assert.Equal(t, int32(len(accounts)), vpcCreates.Load(), "vpcd must be told about each default VPC once")
+	// A flush on each publisher and then on the subscriber puts every event
+	// the nodes sent into the subscription before it is counted.
+	for _, conn := range conns {
+		require.NoError(t, conn.Flush())
+	}
+	require.NoError(t, nc.Flush())
+	vpcCreates, _, err := sub.Pending()
+	require.NoError(t, err)
+	assert.Equal(t, len(accounts), vpcCreates, "vpcd must be told about each default VPC once")
 }
 
 func TestEnsureDefaultVPC_AdoptsOldestExistingDefault(t *testing.T) {

@@ -1761,6 +1761,7 @@ func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, store := setupTestSnapshotService(t)
 			createTestVolume(t, svc, store, "vol-create-fail", 10)
 			svc.SetEBSProvider(&createFailingProvider{EBSProvider: svc.provider, err: tc.err})
@@ -1777,8 +1778,6 @@ func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
-	t.Parallel()
-
 	svc, store := setupTestSnapshotService(t)
 	tagged := createTestSnapshot(t, svc, store, "vol-tagged", 10, map[string]string{"Keep": "x"})
 	createTestSnapshot(t, svc, store, "vol-other", 20, map[string]string{"Other": "y"})

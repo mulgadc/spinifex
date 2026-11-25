@@ -458,6 +458,7 @@ func TestDeleteSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, store := setupTestSnapshotService(t)
 			snapshotID := unreferencedSnapshot(t, svc, store)
 			svc.SetEBSProvider(&deleteFailingProvider{EBSProvider: svc.provider, err: tc.err})

@@ -213,8 +213,6 @@ func TestDescribeSnapshots_TouchesNoOtherAccountsPrefix(t *testing.T) {
 // the describe ignored it, so the parameter promised a scoping it never
 // applied. Under the account prefix the answer is structural.
 func TestDescribeSnapshots_HonoursOwnerIds(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-owner", 8)
@@ -342,8 +340,6 @@ func TestAccountTeardown_LeavesAnotherAccountsSnapshotsAlone(t *testing.T) {
 // guard being deleted later as redundant with the key builder, whose rejection
 // is an internal error rather than an AuthFailure.
 func TestSnapshot_EmptyCallerAccountIsRefusedAtTheBoundary(t *testing.T) {
-	t.Parallel()
-
 	ctx := context.Background()
 	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}

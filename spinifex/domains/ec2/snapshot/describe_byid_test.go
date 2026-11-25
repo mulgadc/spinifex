@@ -74,6 +74,7 @@ func TestDescribeSnapshotsByID_ReadsOnlyTheNamedDocument(t *testing.T) {
 
 	for _, catalog := range []int{1, 500} {
 		t.Run("catalog"+strconv.Itoa(catalog), func(t *testing.T) {
+			t.Parallel()
 			store := recordingstore.New()
 			svc := newByIDService(store)
 			putByIDSnapshot(t, store, byIDSnapshotDoc(byIDSnapshot, byIDAccount))
@@ -162,6 +163,7 @@ func TestDescribeSnapshotsByID_OwnerIDsFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			store := recordingstore.New()
 			svc := newByIDService(store)
 			putByIDSnapshot(t, store, byIDSnapshotDoc(byIDSnapshot, byIDAccount))
@@ -204,6 +206,7 @@ func TestDescribeSnapshotsByID_AttributeFilters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			store := recordingstore.New()
 			svc := newByIDService(store)
 			putByIDSnapshot(t, store, byIDSnapshotDoc(byIDSnapshot, byIDAccount))

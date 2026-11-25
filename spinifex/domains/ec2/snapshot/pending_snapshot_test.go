@@ -482,6 +482,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			if tc.setup != nil {
@@ -564,6 +565,7 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := tc.build(f)
 
@@ -616,6 +618,7 @@ func TestCreateSnapshot_RollbackInterrupted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.provider.onCreate = refuseFrom(1, ebsprovider.ErrVolumeInUse)
@@ -676,6 +679,7 @@ func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *tes
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			var id string
@@ -742,6 +746,7 @@ func TestCreateSnapshot_LateAcceptanceEndsWithOneCompletedSnapshot(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			var late ebsprovider.CreateSnapshotRequest
@@ -797,6 +802,7 @@ func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			reaper := f.node(nodeB)
@@ -953,6 +959,7 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
@@ -1029,6 +1036,7 @@ func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
@@ -1083,6 +1091,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 	t.Parallel()
 
 	t.Run("no provider settles nothing", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-noprovider0001"}, false)
 		svc := f.node(nodeB)
@@ -1092,6 +1101,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		assert.Zero(t, written)
 	})
 	t.Run("an unreadable document fails the sweep", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		_, err := f.store.PutObject(t.Context(), &s3.PutObjectInput{
 			Bucket: aws.String("test-bucket"), Key: aws.String(snapshotDocumentPrefix + testAccountID + "/snap-corrupt000001.json"),
@@ -1104,6 +1114,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		require.Error(t, err)
 	})
 	t.Run("a cancelled sweep stops", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-cancelled00001"}, false)
 		ctx, cancel := context.WithCancel(t.Context())
@@ -1112,6 +1123,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	})
 	t.Run("settled documents are counted and others skipped", func(t *testing.T) {
+		t.Parallel()
 		f := newPendingFixture(t)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-counted000001"}, false)
 		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-done000000001", State: ebsmetadata.SnapshotStateCompleted}, false)

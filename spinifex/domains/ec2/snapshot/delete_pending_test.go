@@ -73,6 +73,7 @@ func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			tc.doc.SnapshotID = id
@@ -121,6 +122,7 @@ func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
@@ -154,6 +156,7 @@ func TestDeleteSnapshot_ClaimContention(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := fastClaims(f.node(nodeA))
 			refused := 0
@@ -224,6 +227,7 @@ func TestPendingSnapshotReaper_MarkedColumn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
@@ -295,6 +299,7 @@ func TestPendingSnapshotReaper_CleanupInterrupted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
 			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
@@ -343,6 +348,7 @@ func TestDeleteSnapshot_LandsBetweenTheReapersRereadAndWrite(t *testing.T) {
 			name = "the reaper's node"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			reaper := fastClaims(f.node(nodeB))
 			deleter := fastClaims(f.node(nodeA))
@@ -441,6 +447,7 @@ func TestAmbiguousCreate_SetBeforeEveryCall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			f.mem.AnswerSnapshotsPending(tc.pending)
@@ -568,6 +575,7 @@ func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newPendingFixture(t)
 			if tc.snap != nil {
 				tc.snap.SnapshotID = snapID
@@ -596,6 +604,7 @@ func TestCopySnapshot_RefusesASourceThatIsNotCompleted(t *testing.T) {
 
 	for _, state := range []string{snapshotStatePending, "error"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := providerSnapshotService(t, "vol-copygate")
 			require.NoError(t, svc.MetadataStore().PutSnapshot(t.Context(), ebsmetadata.Snapshot{
 				SnapshotID: "snap-copygate00001", VolumeID: "vol-copygate", VolumeSize: 4, State: state, OwnerID: testAccountID,

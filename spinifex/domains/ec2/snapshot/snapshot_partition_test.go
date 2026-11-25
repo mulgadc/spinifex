@@ -29,6 +29,8 @@ import (
 // explicitly. Miss that and DescribeSnapshots keeps returning a snapshot whose
 // storage is gone.
 func TestDeleteSnapshot_LeavesNoDocument(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-del", 8)
@@ -51,6 +53,8 @@ func TestDeleteSnapshot_LeavesNoDocument(t *testing.T) {
 // account ID, so nothing on this path needs a special case. This fails if
 // IsAccountID is ever tightened in a way that rejects "000000000000".
 func TestSnapshot_SystemAccountIsAnOrdinaryAccount(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolumeForAccount(t, svc, store, "vol-sys", 8, awsidentifiers.GlobalAccountID)
@@ -71,6 +75,8 @@ func TestSnapshot_SystemAccountIsAnOrdinaryAccount(t *testing.T) {
 // than widening to every account's snapshots. The strict form reports the
 // underlying failure; the tolerant one maps it to an internal error.
 func TestDescribeSnapshots_RefusesACallerWithNoAccount(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _ := setupTestSnapshotService(t)
 
@@ -86,6 +92,8 @@ func TestDescribeSnapshots_RefusesACallerWithNoAccount(t *testing.T) {
 // snapshot whose chunks are gone, so the failure must surface rather than be
 // logged and swallowed.
 func TestDeleteSnapshot_DocumentDeleteFailureSurfaces(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	objects := &deleteFailingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(),
 		failPrefix: "spinifex/ebsmetadata/v2/snapshots/"}
@@ -106,6 +114,8 @@ func TestDeleteSnapshot_DocumentDeleteFailureSurfaces(t *testing.T) {
 // touches only metadata-store keys. An object under the snapshot ID survives
 // because the memory provider never wrote it and nothing else may delete it.
 func TestDeleteSnapshot_TouchesOnlyMetadataStoreKeys(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
@@ -173,6 +183,8 @@ func (s *deleteFailingStore) DeleteObject(ctx context.Context, input *s3.DeleteO
 // snapshots, so this asserts the access pattern: the listing prefix is the
 // caller's own, and no key under another account's prefix is fetched.
 func TestDescribeSnapshots_TouchesNoOtherAccountsPrefix(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
@@ -201,6 +213,8 @@ func TestDescribeSnapshots_TouchesNoOtherAccountsPrefix(t *testing.T) {
 // the describe ignored it, so the parameter promised a scoping it never
 // applied. Under the account prefix the answer is structural.
 func TestDescribeSnapshots_HonoursOwnerIds(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-owner", 8)
@@ -241,6 +255,8 @@ func TestDescribeSnapshots_HonoursOwnerIds(t *testing.T) {
 // An account the caller's prefix cannot contain is answered without a read at
 // all, rather than by listing and filtering afterwards.
 func TestDescribeSnapshots_ForeignOwnerIDReadsNothing(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
@@ -267,6 +283,8 @@ func TestDescribeSnapshots_ForeignOwnerIDReadsNothing(t *testing.T) {
 // prefix. Scope the check and the delete strips chunks a live tenant volume
 // still reads.
 func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolumeForAccount(t, svc, store, "vol-system", 8, awsidentifiers.GlobalAccountID)
@@ -290,6 +308,8 @@ func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 // reached past that account once destroyed every other account's snapshots.
 // This walks the reaper's exact shape rather than asserting the input again.
 func TestAccountTeardown_LeavesAnotherAccountsSnapshotsAlone(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
 	createTestVolumeForAccount(t, svc, store, "vol-doomed", 8, testAccountID)
@@ -322,6 +342,8 @@ func TestAccountTeardown_LeavesAnotherAccountsSnapshotsAlone(t *testing.T) {
 // guard being deleted later as redundant with the key builder, whose rejection
 // is an internal error rather than an AuthFailure.
 func TestSnapshot_EmptyCallerAccountIsRefusedAtTheBoundary(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}

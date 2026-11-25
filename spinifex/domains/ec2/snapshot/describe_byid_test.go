@@ -70,6 +70,8 @@ func snapshotKey(t *testing.T, accountID, snapshotID string) string {
 // owns. The cost of the old path was the whole catalog, so the count is the
 // assertion, not the answer.
 func TestDescribeSnapshotsByID_ReadsOnlyTheNamedDocument(t *testing.T) {
+	t.Parallel()
+
 	for _, catalog := range []int{1, 500} {
 		t.Run("catalog"+strconv.Itoa(catalog), func(t *testing.T) {
 			store := recordingstore.New()
@@ -94,6 +96,8 @@ func TestDescribeSnapshotsByID_ReadsOnlyTheNamedDocument(t *testing.T) {
 // Naming the same snapshot twice is one read and one result: the listing path
 // matched each document once however often the request named it.
 func TestDescribeSnapshotsByID_MultipleAndDuplicateIDs(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	putByIDSnapshot(t, store, byIDSnapshotDoc("snap-a", byIDAccount))
@@ -114,6 +118,8 @@ func TestDescribeSnapshotsByID_MultipleAndDuplicateIDs(t *testing.T) {
 // Another account's snapshot and a snapshot that was never created are the same
 // answer, and neither reads outside the caller's prefix.
 func TestDescribeSnapshotsByID_CrossTenantAndMissingAreIndistinguishable(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	putByIDSnapshot(t, store, byIDSnapshotDoc("snap-theirs", byIDOther))
@@ -140,6 +146,8 @@ func TestDescribeSnapshotsByID_CrossTenantAndMissingAreIndistinguishable(t *test
 // OwnerIds selecting only another account names snapshots the caller's prefix
 // cannot hold, so the named ID is absent without any read at all.
 func TestDescribeSnapshotsByID_OwnerIDsFilter(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		ownerIDs []string
@@ -178,6 +186,8 @@ func TestDescribeSnapshotsByID_OwnerIDsFilter(t *testing.T) {
 // one, and a named snapshot a filter excludes is not-found rather than an empty
 // success.
 func TestDescribeSnapshotsByID_AttributeFilters(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		filterName  string
@@ -220,6 +230,8 @@ func TestDescribeSnapshotsByID_AttributeFilters(t *testing.T) {
 // snapshots. A specifically-named snapshot is never unrelated, so an unreadable
 // document for it fails both variants rather than reporting it as absent.
 func TestDescribeSnapshotsByID_CorruptDocumentFailsBothVariants(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
@@ -245,6 +257,8 @@ func TestDescribeSnapshotsByID_CorruptDocumentFailsBothVariants(t *testing.T) {
 // the request named them in. Answering not-found here would tell a caller its
 // snapshot was deleted on the strength of a broken connection.
 func TestDescribeSnapshotsByID_StoreErrorOutranksAMissingID(t *testing.T) {
+	t.Parallel()
+
 	memory := objectstore.NewMemoryObjectStore()
 	store := &getFailingStore{MemoryObjectStore: memory, failKey: snapshotKey(t, byIDAccount, byIDSnapshot)}
 	svc := newByIDService(store)
@@ -265,6 +279,8 @@ func TestDescribeSnapshotsByID_StoreErrorOutranksAMissingID(t *testing.T) {
 // The strict variant reports an untenanted caller as the listing path does,
 // rather than flattening the reason the read could not be attempted.
 func TestDescribeSnapshotsByID_UntenantedCallerIsInternalInBothVariants(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	input := &ec2.DescribeSnapshotsInput{SnapshotIds: aws.StringSlice([]string{byIDSnapshot})}
@@ -297,6 +313,8 @@ func (s *getFailingStore) GetObject(ctx context.Context, input *s3.GetObjectInpu
 // A store failure is not absence: reporting not-found here would tell a caller
 // its snapshot is gone on the strength of a broken connection.
 func TestDescribeSnapshotsByID_StoreErrorIsInternal(t *testing.T) {
+	t.Parallel()
+
 	memory := objectstore.NewMemoryObjectStore()
 	store := &getFailingStore{MemoryObjectStore: memory, failKey: snapshotKey(t, byIDAccount, byIDSnapshot)}
 	svc := newByIDService(store)
@@ -313,6 +331,8 @@ func TestDescribeSnapshotsByID_StoreErrorIsInternal(t *testing.T) {
 // A caller that has already given up gets an error, never an empty result that
 // reads as "this snapshot does not exist".
 func TestDescribeSnapshotsByID_CancelledContextFails(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	putByIDSnapshot(t, store, byIDSnapshotDoc(byIDSnapshot, byIDAccount))
@@ -331,6 +351,8 @@ func TestDescribeSnapshotsByID_CancelledContextFails(t *testing.T) {
 // A request whose only IDs are nil names nothing, which is an empty result
 // rather than a missing snapshot, and reads nothing to find that out.
 func TestDescribeSnapshotsByID_OnlyNilIDs(t *testing.T) {
+	t.Parallel()
+
 	store := recordingstore.New()
 	svc := newByIDService(store)
 	putByIDSnapshot(t, store, byIDSnapshotDoc(byIDSnapshot, byIDAccount))

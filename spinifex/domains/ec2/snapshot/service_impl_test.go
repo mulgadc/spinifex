@@ -105,6 +105,8 @@ func seedProviderVolume(t *testing.T, svc *SnapshotServiceImpl, volumeID string,
 
 // TestCreateSnapshot tests creating a snapshot from a volume.
 func TestCreateSnapshot(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create a test volume first
@@ -143,6 +145,8 @@ func TestCreateSnapshot(t *testing.T) {
 
 // TestCreateSnapshot_MissingVolumeId tests creating a snapshot without volume ID.
 func TestCreateSnapshot_MissingVolumeId(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{}, testAccountID)
@@ -152,6 +156,8 @@ func TestCreateSnapshot_MissingVolumeId(t *testing.T) {
 
 // TestCreateSnapshot_VolumeZeroSize tests that creating a snapshot from a volume with zero SizeGiB fails.
 func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
@@ -182,6 +188,8 @@ func createEncryptedTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *ob
 // TestCreateSnapshot_EncryptedVolume verifies an encrypted volume snapshots
 // successfully and carries its Encrypted flag onto the snapshot.
 func TestCreateSnapshot_EncryptedVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	volumeID := "vol-enc-snap"
@@ -200,6 +208,8 @@ func TestCreateSnapshot_EncryptedVolume(t *testing.T) {
 // an encrypted clone's source SnapshotID, without which an in-use snapshot
 // could be deleted out from under the volume built on it.
 func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
@@ -214,6 +224,8 @@ func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 
 // TestCreateSnapshot_VolumeNotFound tests creating a snapshot from non-existent volume.
 func TestCreateSnapshot_VolumeNotFound(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -225,6 +237,8 @@ func TestCreateSnapshot_VolumeNotFound(t *testing.T) {
 
 // TestDescribeSnapshots tests listing all snapshots.
 func TestDescribeSnapshots(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volumes
@@ -260,6 +274,8 @@ func TestDescribeSnapshots(t *testing.T) {
 }
 
 func TestDescribeSnapshotsStrict_RejectsPartialMetadataResults(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	key, err := ebsmetadata.SnapshotKey(testAccountID, "snap-corrupt")
 	require.NoError(t, err)
@@ -284,6 +300,8 @@ func TestDescribeSnapshotsStrict_RejectsPartialMetadataResults(t *testing.T) {
 
 // TestDescribeSnapshots_ByID tests listing specific snapshots by ID.
 func TestDescribeSnapshots_ByID(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volume
@@ -315,6 +333,8 @@ func TestDescribeSnapshots_ByID(t *testing.T) {
 // failure, unlike a --filters query that simply matches nothing (see
 // TestDescribeSnapshots_FilterNoResults).
 func TestDescribeSnapshots_NotFound(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-1", 50)
 
@@ -332,6 +352,8 @@ func TestDescribeSnapshots_NotFound(t *testing.T) {
 
 // TestDescribeSnapshots_Empty tests listing snapshots when none exist.
 func TestDescribeSnapshots_Empty(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
@@ -346,6 +368,8 @@ func TestDescribeSnapshots_Empty(t *testing.T) {
 // listed. Without that document the snapshot is not in the account's prefix
 // and DescribeSnapshots cannot see it at all.
 func TestDescribeSnapshots_ImportedAMISnapshotVisible(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	seedSnapshotDocument(t, store, ebsmetadata.Snapshot{
@@ -366,6 +390,8 @@ func TestDescribeSnapshots_ImportedAMISnapshotVisible(t *testing.T) {
 
 // TestDescribeSnapshots_AccountScoping tests that account A cannot see account B's snapshots.
 func TestDescribeSnapshots_AccountScoping(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
@@ -398,6 +424,8 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 
 // TestDeleteSnapshot tests deleting a snapshot.
 func TestDeleteSnapshot(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create test volume and snapshot
@@ -438,6 +466,8 @@ func TestDeleteSnapshot(t *testing.T) {
 // A's snapshot. It is not found rather than refused: the caller's prefix is
 // the read, so the endpoint never confirms another account's snapshot IDs.
 func TestDeleteSnapshot_WrongAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
@@ -475,6 +505,8 @@ func clientErrorDetail(t *testing.T, err error) (string, string) {
 
 // TestDeleteSnapshot_InUseByVolume tests that deleting a snapshot fails when a volume was created from it.
 func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create a test volume and snapshot
@@ -510,6 +542,8 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 // accepted no longer holds the snapshot, so deleting a restored resource and then
 // its snapshot succeeds without waiting for the clone's teardown.
 func TestDeleteSnapshot_CloneAlreadyDeleting(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -546,6 +580,8 @@ func TestDeleteSnapshot_CloneAlreadyDeleting(t *testing.T) {
 // A foreign clone of a tenant snapshot needs cross-account EBS sharing, which
 // is deliberately unimplemented.
 func TestDeleteSnapshot_ForeignVolumeDocumentDoesNotRefuseATenantSnapshot(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -566,6 +602,8 @@ func TestDeleteSnapshot_ForeignVolumeDocumentDoesNotRefuseATenantSnapshot(t *tes
 
 // A volume the caller owns is still named in the refusal.
 func TestDeleteSnapshot_OwnVolumeIsNamedInTheRefusal(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -588,6 +626,8 @@ func TestDeleteSnapshot_OwnVolumeIsNamedInTheRefusal(t *testing.T) {
 // The redaction still has a case to protect: a system snapshot does scan every
 // account, and its refusal must not confirm another account's volume ID.
 func TestDeleteSnapshot_SystemSnapshotRefusalDoesNotNameAForeignVolume(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolumeForAccount(t, svc, store, "vol-system", 8, awsidentifiers.GlobalAccountID)
@@ -612,6 +652,8 @@ func TestDeleteSnapshot_SystemSnapshotRefusalDoesNotNameAForeignVolume(t *testin
 // TestDeleteSnapshot_InUseByRegisteredAMI tests that deleting a snapshot
 // fails while an AMI's own CreateImage snapshot still names it, matching AWS.
 func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -650,6 +692,8 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 // check is whole-cluster: a system AMI registered by a different account than
 // the snapshot's owner still blocks the delete.
 func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-source", 50)
@@ -674,6 +718,8 @@ func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
 
 // TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.
 func TestDeleteSnapshot_NotFound(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
@@ -685,6 +731,8 @@ func TestDeleteSnapshot_NotFound(t *testing.T) {
 
 // TestDeleteSnapshot_MissingID tests deleting without snapshot ID.
 func TestDeleteSnapshot_MissingID(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{}, testAccountID)
@@ -697,6 +745,8 @@ func TestDeleteSnapshot_MissingID(t *testing.T) {
 // control-plane config produced a snapshot that described fine and then failed
 // at attach, so this path refuses instead of producing one.
 func TestCopySnapshot_UnsupportedWithoutProvider(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
@@ -724,6 +774,8 @@ func TestCopySnapshot_UnsupportedWithoutProvider(t *testing.T) {
 
 // TestCopySnapshot_WrongAccount tests that account B cannot copy account A's snapshot.
 func TestCopySnapshot_WrongAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
@@ -748,6 +800,8 @@ func TestCopySnapshot_WrongAccount(t *testing.T) {
 
 // TestCopySnapshot_NotFound tests copying a non-existent snapshot.
 func TestCopySnapshot_NotFound(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
@@ -759,6 +813,8 @@ func TestCopySnapshot_NotFound(t *testing.T) {
 
 // TestCopySnapshot_MissingSourceID tests copying without source snapshot ID.
 func TestCopySnapshot_MissingSourceID(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{}, testAccountID)
@@ -789,6 +845,8 @@ func newRefService(kv jetstream.KeyValue) *SnapshotServiceImpl {
 }
 
 func TestAddSnapshotRef(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -803,6 +861,8 @@ func TestAddSnapshotRef(t *testing.T) {
 }
 
 func TestRemoveSnapshotRef(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -826,6 +886,8 @@ func TestRemoveSnapshotRef(t *testing.T) {
 }
 
 func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -834,6 +896,8 @@ func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
 }
 
 func TestRemoveSnapshotRefForCleanupSurvivesCancellation(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
@@ -847,6 +911,8 @@ func TestRemoveSnapshotRefForCleanupSurvivesCancellation(t *testing.T) {
 }
 
 func TestVolumeHasSnapshots(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -869,6 +935,8 @@ func TestVolumeHasSnapshots(t *testing.T) {
 }
 
 func TestKVNilFallback(t *testing.T) {
+	t.Parallel()
+
 	svc := newRefService(nil)
 
 	// All methods should be no-ops when KV is nil
@@ -880,6 +948,8 @@ func TestKVNilFallback(t *testing.T) {
 }
 
 func TestCreateSnapshot_WritesKVEntry(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{
@@ -913,6 +983,8 @@ func TestCreateSnapshot_WritesKVEntry(t *testing.T) {
 }
 
 func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{
@@ -946,6 +1018,8 @@ func TestDeleteSnapshot_RemovesKVEntry(t *testing.T) {
 
 // TestCreateSnapshot_CrossAccountVolumeRejected tests that snapshotting another account's volume is rejected.
 func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 
 	// Create a volume owned by testAccountID (via TenantID)
@@ -976,6 +1050,8 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 // A volume with no owning account cannot be keyed, so the untenanted volume
 // any caller used to be able to snapshot is not a state the store can hold.
 func TestCreateSnapshot_UntenantedVolumeIsUnwritable(t *testing.T) {
+	t.Parallel()
+
 	_, store := setupTestSnapshotService(t)
 
 	err := ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
@@ -1012,6 +1088,8 @@ func createTestSnapshot(t *testing.T, svc *SnapshotServiceImpl, store *objectsto
 }
 
 func TestDescribeSnapshots_FilterByStatus(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-1", 10, nil)
 
@@ -1033,6 +1111,8 @@ func TestDescribeSnapshots_FilterByStatus(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByVolumeId(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-a", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-b", 20, nil)
@@ -1048,6 +1128,8 @@ func TestDescribeSnapshots_FilterByVolumeId(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByVolumeSize(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-small", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-big", 100, nil)
@@ -1063,6 +1145,8 @@ func TestDescribeSnapshots_FilterByVolumeSize(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterBySnapshotId(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	snapID := createTestSnapshot(t, svc, store, "vol-1", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-2", 20, nil)
@@ -1078,6 +1162,8 @@ func TestDescribeSnapshots_FilterBySnapshotId(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByOwnerId(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-1", 10, nil)
 
@@ -1099,6 +1185,8 @@ func TestDescribeSnapshots_FilterByOwnerId(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterMultipleValues_OR(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-a", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-b", 20, nil)
@@ -1114,6 +1202,8 @@ func TestDescribeSnapshots_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterMultipleFilters_AND(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-a", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-b", 20, nil)
@@ -1140,6 +1230,8 @@ func TestDescribeSnapshots_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterUnknownName_Error(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := setupTestSnapshotService(t)
 
 	_, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -1151,6 +1243,8 @@ func TestDescribeSnapshots_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterWildcard(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-prod-1", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-staging-1", 20, nil)
@@ -1165,6 +1259,8 @@ func TestDescribeSnapshots_FilterWildcard(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterNoResults(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-1", 10, nil)
 
@@ -1178,6 +1274,8 @@ func TestDescribeSnapshots_FilterNoResults(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByTag(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-tagged", 10, map[string]string{"Env": "prod"})
 	createTestSnapshot(t, svc, store, "vol-untagged", 20, nil)
@@ -1192,6 +1290,8 @@ func TestDescribeSnapshots_FilterByTag(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterNoFilters(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestSnapshot(t, svc, store, "vol-1", 10, nil)
 	createTestSnapshot(t, svc, store, "vol-2", 20, nil)
@@ -1202,6 +1302,8 @@ func TestDescribeSnapshots_FilterNoFilters(t *testing.T) {
 }
 
 func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
+	t.Parallel()
+
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
@@ -1227,6 +1329,8 @@ func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
 // the legacy config.json scan cannot see it. Deleting the snapshot underneath
 // one would strip chunks the clone still reads.
 func TestDeleteSnapshot_Provider_BlockedByCloneRecordedInMetadata(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
@@ -1291,6 +1395,8 @@ func (s *snapshotMetadataFailingObjectStore) PutObject(ctx context.Context, inpu
 // document is written before the provider is called, so a failed write leaves
 // no provider snapshot behind to orphan.
 func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
+	t.Parallel()
+
 	store := &snapshotMetadataFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore()}
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
@@ -1353,6 +1459,8 @@ func providerSnapshotService(t *testing.T, volumeID string) (*SnapshotServiceImp
 // control-plane document. That gap is what made the previous implementation
 // describe a snapshot that failed at attach.
 func TestCopySnapshot_Provider_CreatesBackendSnapshot(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, provider := providerSnapshotService(t, "vol-copysrc")
 
@@ -1382,6 +1490,8 @@ func TestCopySnapshot_Provider_CreatesBackendSnapshot(t *testing.T) {
 // JetStream, so it covers the control-plane documents only — the snapshot-ref
 // rollback needs a KV-backed service and is not exercised here.
 func TestCopySnapshot_Provider_CopyAndSourceBothDescribe(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _ := providerSnapshotService(t, "vol-copyref")
 
@@ -1403,6 +1513,8 @@ func TestCopySnapshot_Provider_CopyAndSourceBothDescribe(t *testing.T) {
 // The copy inherits the source description when the caller supplies none,
 // rather than landing with an empty one.
 func TestCopySnapshot_Provider_InheritsSourceDescription(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _ := providerSnapshotService(t, "vol-copydesc")
 
@@ -1421,6 +1533,8 @@ func TestCopySnapshot_Provider_InheritsSourceDescription(t *testing.T) {
 // A provider failure must leave nothing behind: no control-plane document and
 // no entry in the volume's snapshot list.
 func TestCopySnapshot_Provider_FailureLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, provider := providerSnapshotService(t, "vol-copyfail")
 
@@ -1440,6 +1554,8 @@ func TestCopySnapshot_Provider_FailureLeavesNothingBehind(t *testing.T) {
 // Ownership is checked before the copy runs, so another tenant's snapshot is
 // refused rather than duplicated into the caller's account.
 func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, provider := providerSnapshotService(t, "vol-copyown")
 
@@ -1456,6 +1572,8 @@ func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
 // A provider that cannot copy in place answers UnsupportedOperation, and the
 // refusal leaves no copy behind in the control plane.
 func TestCopySnapshot_Provider_WithoutSnapshotCopyIsUnsupported(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, provider := providerSnapshotService(t, "vol-copyunsup")
 
@@ -1494,6 +1612,8 @@ func (p *copyFailingProvider) CopySnapshot(context.Context, ebsprovider.CopySnap
 // Concurrent adds against one volume must not lose a reference, which is what
 // the CAS loop exists to prevent.
 func TestAddSnapshotRefConcurrentNoLostUpdates(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -1518,6 +1638,8 @@ func TestAddSnapshotRefConcurrentNoLostUpdates(t *testing.T) {
 // Removing the last reference takes the key with it, so a volume that has lost
 // every snapshot leaves nothing behind for volumeHasSnapshots to read.
 func TestRemoveSnapshotRefDropsTheEmptiedKey(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -1535,6 +1657,8 @@ func TestRemoveSnapshotRefDropsTheEmptiedKey(t *testing.T) {
 // dropEmptySnapshotRefs leaves a key that is no longer empty alone, so a volume
 // that gained a snapshot after the check keeps its index.
 func TestDropEmptySnapshotRefsLeavesANonEmptyKey(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
@@ -1553,34 +1677,42 @@ func TestDropEmptySnapshotRefsLeavesANonEmptyKey(t *testing.T) {
 // unguarded delete drops it, and volumeHasSnapshots then reports no snapshots
 // for a volume that has one — which is what DeleteVolume gates on.
 func TestDropEmptySnapshotRefsDoesNotDropAConcurrentAdd(t *testing.T) {
+	t.Parallel()
+
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
 	// Repeated because the losing interleaving is a window, not a certainty.
-	for i := range 200 {
-		volume := "vol-" + strconv.Itoa(i)
-		_, err := kv.Put(t.Context(), volume, []byte("[]"))
-		require.NoError(t, err)
+	// The 200 rounds run as 8 workers on separate keys.
+	for w := range 8 {
+		t.Run("worker-"+strconv.Itoa(w), func(t *testing.T) {
+			t.Parallel()
+			for i := range 25 {
+				volume := "vol-" + strconv.Itoa(w) + "-" + strconv.Itoa(i)
+				_, err := kv.Put(t.Context(), volume, []byte("[]"))
+				require.NoError(t, err)
 
-		start := make(chan struct{})
-		var wg sync.WaitGroup
-		var dropErr, addErr error
-		wg.Go(func() {
-			<-start
-			dropErr = svc.dropEmptySnapshotRefs(t.Context(), volume)
-		})
-		wg.Go(func() {
-			<-start
-			addErr = svc.addSnapshotRef(t.Context(), volume, "snap-b")
-		})
-		close(start)
-		wg.Wait()
-		require.NoError(t, dropErr)
-		require.NoError(t, addErr)
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				var dropErr, addErr error
+				wg.Go(func() {
+					<-start
+					dropErr = svc.dropEmptySnapshotRefs(t.Context(), volume)
+				})
+				wg.Go(func() {
+					<-start
+					addErr = svc.addSnapshotRef(t.Context(), volume, "snap-b")
+				})
+				close(start)
+				wg.Wait()
+				require.NoError(t, dropErr)
+				require.NoError(t, addErr)
 
-		has, err := svc.volumeHasSnapshots(t.Context(), volume)
-		require.NoError(t, err)
-		assert.True(t, has, "iteration %d: the concurrent add was dropped by the empty-key delete", i)
+				has, err := svc.volumeHasSnapshots(t.Context(), volume)
+				require.NoError(t, err)
+				assert.True(t, has, "%s: the concurrent add was dropped by the empty-key delete", volume)
+			}
+		})
 	}
 }
 
@@ -1598,6 +1730,8 @@ func (p *createFailingProvider) CreateSnapshot(context.Context, ebsprovider.Crea
 // A provider that cannot snapshot a volume while it is attached refuses it
 // as in use, which the client can act on by detaching the volume first.
 func TestCreateSnapshot_ProviderVolumeInUseIsIncorrectState(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-create-inuse", 10)
 	svc.SetEBSProvider(&createFailingProvider{EBSProvider: svc.provider,
@@ -1615,6 +1749,8 @@ func TestCreateSnapshot_ProviderVolumeInUseIsIncorrectState(t *testing.T) {
 // repeat fails the same way the request is internal and the snapshot is left
 // pending for the reaper rather than removed.
 func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		err  error
@@ -1641,6 +1777,8 @@ func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 }
 
 func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	tagged := createTestSnapshot(t, svc, store, "vol-tagged", 10, map[string]string{"Keep": "x"})
 	createTestSnapshot(t, svc, store, "vol-other", 20, map[string]string{"Other": "y"})
@@ -1672,6 +1810,8 @@ func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
 // AWS reports StorageTier standard on every described snapshot, by listing or
 // by ID, and none on CreateSnapshot's answer.
 func TestDescribeSnapshots_ReportsStandardStorageTier(t *testing.T) {
+	t.Parallel()
+
 	svc, store := setupTestSnapshotService(t)
 	createTestVolume(t, svc, store, "vol-1", 50)
 

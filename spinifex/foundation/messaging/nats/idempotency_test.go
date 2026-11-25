@@ -15,6 +15,7 @@ import (
 // The token is set on the HTTP request and consumed by the service behind NATS,
 // so it has to survive the hop or the dedupe never sees it.
 func TestNATSRequest_ForwardsIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())

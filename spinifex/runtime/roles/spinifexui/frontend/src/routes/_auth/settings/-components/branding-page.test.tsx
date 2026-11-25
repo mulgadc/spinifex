@@ -20,7 +20,6 @@ import { BrandingPage } from "./branding-page"
 const mockAdmin = vi.mocked(signedAdminFetch)
 
 const STORED: ConsoleBrandingResponse = {
-  enabled: true,
   revision: 4,
   productName: "Acme Cloud",
   docsUrl: "https://docs.acme.example",

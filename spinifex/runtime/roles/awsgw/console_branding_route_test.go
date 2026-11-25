@@ -17,7 +17,7 @@ import (
 func TestConsoleBrandingRoute_ServedAheadOfSigV4(t *testing.T) {
 	cache := &consolebranding.Cache{}
 	cache.Set(&consolebranding.Record{ProductName: "Acme Cloud"}, 2)
-	branding := consolebranding.Handler{Enabled: true, Cache: cache}
+	branding := consolebranding.Handler{Cache: cache}
 	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil, branding)},
 		gwfix.Deps{IAM: allowAllIAMService()}))
 	h := gw.SetupRoutes()
@@ -26,5 +26,5 @@ func TestConsoleBrandingRoute_ServedAheadOfSigV4(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/console/branding/branding.json", nil))
 
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"enabled":true,"revision":2,"productName":"Acme Cloud"}`, w.Body.String())
+	assert.JSONEq(t, `{"revision":2,"productName":"Acme Cloud"}`, w.Body.String())
 }

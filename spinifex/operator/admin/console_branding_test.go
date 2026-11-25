@@ -23,16 +23,15 @@ import (
 
 var brandingMethods = []string{"GetConsoleBranding", "PutConsoleBranding"}
 
-func brandingDeps(t *testing.T, enabled bool) (Deps, *nats.Conn) {
+func brandingDeps(t *testing.T) (Deps, *nats.Conn) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := consolebranding.OpenBucket(t.Context(), js)
 	require.NoError(t, err)
 	return Deps{NATS: nc, Branding: &ConsoleBranding{
-		Enabled: enabled,
-		Store:   consolebranding.Store{KV: kv},
-		Cache:   &consolebranding.Cache{},
-		Now:     func() time.Time { return time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC) },
+		Store: consolebranding.Store{KV: kv},
+		Cache: &consolebranding.Cache{},
+		Now:   func() time.Time { return time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC) },
 	}}, nc
 }
 
@@ -56,39 +55,8 @@ func errorCode(t *testing.T, err error) string {
 	return code
 }
 
-func TestConsoleBranding_GateOff(t *testing.T) {
-	d, _ := brandingDeps(t, false)
-
-	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "Acme"})
-	assert.Equal(t, awserrors.ErrorUnsupportedOperation, errorCode(t, err))
-	_, message, _ := awserrors.ResolveErrorDetail(err)
-	assert.Contains(t, message, "branding_enabled")
-
-	got, err := runBranding(t, d, "GetConsoleBranding", struct{}{})
-	require.NoError(t, err, "an operator can read what is stored with the gate off")
-	assert.False(t, got.Enabled)
-}
-
-// Turning the gate off and on again keeps the stored record.
-func TestConsoleBranding_RecordSurvivesGateOffAndOn(t *testing.T) {
-	d, _ := brandingDeps(t, true)
-	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "Acme"})
-	require.NoError(t, err)
-
-	d.Branding.Enabled = false
-	off, err := runBranding(t, d, "GetConsoleBranding", struct{}{})
-	require.NoError(t, err)
-	assert.Equal(t, "Acme", off.ProductName)
-
-	d.Branding.Enabled = true
-	on, err := runBranding(t, d, "GetConsoleBranding", struct{}{})
-	require.NoError(t, err)
-	assert.Equal(t, "Acme", on.ProductName)
-	assert.True(t, on.Enabled)
-}
-
 func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
-	d, _ := brandingDeps(t, true)
+	d, _ := brandingDeps(t)
 	logo, err := json.Marshal(operatorv1.BrandingImage{ContentType: consolebranding.TypeSVG, Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)})
 	require.NoError(t, err)
 
@@ -122,7 +90,7 @@ func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
 }
 
 func TestConsoleBranding_LastSaveWins(t *testing.T) {
-	d, _ := brandingDeps(t, true)
+	d, _ := brandingDeps(t)
 	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "First"})
 	require.NoError(t, err)
 	_, err = runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "Second"})
@@ -134,7 +102,7 @@ func TestConsoleBranding_LastSaveWins(t *testing.T) {
 }
 
 func TestConsoleBranding_InvalidFieldIsNamed(t *testing.T) {
-	d, _ := brandingDeps(t, true)
+	d, _ := brandingDeps(t)
 
 	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "blue"}})
 
@@ -201,7 +169,7 @@ func TestConsoleBranding_PrincipalGrantsAreExplicit(t *testing.T) {
 }
 
 func TestDispatchREST_BodyLimitIsPerMethod(t *testing.T) {
-	d, _ := brandingDeps(t, true)
+	d, _ := brandingDeps(t)
 	tests := []struct {
 		method string
 		size   int

@@ -64,7 +64,6 @@ The forwarder trusts the cluster CA at `/etc/spinifex/ca.pem`; set `SPINIFEX_CA`
 The console proxies `/branding/<name>` to the gateway's public `/console/branding/<name>` route, for `branding.json`, `branding.css`, `logo`, `logo-dark` and `favicon` only.
 It allows GET and HEAD, strips `Authorization` and `Cookie`, and answers 502 when the gateway takes more than 2 seconds.
 The gateway serves the record from memory, so the route needs no NATS access here.
-Branding is off until `branding_enabled = true` is set under `[console]` in `spinifex.toml` on every node.
 
 ## UI conventions
 

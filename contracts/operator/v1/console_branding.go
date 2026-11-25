@@ -37,7 +37,6 @@ type PutConsoleBrandingRequest struct {
 // /admin/PutConsoleBranding success body. A nil DocsURL is the built-in link
 // and an empty one hides it.
 type ConsoleBrandingResponse struct {
-	Enabled     bool               `json:"enabled"`
 	Revision    uint64             `json:"revision"`
 	ProductName string             `json:"productName,omitempty"`
 	DocsURL     *string            `json:"docsUrl,omitempty"`

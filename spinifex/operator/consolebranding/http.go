@@ -23,7 +23,6 @@ const immutableCache = "public, max-age=31536000, immutable"
 // Public is the console's view of the branding. Asset paths are relative to
 // the branding route and carry the revision, so a change gives new URLs.
 type Public struct {
-	Enabled     bool    `json:"enabled"`
 	Revision    uint64  `json:"revision,omitempty"`
 	ProductName string  `json:"productName,omitempty"`
 	DocsURL     *string `json:"docsUrl,omitempty"`
@@ -36,8 +35,7 @@ type Public struct {
 // Handler serves the public branding routes from the cache. It carries
 // nothing a tenant cannot see after login.
 type Handler struct {
-	Enabled bool
-	Cache   *Cache
+	Cache *Cache
 }
 
 // ServeHTTP serves branding.json, branding.css and the three images.
@@ -55,7 +53,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec, rev := h.Cache.Snapshot()
-	if !h.Enabled || rec == nil || r.URL.Query().Get("rev") != strconv.FormatUint(rev, 10) {
+	if rec == nil || r.URL.Query().Get("rev") != strconv.FormatUint(rev, 10) {
 		http.NotFound(w, r)
 		return
 	}
@@ -81,8 +79,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) serveJSON(w http.ResponseWriter) {
-	out := Public{Enabled: h.Enabled}
-	if rec, rev := h.Cache.Snapshot(); h.Enabled && rec != nil {
+	var out Public
+	if rec, rev := h.Cache.Snapshot(); rec != nil {
 		asset := func(name string, set bool) string {
 			if !set {
 				return ""

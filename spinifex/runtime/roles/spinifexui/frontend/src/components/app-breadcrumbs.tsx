@@ -10,7 +10,6 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { useAdmin } from "@/hooks/use-admin"
-import { getBranding } from "@/lib/branding"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { breadcrumbTrail, visibleNav } from "@/lib/nav"
 
@@ -24,11 +23,7 @@ export function AppBreadcrumbs() {
   const { isAdmin } = useAdmin()
 
   const trail = breadcrumbTrail(
-    visibleNav({
-      isAdmin,
-      ochreEnabled: isOchreEnabled(),
-      brandingEnabled: getBranding().enabled,
-    }),
+    visibleNav({ isAdmin, ochreEnabled: isOchreEnabled() }),
     pathname,
   )
 

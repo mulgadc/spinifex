@@ -70,7 +70,7 @@ test("the built console renders under its CSP", async ({ api, page }) => {
   // theme's tokens through React's style prop.
   await page.route("**/branding/branding.json", async (route) => {
     await route.fulfill({
-      json: { enabled: true, revision: 1, stylesheet: "branding.css?rev=1" },
+      json: { revision: 1, stylesheet: "branding.css?rev=1" },
     })
   })
   await page.route("**/branding/branding.css*", async (route) => {
@@ -80,7 +80,7 @@ test("the built console renders under its CSP", async ({ api, page }) => {
     })
   })
   api.handle("POST /proxy/awsgw/admin/GetConsoleBranding", () =>
-    json({ enabled: true, revision: 1 }),
+    json({ revision: 1 }),
   )
   await page.goto("/settings/branding")
   await page

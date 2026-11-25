@@ -10,7 +10,6 @@ import {
 } from "./branding"
 
 interface BrandingBody {
-  enabled: boolean
   revision?: number
   productName?: string
   docsUrl?: string
@@ -54,20 +53,11 @@ describe("loadBranding", () => {
 
     await loadBranding()
 
-    expect(getBranding().enabled).toBeFalsy()
-  })
-
-  it("keeps the built-in brand when branding is not enabled", async () => {
-    mockBranding({ enabled: false, productName: "Acme Cloud" })
-
-    await loadBranding()
-
-    expect(productName()).toBe("Spinifex")
+    expect(getBranding()).toStrictEqual({})
   })
 
   it("applies the product name and a hidden Docs link", async () => {
     mockBranding({
-      enabled: true,
       revision: 4,
       productName: "Acme Cloud",
       docsUrl: "",
@@ -80,7 +70,7 @@ describe("loadBranding", () => {
   })
 
   it("never uses a Docs link that is not https", async () => {
-    mockBranding({ enabled: true, docsUrl: "http://docs.acme.example" })
+    mockBranding({ docsUrl: "http://docs.acme.example" })
 
     await loadBranding()
 
@@ -88,7 +78,7 @@ describe("loadBranding", () => {
   })
 
   it("replaces the favicon with the versioned one", async () => {
-    mockBranding({ enabled: true, revision: 4, favicon: "favicon?rev=4" })
+    mockBranding({ revision: 4, favicon: "favicon?rev=4" })
 
     await loadBranding()
 
@@ -100,7 +90,6 @@ describe("loadBranding", () => {
 
   it("ignores an asset path that is not a revisioned name", async () => {
     mockBranding({
-      enabled: true,
       logo: "//evil.example/x.svg",
       stylesheet: "../x.css",
     })
@@ -116,7 +105,6 @@ describe("loadBranding", () => {
   it("stops waiting for a stalled stylesheet when the budget ends", async () => {
     vi.useFakeTimers()
     mockBranding({
-      enabled: true,
       revision: 4,
       stylesheet: "branding.css?rev=4",
     })
@@ -157,6 +145,6 @@ describe("loadBranding", () => {
     await vi.advanceTimersByTimeAsync(2000)
     await loading
 
-    expect(getBranding().enabled).toBeFalsy()
+    expect(getBranding()).toStrictEqual({})
   })
 })

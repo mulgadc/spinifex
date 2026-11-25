@@ -216,8 +216,8 @@ func isSVG(data []byte) bool {
 }
 
 // Response describes the record for /admin callers, without image bytes.
-func (r *Record) Response(enabled bool, revision uint64) operatorv1.ConsoleBrandingResponse {
-	resp := operatorv1.ConsoleBrandingResponse{Enabled: enabled, Revision: revision}
+func (r *Record) Response(revision uint64) operatorv1.ConsoleBrandingResponse {
+	resp := operatorv1.ConsoleBrandingResponse{Revision: revision}
 	if r == nil {
 		return resp
 	}

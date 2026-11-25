@@ -27,7 +27,6 @@ async function serveBrand(
     if (name === "branding.json") {
       await route.fulfill({
         json: {
-          enabled: true,
           revision: 3,
           productName: "Acme Cloud",
           docsUrl: "",

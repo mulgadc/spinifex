@@ -13,19 +13,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/operator/consolebranding"
 )
 
-// ConsoleBranding is the branding store, the gateway's copy of it and the
-// [console] gate. A nil one answers both methods with InternalError.
+// ConsoleBranding is the branding store and the gateway's copy of it. A nil
+// one answers both methods with InternalError.
 type ConsoleBranding struct {
-	Enabled bool
-	Store   consolebranding.Store
-	Cache   *consolebranding.Cache
-	Now     func() time.Time
+	Store consolebranding.Store
+	Cache *consolebranding.Cache
+	Now   func() time.Time
 }
 
-const brandingDisabledMsg = "console branding is not enabled on this cluster; set branding_enabled = true under [console] in spinifex.toml on every node"
-
-// getConsoleBranding works with the gate off, so an operator can see what is
-// stored before turning it on.
+// getConsoleBranding returns the stored record, without image bytes.
 func (d Deps) getConsoleBranding(ctx context.Context, body []byte) (any, error) {
 	if d.Branding == nil {
 		slog.ErrorContext(ctx, "GetConsoleBranding: branding store not available")
@@ -39,7 +35,7 @@ func (d Deps) getConsoleBranding(ctx context.Context, body []byte) (any, error) 
 		slog.ErrorContext(ctx, "GetConsoleBranding: failed to read record", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	return rec.Response(d.Branding.Enabled, rev), nil
+	return rec.Response(rev), nil
 }
 
 // putConsoleBranding replaces the record in one revision-checked write, so a
@@ -49,9 +45,6 @@ func (d Deps) putConsoleBranding(ctx context.Context, caller dispatch.Actor, bod
 	if b == nil {
 		slog.ErrorContext(ctx, "PutConsoleBranding: branding store not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
-	}
-	if !b.Enabled {
-		return nil, awserrors.Errorf(awserrors.ErrorUnsupportedOperation, "%s", brandingDisabledMsg)
 	}
 	var req operatorv1.PutConsoleBrandingRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -88,5 +81,5 @@ func (d Deps) putConsoleBranding(ctx context.Context, caller dispatch.Actor, bod
 	}
 	slog.InfoContext(ctx, "Console branding updated", "updatedBy", next.UpdatedBy,
 		"revision", newRev, "changed", consolebranding.ChangedFields(stored, next))
-	return next.Response(true, newRev), nil
+	return next.Response(newRev), nil
 }

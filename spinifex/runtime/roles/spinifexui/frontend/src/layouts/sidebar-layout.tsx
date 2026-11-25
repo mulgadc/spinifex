@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/sidebar"
 import { useAdmin } from "@/hooks/use-admin"
 import { clearCredentials } from "@/lib/auth"
-import { docsUrl, productName, getBranding } from "@/lib/branding"
+import { docsUrl, productName } from "@/lib/branding"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { activeNavItem, type NavGroup, visibleNav } from "@/lib/nav"
 import { signOut } from "@/lib/query-client"
@@ -129,12 +129,7 @@ export function SidebarLayout() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { isAdmin } = useAdmin()
-
-  const groups = visibleNav({
-    isAdmin,
-    ochreEnabled: isOchreEnabled(),
-    brandingEnabled: getBranding().enabled,
-  })
+  const groups = visibleNav({ isAdmin, ochreEnabled: isOchreEnabled() })
 
   const docs = docsUrl()
   const active = activeNavItem(groups, pathname)

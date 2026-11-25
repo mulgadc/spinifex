@@ -585,14 +585,13 @@ func launchService(config *config.ClusterConfig) error {
 	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
 	// Every gateway keeps its own copy of the console branding, so the public
 	// route never waits on NATS. The bucket opens lazily, so a branding store
-	// that is down cannot stop the gateway; only the [console] gate allows writes.
+	// that is down cannot stop the gateway.
 	branding := &operatoradmin.ConsoleBranding{
-		Enabled: config.Console.BrandingEnabled,
-		Store:   consolebranding.Store{KV: &consolebranding.LazyBucket{JS: js}},
-		Cache:   &consolebranding.Cache{},
+		Store: consolebranding.Store{KV: &consolebranding.LazyBucket{JS: js}},
+		Cache: &consolebranding.Cache{},
 	}
 	go branding.Cache.Run(janitorCtx, branding.Store, brandingRefreshInterval)
-	brandingRoutes := consolebranding.Handler{Enabled: branding.Enabled, Cache: branding.Cache}
+	brandingRoutes := consolebranding.Handler{Cache: branding.Cache}
 	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()), brandingRoutes)
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{

@@ -1,5 +1,5 @@
-// Drives a load of the Branding route through the real routeTree, with the
-// branding gate and the caller's account each on and off.
+// Drives a load of the Branding route through the real routeTree, as the
+// operator and as a tenant.
 import { QueryClientProvider } from "@tanstack/react-query"
 import {
   createMemoryHistory,
@@ -24,9 +24,7 @@ vi.mock("@/lib/aws-client", async () => {
 
 vi.mock("@/lib/signed-fetch", () => ({
   signedFetch: vi.fn(async () => await Promise.resolve({})),
-  signedAdminFetch: vi.fn(
-    async () => await Promise.resolve({ enabled: true, revision: 0 }),
-  ),
+  signedAdminFetch: vi.fn(async () => await Promise.resolve({ revision: 0 })),
 }))
 
 vi.mock("@/lib/auth", async (importOriginal) => {
@@ -53,10 +51,10 @@ import { routeTree } from "../../../routeTree.gen"
 const ADMIN = "000000000001"
 const TENANT = "000000000002"
 
-async function setGate(enabled: boolean) {
+async function loadBuiltInBrand() {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => await Promise.resolve(Response.json({ enabled }))),
+    vi.fn(async () => await Promise.resolve(Response.json({}))),
   )
   await loadBranding()
 }
@@ -95,8 +93,8 @@ describe("Settings → Branding route", () => {
     vi.unstubAllGlobals()
   })
 
-  it("opens for the operator while branding is on", async () => {
-    await setGate(true)
+  it("opens for the operator", async () => {
+    await loadBuiltInBrand()
     mockStsSend.mockResolvedValue({ Account: ADMIN })
     const router = renderAppAt("/settings/branding")
 
@@ -106,12 +104,9 @@ describe("Settings → Branding route", () => {
     expect(router.state.location.pathname).toBe("/settings/branding")
   })
 
-  it.each([
-    ["a tenant account", TENANT, true],
-    ["the operator with branding off", ADMIN, false],
-  ])("sends %s home", async (_, account, enabled) => {
-    await setGate(enabled)
-    mockStsSend.mockResolvedValue({ Account: account })
+  it("sends a tenant account home", async () => {
+    await loadBuiltInBrand()
+    mockStsSend.mockResolvedValue({ Account: TENANT })
     const router = renderAppAt("/settings/branding")
 
     await waitFor(() => {

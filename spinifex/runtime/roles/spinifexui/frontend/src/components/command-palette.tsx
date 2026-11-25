@@ -16,7 +16,6 @@ import {
   CommandShortcut,
 } from "@/components/ui/command"
 import { useAdmin } from "@/hooks/use-admin"
-import { getBranding } from "@/lib/branding"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { visibleNav } from "@/lib/nav"
 import { IS_MAC } from "@/lib/shortcuts"
@@ -92,11 +91,7 @@ export function CommandPalette() {
   const { isAdmin } = useAdmin()
   const { theme, setTheme } = useTheme()
 
-  const groups = visibleNav({
-    isAdmin,
-    ochreEnabled: isOchreEnabled(),
-    brandingEnabled: getBranding().enabled,
-  })
+  const groups = visibleNav({ isAdmin, ochreEnabled: isOchreEnabled() })
 
   const creates = groups.flatMap((group) =>
     group.items.flatMap((item) =>

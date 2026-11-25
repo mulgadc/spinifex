@@ -100,8 +100,8 @@ func TestAdminWire_PutConsoleBrandingRequest(t *testing.T) {
 
 func TestAdminWire_ConsoleBrandingResponse(t *testing.T) {
 	goldenJSON(t, ConsoleBrandingResponse{
-		Enabled: true, Revision: 4, ProductName: "Acme", Primary: BrandingColors{Light: "#0A4A8F"},
+		Revision: 4, ProductName: "Acme", Primary: BrandingColors{Light: "#0A4A8F"},
 		Logo: &BrandingImageInfo{ContentType: "image/png", Size: 10},
-	}, `{"enabled":true,"revision":4,"productName":"Acme","primary":{"light":"#0A4A8F"},"logo":{"contentType":"image/png","size":10}}`)
-	goldenJSON(t, ConsoleBrandingResponse{}, `{"enabled":false,"revision":0}`)
+	}, `{"revision":4,"productName":"Acme","primary":{"light":"#0A4A8F"},"logo":{"contentType":"image/png","size":10}}`)
+	goldenJSON(t, ConsoleBrandingResponse{}, `{"revision":0}`)
 }

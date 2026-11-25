@@ -205,7 +205,7 @@ async function installConsole(page: Page): Promise<ConsoleApi> {
 
   // The built-in brand, as a gateway with branding off answers it.
   await page.route("**/branding/**", async (route) => {
-    await route.fulfill({ json: { enabled: false } })
+    await route.fulfill({ json: {} })
   })
 
   await page.route("**/api/config", async (route) => {

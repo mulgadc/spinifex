@@ -104,7 +104,7 @@ Dark mode puts ink on the fill rather than white, because no orange is both brig
 
 ### Operator branding
 
-When `[console] branding_enabled = true` is set in `spinifex.toml`, the cluster administrator can set a product name, logos, a favicon, a Docs link and a primary colour for each theme on Settings → Branding.
+The cluster administrator can set a product name, logos, a favicon, a Docs link and a primary colour for each theme on Settings → Branding.
 A colour overrides only `--primary` and `--ring`, through `/branding/branding.css`, which `src/lib/branding.ts` loads before first render under a 2-second budget.
 No other token changes, and no component is restyled.
 

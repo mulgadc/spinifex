@@ -16,7 +16,6 @@ const assetPath = z
   .catch(undefined)
 
 const brandingSchema = z.object({
-  enabled: z.boolean().catch(false),
   revision: z.number().optional().catch(undefined),
   productName: z.string().max(40).optional().catch(undefined),
   docsUrl: z.string().optional().catch(undefined),
@@ -28,7 +27,7 @@ const brandingSchema = z.object({
 
 export type Branding = z.infer<typeof brandingSchema>
 
-const builtIn: Branding = { enabled: false }
+const builtIn: Branding = {}
 
 let branding: Branding = builtIn
 
@@ -38,13 +37,13 @@ export function getBranding(): Branding {
 
 // The name shown in the sidebar and on the login page.
 export function productName(): string {
-  return (branding.enabled && branding.productName) || DEFAULT_PRODUCT_NAME
+  return branding.productName || DEFAULT_PRODUCT_NAME
 }
 
 // The Docs link, or null when the operator has hidden it. Only an https URL is
 // used, so a bad value cannot become a javascript: link.
 export function docsUrl(): string | null {
-  if (!branding.enabled || branding.docsUrl === undefined) {
+  if (branding.docsUrl === undefined) {
     return DEFAULT_DOCS_URL
   }
 
@@ -106,7 +105,7 @@ export async function loadBranding(
 
     const parsed = brandingSchema.safeParse(await response.json())
 
-    if (!parsed.success || !parsed.data.enabled) {
+    if (!parsed.success) {
       return
     }
 

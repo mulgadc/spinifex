@@ -123,27 +123,19 @@ func brandedCache(rev uint64) *consolebranding.Cache {
 	return c
 }
 
-func TestHandler_GateOffServesTheBuiltInBrand(t *testing.T) {
-	h := consolebranding.Handler{Enabled: false, Cache: brandedCache(7)}
-
-	out := publicView(t, get(t, h, "/console/branding/branding.json"))
-	assert.Equal(t, consolebranding.Public{Enabled: false}, out, "a stored record is kept but not served")
-	assert.Equal(t, http.StatusNotFound, get(t, h, "/console/branding/logo?rev=7").Code)
-}
-
 func TestHandler_NoRecordServesTheBuiltInBrand(t *testing.T) {
-	h := consolebranding.Handler{Enabled: true, Cache: &consolebranding.Cache{}}
+	h := consolebranding.Handler{Cache: &consolebranding.Cache{}}
 
-	assert.Equal(t, consolebranding.Public{Enabled: true}, publicView(t, get(t, h, "/console/branding/branding.json")))
+	assert.Equal(t, consolebranding.Public{}, publicView(t, get(t, h, "/console/branding/branding.json")))
 	assert.Equal(t, http.StatusNotFound, get(t, h, "/console/branding/branding.css?rev=0").Code)
 }
 
 func TestHandler_ServesVersionedAssets(t *testing.T) {
-	h := consolebranding.Handler{Enabled: true, Cache: brandedCache(7)}
+	h := consolebranding.Handler{Cache: brandedCache(7)}
 
 	out := publicView(t, get(t, h, "/console/branding/branding.json"))
 	assert.Equal(t, consolebranding.Public{
-		Enabled: true, Revision: 7, ProductName: "Acme Cloud", DocsURL: ptr(""),
+		Revision: 7, ProductName: "Acme Cloud", DocsURL: ptr(""),
 		Stylesheet: "branding.css?rev=7", Logo: "logo?rev=7", Favicon: "favicon?rev=7",
 	}, out)
 
@@ -171,7 +163,7 @@ func TestHandler_ServesVersionedAssets(t *testing.T) {
 // A URL from an earlier revision must not serve today's bytes under a
 // year-long cache header, or a reset would never reach a browser.
 func TestHandler_StaleRevisionIsNotFound(t *testing.T) {
-	h := consolebranding.Handler{Enabled: true, Cache: brandedCache(7)}
+	h := consolebranding.Handler{Cache: brandedCache(7)}
 
 	for _, rev := range []string{"6", "8", "", "7x"} {
 		w := get(t, h, "/console/branding/logo?rev="+rev)
@@ -181,7 +173,7 @@ func TestHandler_StaleRevisionIsNotFound(t *testing.T) {
 }
 
 func TestHandler_RefusesWrites(t *testing.T) {
-	h := consolebranding.Handler{Enabled: true, Cache: brandedCache(7)}
+	h := consolebranding.Handler{Cache: brandedCache(7)}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/console/branding/branding.json", nil))
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
@@ -192,7 +184,7 @@ func TestHandler_RefusesWrites(t *testing.T) {
 func TestHandler_AnswersWhileStoreIsDown(t *testing.T) {
 	c := brandedCache(3)
 	require.Error(t, c.Refresh(t.Context(), consolebranding.Store{KV: failingKV{}}))
-	h := consolebranding.Handler{Enabled: true, Cache: c}
+	h := consolebranding.Handler{Cache: c}
 
 	out := publicView(t, get(t, h, "/console/branding/branding.json"))
 	assert.Equal(t, "Acme Cloud", out.ProductName)

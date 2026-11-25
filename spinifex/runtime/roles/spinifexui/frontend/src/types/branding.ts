@@ -21,7 +21,6 @@ export interface BrandingImage {
 }
 
 export interface ConsoleBrandingResponse {
-  enabled: boolean
   revision: number
   productName?: string
   // Absent keeps the built-in link; empty hides it.

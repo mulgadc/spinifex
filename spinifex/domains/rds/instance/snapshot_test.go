@@ -391,6 +391,7 @@ func TestDescribeDBSnapshots_NamedSnapshotThatDoesNotExistIsAnError(t *testing.T
 // A filter this phase cannot honour is rejected, because a silently
 // unfiltered list reads as a complete answer.
 func TestDescribeDBSnapshots_RejectsUnhonouredScoping(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 
 	cases := map[string]*rds.DescribeDBSnapshotsInput{
@@ -403,6 +404,7 @@ func TestDescribeDBSnapshots_RejectsUnhonouredScoping(t *testing.T) {
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := h.svc.DescribeDBSnapshots(t.Context(), input, testAccountID)
 			require.Error(t, err)
 		})

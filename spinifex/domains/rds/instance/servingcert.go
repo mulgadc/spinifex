@@ -20,6 +20,10 @@ const (
 	servingCertLifetime       = 90 * 24 * time.Hour
 )
 
+// Production always generates a fresh key; tests swap in pre-generated primes
+// so each mint still gets a distinct key without paying for the prime search.
+var generateServingKey = rsa.GenerateKey
+
 // CALoader returns the cluster CA keypair. Injected so tests mint from a throwaway CA, and so the
 // file-backed implementation stays the only thing needing read access to ca.key.
 type CALoader func() (*x509.Certificate, *rsa.PrivateKey, error)
@@ -60,7 +64,7 @@ func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req Servin
 	if bits <= 0 {
 		bits = defaultServingCertKeyBits
 	}
-	key, err := rsa.GenerateKey(rand.Reader, bits)
+	key, err := generateServingKey(rand.Reader, bits)
 	if err != nil {
 		return nil, fmt.Errorf("rds serving cert: generate key: %w", err)
 	}

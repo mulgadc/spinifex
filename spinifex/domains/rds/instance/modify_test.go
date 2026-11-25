@@ -458,6 +458,7 @@ func TestModifyDBInstance_RejectsAnOutOfRangeBackupRetention(t *testing.T) {
 // is rejected, never served with the parameter quietly dropped. Each of these
 // would otherwise leave the customer believing in a guarantee they do not have.
 func TestModifyDBInstance_RejectsTheUnimplementedParameters(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(*rds.ModifyDBInstanceInput){
 		"MultiAZ":                         func(in *rds.ModifyDBInstanceInput) { in.MultiAZ = aws.Bool(true) },
 		"PubliclyAccessible":              func(in *rds.ModifyDBInstanceInput) { in.PubliclyAccessible = aws.Bool(true) },
@@ -483,6 +484,7 @@ func TestModifyDBInstance_RejectsTheUnimplementedParameters(t *testing.T) {
 
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			in := modifyInput()
 			mutate(in)
 			_, err := h.svc.ModifyDBInstance(t.Context(), in, testAccountID)

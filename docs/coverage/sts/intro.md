@@ -1,9 +1,12 @@
 ### Trust policies
 
-Trust policies are validated at write time rather than silently narrowed at assume time. `NotPrincipal`, `NotAction`, empty-string `Action` elements and empty `Principal` blocks are all rejected as malformed.
+Trust policies are validated when they are written.
+`NotPrincipal`, `NotAction`, empty `Action` elements and empty `Principal` blocks are rejected as malformed.
 
-`Condition` blocks are rejected except on `AssumeRoleWithWebIdentity` with `StringEquals`, which is the shape IRSA needs and which Spinifex evaluates at assume time against the token's issuer, subject and audience. Anything wider is refused rather than accepted and ignored, because an accepted-but-unevaluated condition is a silent over-grant.
+`Condition` blocks are rejected, except `StringEquals` on `AssumeRoleWithWebIdentity`, which IRSA uses.
+Spinifex evaluates that condition against the token's issuer, subject and audience.
 
-### Parameters that are refused, not ignored
+### Parameters that are refused
 
-Several inputs the model describes are deliberately rejected rather than accepted as no-ops: inline session policies and policy ARNs, session tags, and MFA serial numbers and token codes. Each of them would otherwise appear to restrict or strengthen a session that in fact carries the role's full permissions.
+Session policies, policy ARNs, session tags, and MFA serial numbers and token codes are rejected.
+A session always has the full permissions of its role.

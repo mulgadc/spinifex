@@ -20,10 +20,6 @@ tags:
 
 Spinifex implements **82 operations** in the IAM `2010-05-08` API model.
 
-### Scope
-
-All IAM operations are account-scoped. The root user of an account bypasses policy evaluation entirely, as it does on AWS.
-
 ### Operations
 
 | Operation |

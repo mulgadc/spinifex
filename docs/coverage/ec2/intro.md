@@ -1,37 +1,22 @@
 ### Spot Instances Are a Mock
 
-Spot Instance Requests are a mock over the on-demand `RunInstances` path. A request synchronously launches real VMs on the operator's own compute and is then reported `active` and `fulfilled`. There is no spot market: no bidding, no price rejection, no interruption and no reclamation, and instances are never taken back.
+Spot Instance Requests launch on-demand instances and report them as `active` and `fulfilled`.
+There is no spot market: no bidding, no price rejection and no interruption.
 
 ### AMI Launch Permissions Are Refused
 
-An AMI cannot be shared with another account or made public. `ModifyImageAttribute` refuses `LaunchPermission`, `UserIds`, `UserGroups`, `OrganizationArns`, `OrganizationalUnitArns` and `OperationType`, and `ResetImageAttribute` resets only `description`, not `launchPermission`. Each refusal is `InvalidParameterValue`. Terraform's `aws_ami_launch_permission` therefore cannot be created. `description` is the only image attribute that can be modified or reset.
+An AMI cannot be shared with another account or made public.
+`ModifyImageAttribute` and `ResetImageAttribute` accept only `description`, and refuse launch permission changes with `InvalidParameterValue`.
+Terraform's `aws_ami_launch_permission` therefore cannot be created.
 
-### RegisterImage Registers From a Snapshot
+### RegisterImage Refuses Some Parameters
 
-`RegisterImage` takes a root EBS snapshot in `BlockDeviceMappings` and writes an image that points at it.
-`EnaSupport` is supported, with `true` and `false` both accepted and stored on the image.
-`DescribeImages` returns `EnaSupport` when the image has one and leaves the member out when it was never set, as AWS does.
-`CopyImage` carries the value to the copy, and `CreateImage` sets it to `true` because every instance reports ENA support.
-`RunInstances` does not read the flag, so an image registered with `EnaSupport=false` is not held back from instance types that need ENA on AWS, since guests use virtio networking either way.
+`ImageLocation`, `KernelId`, `RamdiskId`, `TpmSupport`, `ImdsSupport`, `SriovNetSupport` and any `VirtualizationType` other than `hvm` are refused with `InvalidParameterValue`.
 
-`RegisterImage` refuses `ImageLocation`, `KernelId`, `RamdiskId`, `TpmSupport`, `ImdsSupport` and `SriovNetSupport`, and any `VirtualizationType` other than `hvm`.
-Each refusal is `InvalidParameterValue`, and the message names the parameter and the value, for example `Value (aki-123) for parameter KernelId is invalid. KernelId is not supported.`
-The same form is used for a bad `Architecture`, `BootMode` or `Name` length.
-A missing `Name`, `BlockDeviceMappings` or root snapshot answers `MissingParameter` and names what is missing.
-Registering with `--ena-support`, `--no-ena-support` and neither, copying the image, and three refusals were run on a three-node cluster with the AWS CLI.
-Launching an instance from an `EnaSupport` image was not run, so the launch path is unchanged by construction and not by test.
-
-### CreateSnapshot Error Mapping
-
-`CreateSnapshot` drains and snapshots the volume inside the EBS provider.
-A provider that cannot snapshot a volume because it is in use, as the `qemunbd` provider cannot for an attached volume, answers `ErrVolumeInUse`, which becomes `IncorrectState` with the message `The volume 'vol-...' is in use. Detach it before creating a snapshot.`
-The `viperblockd` provider drains a mounted export and snapshots it, so an attached volume succeeds there.
-A provider that cannot answer now, for example because another node holds the volume, answers `ServiceUnavailable` so the caller retries.
-Any other provider failure is `ServerInternal`.
-The snapshot taken for `CreateImage` maps these errors the same way.
+`EnaSupport` is stored and returned, but does not limit which instance types can launch the image.
 
 ### EBS Encryption by Default Follows the Platform
 
-Whether new volumes are encrypted is decided by the platform's encryption key, not by the account.
-`GetEbsEncryptionByDefault` and `EnableEbsEncryptionByDefault` report `true` when the platform has an encryption key configured and `false` otherwise, and `EnableEbsEncryptionByDefault` does not change that.
-`DisableEbsEncryptionByDefault` is refused with `OperationNotPermitted` and the message `EBS encryption by default cannot be disabled: this platform encrypts every volume` while the platform encrypts, and answers `false` where it does not.
+The platform, not the account, decides whether new volumes are encrypted.
+`GetEbsEncryptionByDefault` reports `true` when the platform encrypts volumes.
+While it does, `DisableEbsEncryptionByDefault` is refused with `OperationNotPermitted`.

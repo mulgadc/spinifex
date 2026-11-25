@@ -20,13 +20,18 @@ tags:
 
 Spinifex implements **9 operations** in the ACM `2015-12-08` API model.
 
-### Import and issuance
+### Validation
 
-Spinifex both stores externally-issued certificates and issues its own for load balancer listener references. Certificates are account-scoped, and a delete is refused while any listener still references the ARN — there is no force flag, matching AWS.
+`RequestCertificate` ignores `ValidationMethod`, and `EMAIL` validation is not offered.
+The platform selects the method from its configuration:
 
-`RequestCertificate` mints an ARN immediately and returns `PENDING_VALIDATION`; it never issues inline except against a tenant private CA, which has no domain to validate. The validation mode is derived from deployment state rather than configured: the DNS provider API where a credential exists, a manual TXT record where the platform hosts the zone, and a private CA otherwise — the only option for a deployment with no publicly delegated domain.
+| Platform configuration | Validation | `ResourceRecord` |
+| --- | --- | --- |
+| DNS provider credential | The platform writes the record | None |
+| Hosted zone, no provider credential | You publish a TXT record at `_acme-challenge.<domain>.` | TXT, not the CNAME that AWS returns |
+| No public domain | Issued at once by a private CA | None |
 
-Terraform's canonical certificate, DNS record and validation flow works unmodified in every mode. Where Spinifex owns the record write it emits no `ResourceRecord`, so iterating the validation options yields zero records and the validation resource still blocks correctly by polling until the certificate is issued.
+A certificate validated by a manual TXT record is not renewed automatically.
 
 ### Operations
 

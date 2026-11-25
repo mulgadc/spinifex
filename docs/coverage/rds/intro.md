@@ -1,22 +1,11 @@
-### Engines
+### TLS is required on MariaDB
 
-Spinifex offers PostgreSQL and MariaDB. Each DB instance is one dedicated system-owned VM running the engine directly, launched from a platform AMI and hidden from the customer's EC2 API. `Engine` is fixed at create: there is no in-place engine change, no cross-engine snapshot restore and no migration between the two.
-
-`mysql` is not an accepted engine and is not an alias for `mariadb`. MariaDB is offered under its own AWS engine name, exactly as AWS RDS offers it, so a client — including Terraform's `aws_db_instance` — must set `engine = "mariadb"`.
-
-Engine versions are pinned per engine. An `EngineVersion` naming anything but the pin is rejected, including a narrower minor version, because the AMI makes no promise about which minor it carries.
-
-### The endpoint is private
-
-The engine is reached over a customer-account ENI injected into a subnet of the DB subnet group, so the endpoint is reachable from inside the VPC only. The DB VM has other NICs that no customer security group governs, and the engine binds none of them — the port is not open there at all, rather than open and gated.
-
-### TLS is required by default
-
-Both engines enforce encrypted connections by default: `rds.force_ssl` on PostgreSQL and `require_secure_transport` on MariaDB. For MariaDB this is a deliberate divergence from AWS, which leaves it off. Both are boolean, modifiable and dynamic, so setting either to `0` in a parameter group restores plaintext without a reboot.
+MariaDB requires encrypted connections by default (`require_secure_transport=1`), but AWS leaves this off.
+Set it to `0` in a parameter group to permit plaintext connections without a reboot.
 
 ### Rejected parameters
 
-A parameter whose omission would create a false safety, security or availability guarantee is rejected with `InvalidParameterValue` rather than silently dropped.
+These parameters are rejected with `InvalidParameterValue`, so that a feature that is not available is never silently ignored.
 
 | Parameter | Why it is rejected |
 |-----------|--------------------|
@@ -33,7 +22,7 @@ A parameter whose omission would create a false safety, security or availability
 | `EnableCloudwatchLogsExports` | Log export is not implemented |
 | `EngineVersion` other than the engine's pin; on modify, any `EngineVersion` and `Engine` | No in-place engine or version change |
 | `Engine=mysql` (and Aurora engines) | Oracle MySQL is not offered; `mariadb` is a distinct engine, not an alias for it |
-| `NewDBInstanceIdentifier` | The identifier is the DNS label and the KV key |
+| `NewDBInstanceIdentifier` | Renaming an instance is not supported |
 | `DBPortNumber`, `DBSubnetGroupName` on modify | Both would move the endpoint |
 | `MaxAllocatedStorage` | Storage autoscaling is not implemented |
 | `ManageMasterUserPassword`, `RotateMasterUserPassword` | Secrets Manager integration is not offered |

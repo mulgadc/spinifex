@@ -65,8 +65,13 @@ func createS3Client(fixture *testpredastore.Fixture, accessKey, secretKey string
 	return s3.New(sess)
 }
 
+// These tests run in parallel on the one shared cluster: each writes only keys
+// no other test reads, and none creates or deletes a bucket.
+
 // TestIntegration_BucketListing tests that both buckets from config exist.
 func TestIntegration_BucketListing(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -96,6 +101,8 @@ func TestIntegration_BucketListing(t *testing.T) {
 
 // TestIntegration_Authentication_Valid tests authentication with valid credentials.
 func TestIntegration_Authentication_Valid(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -116,6 +123,8 @@ func TestIntegration_Authentication_Valid(t *testing.T) {
 
 // TestIntegration_Authentication_Invalid tests authentication with invalid credentials.
 func TestIntegration_Authentication_Invalid(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -141,6 +150,8 @@ func TestIntegration_Authentication_Invalid(t *testing.T) {
 
 // TestIntegration_FileUpload_TestBucket tests file upload to test-bucket.
 func TestIntegration_FileUpload_TestBucket(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -183,6 +194,8 @@ func TestIntegration_FileUpload_TestBucket(t *testing.T) {
 
 // TestIntegration_FileUpload_PublicBucket tests file upload to public-bucket.
 func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -225,19 +238,25 @@ func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
 
 // TestIntegration_FileOperations_Complete tests full file lifecycle.
 func TestIntegration_FileOperations_Complete(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
 	fixture := testpredastore.Start(t)
 
-	client := createS3Client(fixture, validAccessKey, validSecretKey)
-
 	// Test with both buckets
 	buckets := []string{testBucket, publicBucket}
 
 	for _, bucket := range buckets {
 		t.Run(bucket, func(t *testing.T) {
+			t.Parallel()
+
+			// A client per subtest: a transport shared by parallel requests can dial
+			// a spare connection it never uses, and the gate's shutdown waits 5s on it.
+			client := createS3Client(fixture, validAccessKey, validSecretKey)
+
 			key := "lifecycle-test.txt"
 			content := fmt.Sprintf("hello-world-test-1-%s", bucket)
 
@@ -317,6 +336,8 @@ func TestIntegration_FileOperations_Complete(t *testing.T) {
 
 // TestIntegration_MultipleFiles tests uploading multiple files.
 func TestIntegration_MultipleFiles(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -366,6 +387,8 @@ func TestIntegration_MultipleFiles(t *testing.T) {
 
 // TestIntegration_LargeFile tests uploading a larger file (1MB).
 func TestIntegration_LargeFile(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}

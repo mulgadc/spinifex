@@ -199,7 +199,6 @@ func runtimeOps(rt *Router, accountID, modelID string) map[string]func() error {
 }
 
 func TestRouter_LegacySystemCommitmentRefusedOnAllOperations(t *testing.T) {
-	t.Parallel()
 	type opCase struct {
 		modelID string
 		access  AccessResolver

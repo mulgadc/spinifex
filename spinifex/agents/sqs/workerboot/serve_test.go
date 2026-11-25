@@ -35,6 +35,10 @@ import (
 
 const tenantAccount = "123456789012"
 
+// testCallLimit bounds a relayed call. A worker that serves answers within
+// milliseconds, so a call that must go unserved fails without a long wait.
+const testCallLimit = 250 * time.Millisecond
+
 // publicSQS serves the public SQS registration over the relay, as the
 // ingress would after authenticating the tenant; tenant SigV4 and IAM are
 // not under test here.
@@ -201,6 +205,7 @@ func (c gwCluster) bootedWorker(t *testing.T) (*guest, *gwsign.Signer, workeride
 // and delete from its local store; after the store and worker restart on the
 // same disk the queue is still there and an earlier handle still works.
 func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
+	// Not parallel: it reuses a freed port that a parallel test could bind.
 	r := &relay.Relay{}
 	c := newGWCluster(t, r, nil)
 	g, signer, _ := c.bootedWorker(t)
@@ -289,7 +294,8 @@ func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
 // answering the guest is not ready and no call is served; once it starts,
 // readiness and serving follow.
 func TestServe_UnavailableStoreIsNeverReady(t *testing.T) {
-	r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
+	// Not parallel: it reuses a freed port that a parallel test could bind.
+	r := &relay.Relay{CallLimit: testCallLimit, PollerStale: 200 * time.Millisecond}
 	c := newGWCluster(t, r, nil)
 	g, signer, _ := c.bootedWorker(t)
 	port := freePort(t)
@@ -324,6 +330,7 @@ func TestServe_UnavailableStoreIsNeverReady(t *testing.T) {
 // A worker whose recorded receipt key is gone, or replaced, never serves and
 // never makes a new key, so handles issued earlier are not invalidated.
 func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, path string)
@@ -341,7 +348,8 @@ func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 		}, workerkey.ErrKeyMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
+			t.Parallel()
+			r := &relay.Relay{CallLimit: testCallLimit, PollerStale: 200 * time.Millisecond}
 			c := newGWCluster(t, r, nil)
 			g, signer, _ := c.bootedWorker(t)
 			port := storePort(localStore(t, g, 0))
@@ -379,7 +387,8 @@ func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 
 // A worker the domain has recorded as stopped cannot take work.
 func TestServe_StoppedWorkerTakesNoWork(t *testing.T) {
-	r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
+	t.Parallel()
+	r := &relay.Relay{CallLimit: testCallLimit, PollerStale: 200 * time.Millisecond}
 	c := newGWCluster(t, r, nil)
 	g, signer, in := c.bootedWorker(t)
 	w := c.startServing(t, g, signer, storePort(localStore(t, g, 0)))
@@ -398,14 +407,19 @@ func TestServe_StoppedWorkerTakesNoWork(t *testing.T) {
 		}
 		return nil
 	})
-	if !w.logged("AccessDenied") {
-		t.Fatal("the worker's polls were not refused")
-	}
+	// A call can time out before the refusal is logged, so wait for the log.
+	eventually(t, func() error {
+		if !w.logged("AccessDenied") {
+			return errors.New("the worker's polls were not refused")
+		}
+		return nil
+	})
 }
 
 // A gateway reporting a multi-node host cluster is refused before the worker
 // opens its store, so no queue or marker state is created.
 func TestServe_MultiNodeHostCreatesNoStoreState(t *testing.T) {
+	t.Parallel()
 	c := newGWCluster(t, &relay.Relay{}, func() int { return 3 })
 	g, signer, _ := c.bootedWorker(t)
 	port := storePort(localStore(t, g, 0))

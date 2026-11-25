@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { ec2NatGatewayQueryOptions } from "@/queries/ec2"
 
@@ -23,7 +22,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: pageTitle(`${params.id} | NAT Gateway`),
+        title: `${params.id} | NAT Gateway`,
       },
     ],
   }),

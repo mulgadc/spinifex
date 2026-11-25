@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import {
   ecsClusterQueryOptions,
@@ -35,7 +34,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: pageTitle(`${params.clusterName} | ECS`) }],
+    meta: [{ title: `${params.clusterName} | ECS` }],
   }),
   component: ClusterDetail,
 })

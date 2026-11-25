@@ -5,7 +5,6 @@ import {
   docsUrl,
   getBranding,
   loadBranding,
-  pageTitle,
   productName,
   resetBrandingForTest,
 } from "./branding"
@@ -44,7 +43,6 @@ describe("loadBranding", () => {
     await loadBranding()
 
     expect(productName()).toBe("Spinifex")
-    expect(pageTitle("Dashboard")).toBe("Dashboard | Mulga")
     expect(docsUrl()).toBe(DEFAULT_DOCS_URL)
   })
 
@@ -78,7 +76,6 @@ describe("loadBranding", () => {
     await loadBranding()
 
     expect(productName()).toBe("Acme Cloud")
-    expect(pageTitle("Instances", "EC2")).toBe("Instances | EC2 | Acme Cloud")
     expect(docsUrl()).toBeNull()
   })
 

@@ -1,7 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
 import { ecsClustersQueryOptions } from "@/queries/ecs"
 
 import { ClustersPage } from "../-components/clusters-page"
@@ -22,7 +21,7 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/list-clusters/")({
     })
   },
   head: () => ({
-    meta: [{ title: pageTitle("Clusters | ECS") }],
+    meta: [{ title: "Clusters | ECS" }],
   }),
   component: Clusters,
 })

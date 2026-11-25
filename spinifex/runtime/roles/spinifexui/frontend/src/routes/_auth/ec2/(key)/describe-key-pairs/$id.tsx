@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { ec2KeyPairQueryOptions } from "@/queries/ec2"
 
@@ -21,9 +20,7 @@ export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/$id")(
     head: ({ loaderData }) => ({
       meta: [
         {
-          title: pageTitle(
-            `${loaderData?.KeyPairs?.[0]?.KeyName ?? "Key Pair"} | EC2`,
-          ),
+          title: `${loaderData?.KeyPairs?.[0]?.KeyName ?? "Key Pair"} | EC2`,
         },
       ],
     }),

@@ -139,12 +139,12 @@ func TestConsoleBranding_StaleRevisionLeavesRecordUnchanged(t *testing.T) {
 func TestConsoleBranding_InvalidFieldIsNamed(t *testing.T) {
 	d, _ := brandingDeps(t, true)
 
-	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "#0073EE"}})
+	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "blue"}})
 
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, errorCode(t, err))
 	_, message, _ := awserrors.ResolveErrorDetail(err)
 	assert.Contains(t, message, "primary.light")
-	assert.Contains(t, message, "button text")
+	assert.Contains(t, message, "#RRGGBB")
 }
 
 // Every identity gate denies both methods with the same AccessDenied.

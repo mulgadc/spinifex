@@ -128,22 +128,13 @@ func (r *Record) validate() error {
 			return err
 		}
 	}
-	for _, p := range []struct {
-		field, value string
-		theme        theme
-	}{
-		{"primary.light", r.Primary.Light, lightTheme},
-		{"primary.dark", r.Primary.Dark, darkTheme},
+	// The operator owns the colour, so only its shape is checked, not its contrast.
+	for _, p := range []struct{ field, value string }{
+		{"primary.light", r.Primary.Light},
+		{"primary.dark", r.Primary.Dark},
 	} {
-		if p.value == "" {
-			continue
-		}
-		c, ok := parseHex(p.value)
-		if !ok {
+		if p.value != "" && !validHex(p.value) {
 			return invalid(p.field, "must be a #RRGGBB colour")
-		}
-		if err := checkPrimary(p.theme, c); err != nil {
-			return invalid(p.field, "%s", err)
 		}
 	}
 	data, err := json.Marshal(r)

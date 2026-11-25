@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import {
   ecrRepositoriesQueryOptions,
@@ -33,7 +32,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: pageTitle(`${safeDecodeURIComponent(params.id)} | Repository`),
+        title: `${safeDecodeURIComponent(params.id)} | Repository`,
       },
     ],
   }),

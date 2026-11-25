@@ -2,7 +2,6 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import {
   guardrailQueryOptions,
@@ -29,7 +28,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: pageTitle(`${params.guardrailId} | Guardrail`) }],
+    meta: [{ title: `${params.guardrailId} | Guardrail` }],
   }),
   component: GuardrailDetail,
 })

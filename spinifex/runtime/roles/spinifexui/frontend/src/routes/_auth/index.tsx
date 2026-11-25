@@ -28,7 +28,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { pageTitle } from "@/lib/branding"
 import { getNameTag } from "@/lib/utils"
 import {
   ec2AddressesQueryOptions,
@@ -86,7 +85,7 @@ export const Route = createFileRoute("/_auth/")({
     ])
   },
   head: () => ({
-    meta: [{ title: pageTitle("Dashboard") }],
+    meta: [{ title: "Dashboard" }],
   }),
   component: Dashboard,
 })

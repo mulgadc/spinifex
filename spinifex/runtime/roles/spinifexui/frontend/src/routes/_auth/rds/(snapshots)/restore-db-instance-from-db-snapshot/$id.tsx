@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import {
   ec2ImagesQueryOptions,
@@ -49,7 +48,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: pageTitle(`Restore ${safeDecodeURIComponent(params.id)} | RDS`),
+        title: `Restore ${safeDecodeURIComponent(params.id)} | RDS`,
       },
     ],
   }),

@@ -13,7 +13,6 @@ import {
   type TopologyEdge,
   useTopologyHover,
 } from "@/components/topology/topology-canvas"
-import { pageTitle } from "@/lib/branding"
 import {
   buildTopology,
   formatLinkSpeed,
@@ -30,7 +29,7 @@ import { type NICFacts, nodeFactsQueryOptions } from "@/queries/nodes"
 export const Route = createFileRoute("/_auth/nodes/topology")({
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: pageTitle("Topology | Nodes") }],
+    meta: [{ title: "Topology | Nodes" }],
   }),
   component: TopologyPage,
 })

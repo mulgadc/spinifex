@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
 import {
   foundationModelsQueryOptions,
   guardrailsQueryOptions,
@@ -23,7 +22,7 @@ export const Route = createFileRoute("/_auth/bedrock/(playground)/playground/")(
       ])
     },
     head: () => ({
-      meta: [{ title: pageTitle("Playground | Ochre") }],
+      meta: [{ title: "Playground | Ochre" }],
     }),
     component: PlaygroundPage,
   },

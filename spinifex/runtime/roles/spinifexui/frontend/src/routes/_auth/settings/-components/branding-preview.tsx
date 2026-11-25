@@ -1,7 +1,7 @@
 import { type CSSProperties, useId } from "react"
 
 import { Button } from "@/components/ui/button"
-import { type ThemeName, tokenHex } from "@/lib/brand-contrast"
+import { type ThemeName, tokenHex } from "@/lib/theme-tokens"
 import { cn } from "@/lib/utils"
 
 type CSSVariables = CSSProperties & Record<`--${string}`, string>

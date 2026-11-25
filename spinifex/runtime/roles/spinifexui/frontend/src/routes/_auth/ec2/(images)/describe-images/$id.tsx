@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { isSystemManagedImage } from "@/lib/system-managed"
 import { ec2ImageQueryOptions } from "@/queries/ec2"
@@ -22,7 +21,7 @@ export const Route = createFileRoute("/_auth/ec2/(images)/describe-images/$id")(
     head: ({ loaderData }) => ({
       meta: [
         {
-          title: pageTitle(`${loaderData?.Images?.[0]?.Name ?? "Image"} | EC2`),
+          title: `${loaderData?.Images?.[0]?.Name ?? "Image"} | EC2`,
         },
       ],
     }),

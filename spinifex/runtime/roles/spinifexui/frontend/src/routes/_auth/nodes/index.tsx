@@ -20,7 +20,6 @@ import { ResourceView } from "@/components/resource-view"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -45,7 +44,7 @@ export const Route = createFileRoute("/_auth/nodes/")({
   // Defaults stay out of the URL, so the plain list keeps its plain address.
   beforeLoad: requireAdmin,
   head: () => ({
-    meta: [{ title: pageTitle("Nodes") }],
+    meta: [{ title: "Nodes" }],
   }),
   component: NodesPage,
 })

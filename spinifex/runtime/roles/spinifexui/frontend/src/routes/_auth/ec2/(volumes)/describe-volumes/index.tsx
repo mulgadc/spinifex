@@ -2,7 +2,6 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
-import { pageTitle } from "@/lib/branding"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -27,7 +26,7 @@ export const Route = createFileRoute("/_auth/ec2/(volumes)/describe-volumes/")({
   head: () => ({
     meta: [
       {
-        title: pageTitle("Volumes | EC2"),
+        title: "Volumes | EC2",
       },
     ],
   }),

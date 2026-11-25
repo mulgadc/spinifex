@@ -1,7 +1,5 @@
 import { createFileRoute, notFound } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
-
 import { DesignCataloguePage } from "./-components/design/design-catalogue-page"
 
 // The catalogue is for building the console, not using it: a release build
@@ -13,7 +11,7 @@ export const Route = createFileRoute("/_auth/design")({
     }
   },
   head: () => ({
-    meta: [{ title: pageTitle("Design system") }],
+    meta: [{ title: "Design system" }],
   }),
   component: import.meta.env.DEV ? DesignCataloguePage : () => null,
 })

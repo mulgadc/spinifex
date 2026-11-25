@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { getBranding, pageTitle } from "@/lib/branding"
+import { getBranding } from "@/lib/branding"
 import { requireAdmin } from "@/lib/require-admin"
 
 import { BrandingPage } from "./-components/branding-page"
@@ -15,7 +15,7 @@ export const Route = createFileRoute("/_auth/settings/branding")({
     }
   },
   head: () => ({
-    meta: [{ title: pageTitle("Branding | Settings") }],
+    meta: [{ title: "Branding | Settings" }],
   }),
   component: BrandingPage,
 })

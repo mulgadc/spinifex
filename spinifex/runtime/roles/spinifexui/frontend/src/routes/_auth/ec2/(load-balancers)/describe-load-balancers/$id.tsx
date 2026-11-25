@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import { ec2SubnetsQueryOptions } from "@/queries/ec2"
@@ -54,9 +53,7 @@ export const Route = createFileRoute(
   head: ({ params }) => ({
     meta: [
       {
-        title: pageTitle(
-          `${safeDecodeURIComponent(params.id)} | Load Balancer`,
-        ),
+        title: `${safeDecodeURIComponent(params.id)} | Load Balancer`,
       },
     ],
   }),

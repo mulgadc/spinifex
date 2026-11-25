@@ -108,19 +108,10 @@ When `[console] branding_enabled = true` is set in `spinifex.toml`, the cluster 
 A colour overrides only `--primary` and `--ring`, through `/branding/branding.css`, which `src/lib/branding.ts` loads before first render under a 2-second budget.
 No other token changes, and no component is restyled.
 
-A colour is accepted only if it passes six checks against the theme's own tokens, the same in the page (`src/lib/brand-contrast.ts`) and in the gateway:
+A colour is any `#RRGGBB` value; the operator owns the choice, so its contrast is not checked.
 
-| Use | Pair | Minimum |
-|---|---|---|
-| Button text | `--primary-foreground` on the colour | 4.5:1 |
-| Button hover text | `--primary-foreground` on the colour at 80% over `--background` | 4.5:1 |
-| Button hover text on a card | `--primary-foreground` on the colour at 80% over `--card` | 4.5:1 |
-| Link on the page | the colour on `--background` | 4.5:1 |
-| Link on a card | the colour on `--card` | 4.5:1 |
-| Focus ring | the colour on `--background` | 3:1 |
-
-The checks apply only to a colour the operator sets; the built-in primary is not checked.
-Product names, page titles and the Docs link come from `productName()`, `pageTitle()` and `docsUrl()` in `src/lib/branding.ts`, so no file names Spinifex or Mulga in a title.
+The product name and the Docs link come from `productName()` and `docsUrl()` in `src/lib/branding.ts`.
+A page title is the page's own name and names no product.
 
 ### Radius
 

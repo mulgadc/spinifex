@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { isHexColor, primaryChecks, type ThemeName } from "@/lib/brand-contrast"
+import { isHexColor } from "@/lib/theme-tokens"
 
 // Wire types of the /admin console branding methods, and the Settings form.
 
@@ -59,30 +59,13 @@ export const MAX_PRODUCT_NAME_LENGTH = 40
 
 export type DocsLink = "default" | "custom" | "hidden"
 
-const colorField = (theme: ThemeName) =>
-  z
-    .string()
-    .trim()
-    .superRefine((value, ctx) => {
-      if (value === "") {
-        return
-      }
-
-      if (!isHexColor(value)) {
-        ctx.addIssue({ code: "custom", message: "Enter a colour as #RRGGBB." })
-
-        return
-      }
-
-      const failed = primaryChecks(theme, value).find((c) => !c.passes)
-
-      if (failed) {
-        ctx.addIssue({
-          code: "custom",
-          message: `Too little contrast for ${failed.use}: ${failed.ratio.toFixed(2)}:1, at least ${failed.minimum}:1 is needed.`,
-        })
-      }
-    })
+// The operator owns the colour, so only its shape is checked, not its contrast.
+const colorField = z
+  .string()
+  .trim()
+  .refine((value) => value === "" || isHexColor(value), {
+    message: "Enter a colour as #RRGGBB.",
+  })
 
 export const brandingFormSchema = z
   .object({
@@ -95,8 +78,8 @@ export const brandingFormSchema = z
       ),
     docs: z.enum(["default", "custom", "hidden"]),
     docsUrl: z.string().trim(),
-    light: colorField("light"),
-    dark: colorField("dark"),
+    light: colorField,
+    dark: colorField,
   })
   .superRefine((form, ctx) => {
     if (form.docs !== "custom") {

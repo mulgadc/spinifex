@@ -12,13 +12,8 @@ import { FormLock } from "@/components/form-lock"
 import { ImageUploadField } from "@/components/image-upload-field"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
-import {
-  isHexColor,
-  primaryChecks,
-  type ThemeName,
-  tokenHex,
-} from "@/lib/brand-contrast"
 import { DEFAULT_DOCS_URL, DEFAULT_PRODUCT_NAME } from "@/lib/branding"
+import { isHexColor, type ThemeName, tokenHex } from "@/lib/theme-tokens"
 import { usePutConsoleBranding } from "@/mutations/branding"
 import { consoleBrandingQueryOptions } from "@/queries/branding"
 import {
@@ -345,7 +340,7 @@ const THEME_LABEL: Record<ThemeName, string> = {
   dark: "Dark theme",
 }
 
-// One theme's primary colour, with each of its uses and the contrast it gets.
+// One theme's primary colour.
 function ThemeColorField({
   control,
   theme,
@@ -353,9 +348,6 @@ function ThemeColorField({
   control: Control<BrandingFormData>
   theme: ThemeName
 }) {
-  const value = useWatch({ control, name: theme })
-  const colour = previewColor(value)
-
   return (
     <ColorField
       control={control}
@@ -364,25 +356,6 @@ function ThemeColorField({
       label={`Primary colour, ${THEME_LABEL[theme].toLowerCase()}`}
       name={theme}
       placeholder={tokenHex(theme, "--primary")}
-    >
-      {colour && (
-        <ul
-          aria-label={`Contrast in the ${THEME_LABEL[theme].toLowerCase()}`}
-          className="space-y-0.5 text-xs"
-        >
-          {primaryChecks(theme, colour).map((check) => (
-            <li
-              className={
-                check.passes ? "text-muted-foreground" : "text-destructive"
-              }
-              key={check.use}
-            >
-              {check.passes ? "Passes" : "Fails"}: {check.use},{" "}
-              {check.ratio.toFixed(2)}:1 (at least {check.minimum}:1)
-            </li>
-          ))}
-        </ul>
-      )}
-    </ColorField>
+    />
   )
 }

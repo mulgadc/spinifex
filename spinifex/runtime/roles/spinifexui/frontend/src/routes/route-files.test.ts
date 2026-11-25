@@ -49,8 +49,8 @@ describe("route files", () => {
     expect(stale).toStrictEqual([])
   })
 
-  // An operator can rename the product, so a title names it through pageTitle.
-  it("name the product in titles only through pageTitle", () => {
+  // An operator can rename the product, so a page title names no product.
+  it("name no product in a page title", () => {
     const offenders = Object.entries(SOURCES)
       .filter(([, source]) => /\| (?:Mulga|Spinifex)["`]/.test(source))
       .map(([path]) => path)

@@ -130,7 +130,7 @@ func Stylesheet(p operatorv1.BrandingColors) string {
 		{":root:not(.dark)", p.Light},
 		{":root.dark", p.Dark},
 	} {
-		if _, ok := parseHex(t.value); !ok {
+		if !validHex(t.value) {
 			continue
 		}
 		fmt.Fprintf(&b, "%s{--primary:%s;--ring:%s}\n", t.selector, t.value, t.value)

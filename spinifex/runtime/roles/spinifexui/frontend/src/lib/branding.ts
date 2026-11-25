@@ -6,7 +6,6 @@ import { z } from "zod"
 export const BRANDING_BUDGET_MS = 2000
 
 export const DEFAULT_PRODUCT_NAME = "Spinifex"
-export const DEFAULT_TITLE_NAME = "Mulga"
 export const DEFAULT_DOCS_URL = "https://docs.mulgadc.com"
 
 // Asset paths are relative names with a revision; anything else is ignored.
@@ -40,13 +39,6 @@ export function getBranding(): Branding {
 // The name shown in the sidebar and on the login page.
 export function productName(): string {
   return (branding.enabled && branding.productName) || DEFAULT_PRODUCT_NAME
-}
-
-// A page title: the given parts, then the product name.
-export function pageTitle(...parts: string[]): string {
-  const name = (branding.enabled && branding.productName) || DEFAULT_TITLE_NAME
-
-  return [...parts, name].join(" | ")
 }
 
 // The Docs link, or null when the operator has hidden it. Only an https URL is

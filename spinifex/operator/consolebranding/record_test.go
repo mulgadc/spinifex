@@ -1,11 +1,8 @@
 package consolebranding_test
 
 import (
-	"bytes"
 	"encoding/json"
-	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -77,34 +74,29 @@ func TestApply_DocsURL(t *testing.T) {
 
 func TestApply_PrimaryColour(t *testing.T) {
 	tests := []struct {
-		name    string
-		primary operatorv1.BrandingColors
-		field   string
-		use     string
+		name, field string
+		primary     operatorv1.BrandingColors
 	}{
-		{"not hex", operatorv1.BrandingColors{Light: "blue"}, "primary.light", "#RRGGBB"},
-		{"css injection", operatorv1.BrandingColors{Dark: "#fff;}*{x:y"}, "primary.dark", "#RRGGBB"},
-		{"short hex", operatorv1.BrandingColors{Light: "#fff"}, "primary.light", "#RRGGBB"},
-		{"light button text", operatorv1.BrandingColors{Light: "#0073EE"}, "primary.light", "button text contrast"},
-		{"light passes at rest, fails on hover", operatorv1.BrandingColors{Light: "#0050EE"}, "primary.light", "button hover text"},
-		{"light passes hover on the page, fails it on a card", operatorv1.BrandingColors{Light: "#585858"}, "primary.light", "button hover text on a card"},
-		{"dark button text", operatorv1.BrandingColors{Dark: "#000000"}, "primary.dark", "button text contrast"},
-		{"dark passes at rest, fails on hover", operatorv1.BrandingColors{Dark: "#0082EE"}, "primary.dark", "button hover text"},
+		{"not hex", "primary.light", operatorv1.BrandingColors{Light: "blue"}},
+		{"css injection", "primary.dark", operatorv1.BrandingColors{Dark: "#fff;}*{x:y"}},
+		{"short hex", "primary.light", operatorv1.BrandingColors{Light: "#fff"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := consolebranding.Apply(nil, operatorv1.PutConsoleBrandingRequest{Primary: tc.primary})
-			requireInvalid(t, err, tc.field, tc.use)
+			requireInvalid(t, err, tc.field, "#RRGGBB")
 		})
 	}
 
-	rec, err := consolebranding.Apply(nil, operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "#0A4A8F"}})
+	// The operator owns the colour: white on the light theme's white button
+	// text is accepted.
+	rec, err := consolebranding.Apply(nil, operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "#FFFFFF"}})
 	require.NoError(t, err)
+	assert.Equal(t, "#FFFFFF", rec.Primary.Light)
 	assert.Empty(t, rec.Primary.Dark, "a light-only colour leaves the dark theme at its built-in colour")
 }
 
-// The built-in colours are never checked: leaving a theme unset, or resetting
-// it, keeps the built-in one whatever it scores.
+// Leaving a theme unset, or resetting it, keeps the built-in colour.
 func TestApply_UnsetColourKeepsBuiltIn(t *testing.T) {
 	stored := &consolebranding.Record{Primary: operatorv1.BrandingColors{Light: "#0A4A8F", Dark: "#7FB8F0"}}
 
@@ -225,44 +217,6 @@ func FuzzStylesheetOnlyThemeRules(f *testing.F) {
 			}
 		}
 	})
-}
-
-var oklchDeclRE = regexp.MustCompile(`^\s*(--[a-z-]+):\s*oklch\(([\d.]+)%\s+([\d.]+)\s+([\d.]+)\)`)
-
-// The colour check draws against copies of the console's theme tokens; they
-// must match styles.css or a theme change would leave the check out of date.
-func TestThemeTokensMatchStylesheet(t *testing.T) {
-	css, err := os.ReadFile("../../runtime/roles/spinifexui/frontend/src/styles.css")
-	require.NoError(t, err)
-
-	blocks := map[string][]byte{}
-	light, rest, ok := bytes.Cut(css, []byte("\n.dark {"))
-	require.True(t, ok, "styles.css has no .dark block")
-	_, light, ok = bytes.Cut(light, []byte("\n:root {"))
-	require.True(t, ok, "styles.css has no :root block")
-	dark, _, _ := bytes.Cut(rest, []byte("\n}"))
-	blocks["light"], blocks["dark"] = light, dark
-
-	for themeName, tokens := range consolebranding.ThemeTokens() {
-		declared := map[string][3]float64{}
-		for line := range strings.SplitSeq(string(blocks[themeName]), "\n") {
-			m := oklchDeclRE.FindStringSubmatch(line)
-			if m == nil {
-				continue
-			}
-			l, _ := strconv.ParseFloat(m[2], 64)
-			c, _ := strconv.ParseFloat(m[3], 64)
-			h, _ := strconv.ParseFloat(m[4], 64)
-			declared[m[1]] = [3]float64{l / 100, c, h}
-		}
-		for name, want := range tokens {
-			got, ok := declared[name]
-			require.True(t, ok, "%s %s is not an oklch() declaration in styles.css", themeName, name)
-			for i := range want {
-				assert.InDelta(t, want[i], got[i], 1e-9, "%s %s", themeName, name)
-			}
-		}
-	}
 }
 
 func logoReq(img json.RawMessage) operatorv1.PutConsoleBrandingRequest {

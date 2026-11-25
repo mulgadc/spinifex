@@ -20,8 +20,6 @@ interface ColorFieldProps<T extends FieldValues> {
   placeholder: string
   description?: ReactNode
   info?: ReactNode
-  // Rendered under the control, such as the result of a contrast check.
-  children?: ReactNode
 }
 
 // A #RRGGBB colour, picked or typed. Empty means the default colour, which the
@@ -34,7 +32,6 @@ export function ColorField<T extends FieldValues>({
   placeholder,
   description,
   info,
-  children,
 }: ColorFieldProps<T>) {
   return (
     <Controller
@@ -82,7 +79,6 @@ export function ColorField<T extends FieldValues>({
               </Button>
             </div>
             {description && <FieldDescription>{description}</FieldDescription>}
-            {children}
             <FieldError errors={[fieldState.error]} />
           </Field>
         )

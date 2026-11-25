@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { tokenHex } from "@/lib/brand-contrast"
+import { tokenHex } from "@/lib/theme-tokens"
 import {
   BRANDING_IMAGE_TYPES,
   type ImageChange,

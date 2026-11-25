@@ -3,7 +3,6 @@ import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { pageTitle } from "@/lib/branding"
 import { panelSearchFields } from "@/lib/panel-search"
 import { ecsServicesQueryOptions, ecsTasksQueryOptions } from "@/queries/ecs"
 
@@ -27,7 +26,7 @@ export const Route = createFileRoute(
     ])
   },
   head: ({ params }) => ({
-    meta: [{ title: pageTitle(`${params.serviceName} | ECS`) }],
+    meta: [{ title: `${params.serviceName} | ECS` }],
   }),
   component: ServiceDetail,
 })

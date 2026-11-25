@@ -1,7 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 
-import { pageTitle } from "@/lib/branding"
 import { guardrailQueryOptions } from "@/queries/bedrock"
 import { guardrailToForm } from "@/types/bedrock"
 
@@ -17,7 +16,7 @@ export const Route = createFileRoute(
     })
   },
   head: ({ params }) => ({
-    meta: [{ title: pageTitle(`Edit ${params.guardrailId} | Guardrail`) }],
+    meta: [{ title: `Edit ${params.guardrailId} | Guardrail` }],
   }),
   component: RouteComponent,
 })

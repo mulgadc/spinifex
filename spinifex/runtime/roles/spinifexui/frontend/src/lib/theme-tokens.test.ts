@@ -1,36 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  primaryChecks,
-  THEME_TOKENS,
-  type ThemeName,
-  tokenHex,
-} from "./brand-contrast"
-
-function firstFailure(theme: ThemeName, hex: string): string | undefined {
-  return primaryChecks(theme, hex).find((check) => !check.passes)?.use
-}
-
-describe("primaryChecks", () => {
-  // The same colours the gateway's check is tested with, so the page and the
-  // gateway agree on what they accept.
-  it.each([
-    ["light", "#0073EE", "button text"],
-    ["light", "#0050EE", "button hover text"],
-    ["light", "#585858", "button hover text on a card"],
-    ["dark", "#000000", "button text"],
-    ["dark", "#0082EE", "button hover text"],
-  ] as const)("rejects %s %s for %s", (theme, hex, use) => {
-    expect(firstFailure(theme, hex)).toBe(use)
-  })
-
-  it.each([
-    ["light", "#0A4A8F"],
-    ["dark", "#7FB8F0"],
-  ] as const)("accepts %s %s", (theme, hex) => {
-    expect(firstFailure(theme, hex)).toBeUndefined()
-  })
-})
+import { THEME_TOKENS, tokenHex } from "./theme-tokens"
 
 // Vitest does not load CSS, so the source is read from disk. The app's types
 // leave out Node, so the module is named through a variable.

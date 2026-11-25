@@ -97,23 +97,34 @@ describe("BrandingPage", () => {
     expect(JSON.stringify(puts[0])).not.toContain('"logo"')
   })
 
-  it("names the failed use of a colour and does not send it", async () => {
+  it("sends any #RRGGBB colour the operator chooses", async () => {
     const user = userEvent.setup()
     const puts = serve()
     await renderPage()
 
     const light = screen.getByLabelText("Primary colour, light theme")
     await user.clear(light)
-    await user.type(light, "#0073EE")
+    await user.type(light, "#FFFFFF")
+    await user.click(screen.getByRole("button", { name: "Save" }))
 
-    expect(
-      screen.getByRole("list", { name: "Contrast in the light theme" }),
-    ).toHaveTextContent("Fails: button text")
+    await waitFor(() => {
+      expect(puts).toHaveLength(1)
+    })
+    expect(puts[0]?.primary?.light).toBe("#FFFFFF")
+  })
 
+  it("refuses a colour that is not #RRGGBB and does not send it", async () => {
+    const user = userEvent.setup()
+    const puts = serve()
+    await renderPage()
+
+    const light = screen.getByLabelText("Primary colour, light theme")
+    await user.clear(light)
+    await user.type(light, "blue")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     await expect(
-      screen.findByText(/Too little contrast for button text/u),
+      screen.findByText("Enter a colour as #RRGGBB."),
     ).resolves.toBeInTheDocument()
     expect(puts).toHaveLength(0)
   })

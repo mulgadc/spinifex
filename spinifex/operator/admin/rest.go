@@ -56,6 +56,10 @@ func (d Deps) RunMethod(ctx context.Context, method string, caller dispatch.Acto
 		return d.getAccountQuota(ctx, body)
 	case "PutAccountQuota":
 		return d.putAccountQuota(ctx, caller, body)
+	case "GetConsoleBranding":
+		return d.getConsoleBranding(ctx, body)
+	case "PutConsoleBranding":
+		return d.putConsoleBranding(ctx, caller, body)
 	}
 	// The caller's method set is gated by the contract list, so this is
 	// unreachable; failing closed keeps a name added there without a case from
@@ -123,13 +127,18 @@ func (d Deps) dispatchREST(w http.ResponseWriter, inv dispatch.Invocation) error
 		return awserrors.Errorf(awserrors.ErrorServiceUnavailable, "%s", clusterUnavailableMsg)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	// A branding save carries its images base64-encoded, so it gets more room.
+	limit := maxBodyBytes
+	if method == "PutConsoleBranding" {
+		limit = 720 << 10
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "Admin: failed to read request body", "method", method, "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
-	if len(body) > maxBodyBytes {
-		return awserrors.Errorf(awserrors.ErrorInvalidRequest, "request body exceeds 8 KiB")
+	if len(body) > limit {
+		return awserrors.Errorf(awserrors.ErrorInvalidRequest, "request body exceeds %d KiB", limit>>10)
 	}
 
 	output, err := d.RunMethod(r.Context(), method, caller, body)

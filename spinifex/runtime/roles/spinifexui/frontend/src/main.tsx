@@ -6,6 +6,7 @@ import ReactDOM from "react-dom/client"
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
+import { loadBranding } from "@/lib/branding"
 import { loadClusterConfig } from "@/lib/cluster-config"
 import {
   createQueryClient,
@@ -38,8 +39,11 @@ declare module "@tanstack/react-router" {
 }
 
 // The region has to be known before anything signs a request, so the config is
-// loaded first and a failure is shown instead of the app.
+// loaded first and a failure is shown instead of the app. The branding loads
+// beside it under its own budget and never fails the console.
 async function bootstrap(root: ReactDOM.Root) {
+  const branding = loadBranding()
+
   try {
     await loadClusterConfig()
   } catch (error: unknown) {
@@ -57,6 +61,8 @@ async function bootstrap(root: ReactDOM.Root) {
 
     return
   }
+
+  await branding
 
   root.render(
     <StrictMode>

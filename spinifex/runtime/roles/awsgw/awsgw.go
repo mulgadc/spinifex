@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/operator/consolebranding"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
@@ -214,6 +215,10 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 	}
 	return cfg, nil
 }
+
+// brandingRefreshInterval is how often each gateway rereads the console
+// branding, well inside the one minute a change may take to show.
+const brandingRefreshInterval = 10 * time.Second
 
 // openAccountUsageBucket opens (or idempotently creates) the gateway-owned
 // per-account vCPU usage bucket. History is 1: each account key holds a single
@@ -578,7 +583,16 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
-	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()))
+	// Every gateway keeps its own copy of the console branding, so the public
+	// route never waits on NATS. The bucket opens lazily, so a branding store
+	// that is down cannot stop the gateway.
+	branding := &operatoradmin.ConsoleBranding{
+		Store: consolebranding.Store{KV: &consolebranding.LazyBucket{JS: js}},
+		Cache: &consolebranding.Cache{},
+	}
+	go branding.Cache.Run(janitorCtx, branding.Store, brandingRefreshInterval)
+	brandingRoutes := consolebranding.Handler{Cache: branding.Cache}
+	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()), brandingRoutes)
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
 		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
@@ -733,6 +747,7 @@ func launchService(config *config.ClusterConfig) error {
 
 		NetworkTests:           operatoradmin.NewKVNetworkTests(js),
 		Quota:                  quotaSvc,
+		Branding:               branding,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,
 		Region:                 nodeConfig.Region,

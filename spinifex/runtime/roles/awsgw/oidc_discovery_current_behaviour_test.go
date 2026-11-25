@@ -50,7 +50,7 @@ func newDiscoveryEnv(t *testing.T) *discoveryEnv {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-account-" + testDiscAccount})
 	require.NoError(t, err)
-	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil, nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	return &discoveryEnv{nc: nc, kv: kv, h: gw.SetupRoutes()}
 }
 
@@ -153,7 +153,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("no_connection", func(t *testing.T) {
-		h := (withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil)}, gwfix.Deps{IAM: allowAllIAMService()}))).SetupRoutes()
+		h := (withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil, nil)}, gwfix.Deps{IAM: allowAllIAMService()}))).SetupRoutes()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
 			rec := getOIDC(t, h, p)
 			assert.Equal(t, http.StatusInternalServerError, rec.Code, p)

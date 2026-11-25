@@ -102,6 +102,17 @@ So `primary` is its own token, and `brand` keeps the exact site colour for decor
 
 Dark mode puts ink on the fill rather than white, because no orange is both bright enough to read as a link on ink and dark enough to carry white text.
 
+### Operator branding
+
+The cluster administrator can set a product name, logos, a favicon, a Docs link and a primary colour for each theme on Settings → Branding.
+A colour overrides only `--primary` and `--ring`, through `/branding/branding.css`, which `src/lib/branding.ts` loads before first render under a 2-second budget.
+No other token changes, and no component is restyled.
+
+A colour is any `#RRGGBB` value; the operator owns the choice, so its contrast is not checked.
+
+The product name and the Docs link come from `productName()` and `docsUrl()` in `src/lib/branding.ts`.
+A page title is the page's own name and names no product.
+
 ### Radius
 
 `--radius` is 0.5rem; `rounded-md` is that, `rounded-sm` and `rounded-lg` step 2px either side, and status pills are `rounded-full`.
@@ -117,7 +128,7 @@ It is an external file because the console's CSP forbids inline scripts.
 The Go console serves `script-src 'self'; style-src 'self'`.
 
 - **No inline `<script>` or `<style>` elements.** A library that injects either breaks in production while working under `vite dev`, which applies no CSP. This is why `sonner` is not used.
-- **No runtime CSS variables set through `style`.** Primitives use fixed class maps instead, as `ToggleGroup` does for `spacing`.
+- **Runtime CSS variables only through React's `style` prop.** React sets them through the CSSOM, which the CSP allows, as the sidebar, the topology labels and the branding preview do. A `style` attribute in markup is blocked. Primitives use fixed class maps where a value is one of a few, as `ToggleGroup` does for `spacing`.
 - **Base UI's `ScrollArea` injects a `<style>` element** to hide native scrollbars. `main.tsx` wraps the app in `CSPProvider disableStyleElements`, and `styles.css` carries the rule instead (`.base-ui-disable-scrollbar`).
 - **zod compiles validators with `new Function`** unless it is told not to, and it probes for that at module load, before any app code runs. `public/preboot.js` sets `globalThis.__zod_globalConfig = { jitless: true }` first.
 - **Chrome reports a violation whenever `DOMParser` meets a body that is not XML**, because the `<parsererror>` element it builds carries an inline style. The AWS SDK parses every query-protocol error body, so a proxy that answers with plain text or HTML produces a console violation as well as the error. Harmless, but it is noise in exactly the place someone debugging a failed call will look.
@@ -326,6 +337,15 @@ From `lg` it lies over the resource's panel at the same right edge and the creat
 It takes Escape from the panel beneath it, takes focus on open and hands it back to the button that opened it, and keeps a failure inside itself.
 Each such form is its own `*-form.tsx` file with `FormLock`, `CliCommandPanel` and `FormActions`, like a create form.
 It is held in the details component's state rather than the URL, because a form opened from one row of a tab has no list route to carry it, so Back closes the resource's panel and the form with it.
+
+## Settings
+
+A setting for the whole cluster, such as Branding, is a page under `/settings/`, shown only to the administrator.
+It saves the whole record in one request with a revision, and a stale revision is refused rather than merged.
+
+- **Colour.** `ColorField` (`src/components/color-field.tsx`) is a native colour picker beside a `#RRGGBB` text field. Empty means the default, which the picker shows, and Use default clears it.
+- **Image.** `ImageUploadField` (`src/components/image-upload-field.tsx`) checks the file's type and size in the browser and holds one change: keep, remove or set. A kept image is left out of the request, so it is not sent again. The CSP allows no `blob:` image, so a new image shows only after Save.
+- **No CLI.** A setting that no CLI command or AWS API changes shows no `CliCommandPanel`.
 
 ## Create flows
 

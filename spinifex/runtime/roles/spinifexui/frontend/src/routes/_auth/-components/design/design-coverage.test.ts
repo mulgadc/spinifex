@@ -20,6 +20,7 @@ const CATALOGUE = import.meta.glob<string>("./*.tsx", {
 const NOT_SHOWN = {
   "admin-dashboard-panel": "reads the cluster's live node state",
   "app-breadcrumbs": "part of the shell the catalogue renders inside",
+  "brand-logo": "part of the shell, in the sidebar header",
   "bulk-delete": "drives real delete mutations",
   "command-palette": "part of the shell; opened with the shortcut",
   "editor-shell": "the policy editor's frame, shown with its editor",

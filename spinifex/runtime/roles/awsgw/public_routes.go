@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/operator/consolebranding"
 )
 
 // OIDCPublisher serves the unauthenticated per-cluster OIDC discovery document
@@ -19,14 +20,17 @@ type OIDCPublisher interface {
 var _ OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
 
 // PublicRoutes mounts the routes served ahead of SigV4 and the throttle: the
-// OIDC discovery endpoints (IRSA) and the OCI registry at /v2. The registry
-// authenticates by its own token rather than SigV4, so it is not part of the
-// AWS seam. Only the exact /v2 subtree is the registry.
-func PublicRoutes(oidc OIDCPublisher, registry http.Handler) func(chi.Router) {
+// OIDC discovery endpoints (IRSA), the console branding and the OCI registry
+// at /v2. The registry authenticates by its own token rather than SigV4, so it
+// is not part of the AWS seam. Only the exact /v2 subtree is the registry.
+func PublicRoutes(oidc OIDCPublisher, registry, branding http.Handler) func(chi.Router) {
 	return func(r chi.Router) {
 		r.Group(func(pub chi.Router) {
 			pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", oidcDiscoveryDocument(oidc))
 			pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", oidcJWKS(oidc))
+			if branding != nil {
+				pub.Handle(consolebranding.PathPrefix+"*", branding)
+			}
 		})
 		if registry == nil {
 			registry = http.HandlerFunc(registryNotConfigured)

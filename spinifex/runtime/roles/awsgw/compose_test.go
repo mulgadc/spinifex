@@ -29,7 +29,7 @@ func TestComposeGateway_SetsEveryProductionHook(t *testing.T) {
 	gw, err := composeGateway(gatewayInputs{
 		Credentials:  credverify.New(nil, nil),
 		Admission:    accountadmission.New(nil),
-		PublicRoutes: PublicRoutes(nil, nil),
+		PublicRoutes: PublicRoutes(nil, nil, nil),
 		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})},
 	}, awsapi.NewRegistration(awsapi.Deps{}))
 	require.NoError(t, err)

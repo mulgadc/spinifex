@@ -61,9 +61,11 @@ type Deps struct {
 	PlatformCleaner accountteardown.PlatformCleaner
 	// ComputeCleaner and StorageCleaner are the EC2 instance, spot request and
 	// volume cleanup. Nil refuses a request that is not a dry run.
-	ComputeCleaner    accountteardown.ComputeStage
-	StorageCleaner    accountteardown.StorageStage
-	Quota             *quota.Service
+	ComputeCleaner accountteardown.ComputeStage
+	StorageCleaner accountteardown.StorageStage
+	Quota          *quota.Service
+	// Branding serves the console branding methods; nil refuses them.
+	Branding          *ConsoleBranding
 	ExpectedNodes     int
 	NodeIDs           []string
 	GatewayNodeIDs    []string

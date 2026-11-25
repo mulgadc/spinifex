@@ -1,6 +1,7 @@
 package spinifexui
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -109,4 +110,53 @@ func newReverseProxy(backendHost, pathPrefix string, transport http.RoundTripper
 	}
 
 	return proxy
+}
+
+// brandingDeadline bounds one branding request, so a stalled gateway cannot
+// hold the console's first render. The console gives up at the same time.
+const brandingDeadline = 2 * time.Second
+
+// brandingFiles are the only names the branding route forwards.
+var brandingFiles = map[string]bool{
+	"branding.json": true,
+	"branding.css":  true,
+	"logo":          true,
+	"logo-dark":     true,
+	"favicon":       true,
+}
+
+// newBrandingProxy forwards GET /branding/<name> to the gateway's public
+// /console/branding/<name>, for the fixed names only, under the deadline.
+func newBrandingProxy(backendHost string, transport http.RoundTripper, deadline time.Duration) http.Handler {
+	target := &url.URL{Scheme: "https", Host: backendHost}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = target.Host
+			pr.Out.URL.Path = "/console/branding/" + strings.TrimPrefix(pr.In.URL.Path, "/branding/")
+			pr.Out.URL.RawPath = ""
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("Cookie")
+		},
+		Transport: otelhttp.NewTransport(transport),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Warn("Branding proxy error", "backend", backendHost, "path", r.URL.Path, "error", err)
+			http.Error(w, "branding unavailable", http.StatusBadGateway)
+		},
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !brandingFiles[strings.TrimPrefix(r.URL.Path, "/branding/")] {
+			http.NotFound(w, r)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
+		defer cancel()
+		proxy.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

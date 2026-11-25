@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router"
 import { BookOpen, ChevronRight, LogOut } from "lucide-react"
 import { useState } from "react"
 
+import { BrandLogo } from "@/components/brand-logo"
 import {
   Collapsible,
   CollapsibleContent,
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/sidebar"
 import { useAdmin } from "@/hooks/use-admin"
 import { clearCredentials } from "@/lib/auth"
+import { docsUrl, productName } from "@/lib/branding"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { activeNavItem, type NavGroup, visibleNav } from "@/lib/nav"
 import { signOut } from "@/lib/query-client"
@@ -128,6 +130,8 @@ export function SidebarLayout() {
   const queryClient = useQueryClient()
   const { isAdmin } = useAdmin()
   const groups = visibleNav({ isAdmin, ochreEnabled: isOchreEnabled() })
+
+  const docs = docsUrl()
   const active = activeNavItem(groups, pathname)
   const { collapsed, setGroupOpen } = useCollapsedGroups(active?.group.label)
   const { state, setOpenMobile } = useSidebar()
@@ -149,13 +153,9 @@ export function SidebarLayout() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader variant="brand">
-        <img
-          src="/mulga-logo.svg"
-          alt="Mulga"
-          className="size-6 shrink-0 dark:invert"
-        />
+        <BrandLogo className="size-6 shrink-0" />
         <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">
-          Spinifex
+          {productName()}
         </span>
       </SidebarHeader>
       <SidebarContent>
@@ -174,7 +174,7 @@ export function SidebarLayout() {
             open={iconOnly || !collapsed.includes(group.label)}
           />
         ))}
-        {isAdmin && (
+        {isAdmin && docs !== null && (
           <SidebarGroup>
             <SidebarGroupLabel>Documentation</SidebarGroupLabel>
             <SidebarMenu>
@@ -182,11 +182,7 @@ export function SidebarLayout() {
                 <SidebarMenuButton
                   render={
                     // oxlint-disable-next-line jsx-a11y/control-has-associated-label -- SidebarMenuButton supplies the label
-                    <a
-                      href="https://docs.mulgadc.com"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    />
+                    <a href={docs} rel="noopener noreferrer" target="_blank" />
                   }
                   tooltip="Documentation"
                 >

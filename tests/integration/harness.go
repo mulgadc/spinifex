@@ -20,16 +20,16 @@
 package integration
 
 import (
+	"context"
+	"encoding/json"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
-	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
-	"encoding/json"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http/httptest"
 	"testing"
 
@@ -44,33 +44,33 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
-	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
-	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
-	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
-	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
-	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
-	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
-	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
-	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
-	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -290,7 +290,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, extra []awsdisp
 			Region:    cfg.Region,
 		}, credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS), policyauth.New(gwfix.DepsOf(cfg).IAM)))
 		require.NoError(t, err)
-		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()))
+		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()), nil)
 	}
 
 	handler := cfg.SetupRoutes()

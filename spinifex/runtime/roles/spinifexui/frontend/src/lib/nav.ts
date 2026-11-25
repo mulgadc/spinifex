@@ -23,6 +23,7 @@ import {
   LayoutList,
   MapPin,
   MessageSquare,
+  Palette,
   Network,
   Package,
   Plug,
@@ -465,6 +466,17 @@ export const NAV: readonly NavGroup[] = [
         label: "Model Access",
         icon: KeyRound,
         to: "/bedrock/list-model-access",
+        admin: true,
+      },
+    ],
+  },
+  {
+    label: "Settings",
+    items: [
+      {
+        label: "Branding",
+        icon: Palette,
+        to: "/settings/branding",
         admin: true,
       },
     ],

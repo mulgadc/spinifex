@@ -443,6 +443,7 @@ func TestEmbeddingsProvider_EmbedBatch_NonTransportErrorNotRetried(t *testing.T)
 // its longest float32 JSON form, must fit the limit; a body one byte past the
 // limit is rejected, and a body exactly at the limit is still accepted.
 func TestEmbeddingsProvider_Embed_BoundsSuccessfulResponseSize(t *testing.T) {
+	t.Parallel()
 	widest := 0
 	for _, e := range catalog {
 		widest = max(widest, e.EmbeddingDimensions)
@@ -479,6 +480,7 @@ func TestEmbeddingsProvider_Embed_BoundsSuccessfulResponseSize(t *testing.T) {
 		{name: "over limit", body: padded(teiEmbeddingsResponseLimit + 1), wantErr: awserrors.ErrorModelErrorException},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)

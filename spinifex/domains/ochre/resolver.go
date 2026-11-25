@@ -47,6 +47,8 @@ type DynamicEndpointResolver struct {
 	// retry does not span that, and a bounded wait only pays off when it is
 	// shorter than the client's patience and longer than the boot.
 	coldStartWait time.Duration
+	// coldStartPoll spaces the describes of a cold-start wait.
+	coldStartPoll time.Duration
 
 	// group collapses concurrent resolves of one model into a single describe
 	// (and at most one ensure). The daemon deduplicates launches on its own
@@ -130,6 +132,7 @@ func NewDynamicEndpointResolver(svc EndpointService, static map[string]string, t
 		svc:           svc,
 		static:        static,
 		ttl:           ttl,
+		coldStartPoll: coldStartPollInterval,
 		cached:        make(map[string]cachedEndpoint),
 		client:        &http.Client{},
 		livenessTTL:   defaultLivenessCacheTTL,
@@ -278,7 +281,7 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 		return "", nil
 	}
 	deadline := time.Now().Add(r.coldStartWait)
-	ticker := time.NewTicker(coldStartPollInterval)
+	ticker := time.NewTicker(r.coldStartPoll)
 	defer ticker.Stop()
 
 	for {

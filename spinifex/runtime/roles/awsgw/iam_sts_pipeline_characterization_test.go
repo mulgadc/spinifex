@@ -57,6 +57,7 @@ func (e *cbEnv) rawRequest(t *testing.T, c cbCreds, service, body string) *httpt
 }
 
 func TestIAMSTSPipeline_ErrorEnvelopes(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	e.putUserPolicy(t, "alice", cbAllowAll)
 
@@ -79,6 +80,7 @@ func TestIAMSTSPipeline_ErrorEnvelopes(t *testing.T) {
 // CURRENT: IAM authorizes a request that parses, whatever else it omits, so the
 // denial is what the caller sees; STS names a missing RoleArn ahead of the gate.
 func TestIAMSTSPipeline_AuthorizationAndMissingParameterOrder(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("iam_create_user_without_name_and_no_policy_is_denied", func(t *testing.T) {
@@ -95,6 +97,7 @@ func TestIAMSTSPipeline_AuthorizationAndMissingParameterOrder(t *testing.T) {
 // CURRENT: GetUser without UserName describes the caller, and that default is
 // applied before authorization so the policy is evaluated against the user.
 func TestIAMSTSPipeline_GetUserWithoutUserName(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	getUser := cbForm("GetUser")
 
@@ -135,6 +138,7 @@ func TestIAMSTSPipeline_GetUserWithoutUserName(t *testing.T) {
 // CURRENT: AssumeRole is gated twice. The caller's identity policy is checked
 // first, then the role's trust policy.
 func TestIAMSTSPipeline_AssumeRoleGates(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	roleARN, _ := e.createAssumableRole(t, "app")
 
@@ -163,6 +167,7 @@ func TestIAMSTSPipeline_AssumeRoleGates(t *testing.T) {
 // CURRENT: GetSessionToken carries no identity-policy gate, and a role session
 // cannot mint one.
 func TestIAMSTSPipeline_GetSessionToken(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("user_without_policy_mints", func(t *testing.T) {
@@ -182,6 +187,7 @@ func TestIAMSTSPipeline_GetSessionToken(t *testing.T) {
 // CURRENT: AddRoleToInstanceProfile requires iam:PassRole on the role, checked
 // after the iam:AddRoleToInstanceProfile gate and before the binding runs.
 func TestIAMSTSPipeline_AddRoleToInstanceProfileRequiresPassRole(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	_, err := e.iam.CreateRole(e.accountID, &iam.CreateRoleInput{
 		RoleName:                 aws.String("r"),
@@ -216,6 +222,7 @@ func TestIAMSTSPipeline_AddRoleToInstanceProfileRequiresPassRole(t *testing.T) {
 // token the issuer registry does not know is refused, and no other STS action
 // is reachable without a signature.
 func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 
 	t.Run("unsigned_web_identity_reaches_the_handler", func(t *testing.T) {
@@ -234,6 +241,7 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 // A success names its request in both the x-amzn-RequestId header and the
 // body's ResponseMetadata, as AWS Query services do, so an SDK can report it.
 func TestIAMSTSPipeline_SuccessCarriesRequestID(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	e.putUserPolicy(t, "alice", cbAllowAll)
 	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`

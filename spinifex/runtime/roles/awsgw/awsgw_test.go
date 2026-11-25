@@ -20,6 +20,7 @@ import (
 // duplicate or a registration claiming a legacy name must fail it, so the
 // role refuses to start.
 func TestWireServiceRegistry(t *testing.T) {
+	t.Parallel()
 	t.Run("ECR registration wires and passes the overlap guard", func(t *testing.T) {
 		gw := &pipeline.Config{}
 		require.NoError(t, wireServiceRegistry(gw, awsapi.NewRegistration(awsapi.Deps{})))
@@ -73,6 +74,7 @@ func TestWireServiceRegistry(t *testing.T) {
 }
 
 func TestLoadThrottleConfig_Enabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -101,6 +103,7 @@ burst = 40
 }
 
 func TestLoadThrottleConfig_Disabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -118,6 +121,7 @@ burst = 100
 }
 
 func TestLoadThrottleConfig_NoSection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -135,11 +139,13 @@ debug = false
 }
 
 func TestLoadAWSGWConfig_MissingFile(t *testing.T) {
+	t.Parallel()
 	_, err := loadAWSGWConfig("/nonexistent/awsgw.toml")
 	assert.Error(t, err)
 }
 
 func TestLoadQuotaConfig_Enabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -168,6 +174,7 @@ volumes_gib = 100
 }
 
 func TestLoadQuotaConfig_Disabled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -184,6 +191,7 @@ vcpus   = 8
 }
 
 func TestLoadQuotaConfig_NoSection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "awsgw.toml")
 	content := `
@@ -203,6 +211,7 @@ debug = false
 // An absent [signup] section must cap self-service creation rather than leave
 // it open, while an explicit 0 stays the documented way to lift the cap.
 func TestResolveSignupMaxAccounts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string

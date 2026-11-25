@@ -26,6 +26,7 @@ import (
 // A hook left unset in production fails requests closed or drops a route, so
 // the composed config must carry every one of them.
 func TestComposeGateway_SetsEveryProductionHook(t *testing.T) {
+	t.Parallel()
 	gw, err := composeGateway(gatewayInputs{
 		Credentials:  credverify.New(nil, nil),
 		Admission:    accountadmission.New(nil),
@@ -48,6 +49,7 @@ func TestComposeGateway_SetsEveryProductionHook(t *testing.T) {
 // Account termination probes the gateway node set before sealing, so awsgw
 // must hand the operator surface both node sets from the cluster config.
 func TestWithClusterNodes_SetsDaemonAndGatewaySets(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{Node: "n2", Nodes: map[string]config.Config{
 		"n1": {Services: []string{"nats", "awsgw", "daemon"}},
 		"n2": {Services: []string{"daemon"}},
@@ -66,6 +68,7 @@ func TestWithClusterNodes_SetsDaemonAndGatewaySets(t *testing.T) {
 // Deletion runs the quiesce and the fenced removal, which only the concrete IAM
 // service carries. awsgw must bind it, or every DeleteAccount fails.
 func TestOperatorDeps_BindsTheConcreteIAMServiceAndNodes(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{"n1": {}}}
 	iamService := &iamdomain.IAMServiceImpl{}
 
@@ -80,6 +83,7 @@ func TestOperatorDeps_BindsTheConcreteIAMServiceAndNodes(t *testing.T) {
 // with no request to prompt it. A composition that stops starting it would leave
 // such jobs stuck until someone retried by hand.
 func TestAwsgwStartsTheDeletionResumer(t *testing.T) {
+	t.Parallel()
 	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
 	require.NoError(t, err)
 
@@ -103,6 +107,7 @@ func (fixedCleaner) CleanupPlatform(context.Context, *accountcleanup.Request) (*
 // binds. A cleanup that cannot be built must leave the field nil, which refuses
 // the request, rather than bind something half-working.
 func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
+	t.Parallel()
 	bound := withPlatformCleaner(operatoradmin.Deps{}, (&fakeStartup{}).retry(), func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
 	assert.NotNil(t, bound.PlatformCleaner)
 
@@ -115,6 +120,7 @@ func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
 // Both cleanups are bound into the deps the operator registration is built
 // from, or every delete is refused on every gateway.
 func TestAwsgwBindsBothCleanupsIntoTheOperatorRegistration(t *testing.T) {
+	t.Parallel()
 	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
 	require.NoError(t, err)
 
@@ -147,6 +153,7 @@ func TestAwsgwBindsBothCleanupsIntoTheOperatorRegistration(t *testing.T) {
 // The ordinary delete may remove a live launch template only when EKS says no
 // nodegroup names it, so the cleanup must be built with the EKS-backed reader.
 func TestPlatformCleanerIsBuiltWithTheEKSTemplateConsumerReader(t *testing.T) {
+	t.Parallel()
 	file, err := parser.ParseFile(token.NewFileSet(), "platform_cleanup.go", nil, 0)
 	require.NoError(t, err)
 

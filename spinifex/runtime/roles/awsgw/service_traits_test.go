@@ -39,6 +39,7 @@ func productionTraits(t *testing.T) map[string]dispatch.ServiceTraits {
 }
 
 func TestProductionServiceTraits_XMLThrottleCode(t *testing.T) {
+	t.Parallel()
 	got := productionTraits(t)
 
 	for _, svc := range []string{"iam", "sts", "route53"} {
@@ -48,6 +49,7 @@ func TestProductionServiceTraits_XMLThrottleCode(t *testing.T) {
 }
 
 func TestProductionServiceTraits_XMLErrorShape(t *testing.T) {
+	t.Parallel()
 	got := productionTraits(t)
 
 	assert.Equal(t, dispatch.XMLErrorShapeEC2, got["ec2"].XMLErrorShape)
@@ -59,6 +61,7 @@ func TestProductionServiceTraits_XMLErrorShape(t *testing.T) {
 
 // S3 is not served here, but its rejections keep S3's body.
 func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
+	t.Parallel()
 	gw := &pipeline.Config{}
 	require.NoError(t, wireServiceRegistry(gw, iamawsapi.NewRegistration(iamawsapi.Deps{})))
 
@@ -71,6 +74,7 @@ func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
 }
 
 func TestProductionServiceTraits_GlobalSigningRegion(t *testing.T) {
+	t.Parallel()
 	got := productionTraits(t)
 
 	assert.Equal(t, "us-east-1", got["route53"].GlobalSigningRegion)
@@ -80,6 +84,7 @@ func TestProductionServiceTraits_GlobalSigningRegion(t *testing.T) {
 }
 
 func TestProductionServiceTraits_OnlyS3ScopeIsPayloadBody(t *testing.T) {
+	t.Parallel()
 	for svc, traits := range productionTraits(t) {
 		assert.False(t, traits.PayloadBody, svc)
 	}

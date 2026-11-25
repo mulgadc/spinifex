@@ -164,6 +164,7 @@ func allowBedrock() iamdomain.Statement { return statement("Allow", "bedrock:*",
 // TestBedrockPipeline_ErrorEnvelopes pins status, error type, the
 // X-Amzn-Errortype header and the JSON 1.1 content type for each service.
 func TestBedrockPipeline_ErrorEnvelopes(t *testing.T) {
+	t.Parallel()
 	const jsonCT = "application/x-amz-json-1.1"
 	guardrail := []byte(`{"name":"g","blockedInputMessaging":"x","blockedOutputsMessaging":"y"}`)
 
@@ -210,6 +211,7 @@ func TestBedrockPipeline_ErrorEnvelopes(t *testing.T) {
 // Bedrock dispatchers. Real SDKs sign "bedrock"; the three sub-service names
 // are accepted too and the request path alone picks the dispatcher.
 func TestBedrockPipeline_ScopeNames(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		scope  string
@@ -252,6 +254,7 @@ func TestBedrockPipeline_ScopeNames(t *testing.T) {
 // TestBedrockPipeline_PathSplit pins which dispatcher a path reaches by the
 // error each one gives to the same empty-store request.
 func TestBedrockPipeline_PathSplit(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		method string
@@ -287,6 +290,7 @@ func TestBedrockPipeline_PathSplit(t *testing.T) {
 // request rate before it reads the body, agent-runtime only for
 // RetrieveAndGenerate, and nothing else meters.
 func TestBedrockPipeline_QuotaOrder(t *testing.T) {
+	t.Parallel()
 	limited := func(c *bedrockPipelineEnv) {
 		c.Deps.Quota = admissionquota.New(admissionquota.Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 1}, nil)
 	}
@@ -339,6 +343,7 @@ func TestBedrockPipeline_QuotaOrder(t *testing.T) {
 // TestBedrockPipeline_QueryFold pins that a body-less request's singular query
 // parameters become the JSON body, and that a real body is never shadowed.
 func TestBedrockPipeline_QueryFold(t *testing.T) {
+	t.Parallel()
 	app := bedrockPipelineApp(t, nil, allowBedrock())
 	create := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/guardrails",
 		[]byte(`{"name":"g","blockedInputMessaging":"x","blockedOutputsMessaging":"y"}`)))
@@ -365,6 +370,7 @@ func TestBedrockPipeline_QueryFold(t *testing.T) {
 // TestBedrockPipeline_NilCapabilityFallbacks pins what an unset capability
 // looks like through the pipeline.
 func TestBedrockPipeline_NilCapabilityFallbacks(t *testing.T) {
+	t.Parallel()
 	t.Run("no access store hides the catalog", func(t *testing.T) {
 		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Access = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "GET", "/foundation-models", nil))
@@ -406,6 +412,7 @@ func TestBedrockPipeline_NilCapabilityFallbacks(t *testing.T) {
 // its handler for one action of each service, so a signing-scope or path
 // change cannot silently drop a service.
 func TestBedrockPipeline_ActionResolution(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		action string
@@ -442,6 +449,7 @@ func TestBedrockPipeline_ActionResolution(t *testing.T) {
 // TestBedrockPipeline_BodyTooLarge pins the oversize-body answer on a
 // signed bedrock request.
 func TestBedrockPipeline_BodyTooLarge(t *testing.T) {
+	t.Parallel()
 	app := bedrockPipelineApp(t, nil, allowBedrock())
 	big := []byte(`{"name":"` + strings.Repeat("a", 11<<20) + `"}`)
 	got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/guardrails", big))
@@ -451,6 +459,7 @@ func TestBedrockPipeline_BodyTooLarge(t *testing.T) {
 // An embedding InvokeModel through the signed pipeline reaches TEI, and the
 // same request carrying guardrail headers is refused before it does.
 func TestBedrockPipeline_EmbeddingInvokeRefusesGuardrail(t *testing.T) {
+	t.Parallel()
 	const embedModel = "nomic-embed-text-v1.5"
 	var teiCalls int
 	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -37,6 +37,7 @@ func newQuotaSealService(t *testing.T) (*admissionquota.Service, jetstream.JetSt
 }
 
 func TestQuotaOverrideSeal_SealsTerminatingAccount(t *testing.T) {
+	t.Parallel()
 	quota, js := newQuotaSealService(t)
 	_, nc := testutil.StartTestNATS(t)
 	quota.SetAccountTerminationChecker(&stubChecker{terminating: map[string]bool{"111122223333": true}})
@@ -63,6 +64,7 @@ func TestQuotaOverrideSeal_SealsTerminatingAccount(t *testing.T) {
 }
 
 func TestQuotaOverrideSeal_RefusesActiveAccount(t *testing.T) {
+	t.Parallel()
 	quota, _ := newQuotaSealService(t)
 	_, nc := testutil.StartTestNATS(t)
 	quota.SetAccountTerminationChecker(&stubChecker{terminating: map[string]bool{}})
@@ -78,6 +80,7 @@ func TestQuotaOverrideSeal_RefusesActiveAccount(t *testing.T) {
 }
 
 func TestQuotaOverrideSeal_NoResponderWithoutGateway(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	req := admissionv1.SealAccountQuotaOverrideRequest{AccountID: "111122223333"}
@@ -105,6 +108,7 @@ func quotaSealCapabilityRequest(t *testing.T, caller *nats.Conn, subjectNode, bo
 }
 
 func TestQuotaOverrideSealCapability_AnswersOwnNode(t *testing.T) {
+	t.Parallel()
 	nc, caller := newQuotaSealCapabilityConns(t)
 	sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
 	require.NoError(t, err)
@@ -122,6 +126,7 @@ func TestQuotaOverrideSealCapability_AnswersOwnNode(t *testing.T) {
 }
 
 func TestQuotaOverrideSealCapability_RefusesOtherNode(t *testing.T) {
+	t.Parallel()
 	nc, caller := newQuotaSealCapabilityConns(t)
 	sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
 	require.NoError(t, err)
@@ -139,6 +144,7 @@ func TestQuotaOverrideSealCapability_RefusesOtherNode(t *testing.T) {
 // Two gateways configured with one node ID both answer: the subject has no
 // queue group, which is how the probe catches a duplicate.
 func TestQuotaOverrideSealCapability_HasNoQueueGroup(t *testing.T) {
+	t.Parallel()
 	nc, caller := newQuotaSealCapabilityConns(t)
 	for range 2 {
 		sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
@@ -161,6 +167,7 @@ func TestQuotaOverrideSealCapability_HasNoQueueGroup(t *testing.T) {
 }
 
 func TestQuotaOverrideSealCapability_InvalidNodeServesNothing(t *testing.T) {
+	t.Parallel()
 	nc, caller := newQuotaSealCapabilityConns(t)
 	for _, node := range []string{"", "a.b", "node >"} {
 		sub, err := registerQuotaOverrideSealCapability(nc, node)

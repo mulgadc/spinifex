@@ -11,6 +11,7 @@ import (
 // Cluster / TaskDefinition / Task / Service / ContainerInstance / Account / Tags
 // surfaces must be registered, whether wired to the daemon or a 501 stub.
 func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
+	t.Parallel()
 	namespace := []string{
 		// Cluster
 		"CreateCluster", "DescribeClusters", "ListClusters", "DeleteCluster",

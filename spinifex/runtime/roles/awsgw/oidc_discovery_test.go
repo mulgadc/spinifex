@@ -40,6 +40,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 }
 
 func TestOIDCDiscoveryDocument(t *testing.T) {
+	t.Parallel()
 	h := seedDiscoveryCluster(t)
 
 	req := httptest.NewRequest(http.MethodGet,
@@ -66,6 +67,7 @@ func TestOIDCDiscoveryDocument(t *testing.T) {
 }
 
 func TestOIDCJWKS(t *testing.T) {
+	t.Parallel()
 	h := seedDiscoveryCluster(t)
 
 	req := httptest.NewRequest(http.MethodGet,
@@ -91,6 +93,7 @@ func TestOIDCJWKS(t *testing.T) {
 }
 
 func TestOIDCDiscovery_UnknownCluster404(t *testing.T) {
+	t.Parallel()
 	h := seedDiscoveryCluster(t)
 
 	for _, path := range []string{
@@ -110,6 +113,7 @@ func TestOIDCDiscovery_UnknownCluster404(t *testing.T) {
 // TestOIDCDiscovery_NoAuth confirms the discovery routes bypass SigV4 — they
 // return 200 with no Authorization header, unlike the authenticated surface.
 func TestOIDCDiscovery_NoAuth(t *testing.T) {
+	t.Parallel()
 	h := seedDiscoveryCluster(t)
 	req := httptest.NewRequest(http.MethodGet,
 		"/oidc/eks/ap-southeast-2/"+testDiscAccount+"/"+testDiscCluster+"/keys", nil)

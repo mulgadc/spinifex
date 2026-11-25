@@ -28,6 +28,7 @@ func (f *fakeVerifier) VerifyPresignedGetCallerIdentity(presignedURL, expectedCl
 }
 
 func TestEKSTokenVerify_ResolvesPrincipal(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	fake := &fakeVerifier{ident: &stsdomain.PresignedCallerIdentity{
 		AccountID:     "111122223333",
@@ -52,6 +53,7 @@ func TestEKSTokenVerify_ResolvesPrincipal(t *testing.T) {
 }
 
 func TestEKSTokenVerify_RejectedTokenIsError(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	fake := &fakeVerifier{err: errors.New("signature mismatch (cluster name replay)")}
 	sub, err := registerEKSTokenVerify(nc, fake)
@@ -65,6 +67,7 @@ func TestEKSTokenVerify_RejectedTokenIsError(t *testing.T) {
 }
 
 func TestEKSTokenVerify_RejectsEmptyFields(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	fake := &fakeVerifier{ident: &stsdomain.PresignedCallerIdentity{ARN: "arn:..."}}
 	sub, err := registerEKSTokenVerify(nc, fake)

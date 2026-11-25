@@ -10,6 +10,7 @@ import (
 )
 
 func TestParseBedrockEndpoints(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		raw  string
@@ -65,6 +66,7 @@ func TestParseBedrockEndpoints(t *testing.T) {
 // A typo in an optional tuning knob must not stop the gateway from serving,
 // so an unusable value falls back to the fail-fast default.
 func TestParseColdStartWait(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		raw  string

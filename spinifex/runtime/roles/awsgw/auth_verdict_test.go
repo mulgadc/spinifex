@@ -19,6 +19,7 @@ import (
 )
 
 func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -37,6 +38,7 @@ func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {
 }
 
 func TestSigV4Auth_MalformedHeader(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
@@ -72,6 +74,7 @@ func TestSigV4Auth_MalformedHeader(t *testing.T) {
 }
 
 func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -91,6 +94,7 @@ func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
 }
 
 func TestSigV4Auth_InvalidSignature(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -110,6 +114,7 @@ func TestSigV4Auth_InvalidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
+	t.Parallel()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
@@ -155,6 +160,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 }
 
 func TestSigV4Auth_DecryptFailure(t *testing.T) {
+	t.Parallel()
 	// Secret encrypted under a rotated master key — unverifiable credential must
 	// return 403 InvalidClientTokenId, not 500, so the client re-authenticates.
 	otherKey, err := iamdomain.GenerateMasterKey()
@@ -206,6 +212,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 }
 
 func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	past := time.Now().UTC().Add(-16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
@@ -226,6 +233,7 @@ func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 }
 
 func TestSigV4Auth_FutureTimestamp(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	future := time.Now().UTC().Add(16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
@@ -246,6 +254,7 @@ func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 }
 
 func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -266,6 +275,7 @@ func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
 }
 
 func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -290,6 +300,7 @@ func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 // signature comparison. Omitting either enables Authorization header replay
 // across vhosts or outside the clock-skew window.
 func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	rewriteSignedHeaders := func(authHeader, list string) string {
@@ -337,6 +348,7 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 // unserved-scope InvalidAction change may make a real signature failure
 // unrecognisable.
 func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

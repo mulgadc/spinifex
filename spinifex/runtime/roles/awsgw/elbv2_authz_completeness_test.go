@@ -14,6 +14,7 @@ import (
 // added with a silent account-wide grant. It asserts both directions, so a
 // scope left behind by a deleted or renamed action fails too.
 func TestELBv2ScopeTableIsExhaustive(t *testing.T) {
+	t.Parallel()
 	served := elbv2ServedActions()
 	for _, action := range served {
 		assert.True(t, elbv2awsapi.HasScope(action),

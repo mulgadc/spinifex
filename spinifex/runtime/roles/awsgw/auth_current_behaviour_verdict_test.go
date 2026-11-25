@@ -35,6 +35,7 @@ import (
 // Pins CURRENT behaviour: wire outcomes for invalid long-lived credentials, and
 // that key status changes apply to the very next request (no credential cache).
 func TestCurrentBehaviour_Auth_LongLivedRejections(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	gci := cbForm("GetCallerIdentity")
 
@@ -81,6 +82,7 @@ func TestCurrentBehaviour_Auth_LongLivedRejections(t *testing.T) {
 
 // Pins CURRENT behaviour: AssumeRole session credentials at the SigV4 door.
 func TestCurrentBehaviour_Session_AssumeRoleCredentials(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	roleARN, roleID := e.createAssumableRole(t, "app")
 	s := e.assumeRole(t, roleARN, "s1")
@@ -124,6 +126,7 @@ func TestCurrentBehaviour_Session_AssumeRoleCredentials(t *testing.T) {
 // Pins CURRENT behaviour: an expired session answers ExpiredToken (HTTP 400)
 // before its session token is examined.
 func TestCurrentBehaviour_Session_Expired(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	roleARN, _ := e.createAssumableRole(t, "app")
 	s := e.assumeRole(t, roleARN, "s1")
@@ -149,6 +152,7 @@ func TestCurrentBehaviour_Session_Expired(t *testing.T) {
 // Pins CURRENT behaviour: a GetSessionToken session resolves to the IAM user and
 // outlives the long-lived key that minted it.
 func TestCurrentBehaviour_Session_GetSessionTokenOutlivesMintingKey(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	mintKey := e.newKey(t, "alice")
 	s := e.getSessionToken(t, mintKey)
@@ -179,6 +183,7 @@ func TestCurrentBehaviour_Session_GetSessionTokenOutlivesMintingKey(t *testing.T
 // Pins CURRENT behaviour: an AssumeRoleWithWebIdentity session authenticates at
 // the SigV4 door exactly as an AssumeRole session does.
 func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	issuer := testDiscIssuer
 
@@ -234,6 +239,7 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 // Pins CURRENT behaviour: deleting a user and recreating it under the same name
 // strands its old key and sessions, by revocation or by the continuity check.
 func TestCurrentBehaviour_Revocation_UserDeletedAndRecreated(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		noRevoker   bool
@@ -274,6 +280,7 @@ func TestCurrentBehaviour_Revocation_UserDeletedAndRecreated(t *testing.T) {
 // Pins CURRENT behaviour: deleting a role and recreating it under the same name
 // strands its old sessions, by revocation or by the continuity check.
 func TestCurrentBehaviour_Revocation_RoleDeletedAndRecreated(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		noRevoker   bool
@@ -307,6 +314,7 @@ func TestCurrentBehaviour_Revocation_RoleDeletedAndRecreated(t *testing.T) {
 // Pins CURRENT behaviour: whose identity policy the policy check applies to an
 // orphaned key once its user is deleted and recreated under the same name.
 func TestCurrentBehaviour_Revocation_OrphanedKeyPermissionsAfterRecreation(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	key, oldID := e.newUser(t, "frank")
 	listUsers := cbForm("ListUsers")
@@ -339,6 +347,7 @@ func TestCurrentBehaviour_Revocation_OrphanedKeyPermissionsAfterRecreation(t *te
 // Pins CURRENT behaviour: unsigned requests are refused with
 // MissingAuthenticationToken unless the action is anonymous STS.
 func TestCurrentBehaviour_Auth_MissingCredentials(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	missing := cbRegistry(awserrors.ErrorMissingAuthenticationToken)
 	for _, f := range []url.Values{
@@ -369,6 +378,7 @@ func TestCurrentBehaviour_Auth_MissingCredentials(t *testing.T) {
 // Pins CURRENT behaviour: which credential failures a caller can tell apart on
 // the wire, and whether the door decrypted a secret before answering.
 func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
+	t.Parallel()
 	e := newCBEnv(t, cbEnvOpts{})
 	bobKey, _ := e.newUser(t, "bob")
 	_, err := e.iam.UpdateAccessKey(e.accountID, &iam.UpdateAccessKeyInput{
@@ -417,6 +427,7 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 // the account through the in-process IAM service, so a status written out of band is
 // seen by the next request; keys and sessions are likewise re-read on every request.
 func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
+	t.Parallel()
 	denied := cbOutcome{status: http.StatusForbidden, code: awserrors.ErrorAccessDenied,
 		message: awserrors.ErrorLookup[awserrors.ErrorAccessDenied].Message}
 

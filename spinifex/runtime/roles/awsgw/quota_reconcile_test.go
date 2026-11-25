@@ -19,6 +19,7 @@ import (
 )
 
 func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
@@ -69,6 +70,7 @@ func instanceRecordBucket(t *testing.T, js jetstream.JetStream) jetstream.KeyVal
 // describe responder is registered anywhere in this test: if the loop still
 // fanned out over NATS it would have nothing to fan out to.
 func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
@@ -105,6 +107,7 @@ func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 // A launch is a record write, and the loop is woken by it rather than by a
 // tick: the counter moves well inside the resync interval.
 func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
@@ -141,6 +144,7 @@ func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 // on the other account is what proves it: a whole-set pass would correct it too,
 // and the resync that eventually will is a full interval away.
 func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
@@ -202,6 +206,7 @@ func waitAttempt(t *testing.T, attempts <-chan struct{}, msg string) {
 // the reconcile lease this gateway leaves them alone, even when a record change
 // wakes it, and takes the work up once the lease is free.
 func TestRunQuotaReconcileLeavesTheCountersToTheLeaseHolder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)

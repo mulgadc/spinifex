@@ -108,6 +108,7 @@ func subscribeACMCounter(t *testing.T, nc *nats.Conn, subject string, payload []
 // request with no X-Amz-Target fails at dispatch, not at auth, with the
 // MissingAction envelope.
 func TestACMPipeline_MissingTarget_400MissingActionException(t *testing.T) {
+	t.Parallel()
 	_, app := acmPipelineApp(t, allowAllACMDocs())
 	resp := doRequest(app, signACMRequest(t, "", []byte("{}")))
 
@@ -121,6 +122,7 @@ func TestACMPipeline_MissingTarget_400MissingActionException(t *testing.T) {
 // TestACMPipeline_UnknownAction_400InvalidActionException pins that a target
 // naming an action absent from acmActions fails with InvalidAction.
 func TestACMPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
+	t.Parallel()
 	_, app := acmPipelineApp(t, allowAllACMDocs())
 	target := "CertificateManager.MadeUpAction"
 	resp := doRequest(app, signACMRequest(t, target, []byte("{}")))
@@ -138,6 +140,7 @@ func TestACMPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 // ACM action answers 200 with the AWS JSON 1.1 content type through the full
 // pipeline, once the daemon-side NATS responder answers.
 func TestACMPipeline_ListCertificates_200JSONContentType(t *testing.T) {
+	t.Parallel()
 	gw, app := acmPipelineApp(t, allowAllACMDocs())
 	subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.ListCertificates", []byte(`{}`))
 
@@ -156,6 +159,7 @@ func TestACMPipeline_ListCertificates_200JSONContentType(t *testing.T) {
 // whose body exceeds the SigV4 cap is rejected inside SigV4AuthMiddleware,
 // before ACM dispatch ever runs, with the JSON error envelope.
 func TestACMPipeline_OversizedBody_413OverHTTP(t *testing.T) {
+	t.Parallel()
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
@@ -178,6 +182,7 @@ func TestACMPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 // dispatch runs, and denies, before the NATS-backed action handler is ever
 // invoked, through the full pipeline.
 func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
+	t.Parallel()
 	scopedDocs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -207,6 +212,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 // request-level NATS gate before dispatch reads the action, so ACM's own
 // nil-connection check is unreachable over HTTP.
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
 			gw := withACM(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
@@ -234,6 +240,7 @@ func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 // record's action field carries the resolved ACM action once a real request
 // runs through audit.Middleware, SigV4AuthMiddleware and Request.
 func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
+	t.Parallel()
 	gw, _ := acmPipelineApp(t, allowAllACMDocs())
 	subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.ListCertificates", []byte(`{}`))
 
@@ -262,6 +269,7 @@ func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // that drops or adds an action, including by moving ACM onto the
 // registration seam, fails here.
 func TestACMInventory_RegisteredArePinned(t *testing.T) {
+	t.Parallel()
 	acm := dispatch.AWSOperationInventory(acmRegistrationInventory())["acm"]
 
 	want := []string{

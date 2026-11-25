@@ -124,6 +124,7 @@ func (e *v2Env) do(method, path, host string, authz ...string) v2Response {
 const v2Challenge = `Bearer realm="https://` + v2Host + `/v2/token",service="` + v2Host + `"`
 
 func TestV2Pipeline_UnauthenticatedChallengesBeforeSigV4(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 
 	for _, path := range []string{"/v2/", "/v2/team/app/tags/list"} {
@@ -136,6 +137,7 @@ func TestV2Pipeline_UnauthenticatedChallengesBeforeSigV4(t *testing.T) {
 }
 
 func TestV2Pipeline_VersionCheckAndStub(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 	token := e.userToken(t)
 
@@ -152,6 +154,7 @@ func TestV2Pipeline_VersionCheckAndStub(t *testing.T) {
 }
 
 func TestV2Pipeline_TokenRejections(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 	good := e.userToken(t)
 	other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", gwfix.PrincipalTypeUser, v2AKID)
@@ -188,6 +191,7 @@ func TestV2Pipeline_TokenRejections(t *testing.T) {
 // A host that is not a registry host carries no target account, so the
 // account guard has nothing to compare and the token's own account applies.
 func TestV2Pipeline_NonRegistryHostPassesThrough(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 
 	w := e.do(http.MethodGet, "/v2/", "gateway.example.test", basic(e.userToken(t)))
@@ -198,6 +202,7 @@ func TestV2Pipeline_NonRegistryHostPassesThrough(t *testing.T) {
 // The token is a pointer to current IAM/STS state, so each way that state can
 // move turns the same valid, unexpired JWT into a 401 or a 503.
 func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
+	t.Parallel()
 	user := func(e *v2Env) string { return e.userToken(t) }
 	session := func(e *v2Env) string {
 		return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", gwfix.PrincipalTypeUser, v2ASID)
@@ -281,6 +286,7 @@ func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
 // AWS keeps an ECR token valid after the session that minted it expires and judges
 // the role as it is now: its policy on every request, and its existence.
 func TestV2Pipeline_TokenOutlivesItsRoleSession(t *testing.T) {
+	t.Parallel()
 	const roleID = "AROAV2ROLE000001"
 	const manifest = "/v2/team/app/manifests/latest"
 	seed := func(e *v2Env) {
@@ -348,6 +354,7 @@ func TestV2Pipeline_TokenOutlivesItsRoleSession(t *testing.T) {
 }
 
 func TestV2Pipeline_OperationAuthorization(t *testing.T) {
+	t.Parallel()
 	repoARN := "arn:aws:ecr:" + ecrTestRegion + ":" + v2Account + ":repository/team/app"
 	pullOnly := ecrAllowPolicy(
 		[]string{"ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"},
@@ -387,6 +394,7 @@ func TestV2Pipeline_OperationAuthorization(t *testing.T) {
 }
 
 func TestV2Pipeline_PolicyOutageFailsClosed(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 	token := basic(e.userToken(t))
 	// The rehydrate reads succeed; only the policy read fails.
@@ -399,6 +407,7 @@ func TestV2Pipeline_PolicyOutageFailsClosed(t *testing.T) {
 }
 
 func TestV2Pipeline_TokenEndpoint(t *testing.T) {
+	t.Parallel()
 	t.Run("exchange mints a fresh token for the same principal", func(t *testing.T) {
 		e := newV2Env(t, v2Options{})
 		old := e.userToken(t)
@@ -483,6 +492,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 // Only the exact /v2 subtree is the registry; the SigV4 surface keeps every
 // other path.
 func TestV2Pipeline_RouteSplit(t *testing.T) {
+	t.Parallel()
 	e := newV2Env(t, v2Options{})
 
 	registry := e.do(http.MethodGet, "/v2", v2Host)

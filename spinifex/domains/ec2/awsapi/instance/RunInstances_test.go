@@ -260,6 +260,15 @@ func TestParseRunInstances(t *testing.T) {
 		assert.Contains(t, err.Error(), awserrors.ErrorInvalidBlockDeviceMapping)
 	})
 
+	t.Run("ImageIDThatNamesNoDocumentIsMalformed", func(t *testing.T) {
+		t.Parallel()
+		for _, id := range []string{"ami-a/b", `ami-a\b`} {
+			input := defaults
+			input.ImageId = aws.String(id)
+			assert.Equal(t, errors.New(awserrors.ErrorInvalidAMIIDMalformed), ValidateRunInstancesInput(&input), id)
+		}
+	})
+
 	t.Run("MaxCountAtInt32IsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults

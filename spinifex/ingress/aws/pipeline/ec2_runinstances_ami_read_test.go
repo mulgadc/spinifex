@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -32,10 +33,12 @@ type amiGetFailingStore struct {
 	*objectstore.MemoryObjectStore
 
 	failKey string
+	failed  atomic.Int32
 }
 
 func (s *amiGetFailingStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 	if aws.StringValue(input.Key) == s.failKey {
+		s.failed.Add(1)
 		return nil, awserr.NewRequestFailure(
 			awserr.New("InternalError", "We encountered an internal error. Please try again.", nil), 500, "req-1")
 	}
@@ -44,8 +47,8 @@ func (s *amiGetFailingStore) GetObject(ctx context.Context, input *s3.GetObjectI
 
 // serveNodeLaunch puts a real instance service on node-1 behind the gateway.
 // It answers the launch with the node's prepare error, encoded as the daemon's
-// launch handler encodes it.
-func serveNodeLaunch(t *testing.T, app ec2PipelineApp, nc *nats.Conn, store objectstore.ObjectStore) {
+// launch handler encodes it, and sends that error's code on the returned channel.
+func serveNodeLaunch(t *testing.T, app ec2PipelineApp, nc *nats.Conn, store objectstore.ObjectStore) <-chan string {
 	t.Helper()
 	status, err := json.Marshal(clusterv1.NodeStatusResponse{
 		Node:          "node-1",
@@ -66,9 +69,11 @@ func serveNodeLaunch(t *testing.T, app ec2PipelineApp, nc *nats.Conn, store obje
 	node := ec2instance.NewInstanceServiceImpl(nil, types, nil, nil, nil, nil, nil)
 	node.SetRunInstancesDeps(ec2image.NewImageServiceImplWithStore(store, amiReadTestBucket), nil, nil, nil)
 
+	prepared := make(chan string, 1)
 	app.Daemon.handle("ec2.RunInstances.t3.micro.node-1", func(m *nats.Msg) []byte {
 		var input ec2.RunInstancesInput
 		if err := json.Unmarshal(m.Data, &input); err != nil {
+			t.Errorf("the node could not decode the launch: %v", err)
 			return awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)
 		}
 		_, _, _, err := node.PrepareRunInstances(context.Background(), &input, authzAccountID, "")
@@ -76,9 +81,14 @@ func serveNodeLaunch(t *testing.T, app ec2PipelineApp, nc *nats.Conn, store obje
 			t.Errorf("the node prepared a launch with no launchable AMI")
 			return awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)
 		}
-		_, message, _ := awserrors.ResolveErrorDetail(err)
+		code, message, ok := awserrors.ResolveErrorDetail(err)
+		if !ok {
+			code = "unresolved: " + err.Error()
+		}
+		prepared <- code
 		return awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	})
+	return prepared
 }
 
 // RunInstances answers not-found only for an AMI that does not exist. When the
@@ -106,20 +116,68 @@ func TestEC2Pipeline_RunInstancesAMIReadFailure(t *testing.T) {
 				}))
 			}
 			var store objectstore.ObjectStore = memory
+			failing := &amiGetFailingStore{MemoryObjectStore: memory}
 			if tc.failRead {
 				key, err := ebsmetadata.AMIKey(amiReadTestImage)
 				require.NoError(t, err)
-				store = &amiGetFailingStore{MemoryObjectStore: memory, failKey: key}
+				failing.failKey = key
+				store = failing
 			}
 
 			app := ec2Pipeline(t, nil, allowEC2())
-			serveNodeLaunch(t, app, app.NC, store)
+			prepared := serveNodeLaunch(t, app, app.NC, store)
 
 			got := probeEC2(t, app.Handler, runInstancesBase+"&ImageId="+amiReadTestImage)
 
 			assert.Equal(t, tc.wantStatus, got.Status, got.Body)
 			assert.Equal(t, tc.wantCode, got.Code, got.Body)
-			assert.Equal(t, 1, app.Daemon.count("ec2.RunInstances.t3.micro.node-1"), "the launch must reach the node")
+			select {
+			case code := <-prepared:
+				assert.Equal(t, tc.wantCode, code, "the node's own answer")
+			default:
+				t.Fatal("the launch did not reach the node's prepare step")
+			}
+			if tc.failRead {
+				assert.Positive(t, failing.failed.Load(), "the node must read the AMI and get the 500")
+			}
+		})
+	}
+}
+
+// An ID that can name no AMI document is malformed even when no node has room,
+// so the answer does not depend on placement. A launch template that supplies
+// the ID is refused the same way, before any capacity query.
+func TestEC2Pipeline_RunInstancesUnkeyableAMIIDWithNoCapacity(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		template bool
+	}{
+		{name: "request ImageId", body: runInstancesBase + "&ImageId=ami-a%2Fb"},
+		{name: "launch template ImageId", body: runInstancesBase + "&LaunchTemplate.LaunchTemplateName=lt", template: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := ec2Pipeline(t, nil, allowEC2())
+			if tc.template {
+				app.Daemon.reply("ec2.DescribeLaunchTemplateVersions",
+					`{"LaunchTemplateVersions":[{"LaunchTemplateData":{"ImageId":"ami-a/b"}}]}`)
+			}
+			var capacityQueries atomic.Int32
+			sub, err := app.NC.Subscribe(clusterv1.NodeStatusSubject, func(*nats.Msg) { capacityQueries.Add(1) })
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sub.Unsubscribe() })
+			require.NoError(t, app.NC.Flush())
+
+			got := probeEC2(t, app.Handler, tc.body)
+
+			assert.Equal(t, 400, got.Status, got.Body)
+			assert.Equal(t, awserrors.ErrorInvalidAMIIDMalformed, got.Code, got.Body)
+			require.NoError(t, app.NC.Flush())
+			assert.Zero(t, capacityQueries.Load(), "validation must refuse the ID before placement")
+			if tc.template {
+				assert.Equal(t, 1, app.Daemon.count("ec2.DescribeLaunchTemplateVersions"))
+			}
 		})
 	}
 }

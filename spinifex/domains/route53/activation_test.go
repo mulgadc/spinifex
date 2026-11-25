@@ -14,6 +14,7 @@ import (
 )
 
 func TestActivationIsReportedAndCheckedOnDemand(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	svc.Verifier = v
 	id := createZone(t, svc, acctA, "demand.example")
@@ -37,6 +38,7 @@ func TestActivationIsReportedAndCheckedOnDemand(t *testing.T) {
 }
 
 func TestAdminFindsZonesAcrossAccounts(t *testing.T) {
+	t.Parallel()
 	svc, _, _, c := newVerifier(t)
 	a := createZone(t, svc, acctA, "shared.example")
 	c.advance(time.Second)
@@ -55,6 +57,7 @@ func TestAdminFindsZonesAcrossAccounts(t *testing.T) {
 }
 
 func TestAdminOverrideActivatesSuspendsAndReleases(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, c := newVerifier(t)
 	svc.Verifier = v
 	held := createZone(t, svc, acctA, "contested.example")
@@ -98,6 +101,7 @@ func TestAdminOverrideActivatesSuspendsAndReleases(t *testing.T) {
 }
 
 func TestAdminVerifyChecksInTheOwningAccount(t *testing.T) {
+	t.Parallel()
 	svc, v, dns, _ := newVerifier(t)
 	id := createZone(t, svc, acctB, "admin.example")
 	_, err := svc.AdminVerify(ctx, &route53.AdminZoneQuery{ZoneID: id}, "")
@@ -114,6 +118,7 @@ func TestAdminVerifyChecksInTheOwningAccount(t *testing.T) {
 // A zone that names a platform zone, such as one created before its name was
 // reserved, cannot be activated by the operator either.
 func TestAdminOverrideRefusesAReservedName(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "services.example")
 	svc.Reserved = func(name string) bool { return name == "services.example." }

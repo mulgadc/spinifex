@@ -115,6 +115,7 @@ func newRealizer(svc *route53.Service, ns *fakeNorthstar) *route53.Realizer {
 }
 
 func TestRealizerPublishesOnlyActiveZones(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(2)
 	r := newRealizer(svc, ns)
@@ -148,6 +149,7 @@ func TestRealizerPublishesOnlyActiveZones(t *testing.T) {
 // A change is INSYNC only once every northstar server serves it, so a server
 // that has not loaded the new version holds it PENDING and asks for a retry.
 func TestRealizerHoldsChangesPendingUntilEveryServerLoads(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(3)
 	r := newRealizer(svc, ns)
@@ -172,6 +174,7 @@ func TestRealizerHoldsChangesPendingUntilEveryServerLoads(t *testing.T) {
 }
 
 func TestRealizerWithdrawsDeletedAndDeactivatedZones(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(2)
 	r := newRealizer(svc, ns)
@@ -202,7 +205,9 @@ func TestRealizerWithdrawsDeletedAndDeactivatedZones(t *testing.T) {
 // Terraform polls GetChange after DeleteHostedZone, so a deletion must reach
 // INSYNC even when no published entry is left to withdraw.
 func TestRealizerSettlesTheDeletionOfAnUnservedZone(t *testing.T) {
+	t.Parallel()
 	t.Run("never published", func(t *testing.T) {
+		t.Parallel()
 		svc := newService(t)
 		r := newRealizer(svc, newFakeNorthstar(1))
 		id := createZone(t, svc, acctA, "early.com")
@@ -217,6 +222,7 @@ func TestRealizerSettlesTheDeletionOfAnUnservedZone(t *testing.T) {
 		assert.Equal(t, "INSYNC", changeStatus(t, svc, acctA, aws.StringValue(del.ChangeInfo.Id)))
 	})
 	t.Run("withdrawn before the deletion was recorded", func(t *testing.T) {
+		t.Parallel()
 		svc := newService(t)
 		ns := newFakeNorthstar(1)
 		r := newRealizer(svc, ns)
@@ -239,6 +245,7 @@ func TestRealizerSettlesTheDeletionOfAnUnservedZone(t *testing.T) {
 }
 
 func TestRealizerNeverWritesAReservedZone(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
@@ -254,6 +261,7 @@ func TestRealizerNeverWritesAReservedZone(t *testing.T) {
 // Two accounts may hold zones of the same name; if both are ACTIVE, the older
 // one is served and the answer does not flip between them.
 func TestRealizerServesTheOldestOfTwoActiveZones(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	clock := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { clock = clock.Add(time.Second); return clock }
@@ -276,6 +284,7 @@ func TestRealizerServesTheOldestOfTwoActiveZones(t *testing.T) {
 }
 
 func TestRealizerDoesNothingWhenNotElected(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
@@ -290,6 +299,7 @@ func TestRealizerDoesNothingWhenNotElected(t *testing.T) {
 }
 
 func TestRealizerRendersEveryRecordType(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
@@ -321,6 +331,7 @@ func TestRealizerRendersEveryRecordType(t *testing.T) {
 // Route 53 accepts a target host without its trailing dot and serves it fully
 // qualified; northstar refuses to pack a name that is not.
 func TestRealizerQualifiesTargetsWithoutATrailingDot(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
@@ -349,6 +360,7 @@ func TestRealizerQualifiesTargetsWithoutATrailingDot(t *testing.T) {
 
 // Route 53 serves the SOA record set as stored, so an edit to it is served too.
 func TestRealizerPublishesTheStoredSOA(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
@@ -367,6 +379,7 @@ func TestRealizerPublishesTheStoredSOA(t *testing.T) {
 }
 
 func TestTXTValuesAreValidatedAsCharacterStrings(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	for _, v := range []string{
@@ -386,6 +399,7 @@ func TestTXTValuesAreValidatedAsCharacterStrings(t *testing.T) {
 }
 
 func TestRealizerPrunesTheChangesOfDeletedZones(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	clock := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { return clock }
@@ -411,6 +425,7 @@ func TestRealizerPrunesTheChangesOfDeletedZones(t *testing.T) {
 // three accounts are each published once, an idle pass writes nothing, and one
 // changed zone is the only rewrite.
 func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
+	t.Parallel()
 	const zones = 1100
 	svc := newService(t)
 	ns := newFakeNorthstar(3)
@@ -418,7 +433,7 @@ func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
 	accounts := []string{acctA, acctB, "000000000013"}
 	ids := make([]string, zones)
 	var seed errgroup.Group
-	seed.SetLimit(8)
+	seed.SetLimit(64)
 	for i := range zones {
 		seed.Go(func() (err error) {
 			name := fmt.Sprintf("d%04d.example.com", i+1)
@@ -451,6 +466,7 @@ func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
 // A change that leaves the rendered zone as it was, such as an UPSERT of the
 // same value, still reaches INSYNC, or Terraform would wait on it forever.
 func TestRealizerSyncsAChangeThatAltersNothing(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	// The render carries the document's update time, so both changes must land
 	// at one instant for their zones to match.

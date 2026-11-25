@@ -82,6 +82,7 @@ func listSets(t *testing.T, svc *route53.Service, account, zoneID string) []stri
 }
 
 func TestCreateHostedZoneReturnsAWSShape(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	out, err := svc.CreateHostedZone(ctx, &r53.CreateHostedZoneInput{
 		Name:             aws.String("Example.COM"),
@@ -113,6 +114,7 @@ func TestCreateHostedZoneReturnsAWSShape(t *testing.T) {
 }
 
 func TestCreateHostedZoneRejections(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	createZone(t, svc, acctA, "example.com")
 
@@ -131,6 +133,7 @@ func TestCreateHostedZoneRejections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.CreateHostedZone(ctx, tc.in, acctA)
 			requireCode(t, err, tc.code)
 		})
@@ -142,6 +145,7 @@ func TestCreateHostedZoneRejections(t *testing.T) {
 }
 
 func TestCreateHostedZoneEnforcesAccountLimit(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	svc.MaxZonesPerAccount = 2
 	createZone(t, svc, acctA, "a.com")
@@ -152,6 +156,7 @@ func TestCreateHostedZoneEnforcesAccountLimit(t *testing.T) {
 }
 
 func TestZonesAreInvisibleToOtherAccounts(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 
@@ -168,6 +173,7 @@ func TestZonesAreInvisibleToOtherAccounts(t *testing.T) {
 }
 
 func TestChangeResourceRecordSetsCreateUpsertDelete(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 
@@ -201,6 +207,7 @@ func TestChangeResourceRecordSetsCreateUpsertDelete(t *testing.T) {
 }
 
 func TestChangeBatchIsAllOrNothing(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"))
@@ -226,6 +233,7 @@ func TestChangeBatchIsAllOrNothing(t *testing.T) {
 }
 
 func TestChangeBatchValidation(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"), change("CREATE", "cn.example.com", "CNAME", 60, "x.example.net"))
@@ -264,6 +272,7 @@ func TestChangeBatchValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := apply(svc, acctA, id, tc.change)
 			assert.Contains(t, requireCode(t, err, tc.code), tc.msg)
 		})
@@ -274,10 +283,12 @@ func TestChangeBatchValidation(t *testing.T) {
 }
 
 func TestChangeWithoutTTLAnswersInvalidInput(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	for _, action := range []string{"CREATE", "UPSERT", "DELETE"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			ch := change(action, "nottl.example.com", "A", 0, "192.0.2.1")
 			ch.ResourceRecordSet.TTL = nil
 			_, err := apply(svc, acctA, id, ch)
@@ -290,6 +301,7 @@ func TestChangeWithoutTTLAnswersInvalidInput(t *testing.T) {
 // TestErrorMessagesMatchAWS pins the code and text real Route 53 returned for
 // each case, with the zone and names the recording used.
 func TestErrorMessagesMatchAWS(t *testing.T) {
+	t.Parallel()
 	const zone = "awsdiffn103710.awsdiff-mulga.net"
 	svc := newService(t)
 	id := createZone(t, svc, acctA, zone)
@@ -334,12 +346,14 @@ func TestErrorMessagesMatchAWS(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.msg, requireCode(t, tc.err, tc.code))
 		})
 	}
 }
 
 func TestChangeBatchSizeLimits(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	values := make([]string, 0, 401)
@@ -358,6 +372,7 @@ func TestChangeBatchSizeLimits(t *testing.T) {
 }
 
 func TestConcurrentChangeBatchesBothLand(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	var wg sync.WaitGroup
@@ -374,6 +389,7 @@ func TestConcurrentChangeBatchesBothLand(t *testing.T) {
 }
 
 func TestListResourceRecordSetsPagesInRoute53Order(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	_, err := apply(svc, acctA, id,
@@ -420,6 +436,7 @@ func TestListResourceRecordSetsPagesInRoute53Order(t *testing.T) {
 }
 
 func TestDeleteHostedZoneRequiresOnlyDefaultRecords(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	_, err := apply(svc, acctA, id, change("CREATE", "sub.example.com", "NS", 300, "ns.elsewhere.net"))
@@ -446,6 +463,7 @@ func TestDeleteHostedZoneRequiresOnlyDefaultRecords(t *testing.T) {
 }
 
 func TestListHostedZonesPaging(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	for _, n := range []string{"b.example.com", "example.org", "a.example.com", "example.com"} {
 		createZone(t, svc, acctA, n)
@@ -491,6 +509,7 @@ func TestListHostedZonesPaging(t *testing.T) {
 }
 
 func TestHostedZoneTags(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	bare := strings.TrimPrefix(id, "/hostedzone/")
@@ -541,6 +560,7 @@ func TestHostedZoneTags(t *testing.T) {
 }
 
 func TestChangeTagsForResourceBoundsItsLists(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	bare := strings.TrimPrefix(createZone(t, svc, acctA, "example.com"), "/hostedzone/")
 	eleven := make([]*r53.Tag, 11)
@@ -562,6 +582,7 @@ func TestChangeTagsForResourceBoundsItsLists(t *testing.T) {
 }
 
 func TestChangesOnAnActiveZoneWaitForSync(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	bare := strings.TrimPrefix(id, "/hostedzone/")
@@ -588,6 +609,7 @@ func TestChangesOnAnActiveZoneWaitForSync(t *testing.T) {
 }
 
 func TestUpdateHostedZoneComment(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	out, err := svc.UpdateHostedZoneComment(ctx, &r53.UpdateHostedZoneCommentInput{Id: aws.String(id), Comment: aws.String("moved")}, acctA)
@@ -598,6 +620,7 @@ func TestUpdateHostedZoneComment(t *testing.T) {
 }
 
 func TestChangeRecordsArePrunedAfterRetention(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	svc.Now = func() time.Time { return now }
@@ -613,6 +636,7 @@ func TestChangeRecordsArePrunedAfterRetention(t *testing.T) {
 }
 
 func TestLookupsOfUnissuableIDsNameNothing(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 
@@ -632,6 +656,7 @@ func TestLookupsOfUnissuableIDsNameNothing(t *testing.T) {
 // AWS refuses a value outside the model's bounds with InvalidInput before it
 // looks anything up, whatever the operation's semantic errors would be.
 func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 	longID := aws.String(strings.Repeat("Z", 33))
@@ -724,6 +749,7 @@ func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
 	}
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			assert.Contains(t, requireCode(t, call(), awserrors.ErrorInvalidInput), "failed to satisfy constraint")
 		})
 	}
@@ -733,6 +759,7 @@ func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
 }
 
 func TestListAndLookupErrorsMatchAWS(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
 

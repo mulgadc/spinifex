@@ -85,7 +85,7 @@ iface enp0s1 inet manual
 iface enp0s1 inet6 manual
 
 # Spinifex Config
-# WAN bridge (Spinifex EC2 instances connect here)
+# WAN bridge (EC2 instances on Spinifex connect here)
 # VMs (EC2) / containers <-> br-wan <-> enp0s1 <-> external network
 auto br-wan
 iface br-wan inet dhcp
@@ -100,7 +100,7 @@ Walkthrough of changes:
 * Adds enp0s1 into the bridge
 * enp0s1 becomes a slave interface
 * All traffic goes through br-wan
-* Spinifex EC2 (VMs) in a public subnet, obtain an IP address from the WAN upstream
+* EC2 instances (VMs) on Spinifex in a public subnet, obtain an IP address from the WAN upstream
 
 ### Restart networking
 
@@ -248,7 +248,7 @@ sudo systemctl start spinifex.target
 
 ## Verify installation
 
-Connect to the local AWS gateway and issue a sample command using the AWS CLI tool, all running on your local infrastructure, no cloud required.
+Connect to the local Spinifex gateway and issue a sample command using the AWS CLI tool, all running on your local infrastructure, no cloud required.
 
 ```bash
 export AWS_PROFILE=spinifex

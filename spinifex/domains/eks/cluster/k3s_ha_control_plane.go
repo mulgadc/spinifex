@@ -462,23 +462,14 @@ const hostFanoutTimeout = time.Second
 type natsHostScheduler struct {
 	nc            *nats.Conn
 	fanoutTimeout time.Duration
-}
-
-// HostSchedulerOption customises a NATS fan-out HostScheduler.
-type HostSchedulerOption func(*natsHostScheduler)
-
-// WithFanoutTimeout overrides the window a fan-out waits for host replies.
-func WithFanoutTimeout(d time.Duration) HostSchedulerOption {
-	return func(h *natsHostScheduler) { h.fanoutTimeout = d }
+	// expectReplies ends a subject's fan-out once that many replies arrive. Tests
+	// set it so the result does not depend on how fast replies land.
+	expectReplies map[string]int
 }
 
 // NewNATSHostScheduler returns a NATS fan-out HostScheduler for EKSServiceDeps.
-func NewNATSHostScheduler(nc *nats.Conn, opts ...HostSchedulerOption) HostScheduler {
-	h := &natsHostScheduler{nc: nc, fanoutTimeout: hostFanoutTimeout}
-	for _, opt := range opts {
-		opt(h)
-	}
-	return h
+func NewNATSHostScheduler(nc *nats.Conn) HostScheduler {
+	return &natsHostScheduler{nc: nc, fanoutTimeout: hostFanoutTimeout}
 }
 
 func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType string) []string {
@@ -611,8 +602,9 @@ func (h *natsHostScheduler) fanout(ctx context.Context, subject string, handle f
 		return
 	}
 
+	want, capped := h.expectReplies[subject]
 	deadline := time.Now().Add(h.fanoutTimeout)
-	for {
+	for got := 0; !capped || got < want; got++ {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return

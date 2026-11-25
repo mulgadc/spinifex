@@ -53,7 +53,12 @@ func providerFor(pool external.ExternalPoolConfig) (Provider, error) {
 func fromProvider(ctx context.Context, js jetstream.JetStream, pool external.ExternalPoolConfig, sbAddr string, provider Provider, peerHostIDs []string) (*PoolAllocator, error) {
 	// A refused key looks ready until the first launch, so the refusal is
 	// surfaced at start with the provider's reason.
-	_, err := provider.List(ctx)
+	var err error
+	if lp, ok := provider.(*LatitudeProvider); ok {
+		err = lp.reportMembers(ctx, pool.Name)
+	} else {
+		_, err = provider.List(ctx)
+	}
 	reportFirstCall(ctx, pool, err)
 
 	return New(provider, NewKVStore(js), Config{

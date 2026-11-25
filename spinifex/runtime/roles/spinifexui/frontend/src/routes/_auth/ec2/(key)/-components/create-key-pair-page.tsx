@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useState } from "react"
+import { useId, useState } from "react"
 import {
   Controller,
   type DeepPartialSkipArrayKey,
@@ -35,13 +35,16 @@ import { type CreateKeyPairData, createKeyPairSchema } from "@/types/ec2"
 import { PrivateKeyModal } from "../../-components/private-key-modal"
 
 interface CreateKeyPairPageProps {
-  // Called with the new key pair's ID once its private key is saved, or with
-  // nothing on cancel.
-  onClose: (keyPairId?: string) => void
+  // Called with the new key pair's ID and name once its private key is saved,
+  // or with nothing on cancel.
+  onClose: (keyPairId?: string, keyName?: string) => void
 }
 
 export function CreateKeyPairPage({ onClose }: CreateKeyPairPageProps) {
   const createMutation = useCreateKeyPair()
+  // Unique ids, so the form can open over another form that has a key field.
+  const keyNameId = useId()
+  const keyTypeId = useId()
 
   const [keyMaterial, setKeyMaterial] = useState<{
     keyName: string
@@ -91,11 +94,11 @@ export function CreateKeyPairPage({ onClose }: CreateKeyPairPageProps) {
         >
           <Field>
             <FieldTitle>
-              <label htmlFor="keyName">Key Pair Name</label>
+              <label htmlFor={keyNameId}>Key Pair Name</label>
             </FieldTitle>
             <Input
               aria-invalid={!!errors.keyName}
-              id="keyName"
+              id={keyNameId}
               placeholder="my-key-pair…"
               {...register("keyName")}
             />
@@ -104,7 +107,7 @@ export function CreateKeyPairPage({ onClose }: CreateKeyPairPageProps) {
 
           <Field>
             <FieldTitle>
-              <label htmlFor="keyType">Key Type</label>
+              <label htmlFor={keyTypeId}>Key Type</label>
             </FieldTitle>
             <Controller
               control={control}
@@ -114,7 +117,7 @@ export function CreateKeyPairPage({ onClose }: CreateKeyPairPageProps) {
                   <SelectTrigger
                     aria-invalid={!!errors.keyType}
                     className="w-full"
-                    id="keyType"
+                    id={keyTypeId}
                   >
                     <SelectValue placeholder="Select a key type" />
                   </SelectTrigger>
@@ -153,7 +156,7 @@ export function CreateKeyPairPage({ onClose }: CreateKeyPairPageProps) {
           keyMaterial={keyMaterial.material}
           keyName={keyMaterial.keyName}
           onClose={() => {
-            onClose(keyMaterial.keyPairId)
+            onClose(keyMaterial.keyPairId, keyMaterial.keyName)
           }}
           open={!!keyMaterial}
         />

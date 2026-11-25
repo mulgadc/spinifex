@@ -1,4 +1,4 @@
-# Spinifex EKS demo app
+# Spinifex demo app for EKS
 
 A small, Spinifex-themed web app shared by the EKS Terraform workbooks. It replaces `nginxdemos/hello` with something production-shaped that you build yourself and push to **ECR**, then pull onto your EKS workers.
 
@@ -16,7 +16,7 @@ All configuration is read from the environment, so one image serves every tier:
 |---|---|---|
 | `POD_NAME`, `NODE_NAME`, `POD_NAMESPACE` | identity shown on the page | downward API |
 | `CLUSTER_NAME`, `AWS_REGION` | cluster/region labels | deployment env |
-| `APP_TITLE` | page heading | deployment env (default `Spinifex EKS`) |
+| `APP_TITLE` | page heading | deployment env (default `Spinifex for EKS`) |
 | `PORT` | listen port | default `8080` |
 | `DATA_DIR` | when set, the hit counter is persisted here and survives pod restarts | mounted **EBS-CSI PVC** in `eks-gitops-argocd` |
 
@@ -24,7 +24,7 @@ When `DATA_DIR` points at a writable volume the page shows a **"persisted to EBS
 
 ## Build and push to ECR
 
-The image is named `spinifex-demo`. Build it once and push it to a repository in your Spinifex ECR; every workbook references it by its ECR URI.
+The image is named `spinifex-demo`. Build it once and push it to an ECR repository on your Spinifex cluster; every workbook references it by its ECR URI.
 
 ```bash
 export AWS_PROFILE=spinifex

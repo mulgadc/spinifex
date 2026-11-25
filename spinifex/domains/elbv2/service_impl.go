@@ -823,6 +823,11 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(ctx context.Context, listeners [
 				continue
 			}
 			pem, err := s.resolveCertPEM(ctx, c.CertificateArn, accountID)
+			if errors.Is(err, errCertNoMaterial) {
+				// Leave it out so the renderer skips it and the other frontends still load.
+				slog.WarnContext(ctx, "resolveListenerCerts: certificate has no material, not staged", "certArn", c.CertificateArn)
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("cert %s: %w", c.CertificateArn, err)
 			}
@@ -834,6 +839,10 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(ctx context.Context, listeners [
 	}
 	return out, nil
 }
+
+// errCertNoMaterial means the ACM record has no leaf or no private key, for
+// example a certificate that is still PENDING_VALIDATION.
+var errCertNoMaterial = errors.New("certificate has no issued material")
 
 // resolveCertPEM loads a certificate from ACM and returns its combined PEM
 // (leaf + chain + key). Cross-account certs are treated as absent.
@@ -848,6 +857,9 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(ctx context.Context, arn, accountID st
 	if rec == nil || rec.AccountID != accountID {
 		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
 	}
+	if strings.TrimSpace(rec.Certificate) == "" || strings.TrimSpace(rec.PrivateKey) == "" {
+		return "", errCertNoMaterial
+	}
 
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(rec.Certificate, "\n"))
@@ -861,8 +873,8 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(ctx context.Context, arn, accountID st
 	return b.String(), nil
 }
 
-// validateListenerCerts confirms every certificate ARN resolves in the ACM store
-// and is owned by the account. Rejects at the API boundary to avoid silently
+// validateListenerCerts confirms every certificate ARN resolves in the ACM store,
+// is owned by the account and has issued material. Rejects at the API boundary to avoid silently
 // freezing data-plane convergence at config-render time.
 func (s *ELBv2ServiceImpl) validateListenerCerts(ctx context.Context, certs []ListenerCertificate, accountID string) error {
 	if s.acmStore == nil {

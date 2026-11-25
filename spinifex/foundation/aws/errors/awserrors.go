@@ -56,6 +56,7 @@ var (
 	ErrorDiskImageSizeTooLarge                             = "DiskImageSizeTooLarge"
 	ErrorDryRunOperation                                   = "DryRunOperation"
 	ErrorDuplicateSubnetsInSameZone                        = "DuplicateSubnetsInSameZone"
+	ErrorDuplicateTransitGatewayAttachment                 = "DuplicateTransitGatewayAttachment"
 	ErrorEncryptedVolumesNotSupported                      = "EncryptedVolumesNotSupported"
 	ErrorExistingVpcEndpointConnections                    = "ExistingVpcEndpointConnections"
 	ErrorExpiredToken                                      = "ExpiredToken"
@@ -298,6 +299,10 @@ var (
 	ErrorInvalidSubnetIDNotFound                              = "InvalidSubnetID.NotFound"
 	ErrorInvalidTagKeyMalformed                               = "InvalidTagKey.Malformed"
 	ErrorInvalidTargetArnUnknown                              = "InvalidTargetArn.Unknown"
+	ErrorInvalidTransitGatewayAttachmentIDMalformed           = "InvalidTransitGatewayAttachmentID.Malformed"
+	ErrorInvalidTransitGatewayAttachmentIDNotFound            = "InvalidTransitGatewayAttachmentID.NotFound"
+	ErrorInvalidTransitGatewayIDMalformed                     = "InvalidTransitGatewayID.Malformed"
+	ErrorInvalidTransitGatewayIDNotFound                      = "InvalidTransitGatewayID.NotFound"
 	ErrorInvalidTargetException                               = "InvalidTargetException"
 	ErrorInvalidTenancy                                       = "InvalidTenancy"
 	ErrorInvalidTime                                          = "InvalidTime"
@@ -926,6 +931,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDiskImageSizeTooLarge:                                 {HTTPCode: 400, Message: "The disk image exceeds the allowed limit (for instance or volume import)."},
 	ErrorDryRunOperation:                                       {HTTPCode: 412, Message: "Request would have succeeded, but DryRun flag is set."},
 	ErrorDuplicateSubnetsInSameZone:                            {HTTPCode: 400, Message: "For an interface VPC endpoint, you can specify only one subnet per Availability Zone."},
+	ErrorDuplicateTransitGatewayAttachment:                     {HTTPCode: 400, Message: "The VPC already has a non-deleted attachment to the specified transit gateway."},
 	ErrorEncryptedVolumesNotSupported:                          {HTTPCode: 400, Message: "Encrypted Amazon EBS volumes may only be attached to instances that support Amazon EBS encryption. For more information, see Amazon EBS encryption."},
 	ErrorExistingVpcEndpointConnections:                        {HTTPCode: 400, Message: "You cannot delete a VPC endpoint service configuration or change the load balancers for the endpoint service if there are endpoints attached to the service."},
 	ErrorExpiredToken:                                          {HTTPCode: 400, Message: "The security token included in the request is expired."},
@@ -1168,6 +1174,10 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidTagKeyMalformed:                                {HTTPCode: 400, Message: "The specified tag key is not valid. Tag keys cannot be empty or null, and cannot start with aws:."},
 	ErrorInvalidTargetArnUnknown:                               {HTTPCode: 404, Message: "The specified ARN for the specified user or role is not valid or does not exist."},
 	ErrorInvalidTargetException:                                {HTTPCode: 404, Message: "The specified TargetId is not valid, does not exist, or is in another organization. You can only generate an account status report for declarative policies in your own organization. Ensure that you specify the TargetId in one of the following forms: r-xxxx, ou-xxxx-xxxxxxxx, or a 12-digit account ID in the form xxxxxxxxxxxx."},
+	ErrorInvalidTransitGatewayAttachmentIDMalformed:            {HTTPCode: 400, Message: "The specified transit gateway attachment ID is malformed."},
+	ErrorInvalidTransitGatewayAttachmentIDNotFound:             {HTTPCode: 400, Message: "The specified transit gateway attachment does not exist."},
+	ErrorInvalidTransitGatewayIDMalformed:                      {HTTPCode: 400, Message: "The specified transit gateway ID is malformed."},
+	ErrorInvalidTransitGatewayIDNotFound:                       {HTTPCode: 400, Message: "The specified transit gateway does not exist."},
 	ErrorInvalidTenancy:                                        {HTTPCode: 400, Message: "The tenancy of the instance or VPC is not supported for the requested action. For example, you cannot modify the tenancy of an instance or VPC that has a tenancy attribute of default."},
 	ErrorInvalidTime:                                           {HTTPCode: 400, Message: "The specified timestamp is not valid."},
 	ErrorInvalidTrafficMirrorFilterNotFound:                    {HTTPCode: 404, Message: "The specified Traffic Mirror filter does not exist."},

@@ -5,10 +5,10 @@ import (
 	"math"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -27,37 +27,39 @@ func taggable(types ...string) taggableTypes {
 // TagSpecifications; TestEC2TaggableTypes_CoverEveryAction keeps it complete.
 // AWS answers some actions with InvalidParameter rather than InvalidParameterValue.
 var ec2TaggableTypes = map[string]taggableTypes{
-	"AllocateAddress":                 taggable("elastic-ip"),
-	"AuthorizeSecurityGroupEgress":    {types: []string{"security-group-rule"}, code: awserrors.ErrorInvalidParameter},
-	"AuthorizeSecurityGroupIngress":   {types: []string{"security-group-rule"}, code: awserrors.ErrorInvalidParameter},
-	"CopyImage":                       taggable("image", "snapshot"),
-	"CopySnapshot":                    taggable("snapshot"),
-	"CreateCapacityReservation":       taggable("capacity-reservation"),
-	"CreateEgressOnlyInternetGateway": taggable("egress-only-internet-gateway"),
-	"CreateImage":                     taggable("image", "snapshot"),
-	"CreateInternetGateway":           taggable("internet-gateway"),
-	"CreateKeyPair":                   taggable("key-pair"),
-	"CreateLaunchTemplate":            taggable("launch-template"),
-	"CreateNatGateway":                taggable("natgateway"),
-	"CreateNetworkInterface":          {types: []string{"network-interface"}, code: awserrors.ErrorInvalidParameter},
-	"CreatePlacementGroup":            taggable("placement-group"),
-	"CreateRouteTable":                taggable("route-table"),
-	"CreateSecurityGroup":             taggable("security-group"),
-	"CreateSnapshot":                  taggable("snapshot"),
-	"CreateSubnet":                    {types: []string{"subnet"}, code: awserrors.ErrorInvalidParameter},
-	"CreateVolume":                    taggable("volume"),
-	"CreateVpc":                       {types: []string{"vpc"}, code: awserrors.ErrorInvalidParameter},
-	"CreateVpcPeeringConnection":      taggable("vpc-peering-connection"),
-	"CreateVpcEndpoint":               taggable("vpc-endpoint"),
-	"ImportKeyPair":                   taggable("key-pair"),
-	"RegisterImage":                   taggable("image"),
-	"RequestSpotInstances":            taggable("spot-instances-request"),
-	"RunInstances":                    taggable("instance", "volume", "network-interface", "spot-instances-request"),
+	"AllocateAddress":                   taggable("elastic-ip"),
+	"AuthorizeSecurityGroupEgress":      {types: []string{"security-group-rule"}, code: awserrors.ErrorInvalidParameter},
+	"AuthorizeSecurityGroupIngress":     {types: []string{"security-group-rule"}, code: awserrors.ErrorInvalidParameter},
+	"CopyImage":                         taggable("image", "snapshot"),
+	"CopySnapshot":                      taggable("snapshot"),
+	"CreateCapacityReservation":         taggable("capacity-reservation"),
+	"CreateEgressOnlyInternetGateway":   taggable("egress-only-internet-gateway"),
+	"CreateImage":                       taggable("image", "snapshot"),
+	"CreateInternetGateway":             taggable("internet-gateway"),
+	"CreateKeyPair":                     taggable("key-pair"),
+	"CreateLaunchTemplate":              taggable("launch-template"),
+	"CreateNatGateway":                  taggable("natgateway"),
+	"CreateNetworkInterface":            {types: []string{"network-interface"}, code: awserrors.ErrorInvalidParameter},
+	"CreatePlacementGroup":              taggable("placement-group"),
+	"CreateRouteTable":                  taggable("route-table"),
+	"CreateSecurityGroup":               taggable("security-group"),
+	"CreateSnapshot":                    taggable("snapshot"),
+	"CreateSubnet":                      {types: []string{"subnet"}, code: awserrors.ErrorInvalidParameter},
+	"CreateVolume":                      taggable("volume"),
+	"CreateVpc":                         {types: []string{"vpc"}, code: awserrors.ErrorInvalidParameter},
+	"CreateVpcPeeringConnection":        taggable("vpc-peering-connection"),
+	"CreateTransitGateway":              taggable("transit-gateway"),
+	"CreateTransitGatewayVpcAttachment": taggable("transit-gateway-attachment"),
+	"CreateVpcEndpoint":                 taggable("vpc-endpoint"),
+	"ImportKeyPair":                     taggable("key-pair"),
+	"RegisterImage":                     taggable("image"),
+	"RequestSpotInstances":              taggable("spot-instances-request"),
+	"RunInstances":                      taggable("instance", "volume", "network-interface", "spot-instances-request"),
 }
 
 // validateTagSpecifications refuses a TagSpecifications entry whose ResourceType
-// the action cannot tag, or a tag key with the reserved aws: prefix. Only
-// customer requests come through here, so system callers may still set aws: tags.
+// the action cannot tag, or a reserved tag key. Only customer requests come
+// through here, so system callers may still set aws: and platform tags.
 func validateTagSpecifications(action string, input any) error {
 	allowed, ok := ec2TaggableTypes[action]
 	if !ok {
@@ -68,10 +70,11 @@ func validateTagSpecifications(action string, input any) error {
 			continue
 		}
 		for _, tag := range spec.Tags {
-			// AWS reserves the prefix in any case.
-			if key := aws.StringValue(tag.Key); strings.HasPrefix(strings.ToLower(key), "aws:") {
-				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-					"Value ( %s ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", key)
+			if tag == nil {
+				continue
+			}
+			if err := ec2tagsapi.ReservedKeyError(aws.StringValue(tag.Key)); err != nil {
+				return err
 			}
 		}
 		if spec.ResourceType == nil {

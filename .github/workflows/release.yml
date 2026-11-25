@@ -185,16 +185,8 @@ jobs:
           retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
-  baremetal:
-    needs: release
-    permissions:
-      contents: read
-      statuses: write
-    uses: ./.github/workflows/e2e-baremetal.yml
-    secrets: inherit
-
   promote:
-    needs: [ verify, baremetal ]
+    needs: verify
     runs-on: ubuntu-26.04
     permissions:
       contents: write
@@ -225,9 +217,9 @@ jobs:
       variant: all
     secrets: inherit
 
-  # Annotate the (still-draft) release if either gate failed.
+  # Annotate the (still-draft) release if the verify gate failed.
   mark-failed:
-    needs: [ verify, baremetal ]
+    needs: verify
     if: failure()
     runs-on: ubuntu-26.04
     permissions:
@@ -242,7 +234,7 @@ jobs:
         run: |
           EXISTING_BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
           NOTES_FILE=$(mktemp)
-          printf 'Verification failed (tofu install or bare-metal boot) — see workflow run for details.\n\n%s' "$EXISTING_BODY" > "$NOTES_FILE"
+          printf 'Verification failed (tofu install) — see workflow run for details.\n\n%s' "$EXISTING_BODY" > "$NOTES_FILE"
           gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_FILE"
           rm -f "$NOTES_FILE"
 
@@ -251,9 +243,9 @@ jobs:
     runs-on: [ self-hosted, ci-single ]
     permissions:
       contents: write
-    # ISO build (~60-90m) overlaps the parallel baremetal run (~120m); the
-    # upload gate then waits for baremetal to finish, so the job must outlast it.
-    timeout-minutes: 180
+    # ISO build (~10-50m) runs beside verify (25m cap); the upload gate then
+    # waits for verify to finish, so the job must outlast both.
+    timeout-minutes: 90
     steps:
       - name: Clean Workspace
         run: |
@@ -320,25 +312,24 @@ jobs:
             SPINIFEX_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spx" \
             INSTALLER_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spinifex-installer"
 
-      - name: Wait for verify + baremetal
+      - name: Wait for verify
         id: wait-verify
         if: steps.build-iso.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Waiting for verify + baremetal jobs to complete..."
+          echo "Waiting for verify job to complete..."
           while true; do
             JOBS=$(gh api \
               "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate)
             VERIFY=$(echo "$JOBS" | jq -r '.jobs[] | select(.name == "verify") | .conclusion // empty')
-            BAREMETAL=$(echo "$JOBS" | jq -r '.jobs[] | select(.name | startswith("baremetal")) | .conclusion // empty')
-            if [ -n "$VERIFY" ] && [ -n "$BAREMETAL" ]; then
-              echo "verify=$VERIFY baremetal=$BAREMETAL"
-              { [ "$VERIFY" = "success" ] && [ "$BAREMETAL" = "success" ]; } && exit 0
+            if [ -n "$VERIFY" ]; then
+              echo "verify=$VERIFY"
+              [ "$VERIFY" = "success" ] && exit 0
               exit 1
             fi
-            echo "Still waiting (verify=${VERIFY:-pending} baremetal=${BAREMETAL:-pending}), retry 30s..."
+            echo "Still waiting (verify=${VERIFY:-pending}), retry 30s..."
             sleep 30
           done
 

@@ -1,0 +1,35 @@
+...@style
+direction: right
+
+machine: "Client\nyour machine: deploy-latitude.sh\nOpenTofu or Terraform" {class: client}
+api: "latitude.sh API\nproject · server\nElastic IP" {class: box}
+internet: "Internet\ncustomers" {class: internet}
+
+site: "latitude.sh site\nDAL by default · --site for another" {
+  class: datacenter
+
+  eip: "Elastic IP" {class: eip}
+
+  node: "node1 · m4-metal-medium · --nodes 1\nbare metal · Ubuntu 26.04" {
+    class: server
+
+    cp: "Spinifex\nawsgw · daemon · vpcd · nats\npredastore · viperblock · ui" {class: box}
+
+    vpc: "Your VPC\nnginx-webserver workbook" {
+      class: vpc
+      subnet: "Public subnet" {
+        class: public-subnet
+        guest: "EC2 instance\nNginx web server" {class: instance}
+        ebs: "EBS volume" {class: volume}
+      }
+    }
+  }
+}
+
+
+machine -> api: "API calls" {class: flow}
+api -> site: "creates the server\nand Elastic IP" {class: flow}
+machine -> site.node.cp: "SSH installs\nSpinifex" {class: flow}
+internet -> site.eip: {class: flow}
+site.eip -> site.node.vpc.subnet.guest: "static pool address\nrouted to the guest" {class: flow}
+site.node.vpc.subnet.guest -> site.node.vpc.subnet.ebs: "attached" {class: quiet}

@@ -271,10 +271,14 @@ func (p *embeddingsProvider) embedBatch(ctx context.Context, modelID, baseURL st
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, teiEmbeddingsResponseLimit+1))
 	if err != nil {
 		slog.Error("embeddings: failed to read response body", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "failure", transportFailureClass(err))
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+	}
+	if len(respBody) > teiEmbeddingsResponseLimit {
+		slog.Error("embeddings: response exceeds limit", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "limit_bytes", teiEmbeddingsResponseLimit)
+		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
 	var er embeddingsResponse

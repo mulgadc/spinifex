@@ -369,6 +369,14 @@ generate-aws-model-coverage:
 aws-model-coverage: generate-aws-model-coverage
 	@go run ./cmd/aws-model-coverage
 
+# Docs diagrams: render .github/assets/diagrams/src/*.d2 to SVG. Needs d2 v0.7.1
+# on PATH or in D2_BIN. diagrams-check fails when a committed SVG is stale.
+diagrams:
+	@scripts/render-diagrams.sh
+
+diagrams-check:
+	@scripts/render-diagrams.sh --check
+
 # Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
 # checked out alongside spinifex (see internal/testkit/segscanoracle), which
 # is not the default local or CI layout, so this is a separate target from
@@ -645,7 +653,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm deploy deploy-verify go_build preflight test test-cover test-cover-pkgs list-test-pkgs test-race test-race-pkgs diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm deploy deploy-verify go_build preflight test test-cover test-cover-pkgs list-test-pkgs test-race test-race-pkgs diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage diagrams diagrams-check test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

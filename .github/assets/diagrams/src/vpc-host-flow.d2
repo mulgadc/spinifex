@@ -1,0 +1,27 @@
+...@style
+direction: down
+
+host: "Bare-metal host" {
+  class: server
+
+  tap-eni1: "ENI\ntap-eni1" {class: eni}
+  tap-eni2: "ENI\ntap-eni2" {class: eni}
+  tap-eni3: "ENI\ntap-eni3" {class: eni}
+
+  br-int: "br-int · OVS bridge\noverlay" {class: box}
+  ovn: "OVN\nNAT pipeline" {class: box}
+  br-ext: "br-ext · OVS bridge\nOVN external uplink (localnet)" {class: box}
+  br-wan: "br-wan · Linux bridge\nhost IP · default route" {class: box}
+  nic: "WAN NIC\nenslaved to br-wan · no IP" {class: box}
+
+  tap-eni1 -> br-int: {class: flow}
+  tap-eni2 -> br-int: {class: flow}
+  tap-eni3 -> br-int: {class: flow}
+  br-int -> ovn: {class: flow}
+  ovn -> br-ext: {class: flow}
+  br-ext -> br-wan: "veth pair" {class: flow}
+  br-wan -> nic: {class: flow}
+}
+
+wan: "Internet\nphysical WAN" {class: internet}
+host.nic -> wan: {class: flow}

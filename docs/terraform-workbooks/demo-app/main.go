@@ -88,7 +88,7 @@ func main() {
 		Namespace: env("POD_NAMESPACE", "default"),
 		Cluster:   env("CLUSTER_NAME", "spinifex-eks"),
 		Region:    env("AWS_REGION", env("AWS_DEFAULT_REGION", "ap-southeast-2")),
-		Title:     env("APP_TITLE", "Spinifex EKS"),
+		Title:     env("APP_TITLE", "Spinifex for EKS"),
 		Persisted: dataDir != "",
 	}
 

@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,5 +156,33 @@ func TestValidateCreateTagsInput_RejectsReservedAWSPrefix(t *testing.T) {
 	assert.NoError(t, ValidateCreateTagsInput(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String("vpc-1234567890abcdef0")},
 		Tags:      []*ec2.Tag{{Key: aws.String("team:aws:owner"), Value: aws.String("v")}},
+	}))
+}
+
+func TestReservedPlatformKey_RefusedOnCreateAndDeleteTags(t *testing.T) {
+	resources := []*string{aws.String("eipalloc-1234567890abcdef0")}
+	for _, key := range []string{awstags.ManagedByKey, "Spinifex:Managed-By"} {
+		want := "Value ( " + key + " ) for parameter key is invalid. Tag key 'spinifex:managed-by' is reserved for internal use"
+
+		code, msg, ok := awserrors.ResolveErrorDetail(ValidateCreateTagsInput(&ec2.CreateTagsInput{
+			Resources: resources,
+			Tags:      []*ec2.Tag{{Key: aws.String(key), Value: aws.String(awstags.ManagedByELBv2)}},
+		}))
+		require.True(t, ok, "CreateTags %s carries no AWS code", key)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Equal(t, want, msg)
+
+		code, msg, ok = awserrors.ResolveErrorDetail(ValidateDeleteTagsInput(&ec2.DeleteTagsInput{
+			Resources: resources,
+			Tags:      []*ec2.Tag{{Key: aws.String(key)}},
+		}))
+		require.True(t, ok, "DeleteTags %s carries no AWS code", key)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Equal(t, want, msg)
+	}
+
+	assert.NoError(t, ValidateCreateTagsInput(&ec2.CreateTagsInput{
+		Resources: resources,
+		Tags:      []*ec2.Tag{{Key: aws.String("spinifex:managed-by-team"), Value: aws.String("v")}},
 	}))
 }

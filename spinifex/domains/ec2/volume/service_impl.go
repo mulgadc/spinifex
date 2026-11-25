@@ -23,6 +23,7 @@ import (
 	ebsobligation "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/obligation"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -50,6 +51,9 @@ var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
 // InstanceServiceImpl can call DeleteVolume/DeleteVolumeOnTerminate through
 // the dependency wired via SetTerminationDeps.
 var _ ec2instance.VolumeDeleter = (*VolumeServiceImpl)(nil)
+
+// DescribeTags reads volume tags from the volume record.
+var _ ec2tags.VolumeTagReader = (*VolumeServiceImpl)(nil)
 
 // VolumeServiceImpl handles EBS volume operations with S3 storage.
 type VolumeServiceImpl struct {
@@ -955,6 +959,38 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 	return volume
 }
 
+// VolumeTags returns the tags on the account's volume records, keyed by volume
+// ID. A nil volumeIDs lists every volume, as DescribeVolumes does; an ID with
+// no record is left out.
+func (s *VolumeServiceImpl) VolumeTags(ctx context.Context, accountID string, volumeIDs []string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string)
+	if volumeIDs == nil {
+		metas, err := s.metadata.ListVolumes(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("list volumes: %w", err)
+		}
+		for _, meta := range metas {
+			if len(meta.Tags) > 0 {
+				out[meta.VolumeID] = meta.Tags
+			}
+		}
+		return out, nil
+	}
+	for _, id := range volumeIDs {
+		meta, err := s.metadata.GetVolume(ctx, accountID, id)
+		if objectstore.IsNoSuchKeyError(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get volume %s: %w", id, err)
+		}
+		if len(meta.Tags) > 0 {
+			out[meta.VolumeID] = meta.Tags
+		}
+	}
+	return out, nil
+}
+
 // GetVolumeMetadata reads the control-plane document for a volume. It is the
 // ownership and attachment record the daemon validates attach/detach against.
 func (s *VolumeServiceImpl) GetVolumeMetadata(accountID, volumeID string) (ebsmetadata.Volume, error) {
@@ -1295,7 +1331,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 
 	// Snapshot-backed clones read chunk files from the source volume's S3
 	// prefix, so deleting a volume that still has snapshots would break them.
-	if err := s.checkVolumeHasNoSnapshots(ctx, volumeID); err != nil {
+	if err := s.checkVolumeHasNoSnapshots(ctx, accountID, volumeID); err != nil {
 		return nil, err
 	}
 
@@ -1314,40 +1350,46 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots
 // using the JetStream KV index.
-func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, volumeID string) error {
+func (s *VolumeServiceImpl) checkVolumeHasNoSnapshots(ctx context.Context, accountID, volumeID string) error {
 	if s.snapshotKV == nil {
 		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: snapshotKV is nil", "volumeId", volumeID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	has, err := s.volumeHasSnapshotsKV(ctx, volumeID)
+	snapshots, err := s.volumeSnapshotsKV(ctx, volumeID)
 	if err != nil {
 		slog.ErrorContext(ctx, "checkVolumeHasNoSnapshots: KV lookup failed", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if has {
-		slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID)
-		return errors.New(awserrors.ErrorVolumeInUse)
+	if len(snapshots) == 0 {
+		return nil
 	}
-	return nil
+	slog.ErrorContext(ctx, "DeleteVolume blocked: volume has snapshots", "volumeId", volumeID, "snapshots", len(snapshots))
+	// The metadata read sees only the caller's prefix, so a snapshot is named
+	// only when the caller owns it and DescribeSnapshots would show it.
+	if snap, err := s.metadata.GetSnapshot(ctx, accountID, snapshots[0]); err == nil && !snap.Hidden() {
+		return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because snapshot '%s' depends on it", volumeID, snapshots[0])
+	}
+	return awserrors.Errorf(awserrors.ErrorVolumeInUse, "The volume '%s' cannot be deleted because a snapshot depends on it", volumeID)
 }
 
-// volumeHasSnapshotsKV checks the JetStream KV index for snapshot references.
-func (s *VolumeServiceImpl) volumeHasSnapshotsKV(ctx context.Context, volumeID string) (bool, error) {
+// volumeSnapshotsKV returns the snapshot IDs the JetStream KV index records
+// against volumeID.
+func (s *VolumeServiceImpl) volumeSnapshotsKV(ctx context.Context, volumeID string) ([]string, error) {
 	entry, err := s.snapshotKV.Get(ctx, volumeID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
 
 	var snapshots []string
 	if err := json.Unmarshal(entry.Value(), &snapshots); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return len(snapshots) > 0, nil
+	return snapshots, nil
 }
 
 // ApplyRecordTags mirrors CreateTags into the owning volume's tags.json so

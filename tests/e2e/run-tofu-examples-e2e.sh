@@ -52,11 +52,16 @@ curl_public() {
 # SSH_OPTS itself: a hop added to every ssh would also divert the bastion's
 # inner ssh to a private address, which no proxy can reach.
 ssh_public() {
-    if [ -n "$PUBLIC_PROXY" ]; then
-        ssh -o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p" "$@"
-        return
-    fi
-    ssh "$@"
+    ssh_public_cmd
+    "${SSH_PUBLIC_CMD[@]}" "$@"
+}
+
+# Sets SSH_PUBLIC_CMD to the ssh argv ssh_public runs, for callers that must
+# put it under timeout(1), which cannot run a shell function.
+ssh_public_cmd() {
+    SSH_PUBLIC_CMD=(ssh)
+    [ -n "$PUBLIC_PROXY" ] && SSH_PUBLIC_CMD+=(-o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p")
+    return 0
 }
 
 # Fail here rather than letting every assertion time out in turn: a proxy that
@@ -301,12 +306,84 @@ assert_bastion_private_subnet() {
     local attempt
     for attempt in $(seq 1 30); do
         if ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} true" 2>/dev/null; then
-            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid='
+            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid=' || return 1
+            assert_bastion_s3_endpoint "$bastion" "$key" "$inner_ssh"
             return $?
         fi
         sleep 5
     done
     log "  bastion→private: SSH never reachable after 150s"
+    return 1
+}
+
+# The private instance has no internet route, so an S3 answer can only come
+# through the workbook's gateway endpoint. An unsigned GET / must give S3's
+# AccessDenied; any other answer, or none, fails.
+assert_bastion_s3_endpoint() {
+    local bastion="$1" key="$2" inner_ssh="$3"
+    local port addrs addr attempt out rc code body
+    port=$(tofu output -raw s3_gate_port)
+    addrs=$(tofu output -json s3_gateway_addresses | jq -r '.[]')
+    if [ -z "$addrs" ]; then
+        log "  s3-endpoint: s3_gateway_addresses is empty"
+        return 1
+    fi
+    # Sent on stdin through both SSH hops, so no quoting crosses a shell.
+    # Prints the body, then the HTTP status, then curl's exit code.
+    local probe='out=$(curl -sk --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "https://$1:$2/"); rc=$?; printf "%s\ncurl_exit=%s\n" "$out" "$rc"'
+    # 60s of wall clock per address covers every SSH hop, curl and pause.
+    local deadline left
+    ssh_public_cmd
+    for addr in $addrs; do
+        local ok=0
+        deadline=$((SECONDS + 60))
+        attempt=0
+        while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+            attempt=$((attempt + 1))
+            out=$(timeout "$left" "${SSH_PUBLIC_CMD[@]}" "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
+                "${inner_ssh} bash -s -- ${addr} ${port}" <<<"$probe" 2>&1)
+            rc=$?
+            if [ "$rc" -eq 124 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: no answer before the 60s deadline"
+            elif [ "$rc" -ne 0 ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: ssh exit ${rc}: $(tail -c 200 <<<"$out")"
+            elif [ "$(sed -n '$p' <<<"$out")" != "curl_exit=0" ]; then
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: curl failed, $(sed -n '$p' <<<"$out")"
+            else
+                code=$(sed '$d' <<<"$out" | sed -n '$p')
+                body=$(sed '$d' <<<"$out" | sed '$d')
+                if [ "$code" = "403" ] && grep -q '<Code>AccessDenied</Code>' <<<"$body"; then
+                    log "  s3-endpoint ${addr}:${port}: AccessDenied through the endpoint"
+                    ok=1
+                    break
+                fi
+                log "  s3-endpoint ${addr}:${port}: attempt ${attempt}: HTTP ${code}: $(head -c 200 <<<"$body")"
+            fi
+            [ $((deadline - SECONDS)) -gt 5 ] || break
+            sleep 5
+        done
+        [ "$ok" -eq 1 ] || { log "  s3-endpoint ${addr}:${port}: no S3 AccessDenied within 60s (${attempt} attempts)"; return 1; }
+    done
+}
+
+# The workbook's aws_vpc_endpoint needs the S3 service, which the cluster
+# offers only once every node reaches the endpoint feature level.
+require_s3_endpoint_service() {
+    local deadline=$((SECONDS + ${SPINIFEX_VPCE_ACTIVATION_TIMEOUT_S:-120})) names left
+    local want="com.amazonaws.${CLUSTER_REGION}.s3"
+    if [ -z "$CLUSTER_REGION" ]; then
+        log "  no region in the spinifex profile, so the S3 endpoint service name is unknown"
+        return 1
+    fi
+    while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+        if names=$(timeout "$left" aws ec2 describe-vpc-endpoint-services --service-names "$want" \
+            --query 'ServiceNames' --output text 2>&1) && tr '\t' '\n' <<<"$names" | grep -qxF "$want"; then
+            return 0
+        fi
+        [ $((deadline - SECONDS)) -gt 5 ] || break
+        sleep 5
+    done
+    log "  the cluster does not offer ${want} (last answer: ${names:-none}); check spx admin cluster status for a node below feature level 2"
     return 1
 }
 
@@ -631,7 +708,7 @@ assert_eks_gitops_argocd() {
 # Opt-in rather than universal: the four original workbooks were never written
 # against this assertion, and a pre-existing diff in one of them would fail a
 # suite that is otherwise reporting on something else.
-CLEAN_PLAN_WORKBOOKS=" rds-quickstart "
+CLEAN_PLAN_WORKBOOKS=" rds-quickstart bastion-private-subnet "
 
 assert_clean_plan() {
     local example="$1"
@@ -710,6 +787,14 @@ run_workbook() {
 
     CURRENT_WORKBOOK="$example"
     log "=== ${example} ==="
+
+    # Before the state cleanup below, so a cluster that cannot run the
+    # workbook leaves the directory as it found it.
+    if [ "$example" = "bastion-private-subnet" ] && ! require_s3_endpoint_service; then
+        log "  FAIL ${example}: S3 gateway endpoint service not offered"
+        return 1
+    fi
+
     cd "$path"
     rm -rf .terraform terraform.tfstate* .terraform.lock.hcl
 

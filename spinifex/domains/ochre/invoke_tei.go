@@ -17,8 +17,9 @@ import (
 // request and response bodies are this model-specific InvokeModel contract.
 const teiEmbeddingsPath = "/v1/embeddings"
 
-// teiEmbeddingsResponseLimit caps the upstream body read: 32 inputs of a
-// 768-dim float vector stay well under it.
+// teiEmbeddingsResponseLimit caps every successful TEI embeddings body read,
+// for InvokeModel and the knowledge-base embedder: 32 inputs of a 768-dim
+// float vector stay well under it.
 const teiEmbeddingsResponseLimit = 16 << 20
 
 // teiEmbeddingsRequest is the accepted InvokeModel body. Dimensions must be
@@ -29,6 +30,10 @@ type teiEmbeddingsRequest struct {
 	EncodingFormat json.RawMessage `json:"encoding_format,omitempty"`
 	Dimensions     json.RawMessage `json:"dimensions,omitempty"`
 }
+
+// teiEmbeddingsRequestFields are the exact request keys; encoding/json alone
+// matches struct tags case-insensitively.
+var teiEmbeddingsRequestFields = []string{"input", "model", "encoding_format", "dimensions"}
 
 // teiEmbeddingsUpstreamRequest is what is forwarded to TEI, without model.
 type teiEmbeddingsUpstreamRequest struct {
@@ -81,6 +86,15 @@ func parseTEIEmbeddingsRequest(modelID string, body []byte) ([]byte, int, error)
 	// Valid first: the decoder alone accepts trailing bytes after one value.
 	if !json.Valid(body) {
 		return nil, 0, invalid
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, 0, invalid
+	}
+	for key := range fields {
+		if !slices.Contains(teiEmbeddingsRequestFields, key) {
+			return nil, 0, invalid
+		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
@@ -208,7 +222,7 @@ func mapTEIStatus(status int) string {
 	}
 }
 
-// normalizeTEIEmbeddingsResponse requires n vectors of dims numbers indexed
+// normalizeTEIEmbeddingsResponse requires n embedding objects of dims numbers indexed
 // 0..n-1 and nonnegative token counts, and replaces model with modelID.
 func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n, dims int) ([]byte, error) {
 	var r teiEmbeddingsResponse
@@ -220,6 +234,9 @@ func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n, dims int) ([
 	}
 	seen := make([]bool, n)
 	for _, d := range r.Data {
+		if d.Object != "embedding" {
+			return nil, errors.New("vector object is not embedding")
+		}
 		if d.Index == nil || *d.Index < 0 || *d.Index >= n || seen[*d.Index] {
 			return nil, errors.New("missing, duplicate or out-of-range vector")
 		}

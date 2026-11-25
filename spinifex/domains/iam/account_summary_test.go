@@ -142,11 +142,11 @@ func TestGetAccountSummary_ProvidersCountsOIDCPerAccount(t *testing.T) {
 	accB, err := svc.CreateAccount("Org B")
 	require.NoError(t, err)
 
-	for _, issuer := range []string{"https://oidc.example/a", "https://oidc.example/b"} {
+	for _, issuer := range []string{testIssuer, testIssuer + "2"} {
 		_, err := svc.CreateOpenIDConnectProvider(accA.AccountID, &iam.CreateOpenIDConnectProviderInput{Url: aws.String(issuer)})
 		require.NoError(t, err)
 	}
-	_, err = svc.CreateOpenIDConnectProvider(accB.AccountID, &iam.CreateOpenIDConnectProviderInput{Url: aws.String("https://oidc.example/c")})
+	_, err = svc.CreateOpenIDConnectProvider(accB.AccountID, &iam.CreateOpenIDConnectProviderInput{Url: aws.String(testIssuer)})
 	require.NoError(t, err)
 
 	out, err := svc.GetAccountSummary(accA.AccountID, &iam.GetAccountSummaryInput{})

@@ -291,6 +291,16 @@ The `ebs provider` gate then checks the units, the viperblock mask, the daemon's
 
 `e2e-oci.sh` deletes everything tagged with each recorded `cluster_id` once that topology's nodes are destroyed, including from `--sweep-only`, and fails the run if anything tagged remains. A standalone `validate-topology.sh` run does not sweep, so follow it with `./e2e-oci.sh --sweep-only`.
 
+**The sweep reaches only a state directory marked `disposable`.**
+A run that will tear itself down writes the marker before it creates anything, so a killed run is still swept.
+`--keep`, existing infrastructure and a failure left up by `--keep-on-fail` remove it, so the sweep leaves those deployments and their volumes alone.
+A successful `--destroy-only` writes it, which makes the destroyed deployment's volumes and backups eligible for the next sweep.
+
+A run without `--keep` stops with an error when its directory holds Terraform instances, unreadable state or a cluster record and has no marker: that is a deployment it does not own.
+Use it with `--keep`, or remove it with `--destroy-only`.
+`--dry-run` does not sweep and does not change the marker, with or without `--keep`.
+A sweep from before this marker existed ignores it, so keep a deployment in its own `OCI_STATE_ROOT` while any older checkout shares the root.
+
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
 ### Validate infrastructure Terraform already created
@@ -332,6 +342,33 @@ For infrastructure configured with `instance_principal = "off"`, supply the API-
 ```
 
 `--existing-state-file` skips Terraform apply and destroy, and automatically keeps the hosts. If state is unavailable, replace it with `--existing-hosts-file /path/to/hosts`, containing one public SSH IP address per line. A hosts file carries no authentication metadata, so pass either `--instance-principal` or `--credential-hook` explicitly.
+
+### Reinstall a formed cluster
+
+`--reinstall` runs the installer again on every node, for example to put a new build on a kept deployment.
+Before it changes a host, the run asks each host whether `spx admin init` wrote `data_dir` to `/etc/spinifex/spinifex.toml`:
+
+- **Every host has it:** the cluster is formed. The run does not form it again, and the installer does not run `setup-ovn.sh --management`, so the clustered NB/SB client configuration stays.
+- **No host has it:** the run installs and forms a new cluster.
+- **A host does not answer, or the hosts disagree:** the run stops before it changes a host, and names the hosts.
+
+To install a build of your checkout, build the bundle at the repository root, then give the bundle and its `setup.sh` to the run:
+
+```bash
+make distro-amd64
+cd scripts/terraform/oci-spx
+./validate-topology.sh \
+  --topology vm-multi \
+  --existing-state-file "$PWD/terraform.tfstate" \
+  --instance-principal \
+  --reinstall \
+  --distro ../../../dist/spinifex-<version>-linux-amd64.tar.gz \
+  --setup-sh ../../../scripts/setup.sh \
+  --skip-workload
+```
+
+The cloud-init gate waits for `/var/lib/cloud/instance/boot-finished` on every node for at most `OCI_CLOUD_INIT_TIMEOUT` seconds in total, 1200 by default.
+At that limit it stops with `cloud-init did not finish on <host>`, also when an SSH call to the host does not return.
 
 ## Common Commands
 

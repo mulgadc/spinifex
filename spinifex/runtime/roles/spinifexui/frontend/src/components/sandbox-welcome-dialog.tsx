@@ -2,10 +2,10 @@ import { Link } from "@tanstack/react-router"
 import {
   FlaskConical,
   FolderOpen,
-  HardDrive,
   Key,
   Network,
-  Ship,
+  Server,
+  ShipWheel,
 } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
@@ -36,7 +36,7 @@ const STARTING_POINTS: {
   {
     to: "/ec2/describe-instances",
     search: { create: true },
-    icon: <HardDrive className="size-3.5" />,
+    icon: <Server className="size-3.5" />,
     label: "Launch an instance",
     hint: "Boot a VM on real hardware",
   },
@@ -54,7 +54,7 @@ const STARTING_POINTS: {
   },
   {
     to: "/eks/list-clusters",
-    icon: <Ship className="size-3.5" />,
+    icon: <ShipWheel className="size-3.5" />,
     label: "Kubernetes",
     hint: "Managed EKS-compatible clusters",
   },

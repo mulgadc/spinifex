@@ -172,6 +172,32 @@ func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 		"a change to one account must not recompute another; the resync is what eventually corrects it")
 }
 
+// attemptStore reports on attempts each time a Load of the lease key returns,
+// which is the read every TryLock starts with.
+type attemptStore struct {
+	kvsync.KVStore
+
+	attempts chan struct{}
+}
+
+func (s *attemptStore) Load(ctx context.Context, key string) ([]byte, uint64, error) {
+	value, rev, err := s.KVStore.Load(ctx, key)
+	select {
+	case s.attempts <- struct{}{}:
+	default:
+	}
+	return value, rev, err
+}
+
+func waitAttempt(t *testing.T, attempts <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-attempts:
+	case <-time.After(10 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
 // The quota counters are written by one gateway at a time: while a peer holds
 // the reconcile lease this gateway leaves them alone, even when a record change
 // wakes it, and takes the work up once the lease is free.
@@ -182,7 +208,8 @@ func TestRunQuotaReconcileLeavesTheCountersToTheLeaseHolder(t *testing.T) {
 	require.NoError(t, err)
 	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
-	syncKV, err := kvstore.OpenSyncBucket(js).KV(t.Context())
+	syncStore := kvstore.OpenSyncBucket(js)
+	syncKV, err := syncStore.KV(t.Context())
 	require.NoError(t, err)
 	_, err = syncKV.Put(t.Context(), admissionquota.KeyReconcile, []byte(`{"holder":"gw-peer","generation":1}`))
 	require.NoError(t, err)
@@ -192,19 +219,26 @@ func TestRunQuotaReconcileLeavesTheCountersToTheLeaseHolder(t *testing.T) {
 	putInstanceRecord(t, records, "i-aaa", account, "m5.xlarge", vm.StateRunning)
 
 	accounts := func() ([]string, error) { return []string{account}, nil }
+	store := &attemptStore{KVStore: syncStore, attempts: make(chan struct{}, 16)}
+	lease := reconcile.NewLeaderLease(store, admissionquota.KeyReconcile, "gw-test")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
+	go runQuotaReconcile(ctx, quota, lease, js, accounts, 1)
+	waitAttempt(t, store.attempts, "the startup pass never asked for the lease")
 
+	// Passes run one at a time, so the attempt the second change wakes comes
+	// only after the pass the first change woke has finished.
 	putInstanceRecord(t, records, "i-bbb", account, "t3.micro", vm.StateRunning)
-	require.Never(t, func() bool {
-		return readUsageCounter(t, bucket, account) != -1
-	}, 500*time.Millisecond, 20*time.Millisecond, "a gateway that does not hold the lease must not write the counter")
+	waitAttempt(t, store.attempts, "a record change never woke a pass")
+	putInstanceRecord(t, records, "i-ccc", account, "t3.micro", vm.StateRunning)
+	waitAttempt(t, store.attempts, "a second record change never woke a pass")
+	require.Equal(t, -1, readUsageCounter(t, bucket, account),
+		"a gateway that does not hold the lease must not write the counter")
 
 	require.NoError(t, syncKV.Delete(t.Context(), admissionquota.KeyReconcile))
-	putInstanceRecord(t, records, "i-ccc", account, "t3.micro", vm.StateRunning)
+	putInstanceRecord(t, records, "i-ddd", account, "t3.micro", vm.StateRunning)
 	require.Eventually(t, func() bool {
-		return readUsageCounter(t, bucket, account) == 8
+		return readUsageCounter(t, bucket, account) == 10
 	}, 10*time.Second, 20*time.Millisecond, "with the lease free, the next change reconciles the account")
 }
 

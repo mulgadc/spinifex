@@ -1,6 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { ChevronDown, ChevronRight, Lock, Network, Server } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronRight,
+  Lock,
+  Network,
+  ServerCog,
+} from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import type { SortState } from "@/components/data-table"
@@ -102,7 +108,7 @@ export function AdminDashboardPanel() {
       <Card>
         <CardHeader>
           <CardTitle variant="icon">
-            <Server className="size-3.5" />
+            <ServerCog className="size-3.5" />
             Cluster
             <Badge variant="outline">{clusterMode}</Badge>
           </CardTitle>

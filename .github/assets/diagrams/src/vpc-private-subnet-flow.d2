@@ -1,0 +1,15 @@
+...@style
+direction: right
+
+vpc: "VPC" {
+  class: vpc
+  subnet: "Private subnet" {
+    class: private-subnet
+    instance: "EC2 instance\n10.0.2.5" {class: instance}
+  }
+  router: "VPC router\nlookup 0.0.0.0/0" {class: route-table}
+  subnet.instance -> router: "egress packet" {class: flow}
+}
+
+dropped: "Dropped\nno default route\nno IGW attached" {class: deny}
+vpc.router -> dropped: {class: flow}

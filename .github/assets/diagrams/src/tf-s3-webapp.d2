@@ -1,0 +1,28 @@
+...@style
+direction: right
+
+browser: "Client\nbrowser (end user)" {class: client}
+
+region: Region {
+  class: region
+
+  vpc: "VPC 10.30.0.0/16" {
+    class: vpc
+
+    igw: "Internet gateway" {class: igw}
+
+    public: "Public subnet\n10.30.1.0/24" {
+      class: public-subnet
+      app: "EC2 instance\nFlask webapp :80" {class: instance}
+    }
+
+    imds: "IMDS credentials\n169.254.169.254" {class: credentials}
+  }
+
+  s3: "S3 API\nPredastore :8443" {class: bucket}
+}
+
+browser -> region.vpc.igw: "HTTP" {class: flow}
+region.vpc.igw -> region.vpc.public.app: {class: flow}
+region.vpc.public.app -> region.vpc.imds: "get short-lived\nSTS credentials" {class: quiet}
+region.vpc.public.app -> region.s3: "S3 API (boto3)" {class: flow}

@@ -49,7 +49,32 @@ jobs:
       single_legs: ${{ steps.select.outputs.single_legs }}
       multi_suites: ${{ steps.select.outputs.multi_suites }}
       multi_timeout: ${{ steps.select.outputs.multi_timeout }}
+      skip: ${{ steps.dedup.outputs.skip }}
     steps:
+      # A commit reaches main and dev as the same SHA, and statuses are per SHA.
+      # Skip a push whose commit already passed, or that an older run is
+      # testing now; the older run's status is the one the commit shows.
+      - name: Check for an earlier run of this commit
+        id: dedup
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          PASSED=$(gh api "repos/${REPO}/commits/${GITHUB_SHA}/status" \
+            --jq '[.statuses[] | select(.context == "e2e" and .state == "success") | .target_url] | first // empty')
+          OLDER=$(gh api "repos/${REPO}/actions/workflows/e2e.yml/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            --jq "[.workflow_runs[] | select(.id < ${RUN_ID} and .status != \"completed\") | .html_url] | first // empty")
+          BY="${PASSED:-$OLDER}"
+          if [ -n "${BY}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Commit ${GITHUB_SHA} is tested by ${BY}; no suites run here." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Full history without file contents: the diff needs both commits' trees.
       - uses: actions/checkout@v7.0.1
         with:
@@ -67,8 +92,13 @@ jobs:
           IN_SUITES: ${{ inputs.suites }}
           # A test_run regex already narrows the suite, so it runs in one leg.
           E2E_SINGLE_SHARDS: ${{ inputs.test_run && '1' || '' }}
+          SKIP: ${{ steps.dedup.outputs.skip }}
         run: |
           set -euo pipefail
+          if [ "${SKIP}" = true ]; then
+            printf 'single_legs=[]\nmulti_suites=\nmulti_timeout=60\n' | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
           SELECT=.github/scripts/e2e-select.sh
           if [ "${EVENT}" = push ]; then
             bash "${SELECT}" push "${BEFORE}" "${GITHUB_SHA}" | tee -a "$GITHUB_OUTPUT"
@@ -1141,7 +1171,8 @@ jobs:
 
   e2e_status:
     name: Report E2E Status
-    if: always()
+    # A skipped commit keeps the status its testing run posts.
+    if: always() && needs.plan.outputs.skip != 'true'
     # plan is a dependency because a failed plan skips both e2e jobs, and a
     # skipped job counts as passed below: without it a broken selection would
     # report green having run nothing.
@@ -1181,7 +1212,7 @@ jobs:
   e2e_es_summary:
     name: ES CI Run Summary
     needs: [plan, e2e_single, e2e_multi]
-    if: always()
+    if: always() && needs.plan.outputs.skip != 'true'
     # Any self-hosted runner reaches the sink, and this holds no env. Pinned
     # to ci-single it waited up to 40 minutes behind a nightly's cells.
     runs-on: [self-hosted]

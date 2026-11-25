@@ -2,14 +2,15 @@ import type { LinkProps } from "@tanstack/react-router"
 import {
   Activity,
   ArrowLeftRight,
-  Boxes,
   Brain,
+  Cable,
   Camera,
   Container,
   Crosshair,
   Database,
   Earth,
   FileStack,
+  FolderOpen,
   Globe,
   HardDrive,
   Home,
@@ -28,13 +29,16 @@ import {
   Route,
   Router,
   Server,
+  ServerCog,
   Shield,
   ShieldCheck,
+  ShipWheel,
   SlidersHorizontal,
   UserCog,
   Users,
   UsersRound,
   Waypoints,
+  Workflow,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -69,7 +73,7 @@ export const NAV: readonly NavGroup[] = [
       { label: "Dashboard", icon: Home, to: "/", exact: true },
       {
         label: "Nodes",
-        icon: Server,
+        icon: ServerCog,
         to: "/nodes",
         exact: true,
         admin: true,
@@ -237,6 +241,33 @@ export const NAV: readonly NavGroup[] = [
         ],
       },
       {
+        label: "Transit Gateways",
+        icon: Workflow,
+        to: "/ec2/describe-transit-gateways",
+        create: {
+          label: "Create transit gateway",
+          to: "/ec2/create-transit-gateway",
+        },
+        match: [
+          "/ec2/describe-transit-gateways",
+          "/ec2/create-transit-gateway",
+        ],
+      },
+      {
+        label: "TGW Attachments",
+        tooltip: "Transit gateway attachments",
+        icon: Cable,
+        to: "/ec2/describe-transit-gateway-vpc-attachments",
+        create: {
+          label: "Create VPC attachment",
+          to: "/ec2/create-transit-gateway-vpc-attachment",
+        },
+        match: [
+          "/ec2/describe-transit-gateway-vpc-attachments",
+          "/ec2/create-transit-gateway-vpc-attachment",
+        ],
+      },
+      {
         label: "Endpoints",
         tooltip: "VPC endpoints",
         icon: Plug,
@@ -252,7 +283,7 @@ export const NAV: readonly NavGroup[] = [
       {
         label: "EKS",
         tooltip: "EKS clusters",
-        icon: Boxes,
+        icon: ShipWheel,
         to: "/eks/list-clusters",
         create: { label: "Create EKS cluster", to: "/eks/create-cluster" },
         match: ["/eks/list-clusters", "/eks/create-cluster"],
@@ -389,7 +420,7 @@ export const NAV: readonly NavGroup[] = [
     items: [
       {
         label: "Buckets",
-        icon: Server,
+        icon: FolderOpen,
         to: "/s3/ls",
         create: { label: "Create bucket", to: "/s3/create-bucket" },
       },

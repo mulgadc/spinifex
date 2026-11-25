@@ -28,6 +28,7 @@ import (
 // snapshot, scoped to the local AZ. Empty maps are valid.
 type IntentState struct {
 	PeeringIntent
+	TransitGatewayIntent
 
 	VPCs        map[string]topology.VPCSpec
 	Subnets     map[string]topology.SubnetSpec
@@ -91,7 +92,8 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	if err != nil {
 		return IntentState{}, err
 	}
-	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets); err != nil {
+	subnetAZs := map[string]string{}
+	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets, subnetAZs); err != nil {
 		return IntentState{}, err
 	}
 	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
@@ -118,6 +120,8 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
 	intent.PeeringIntent = loadPeering(ctx, js, localVPCs, vpcIDs)
 	intent.PeeringRoutes = loadPeeringRoutes(intent.VPCs, intent.Subnets, routeTables)
+	intent.TransitGatewayIntent = loadTransitGateways(ctx, js, intent.VPCs, vpcIDs, subnetAZs)
+	intent.TGWRoutes = loadTGWRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
 	return intent, nil
@@ -264,7 +268,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 	return localVPCs, vpcIDs, nil
 }
 
-func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
+func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string) error {
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSubnets)
 	if err != nil {
 		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
@@ -303,6 +307,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 			VPCID:    rec.VpcId,
 			CIDR:     prefix,
 		}
+		azs[rec.SubnetId] = rec.AvailabilityZone
 	}
 	return nil
 }

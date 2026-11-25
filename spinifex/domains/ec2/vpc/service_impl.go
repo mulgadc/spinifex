@@ -62,6 +62,9 @@ type VPCRecord struct {
 	EnableNetworkAddressUsageMetrics bool              `json:"enable_network_address_usage_metrics"`
 	Tags                             map[string]string `json:"tags"`
 	CreatedAt                        time.Time         `json:"created_at"`
+	// Deleting is set by DeleteVpc at the revision it checked, before its
+	// steps that cannot be undone. Attachment admission treats it as absent.
+	Deleting bool `json:"deleting,omitempty"`
 }
 
 // SubnetRecord represents a stored Subnet.
@@ -75,6 +78,8 @@ type SubnetRecord struct {
 	MapPublicIpOnLaunch bool              `json:"map_public_ip_on_launch"`
 	Tags                map[string]string `json:"tags"`
 	CreatedAt           time.Time         `json:"created_at"`
+	// Deleting is DeleteSubnet's mark, as VPCRecord.Deleting is DeleteVpc's.
+	Deleting bool `json:"deleting,omitempty"`
 }
 
 // VPCServiceImpl implements VPC, Subnet, and ENI operations with NATS JetStream persistence.
@@ -120,6 +125,12 @@ type VPCServiceImpl struct {
 	// Reports, per dependent resource kind owned elsewhere, whether one blocks
 	// DeleteVpc. Set before serving.
 	dependencyChecks map[string]DependencyCheck
+
+	// The same, for DeleteSubnet; the check receives the subnet ID.
+	subnetDependencyChecks map[string]DependencyCheck
+
+	// Admits the deletion mark at the Transit Gateway level; nil marks always.
+	markAdmit func(ctx context.Context) (done func(), ok bool, err error)
 }
 
 // DependencyCheck reports whether a resource of one kind blocks deleting
@@ -133,6 +144,37 @@ func (s *VPCServiceImpl) SetDependencyCheck(kind string, check DependencyCheck) 
 		s.dependencyChecks = map[string]DependencyCheck{}
 	}
 	s.dependencyChecks[kind] = check
+}
+
+// SetSubnetDependencyCheck is SetDependencyCheck for DeleteSubnet: check
+// receives the subnet ID in place of the VPC ID.
+func (s *VPCServiceImpl) SetSubnetDependencyCheck(kind string, check DependencyCheck) {
+	if s.subnetDependencyChecks == nil {
+		s.subnetDependencyChecks = map[string]DependencyCheck{}
+	}
+	s.subnetDependencyChecks[kind] = check
+}
+
+// SetDeletionMarkAdmission installs the feature-level admission a VPC or
+// subnet delete holds while it runs. Below the level it writes no mark, so a
+// rollback that counted the marks cannot be overtaken by a new one.
+func (s *VPCServiceImpl) SetDeletionMarkAdmission(admit func(ctx context.Context) (done func(), ok bool, err error)) {
+	s.markAdmit = admit
+}
+
+// admitMark reports whether a parent delete writes the deletion mark. The
+// caller holds done until the delete ends.
+func (s *VPCServiceImpl) admitMark(ctx context.Context, op, id string) (func(), bool, error) {
+	if s.markAdmit == nil {
+		return func() {}, true, nil
+	}
+	done, ok, err := s.markAdmit(ctx)
+	if err != nil {
+		done()
+		slog.ErrorContext(ctx, op+": feature level unreadable", "id", id, "err", err)
+		return nil, false, errors.New(awserrors.ErrorServerInternal)
+	}
+	return done, ok, nil
 }
 
 // SetPrefixListAdmission installs the feature-level admission a write adding a
@@ -322,6 +364,9 @@ func (s *VPCServiceImpl) nextVNI(ctx context.Context) (int64, error) {
 	return allocated, nil
 }
 
+// linkLocal is 169.254.0.0/16, which no VPC CIDR may overlap.
+var linkLocal = &net.IPNet{IP: net.IPv4(169, 254, 0, 0).To4(), Mask: net.CIDRMask(16, 32)}
+
 // invalidCIDRBlockError is AWS's answer to a CidrBlock that does not parse.
 func invalidCIDRBlockError(cidr string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
@@ -342,6 +387,10 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 	// AWS allows /16 to /28 for VPC CIDR blocks
 	ones, _ := ipNet.Mask.Size()
 	if ones < 16 || ones > 28 {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcRange, "The CIDR '%s' is invalid.", *input.CidrBlock)
+	}
+	// AWS reserves the link-local block, which also carries Transit Gateway links.
+	if ipNet.Contains(linkLocal.IP) || linkLocal.Contains(ipNet.IP) {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcRange, "The CIDR '%s' is invalid.", *input.CidrBlock)
 	}
 
@@ -420,146 +469,40 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	vpcID := *input.VpcId
 	key := kvstore.AccountKey(accountID, vpcID)
 
-	if _, err := s.vpcKV.Get(ctx, key); err != nil {
-		// AWS-faithful: an absent VPC is NotFound (the tofu/SDK provider
-		// tolerates it on destroy); destroy orchestration tolerates it too.
-		// A transient read error stays a server error.
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, vpcNotFoundError(vpcID)
-		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	// The marked write at the checked revision is the commit point: the
+	// cascade below cannot be undone, so admission must lose to the mark.
+	done, mark, err := s.admitMark(ctx, "DeleteVpc", vpcID)
+	if err != nil {
+		return nil, err
 	}
-
-	// Check for dependent subnets owned by this account
-	prefix := accountID + "."
-	subnetKeys, err := s.subnetKV.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	for _, k := range subnetKeys {
-		if k == kvstore.VersionKey {
-			continue
-		}
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		entry, err := s.subnetKV.Get(ctx, k)
+	defer done()
+	var markedRev uint64
+	var defaultSGId string
+	for attempt := 1; ; attempt++ {
+		entry, err := s.vpcKV.Get(ctx, key)
 		if err != nil {
-			// ErrKeyNotFound means the subnet was deleted between Keys() and
-			// Get() — fine to skip. Any other error is fail-closed: a
-			// transient read error must not let DeleteVpc bypass a subnet
-			// dependency it can't see.
+			// AWS-faithful: an absent VPC is NotFound (the tofu/SDK provider
+			// tolerates it on destroy). A transient read error stays a server error.
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
+				return nil, vpcNotFoundError(vpcID)
 			}
-			slog.WarnContext(ctx, "DeleteVpc: subnet read failed", "key", k, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		var subnet SubnetRecord
-		if err := json.Unmarshal(entry.Value(), &subnet); err != nil {
-			slog.WarnContext(ctx, "DeleteVpc: subnet unmarshal failed", "key", k, "err", err)
+		if defaultSGId, err = s.checkVpcDependencies(ctx, accountID, vpcID); err != nil {
+			return nil, err
+		}
+		if !mark {
+			markedRev = entry.Revision()
+			break
+		}
+		markedRev, err = markDeleting(ctx, s.vpcKV, key, entry)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrParentChanged) || attempt == markAttempts {
+			slog.ErrorContext(ctx, "DeleteVpc: deletion mark failed", "vpcId", vpcID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if subnet.VpcId == vpcID {
-			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent subnet", "vpcId", vpcID, "subnetId", subnet.SubnetId)
-			return nil, awserrors.HasDependencies("vpc", vpcID)
-		}
-	}
-
-	// Reject if any non-default SG remains in this VPC; the cascade only
-	// auto-deletes the default SG (matches AWS DeleteVpc semantics).
-	defaultSGId := ""
-	sgKeys, err := s.sgKV.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	for _, k := range sgKeys {
-		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		entry, err := s.sgKV.Get(ctx, k)
-		if err != nil {
-			// ErrKeyNotFound means the SG was deleted between Keys() and
-			// Get() — fine to skip. Any other error is fail-closed: a
-			// transient read error must not let DeleteVpc orphan a
-			// non-default SG it can't see.
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			slog.WarnContext(ctx, "DeleteVpc: SG read failed", "key", k, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		var sg SecurityGroupRecord
-		if err := json.Unmarshal(entry.Value(), &sg); err != nil {
-			slog.WarnContext(ctx, "DeleteVpc: SG unmarshal failed", "key", k, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		if sg.VpcId != vpcID {
-			continue
-		}
-		if !sg.IsDefault {
-			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent security group", "vpcId", vpcID, "groupId", sg.GroupId)
-			return nil, awserrors.HasDependencies("vpc", vpcID)
-		}
-		defaultSGId = sg.GroupId
-	}
-
-	// Reject if any non-main route table remains in this VPC; DeleteVpc only
-	// auto-reaps the main route table (matches AWS DeleteVpc semantics).
-	rtbKeys, err := s.rtbKV.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	for _, k := range rtbKeys {
-		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		entry, err := s.rtbKV.Get(ctx, k)
-		if err != nil {
-			// ErrKeyNotFound means the route table was deleted between Keys()
-			// and Get() — fine to skip. Any other error is fail-closed: a
-			// transient read error must not let DeleteVpc orphan a
-			// non-main route table it can't see.
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			slog.WarnContext(ctx, "DeleteVpc: route table read failed", "key", k, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		var rtb struct {
-			RouteTableId string `json:"route_table_id"`
-			VpcId        string `json:"vpc_id"`
-			IsMain       bool   `json:"is_main"`
-		}
-		if err := json.Unmarshal(entry.Value(), &rtb); err != nil {
-			slog.WarnContext(ctx, "DeleteVpc: route table unmarshal failed", "key", k, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		if rtb.VpcId != vpcID {
-			continue
-		}
-		if !rtb.IsMain {
-			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent route table", "vpcId", vpcID, "routeTableId", rtb.RouteTableId)
-			return nil, awserrors.HasDependencies("vpc", vpcID)
-		}
-	}
-
-	// Reject if an internet gateway or egress-only internet gateway still names
-	// this VPC, as AWS does. Without this the gateway outlives the only VPC id
-	// that can detach it, and it can then never be detached or deleted.
-	if err := rejectAttachedGateway(ctx, s.igwKV, accountID, vpcID); err != nil {
-		return nil, err
-	}
-	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
-		return nil, err
-	}
-	// A NAT gateway's record leaves this bucket once deleted, so any record
-	// naming the VPC is one AWS would still count as a dependency.
-	if err := rejectAttachedGateway(ctx, s.natgwKV, accountID, vpcID); err != nil {
-		return nil, err
-	}
-	if err := s.rejectOwnedDependency(ctx, accountID, vpcID); err != nil {
-		return nil, err
 	}
 
 	// Cascade-delete the default SG before removing the VPC record so a vpcd
@@ -587,7 +530,10 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		slog.InfoContext(ctx, "DeleteVpc: reaped main route table", "vpcId", vpcID, "routeTableId", rtbID)
 	}
 
-	if err := s.vpcKV.Delete(ctx, key); err != nil {
+	// A conflict here means a later DeleteVpc wrote the mark again and
+	// finishes the delete itself.
+	if err := s.vpcKV.Delete(ctx, key, jetstream.LastRevision(markedRev)); err != nil {
+		slog.ErrorContext(ctx, "DeleteVpc: record delete at the marked revision failed", "vpcId", vpcID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	s.releaseDefaultVPCClaim(ctx, accountID, vpcID)
@@ -601,18 +547,155 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	return &ec2.DeleteVpcOutput{}, nil
 }
 
-// rejectOwnedDependency returns DependencyViolation while a resource another
-// service owns, such as a peering connection or an endpoint, still needs
-// vpcID. A failed check fails closed.
-func (s *VPCServiceImpl) rejectOwnedDependency(ctx context.Context, accountID, vpcID string) error {
-	for _, kind := range slices.Sorted(maps.Keys(s.dependencyChecks)) {
-		blocked, err := s.dependencyChecks[kind](ctx, accountID, vpcID)
+// checkVpcDependencies returns DependencyViolation while anything but the
+// default security group and the main route table still needs vpcID. It
+// returns the default security group's ID for the cascade.
+func (s *VPCServiceImpl) checkVpcDependencies(ctx context.Context, accountID, vpcID string) (defaultSGId string, err error) {
+	prefix := accountID + "."
+	// Check for dependent subnets owned by this account
+	subnetKeys, err := s.subnetKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range subnetKeys {
+		if k == kvstore.VersionKey {
+			continue
+		}
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.subnetKV.Get(ctx, k)
 		if err != nil {
-			slog.WarnContext(ctx, "DeleteVpc: dependency check failed", "kind", kind, "vpcId", vpcID, "err", err)
+			// ErrKeyNotFound means the subnet was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc bypass a subnet
+			// dependency it can't see.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.WarnContext(ctx, "DeleteVpc: subnet read failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		var subnet SubnetRecord
+		if err := json.Unmarshal(entry.Value(), &subnet); err != nil {
+			slog.WarnContext(ctx, "DeleteVpc: subnet unmarshal failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		if subnet.VpcId == vpcID {
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent subnet", "vpcId", vpcID, "subnetId", subnet.SubnetId)
+			return "", awserrors.HasDependencies("vpc", vpcID)
+		}
+	}
+
+	// Reject if any non-default SG remains in this VPC; the cascade only
+	// auto-deletes the default SG (matches AWS DeleteVpc semantics).
+	sgKeys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range sgKeys {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(ctx, k)
+		if err != nil {
+			// ErrKeyNotFound means the SG was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc orphan a
+			// non-default SG it can't see.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.WarnContext(ctx, "DeleteVpc: SG read failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		var sg SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &sg); err != nil {
+			slog.WarnContext(ctx, "DeleteVpc: SG unmarshal failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		if sg.VpcId != vpcID {
+			continue
+		}
+		if !sg.IsDefault {
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent security group", "vpcId", vpcID, "groupId", sg.GroupId)
+			return "", awserrors.HasDependencies("vpc", vpcID)
+		}
+		defaultSGId = sg.GroupId
+	}
+
+	// Reject if any non-main route table remains in this VPC; DeleteVpc only
+	// auto-reaps the main route table (matches AWS DeleteVpc semantics).
+	rtbKeys, err := s.rtbKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range rtbKeys {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.rtbKV.Get(ctx, k)
+		if err != nil {
+			// ErrKeyNotFound means the route table was deleted between Keys()
+			// and Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc orphan a
+			// non-main route table it can't see.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.WarnContext(ctx, "DeleteVpc: route table read failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		var rtb struct {
+			RouteTableId string `json:"route_table_id"`
+			VpcId        string `json:"vpc_id"`
+			IsMain       bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rtb); err != nil {
+			slog.WarnContext(ctx, "DeleteVpc: route table unmarshal failed", "key", k, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+		if rtb.VpcId != vpcID {
+			continue
+		}
+		if !rtb.IsMain {
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent route table", "vpcId", vpcID, "routeTableId", rtb.RouteTableId)
+			return "", awserrors.HasDependencies("vpc", vpcID)
+		}
+	}
+
+	// Reject if an internet gateway or egress-only internet gateway still names
+	// this VPC, as AWS does. Without this the gateway outlives the only VPC id
+	// that can detach it, and it can then never be detached or deleted.
+	if err := rejectAttachedGateway(ctx, s.igwKV, accountID, vpcID); err != nil {
+		return "", err
+	}
+	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
+		return "", err
+	}
+	// A NAT gateway's record leaves this bucket once deleted, so any record
+	// naming the VPC is one AWS would still count as a dependency.
+	if err := rejectAttachedGateway(ctx, s.natgwKV, accountID, vpcID); err != nil {
+		return "", err
+	}
+	if err := rejectOwnedDependency(ctx, s.dependencyChecks, "vpc", accountID, vpcID); err != nil {
+		return "", err
+	}
+	return defaultSGId, nil
+}
+
+// rejectOwnedDependency returns DependencyViolation while a resource another
+// service owns, such as a peering connection or an endpoint, still needs the
+// VPC or subnet id. A failed check fails closed.
+func rejectOwnedDependency(ctx context.Context, checks map[string]DependencyCheck, resource, accountID, id string) error {
+	for _, kind := range slices.Sorted(maps.Keys(checks)) {
+		blocked, err := checks[kind](ctx, accountID, id)
+		if err != nil {
+			slog.WarnContext(ctx, "Delete: dependency check failed", "kind", kind, "resource", resource, "id", id, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if blocked {
-			return awserrors.HasDependencies("vpc", vpcID)
+			return awserrors.HasDependencies(resource, id)
 		}
 	}
 	return nil
@@ -909,25 +992,49 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 	subnetID := *input.SubnetId
 	key := kvstore.AccountKey(accountID, subnetID)
 
-	// Read subnet record before deletion (needed for vpcd event)
-	subnetEntry, err := s.subnetKV.Get(ctx, key)
+	// The marked write at the checked revision is the commit point, before
+	// the association clear that cannot be undone.
+	done, mark, err := s.admitMark(ctx, "DeleteSubnet", subnetID)
 	if err != nil {
-		// AWS-faithful: an absent subnet is NotFound (provider tolerates it on
-		// destroy); destroy orchestration tolerates it too. A transient read
-		// error stays a server error.
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", subnetID)
-		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	var subnetRecord SubnetRecord
-	_ = json.Unmarshal(subnetEntry.Value(), &subnetRecord)
-
-	// Block while a live ENI attachment (hence a resident instance) remains in
-	// the subnet (rule #3). Orphan/available ENIs do not pin it: tofu deletes
-	// them first and the GC backstop reaps leftovers.
-	if err := s.checkSubnetResidents(ctx, accountID, subnetID); err != nil {
 		return nil, err
+	}
+	defer done()
+	var subnetRecord SubnetRecord
+	var markedRev uint64
+	for attempt := 1; ; attempt++ {
+		subnetEntry, err := s.subnetKV.Get(ctx, key)
+		if err != nil {
+			// AWS-faithful: an absent subnet is NotFound (provider tolerates it on
+			// destroy). A transient read error stays a server error.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", subnetID)
+			}
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		// The record is read for the vpcd event only.
+		_ = json.Unmarshal(subnetEntry.Value(), &subnetRecord)
+
+		// Block while a live ENI attachment (hence a resident instance) remains in
+		// the subnet. Orphan/available ENIs do not pin it: tofu deletes them
+		// first and the GC backstop reaps leftovers.
+		if err := s.checkSubnetResidents(ctx, accountID, subnetID); err != nil {
+			return nil, err
+		}
+		if err := rejectOwnedDependency(ctx, s.subnetDependencyChecks, "subnet", accountID, subnetID); err != nil {
+			return nil, err
+		}
+		if !mark {
+			markedRev = subnetEntry.Revision()
+			break
+		}
+		markedRev, err = markDeleting(ctx, s.subnetKV, key, subnetEntry)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrParentChanged) || attempt == markAttempts {
+			slog.ErrorContext(ctx, "DeleteSubnet: deletion mark failed", "subnetId", subnetID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	// Clear route table associations naming this subnet before the subnet
@@ -939,7 +1046,10 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 		return nil, err
 	}
 
-	if err := s.subnetKV.Delete(ctx, key); err != nil {
+	// A conflict here means a later DeleteSubnet wrote the mark again and
+	// finishes the delete itself.
+	if err := s.subnetKV.Delete(ctx, key, jetstream.LastRevision(markedRev)); err != nil {
+		slog.ErrorContext(ctx, "DeleteSubnet: record delete at the marked revision failed", "subnetId", subnetID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	s.clearRecordTags(ctx, accountID, subnetID)

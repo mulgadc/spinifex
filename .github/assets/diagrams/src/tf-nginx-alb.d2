@@ -1,0 +1,35 @@
+...@style
+direction: right
+
+internet: Internet {class: internet}
+
+region: Region {
+  class: region
+
+  vpc: "VPC 10.20.0.0/16 · nginx-alb-vpc" {
+    class: vpc
+
+    igw: "Internet gateway\nnginx-alb-igw" {class: igw}
+    alb: "ALB nginx-alb\nlistener HTTP :80" {class: lb}
+
+    az: Availability Zone {
+      class: az
+
+      public_a: "public_a 10.20.1.0/24" {
+        class: public-subnet
+        web1: "EC2 instance\nnginx-alb-1 on node1" {class: instance}
+        web3: "EC2 instance\nnginx-alb-3 on node3" {class: instance}
+      }
+      public_b: "public_b 10.20.2.0/24" {
+        class: public-subnet
+        web2: "EC2 instance\nnginx-alb-2 on node2" {class: instance}
+      }
+    }
+  }
+}
+
+internet -> region.vpc.igw: "HTTP :80" {class: flow}
+region.vpc.igw -> region.vpc.alb: {class: flow}
+region.vpc.alb -> region.vpc.az.public_a.web1: {class: flow}
+region.vpc.alb -> region.vpc.az.public_a.web3: {class: flow}
+region.vpc.alb -> region.vpc.az.public_b.web2: {class: flow}

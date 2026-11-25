@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
-	"strings"
 
 	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
@@ -124,16 +123,7 @@ func loadPeeringRoutes(
 					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
 				continue
 			}
-			exclude := []netip.Prefix{vpc.CIDR}
-			for _, other := range rt.Routes {
-				if !strings.HasPrefix(other.GatewayId, "igw-") && other.NatGatewayId == "" {
-					continue
-				}
-				p, err := netip.ParsePrefix(other.DestinationCidrBlock)
-				if err == nil && p.Bits() > dest.Bits() && dest.Contains(p.Addr()) {
-					exclude = append(exclude, p)
-				}
-			}
+			exclude := gatewayExcludes(vpc.CIDR, dest, rt.Routes)
 			for subnetID := range targets[rt.RouteTableId] {
 				out = append(out, PeeringRouteIntent{
 					VPCID: rt.VpcId, RouteTableID: rt.RouteTableId, SubnetID: subnetID,

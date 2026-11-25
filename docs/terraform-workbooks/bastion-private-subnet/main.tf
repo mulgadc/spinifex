@@ -2,8 +2,9 @@
 #
 # Deploys a VPC with both public and private subnets. A bastion host in the
 # public subnet provides SSH access to an isolated instance in the private
-# subnet. The private instance has no internet connectivity — ideal for
-# sensitive workloads that must remain air-gapped from the internet.
+# subnet. The private instance has no internet connectivity. SSH reaches it
+# only through the bastion, and it reaches S3 through a gateway VPC endpoint
+# on its route table, with no internet or NAT gateway.
 #
 # Architecture:
 #
@@ -11,6 +12,9 @@
 #                    │
 #                    ▼ SSH (private IP)
 #                 App Server (private subnet, no internet)
+#                    │
+#                    ▼ HTTPS via S3 gateway endpoint
+#                 S3 (Predastore)
 #
 # Usage:
 #   export AWS_PROFILE=spinifex
@@ -23,6 +27,9 @@
 #   # From the bastion, SSH to the private instance
 #   # (the key is pre-installed at ~/.ssh/bastion-demo.pem via cloud-init)
 #   ssh -i ~/.ssh/bastion-demo.pem ubuntu@<private_ip>
+#
+#   # From the private instance, reach S3 through the endpoint
+#   # (the command is in the s3_check_from_private output)
 
 terraform {
   required_version = ">= 1.6.0"
@@ -61,6 +68,12 @@ variable "spinifex_endpoint" {
   type        = string
   default     = "https://127.0.0.1:9999"
   description = "Spinifex AWS gateway endpoint"
+}
+
+variable "s3_gate_port" {
+  type        = number
+  default     = 8443
+  description = "Port that S3 serves on at the S3 prefix-list addresses. AWS uses 443; Spinifex uses the Predastore gate port. The workbook assumes that all nodes use the same port."
 }
 
 # ---------------------------------------------------------------------------
@@ -216,6 +229,28 @@ resource "aws_route_table_association" "private" {
 }
 
 # ---------------------------------------------------------------------------
+# S3 Gateway Endpoint — the private subnet reaches S3 with no internet route
+# ---------------------------------------------------------------------------
+
+data "aws_vpc_endpoint_service" "s3" {
+  service      = "s3"
+  service_type = "Gateway"
+}
+
+# Adds a route from the S3 prefix list to the endpoint in the private route
+# table. The private route table still has no default route.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = data.aws_vpc_endpoint_service.s3.service_name
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.private.id]
+
+  tags = {
+    Name = "bastion-demo-s3-endpoint"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Security Groups
 # ---------------------------------------------------------------------------
 
@@ -246,7 +281,8 @@ resource "aws_security_group" "bastion" {
   }
 }
 
-# Private instances: SSH only from the bastion security group
+# Private instances: SSH only from the bastion security group. Egress stays
+# inside the VPC, plus S3 through the gateway endpoint's prefix list.
 resource "aws_security_group" "private" {
   name        = "bastion-demo-private-sg"
   description = "Private: SSH from bastion only"
@@ -266,6 +302,14 @@ resource "aws_security_group" "private" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["10.20.0.0/16"]
+  }
+
+  egress {
+    description     = "S3 through the gateway endpoint"
+    from_port       = var.s3_gate_port
+    to_port         = var.s3_gate_port
+    protocol        = "tcp"
+    prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
   }
 
   tags = {
@@ -346,4 +390,22 @@ output "ssh_to_bastion" {
 output "ssh_to_private_from_bastion" {
   description = "From the bastion, SSH to the private instance (key is pre-installed via cloud-init)"
   value       = "ssh -i ~/.ssh/bastion-demo.pem ubuntu@${aws_instance.private.private_ip}"
+}
+
+output "s3_endpoint_id" {
+  value = aws_vpc_endpoint.s3.id
+}
+
+output "s3_gateway_addresses" {
+  description = "Addresses in the S3 prefix list that the private instance reaches through the endpoint"
+  value       = [for c in aws_vpc_endpoint.s3.cidr_blocks : split("/", c)[0]]
+}
+
+output "s3_gate_port" {
+  value = var.s3_gate_port
+}
+
+output "s3_check_from_private" {
+  description = "Run on the private instance: an unsigned request gets an S3 AccessDenied error through the endpoint"
+  value       = "curl -sk https://${split("/", aws_vpc_endpoint.s3.cidr_blocks[0])[0]}:${var.s3_gate_port}/"
 }

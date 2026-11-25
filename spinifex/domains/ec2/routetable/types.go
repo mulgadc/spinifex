@@ -26,6 +26,8 @@ type RouteRecord struct {
 	NatGatewayId         string `json:"nat_gateway_id,omitempty"` // "nat-xxx" (future)
 	// State is not stored for a peering route; it is derived when described.
 	VpcPeeringConnectionId string `json:"vpc_peering_connection_id,omitempty"`
+	// State is not stored for a Transit Gateway route either.
+	TransitGatewayId string `json:"transit_gateway_id,omitempty"`
 	// Set only on a derived VPC endpoint route, which is never stored.
 	DestinationPrefixListId string `json:"destination_prefix_list_id,omitempty"`
 	State                   string `json:"state"`  // "active", "blackhole"

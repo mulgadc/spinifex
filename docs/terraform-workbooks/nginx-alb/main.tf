@@ -308,7 +308,7 @@ resource "aws_instance" "nginx" {
     cat > /var/www/html/index.html <<HTML
     <!DOCTYPE html>
     <html>
-    <head><title>Spinifex ALB Demo</title></head>
+    <head><title>Spinifex Demo (ALB)</title></head>
     <body style="font-family: sans-serif; max-width: 600px; margin: 80px auto;">
       <h1>Hello from Spinifex!</h1>
       <p><strong>Instance:</strong> $INSTANCE_ID (Server ${count.index + 1})</p>

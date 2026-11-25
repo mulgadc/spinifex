@@ -74,6 +74,9 @@ func (d *Daemon) recordTagMirrors() []recordTagMirror {
 	if d.vpcEndpointService != nil {
 		mirrors = append(mirrors, d.vpcEndpointService)
 	}
+	if d.tgwService != nil {
+		mirrors = append(mirrors, d.tgwService)
+	}
 	if d.keyService != nil {
 		mirrors = append(mirrors, d.keyService)
 	}

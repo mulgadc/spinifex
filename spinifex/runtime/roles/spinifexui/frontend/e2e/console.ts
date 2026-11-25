@@ -122,6 +122,8 @@ const EMPTY_EC2 = {
   DescribePlacementGroups: "<placementGroupSet/>",
   DescribeSecurityGroups: "<securityGroupInfo/>",
   DescribeSubnets: "<subnetSet/>",
+  DescribeTransitGatewayVpcAttachments: "<transitGatewayVpcAttachments/>",
+  DescribeTransitGateways: "<transitGatewaySet/>",
   DescribeVolumes: "<volumeSet/>",
   DescribeVpcEndpoints: "<vpcEndpointSet/>",
   DescribeVpcPeeringConnections: "<vpcPeeringConnectionSet/>",

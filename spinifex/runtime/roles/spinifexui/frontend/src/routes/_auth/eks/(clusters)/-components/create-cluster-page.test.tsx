@@ -1,5 +1,6 @@
+import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -33,25 +34,35 @@ const EKS_IMAGE = {
 
 const onClose = vi.fn()
 
-function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
+const SUBNET_A: Subnet = {
+  SubnetId: "subnet-a",
+  VpcId: "vpc-1",
+  CidrBlock: "10.0.1.0/24",
+  AvailabilityZone: "ap-southeast-2a",
+}
+
+interface RenderOptions {
+  withEksImage?: boolean
+  vpcs?: Vpc[]
+  subnets?: Subnet[]
+}
+
+function renderPage({
+  withEksImage = true,
+  vpcs = [{ VpcId: "vpc-1", CidrBlock: "10.0.0.0/16" }],
+  subnets = [SUBNET_A],
+}: RenderOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   queryClient.setQueryData(ec2VpcsQueryOptions.queryKey, {
     $metadata: {},
-    Vpcs: [{ VpcId: "vpc-1", CidrBlock: "10.0.0.0/16" }],
+    Vpcs: vpcs,
   })
   queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
     $metadata: {},
-    Subnets: [
-      {
-        SubnetId: "subnet-a",
-        VpcId: "vpc-1",
-        CidrBlock: "10.0.1.0/24",
-        AvailabilityZone: "ap-southeast-2a",
-      },
-    ],
+    Subnets: subnets,
   })
   queryClient.setQueryData(iamRolesQueryOptions.queryKey, {
     $metadata: {},
@@ -62,11 +73,13 @@ function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
     Images: withEksImage ? [EKS_IMAGE] : [],
   })
 
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <CreateClusterPage onClose={onClose} />
     </QueryClientProvider>,
   )
+
+  return { ...view, queryClient }
 }
 
 async function cliText(user: ReturnType<typeof userEvent.setup>) {
@@ -127,16 +140,12 @@ describe("CreateClusterPage", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("lists the chosen VPC's subnets as switches with their AZ and CIDR", async () => {
-    const user = userEvent.setup()
+  it("lists the chosen VPC's subnets as switches with their AZ and CIDR", () => {
     renderPage()
-
-    await user.click(screen.getByLabelText("VPC"))
-    await user.click(await screen.findByRole("option", { name: /vpc-1/ }))
 
     expect(
       screen.getByRole("switch", { name: "Subnet subnet-a" }),
-    ).not.toBeChecked()
+    ).toBeChecked()
     expect(
       screen.getByText("ap-southeast-2a · 10.0.1.0/24"),
     ).toBeInTheDocument()
@@ -185,9 +194,6 @@ describe("CreateClusterPage", () => {
     renderPage()
 
     await user.type(screen.getByLabelText("Name"), "web")
-    await user.click(screen.getByLabelText("VPC"))
-    await user.click(await screen.findByRole("option", { name: /vpc-1/ }))
-    await user.click(screen.getByRole("switch", { name: "Subnet subnet-a" }))
 
     const code = await cliText(user)
 
@@ -199,5 +205,99 @@ describe("CreateClusterPage", () => {
     expect(code).toHaveTextContent(
       "bootstrapClusterCreatorAdminPermissions=true",
     )
+  })
+
+  describe("default network", () => {
+    it("preselects the only VPC and its subnet", () => {
+      renderPage()
+
+      expect(screen.getByLabelText("VPC")).toHaveTextContent("vpc-1")
+      expect(
+        screen.getByRole("switch", { name: "Subnet subnet-a" }),
+      ).toBeChecked()
+    })
+
+    it("prefers the default VPC over others, selecting all of its subnets", () => {
+      renderPage({
+        vpcs: [
+          { VpcId: "vpc-1", CidrBlock: "10.0.0.0/16" },
+          { VpcId: "vpc-def", CidrBlock: "172.31.0.0/16", IsDefault: true },
+        ],
+        subnets: [
+          SUBNET_A,
+          { SubnetId: "subnet-d1", VpcId: "vpc-def" },
+          { SubnetId: "subnet-d2", VpcId: "vpc-def" },
+        ],
+      })
+
+      expect(screen.getByLabelText("VPC")).toHaveTextContent("vpc-def")
+      expect(
+        screen.getByRole("switch", { name: "Subnet subnet-d1" }),
+      ).toBeChecked()
+      expect(
+        screen.getByRole("switch", { name: "Subnet subnet-d2" }),
+      ).toBeChecked()
+      expect(
+        screen.queryByRole("switch", { name: "Subnet subnet-a" }),
+      ).not.toBeInTheDocument()
+    })
+
+    it("leaves the choice to the customer when several VPCs have no default", () => {
+      renderPage({
+        vpcs: [{ VpcId: "vpc-1" }, { VpcId: "vpc-2" }],
+        subnets: [SUBNET_A, { SubnetId: "subnet-b", VpcId: "vpc-2" }],
+      })
+
+      expect(screen.getByLabelText("VPC")).toHaveTextContent("Select VPC")
+      expect(
+        screen.getByText("No subnets in the selected VPC."),
+      ).toBeInTheDocument()
+    })
+
+    it("shows the empty state when the account has no VPC", () => {
+      renderPage({ vpcs: [], subnets: [] })
+
+      expect(screen.getByLabelText("VPC")).toHaveTextContent("Select VPC")
+      expect(
+        screen.getByText("No subnets in the selected VPC."),
+      ).toBeInTheDocument()
+    })
+
+    it("keeps a cleared subnet cleared when the subnet list refreshes", async () => {
+      const user = userEvent.setup()
+      const { queryClient } = renderPage()
+
+      await user.click(screen.getByRole("switch", { name: "Subnet subnet-a" }))
+
+      act(() => {
+        queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
+          $metadata: {},
+          Subnets: [SUBNET_A, { SubnetId: "subnet-new", VpcId: "vpc-1" }],
+        })
+      })
+
+      await expect(
+        screen.findByRole("switch", { name: "Subnet subnet-new" }),
+      ).resolves.not.toBeChecked()
+      expect(
+        screen.getByRole("switch", { name: "Subnet subnet-a" }),
+      ).not.toBeChecked()
+    })
+
+    it("does not reselect subnets when the customer picks another VPC", async () => {
+      const user = userEvent.setup()
+      renderPage({
+        vpcs: [{ VpcId: "vpc-def", IsDefault: true }, { VpcId: "vpc-1" }],
+        subnets: [SUBNET_A, { SubnetId: "subnet-d1", VpcId: "vpc-def" }],
+      })
+
+      await user.click(screen.getByLabelText("VPC"))
+      await user.click(await screen.findByRole("option", { name: /vpc-1/ }))
+
+      expect(screen.getByLabelText("VPC")).toHaveTextContent("vpc-1")
+      expect(
+        screen.getByRole("switch", { name: "Subnet subnet-a" }),
+      ).not.toBeChecked()
+    })
   })
 })

@@ -396,16 +396,16 @@ func allTagOps() []tagOps {
 			keys:     exactKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				out, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
-					Url: aws.String("https://oidc.example.com/id/TAGME"),
+					Url: aws.String(testIssuer),
 				})
 				require.NoError(t, err)
 				return *out.OpenIDConnectProviderArn
 			},
 			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
 				_, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
-					Url: aws.String("https://oidc.example.com/id/TAGGED"), Tags: tags,
+					Url: aws.String(testIssuer + "-tagged"), Tags: tags,
 				})
-				return "arn:aws:iam::" + testAccountID + ":oidc-provider/oidc.example.com/id/TAGGED", err
+				return OIDCProviderARN(testAccountID, strings.TrimPrefix(testIssuer, "https://")+"-tagged"), err
 			},
 			missingID: "arn:aws:iam::" + testAccountID + ":oidc-provider/oidc.example.com/id/MISSING",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {

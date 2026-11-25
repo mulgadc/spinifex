@@ -166,7 +166,7 @@ Open between all hosts:
 | UDP 500, 4500 and IP protocol 50 (ESP) | IPsec for the Geneve tunnels, while IPsec is on |
 | TCP 4222, 4248 | NATS |
 | TCP 6641, 6642 | OVN northbound and southbound |
-| TCP 8443 | Predastore S3 gate |
+| TCP 8443 | Predastore gate (S3 API) |
 | UDP 6660, 7660 | Object shards, metadata consensus |
 
 UDP 4500 carries the tunnel traffic only where IKE detects NAT between two nodes; otherwise it travels as ESP, on Oracle Linux as on Debian.

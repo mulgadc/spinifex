@@ -131,7 +131,7 @@ tofu apply
 
 > **Why two modules?** The Kubernetes provider in `workloads/` reads the cluster endpoint from a live `data "aws_eks_cluster"` source, so it's only ever configured while the cluster exists. Keeping it out of the cluster module means `destroy` never tries to refresh a workload against a cluster that's already gone — the failure mode where the provider falls back to `http://localhost:80` and reports `connection refused`. Always destroy `workloads/` before the cluster.
 
-> **Same profile for the Kubernetes provider.** The Kubernetes provider authenticates by shelling out to `aws eks get-token`, which has to reach the Spinifex STS endpoint. Keep `AWS_PROFILE=spinifex` exported for both applies.
+> **Same profile for the Kubernetes provider.** The Kubernetes provider authenticates by shelling out to `aws eks get-token`, which has to reach the Spinifex endpoint for STS. Keep `AWS_PROFILE=spinifex` exported for both applies.
 
 <!-- INCLUDE: workloads/main.tf lang:hcl -->
 
@@ -192,7 +192,7 @@ If the pods are `Pending`, the worker may not be `Ready` yet — give it a momen
 
 ### kubernetes provider: connection refused / Unauthorized
 
-The provider runs `aws eks get-token` against the Spinifex STS endpoint. Confirm the AWS CLI is still pointed at Spinifex and the cluster is `ACTIVE`:
+The provider runs `aws eks get-token` against the Spinifex endpoint for STS. Confirm the AWS CLI is still pointed at Spinifex and the cluster is `ACTIVE`:
 
 ```bash
 aws sts get-caller-identity

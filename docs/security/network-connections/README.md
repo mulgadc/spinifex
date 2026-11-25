@@ -158,7 +158,7 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 Debian and Ubuntu hosts reach their distribution's own mirrors for the same purpose.
 
-**To peer nodes (cluster-internal):** NATS federation (4248), Predastore S3 (8443), OVN NB/SB (6641/6642), northstar DNS forwarding (5300), and the Geneve/IPsec overlay (6081, 500, 4500, ESP) — see [§3](#3-cross-node-internal-connections) for encryption and verification of each. The daemon also polls local NATS monitoring at `127.0.0.1:8222/varz` (loopback HTTP). It opens no connection to Predastore for status: the storage topology it reports comes from reading `predastore.toml`, and no Predastore node serves a status endpoint.
+**To peer nodes (cluster-internal):** NATS federation (4248), Predastore for S3 (8443), OVN NB/SB (6641/6642), northstar DNS forwarding (5300), and the Geneve/IPsec overlay (6081, 500, 4500, ESP) — see [§3](#3-cross-node-internal-connections) for encryption and verification of each. The daemon also polls local NATS monitoring at `127.0.0.1:8222/varz` (loopback HTTP). It opens no connection to Predastore for status: the storage topology it reports comes from reading `predastore.toml`, and no Predastore node serves a status endpoint.
 
 **Update checks and metadata.** Spinifex does not check for updates and does not consume a cloud metadata service (`169.254.169.254` is served *by* the cluster to guest VMs). Node software updates come from the operator's OS package channel. The install-telemetry endpoint above is the only vendor-operated destination contacted by a node; closed-egress deployments should disable it and record the opt-out in the security plan.
 
@@ -171,7 +171,7 @@ Control-plane and data-plane traffic between Spinifex nodes, for completeness an
 | Connection | Port(s) | Encryption / Auth | Notes |
 |-----------|---------|-------------------|-------|
 | NATS cluster routes | 4248 | Mutual TLS + cluster token | Full mesh between NATS servers |
-| Predastore S3 (gate) | TCP 8443 | TLS + AWS SigV4 | Cross-node object reads/writes |
+| Predastore gate (S3 API) | TCP 8443 | TLS + AWS SigV4 | Cross-node object reads/writes |
 | Predastore endpoint listener | TCP 8474 | Mutual TLS 1.3 against the formation CA, then the guest's own TLS + AWS SigV4 | A node's VPC endpoint proxy relaying a guest's S3 connection to the node it dialled |
 | Predastore blob | UDP 6660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Erasure-coded object shards. Same port on every machine. |
 | Predastore meta | UDP 7660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Raft consensus over buckets and the object index. Same port on every machine. |

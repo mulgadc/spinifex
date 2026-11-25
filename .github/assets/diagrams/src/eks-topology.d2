@@ -1,0 +1,56 @@
+...@style
+direction: right
+
+users: "Internet\nkubectl, aws eks" {class: internet}
+
+region: Region {
+  class: region
+
+  cp: "EKS control plane · Spinifex-managed" {
+    class: group
+    nlb: "NLB\npublic API" {class: lb}
+    api: "EKS control plane\napiserver VM" {class: eks}
+    nlb -> api: {class: flow}
+  }
+
+  vpc: VPC {
+    class: vpc
+
+    az_a: az-a {
+      class: az
+      subnet_a: subnet_a {
+        class: public-subnet
+        w: "Worker node" {
+          class: instance-contents
+          grid-columns: 3
+          grid-gap: 16
+          p1: pod {class: box; width: 56; height: 36}
+          p2: pod {class: box; width: 56; height: 36}
+          p3: pod {class: box; width: 56; height: 36}
+        }
+      }
+    }
+
+    az_b: az-b {
+      class: az
+      subnet_b: subnet_b {
+        class: public-subnet
+        w: "Worker node" {
+          class: instance-contents
+          grid-columns: 3
+          grid-gap: 16
+          p1: pod {class: box; width: 56; height: 36}
+          p2: pod {class: box; width: 56; height: 36}
+        }
+      }
+    }
+  }
+
+  ecr: ECR {class: ecr}
+}
+
+users -> region.cp.nlb: "API" {class: flow}
+region.cp.api -> region.vpc.az_a.subnet_a.w: "workers join" {class: quiet}
+region.cp.api -> region.vpc.az_b.subnet_b.w: "workers join" {class: quiet}
+region.vpc.az_a.subnet_a.w -> region.ecr: "image pull" {class: quiet}
+region.vpc.az_b.subnet_b.w -> region.ecr: "image pull" {class: quiet}

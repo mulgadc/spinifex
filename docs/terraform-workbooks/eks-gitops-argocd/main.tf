@@ -616,7 +616,7 @@ resource "tls_self_signed_cert" "ingress" {
 
   subject {
     common_name  = var.cert_common_name
-    organization = "Spinifex EKS Demo"
+    organization = "Spinifex Demo for EKS"
   }
 
   # Wildcard SAN so one ALB (shared IngressGroup) can host-route both the demo

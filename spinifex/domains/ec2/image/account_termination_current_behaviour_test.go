@@ -109,7 +109,7 @@ func TestCurrentBehaviour_AccountTermination_CreateImageSnapshotDoesNotPinSource
 	s.seedVolume(t, "vol-snapshotted")
 	_, err := s.snapshots.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-snapshotted")}, ctAccountID)
 	require.NoError(t, err)
-	assert.EqualError(t, s.deleteVolume("vol-snapshotted"), awserrors.ErrorVolumeInUse,
+	assert.True(t, awserrors.IsErrorCode(s.deleteVolume("vol-snapshotted"), awserrors.ErrorVolumeInUse),
 		"a CreateSnapshot snapshot blocks deleting its source volume")
 
 	s.seedVolume(t, "vol-imaged")

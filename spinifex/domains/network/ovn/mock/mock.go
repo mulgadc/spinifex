@@ -53,6 +53,13 @@ type Client struct {
 	// DeletePeeringLinkErr, when set, fails DeletePeeringLink with no change.
 	DeletePeeringLinkErr error
 
+	// EnsureTransitGatewayLinkErr, when set, fails EnsureTransitGatewayLink
+	// with no change; the calls count only writes that changed a row.
+	EnsureTransitGatewayLinkErr    error
+	EnsureTransitGatewayLinkWrites int
+	// DeleteTransitGatewayLinkErr, when set, fails DeleteTransitGatewayLink with no change.
+	DeleteTransitGatewayLinkErr error
+
 	// UpdateLogicalRouterPolicyErr, when set, fails UpdateLogicalRouterPolicy with no change.
 	UpdateLogicalRouterPolicyErr error
 }

@@ -1,4 +1,4 @@
-# Spinifex EKS demo app — multi-stage build to a tiny distroless image.
+# Spinifex demo app for EKS — multi-stage build to a tiny distroless image.
 #
 # Stage 1 compiles a static binary; stage 2 ships only that binary on a
 # distroless base (no shell, no package manager) for a small, production-shaped

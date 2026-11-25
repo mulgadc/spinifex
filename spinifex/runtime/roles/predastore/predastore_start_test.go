@@ -171,6 +171,10 @@ func TestStartRejectsUnprotectedMasterKey(t *testing.T) {
 // blocks for as long as the host serves, and SIGTERM cancels the context the
 // gate and the local nodes share, which is what lets Start return at all.
 func TestStartServesUntilSIGTERM(t *testing.T) {
+	// Parallel overlaps this cluster's Raft election with the shared fixture's.
+	// No other test registers for SIGTERM or reaches the signal handler in Start.
+	t.Parallel()
+
 	dir := t.TempDir()
 	basePath := t.TempDir()
 	gatePort := freePort(t)
@@ -202,7 +206,7 @@ func TestStartServesUntilSIGTERM(t *testing.T) {
 		}
 		conn.Close()
 		return true
-	}, 60*time.Second, 100*time.Millisecond, "gate never accepted a connection on %s", addr)
+	}, 60*time.Second, 20*time.Millisecond, "gate never accepted a connection on %s", addr)
 
 	assert.FileExists(t, filepath.Join(basePath, serviceName+".pid"))
 	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))

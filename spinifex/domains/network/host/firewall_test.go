@@ -348,9 +348,23 @@ func TestMaintainFirewall_SteadyStateIsQuiet(t *testing.T) {
 	firewallReconcileInterval = time.Millisecond
 	t.Cleanup(func() { firewallRetryDelay, firewallReconcileInterval = origRetry, origInterval })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	var passes atomic.Int32
+	encap := ovnEncapCommand
+	ovnEncapCommand = func(remote string) *exec.Cmd { passes.Add(1); return encap(remote) }
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	MaintainFirewall(ctx, env.configPath, firewallClusterConfig(true))
+	done := make(chan struct{})
+	go func() { MaintainFirewall(ctx, env.configPath, firewallClusterConfig(true)); close(done) }()
+
+	require.Eventually(t, func() bool { return passes.Load() >= 10 }, 5*time.Second, time.Millisecond,
+		"loop must keep ticking")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MaintainFirewall did not return when its context was cancelled")
+	}
 
 	// Many ticks, one apply: the rendered-file comparison short-circuits the rest.
 	assert.Len(t, env.helperRuns(), 1)

@@ -6,10 +6,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,13 +23,24 @@ import (
 // the smallest crypto/rsa accepts, and the cert structure is all these check.
 const testIPSecKeyBits = 1024
 
-func init() { ipsecCertKeyBits = testIPSecKeyBits }
+// RSA key generation is slow, so the tests make one CA key and one peer key,
+// start both at package load, and reuse them in every test.
+var (
+	testCAKey   = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, testIPSecKeyBits) })
+	testPeerKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, testIPSecKeyBits) })
+)
+
+func init() {
+	go func() { _, _ = testCAKey() }()
+	go func() { _, _ = testPeerKey() }()
+	ipsecGenerateKey = func(io.Reader, int) (*rsa.PrivateKey, error) { return testPeerKey() }
+}
 
 // writeTestCA writes a throwaway self-signed RSA CA in the PEM/PKCS8 form the
 // IPsec issuer loads.
 func writeTestCA(t *testing.T, certPath, keyPath string) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, testIPSecKeyBits)
+	key, err := testCAKey()
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),

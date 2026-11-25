@@ -16,6 +16,7 @@ import (
 // of real logic: it must root an actual qcow2 Provider at cfg.BaseDir and
 // answer capabilities with that provider's own, not a stub's.
 func TestLaunchService_ServesRealProviderOverNATS(t *testing.T) {
+	t.Parallel()
 	ns, client := testutil.StartTestNATS(t)
 
 	cfg := &Config{
@@ -48,6 +49,7 @@ func TestLaunchService_ServesRealProviderOverNATS(t *testing.T) {
 // natsserve.Options.NodeID: PublishVolume must be reachable on this node's
 // own subject, not the wildcard every-node form.
 func TestLaunchService_ScopesPublishToNodeID(t *testing.T) {
+	t.Parallel()
 	ns, client := testutil.StartTestNATS(t)
 
 	cfg := &Config{

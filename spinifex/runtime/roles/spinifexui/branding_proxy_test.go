@@ -68,6 +68,7 @@ func TestBrandingProxy_ForwardsOnlyTheFixedNames(t *testing.T) {
 }
 
 func TestBrandingProxy_StalledGatewayReturnsWithinTheDeadline(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	transport := brandingBackend(t, func(http.ResponseWriter, *http.Request) { <-release })
 	// Registered after the backend, so it runs first and lets Close finish.

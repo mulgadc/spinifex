@@ -18,17 +18,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// slowUpload PUTs a body that takes longer to arrive than the console's
-// ReadTimeout, as an object part does over a slow link.
+// readTimeout is the console's ReadTimeout and WriteTimeout in these tests.
+const readTimeout = 100 * time.Millisecond
+
+// slowUpload PUTs a body that stalls past readTimeout after its first part, as
+// an object part does over a slow link.
 func slowUpload(t *testing.T, url string) (*http.Response, error) {
 	t.Helper()
 	body, writer := io.Pipe()
 	go func() {
-		for range 5 {
-			time.Sleep(80 * time.Millisecond)
-			if _, err := writer.Write([]byte(strings.Repeat("x", 1024))); err != nil {
-				return
-			}
+		if _, err := writer.Write([]byte(strings.Repeat("x", 1024))); err != nil {
+			return
+		}
+		time.Sleep(readTimeout * 5 / 2)
+		if _, err := writer.Write([]byte(strings.Repeat("x", 4*1024))); err != nil {
+			return
 		}
 		_ = writer.Close()
 	}()
@@ -39,7 +43,10 @@ func slowUpload(t *testing.T, url string) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-func TestHandler_S3ProxyOutlastsTheServerReadTimeout(t *testing.T) {
+// newDeadlineFront starts the console handler with short server timeouts, in
+// front of a backend that answers with the number of body bytes it received.
+func newDeadlineFront(t *testing.T) string {
+	t.Helper()
 	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
 		_, _ = w.Write([]byte(strconv.FormatInt(n, 10)))
@@ -57,28 +64,40 @@ func TestHandler_S3ProxyOutlastsTheServerReadTimeout(t *testing.T) {
 	require.NoError(t, err)
 	svc := &Service{Config: &Config{Region: "us-west-1"}}
 	front := httptest.NewUnstartedServer(svc.newHandler(contentFS, filepath.Join(t.TempDir(), "ca.pem"), transport))
-	front.Config.ReadTimeout = 150 * time.Millisecond
-	front.Config.WriteTimeout = 150 * time.Millisecond
+	front.Config.ReadTimeout = readTimeout
+	front.Config.WriteTimeout = readTimeout
 	front.Start()
 	t.Cleanup(front.Close)
+	return front.URL
+}
 
-	resp, err := slowUpload(t, front.URL+"/proxy/s3/bucket/key")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	got, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "5120", string(got), "the backend received the whole body")
+func TestHandler_S3ProxyOutlastsTheServerReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	t.Run("s3 route extends the deadline", func(t *testing.T) {
+		t.Parallel()
+		resp, err := slowUpload(t, newDeadlineFront(t)+"/proxy/s3/bucket/key")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "5120", string(got), "the backend received the whole body")
+	})
 
 	// The gateway route keeps the server's timeout, so the same body fails there.
-	resp, err = slowUpload(t, front.URL+"/proxy/awsgw/")
-	if err == nil {
-		defer resp.Body.Close()
-		assert.NotEqual(t, http.StatusOK, resp.StatusCode)
-	}
+	t.Run("gateway route keeps the server timeout", func(t *testing.T) {
+		t.Parallel()
+		resp, err := slowUpload(t, newDeadlineFront(t)+"/proxy/awsgw/")
+		if err == nil {
+			defer resp.Body.Close()
+			assert.NotEqual(t, http.StatusOK, resp.StatusCode)
+		}
+	})
 }
 
 func TestHandler_AWSGWProxyPassesAnEventStreamThroughAsItArrives(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

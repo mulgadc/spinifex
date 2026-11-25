@@ -494,14 +494,16 @@ func TestExecute_ARM64_Q35(t *testing.T) {
 
 // installFakeFirmware seeds a temp directory with code+vars files matching the
 // pflash split-file shape and swaps FirmwarePathCandidates so tests don't
-// depend on whatever firmware happens to be installed on the host.
-func installFakeFirmware(t *testing.T, arch string, varsBytes []byte) (codePath, varsPath string) {
+// depend on whatever firmware happens to be installed on the host. VARS is a
+// sparse file of varsSize zero bytes.
+func installFakeFirmware(t *testing.T, arch string, varsSize int64) (codePath, varsPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	codePath = filepath.Join(dir, "CODE.fd")
 	varsPath = filepath.Join(dir, "VARS.fd")
 	require.NoError(t, os.WriteFile(codePath, []byte("fake-code"), 0o644))
-	require.NoError(t, os.WriteFile(varsPath, varsBytes, 0o644))
+	require.NoError(t, os.WriteFile(varsPath, nil, 0o644))
+	require.NoError(t, os.Truncate(varsPath, varsSize))
 
 	orig := FirmwarePathCandidates
 	FirmwarePathCandidates = map[string][]FirmwareCandidate{
@@ -512,7 +514,7 @@ func installFakeFirmware(t *testing.T, arch string, varsBytes []byte) (codePath,
 }
 
 func TestExecute_x86_64_UEFI(t *testing.T) {
-	codePath, _ := installFakeFirmware(t, "x86_64", make([]byte, 540_672))
+	codePath, _ := installFakeFirmware(t, "x86_64", 540_672)
 
 	cfg := Config{
 		CPUCount:     2,
@@ -558,7 +560,7 @@ func TestExecute_x86_64_UEFI_MissingFirmware(t *testing.T) {
 }
 
 func TestExecute_ARM64_UEFI_pflash(t *testing.T) {
-	codePath, _ := installFakeFirmware(t, "arm64", make([]byte, 67_108_864))
+	codePath, _ := installFakeFirmware(t, "arm64", 67_108_864)
 
 	cfg := Config{
 		CPUCount:     1,

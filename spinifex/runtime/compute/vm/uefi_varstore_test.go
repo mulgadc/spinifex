@@ -19,7 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
-	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
@@ -123,7 +122,7 @@ func newUEFIFixture(t *testing.T) *uefiFixture {
 	FirmwarePathCandidates = map[string][]FirmwareCandidate{"x86_64": {{Code: code, VarsTemplate: vars}}}
 	t.Cleanup(func() { FirmwarePathCandidates = orig })
 
-	_, _, js := testutil.StartTestJetStream(t)
+	js := newTestJetStream(t)
 	records := uefistore.NewStore(js)
 	require.NoError(t, records.Open(t.Context()))
 

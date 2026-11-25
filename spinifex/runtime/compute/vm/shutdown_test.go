@@ -58,6 +58,7 @@ func shutdownTestManager(t *testing.T) (m *Manager, store *fakeStateStore, mount
 // ShuttingDown plus the StateReason mutation, and the goroutine driving
 // the instance through terminateCleanup → Terminated.
 func TestMarkFailed_TransitionsToTerminated(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, _, _, rt := shutdownTestManager(t)
 
@@ -97,6 +98,7 @@ func TestMarkFailed_TransitionsToTerminated(t *testing.T) {
 // TestMarkFailed_NilInstance verifies MarkFailed tolerates a VM with no
 // embedded ec2.Instance (Instance == nil) without panicking.
 func TestMarkFailed_NilInstance(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, _, _, rt := shutdownTestManager(t)
 
@@ -1121,6 +1123,7 @@ func TestTerminate_WriteRunningStateFailure_RollbackInsert(t *testing.T) {
 // loss: a benign `systemctl restart spinifex-daemon` would destroy user
 // volumes flagged DeleteOnTermination=true.
 func TestMarkRecoveryFailed_PreservesVolumesAndAWSResources(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, _, cleaner, rt := shutdownTestManager(t)
 	saved := make(chan struct{}, 1)
@@ -1191,6 +1194,7 @@ func TestMarkRecoveryFailed_PreservesVolumesAndAWSResources(t *testing.T) {
 // ec2.cmd.<id> subscription live so the operator's terminate command
 // can reach this node.
 func TestMarkRecoveryFailed_DoesNotFireOnInstanceDown(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	var down atomic.Int64
 	m, _, _, _, rt := shutdownTestManager(t)
@@ -1569,6 +1573,7 @@ func TestStopCleanup_SealFailure_StillRunsBestEffortSteps(t *testing.T) {
 // VM is still stopped, and every per-VM seal failure comes back to the caller so
 // the coordinated shutdown refuses to advance to the STORAGE phase.
 func TestStopAll_SealFailure_AggregatesAndPropagates(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, mounter, _, _ := shutdownTestManager(t)
 	mounter.unmountErr = errSealStalled
@@ -1596,6 +1601,7 @@ func TestStopAll_SealFailure_AggregatesAndPropagates(t *testing.T) {
 // TestStopAll_SealSucceeds_ReturnsNil is the control for the test above: an
 // identical fan-out whose seals all succeed must still report success.
 func TestStopAll_SealSucceeds_ReturnsNil(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, mounter, _, _ := shutdownTestManager(t)
 
@@ -1612,6 +1618,7 @@ func TestStopAll_SealSucceeds_ReturnsNil(t *testing.T) {
 // not short-circuit Stop: the instance still reaches Stopped and migrates to the
 // shared KV, and the caller still learns the volume was not sealed.
 func TestStop_SealFailure_CompletesStopAndReportsError(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, store, mounter, _, _ := shutdownTestManager(t)
 	mounter.unmountErr = errSealStalled
@@ -1635,6 +1642,7 @@ func TestStop_SealFailure_CompletesStopAndReportsError(t *testing.T) {
 // stricter stop path: the volumes are deleted next, so an unsealed block map
 // loses nothing and terminate must stay idempotent.
 func TestTerminate_SealFailure_Tolerated(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, mounter, cleaner, _ := shutdownTestManager(t)
 	mounter.unmountErr = errSealStalled

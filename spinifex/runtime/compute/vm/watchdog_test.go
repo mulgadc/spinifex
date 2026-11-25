@@ -61,6 +61,7 @@ func TestScanAndMarkStuckPending_BoundaryNotStuck(t *testing.T) {
 }
 
 func TestScanAndMarkStuckPending_StuckPending_MarkedFailed(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, rt, _ := crashTestManager(t)
 
@@ -75,6 +76,7 @@ func TestScanAndMarkStuckPending_StuckPending_MarkedFailed(t *testing.T) {
 }
 
 func TestScanAndMarkStuckPending_StuckProvisioning_MarkedFailed(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 	m, _, rt, _ := crashTestManager(t)
 
@@ -125,6 +127,7 @@ func TestStartPendingWatchdog_CtxCancelStopsGoroutine(t *testing.T) {
 	// goleak fails the test if the watchdog goroutine outlives ctx.
 	// Without this, a regression that ignored ctx.Done would still pass:
 	// the harness reaps the leaked goroutine on test process exit.
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 
 	m, _, _, _ := crashTestManager(t)
@@ -174,6 +177,7 @@ func deepRecurse(n int, ready chan<- struct{}, block <-chan struct{}) int {
 // panicking on the "...N frames elided..." line runtime.Stack emits for
 // goroutines parked past 100 frames deep. v1.3.0 reads it as a function name.
 func TestGoleakParsesElidedFrameStacks(t *testing.T) {
+	stopSharedJetStream()
 	ready := make(chan struct{})
 	block := make(chan struct{})
 	done := make(chan struct{})

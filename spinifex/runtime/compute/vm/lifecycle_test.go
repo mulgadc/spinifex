@@ -772,6 +772,7 @@ func startBrokenQMPListener(t *testing.T) (string, func()) {
 // newQMPClientWithHandshake and AttachQMP must return without spawning
 // the heartbeat or mutating instance.QMPClient.
 func TestAttachQMP_DialFailure_NoHeartbeatLeak(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 
 	orig := qmpSocketWaitTimeout
@@ -796,6 +797,7 @@ func TestAttachQMP_DialFailure_NoHeartbeatLeak(t *testing.T) {
 // before AttachQMP returns, the heartbeat must not start, and
 // instance.QMPClient must remain nil.
 func TestAttachQMP_HandshakeFailure_NoHeartbeatLeak(t *testing.T) {
+	stopSharedJetStream()
 	sockPath, stopListener := startBrokenQMPListener(t)
 
 	m := NewManager()
@@ -1619,6 +1621,7 @@ func startDelayedQMPListener(t *testing.T, sockPath string, delay time.Duration)
 // and the relaunched QEMU only listens after a short delay. The dial must retry
 // past the refused window rather than fail the whole restart.
 func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
+	stopSharedJetStream()
 	defer goleak.VerifyNone(t)
 
 	sockPath := filepath.Join(t.TempDir(), "qmp-i-retry.sock")

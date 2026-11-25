@@ -12,8 +12,21 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	memoizeEmptyHostVirtStack()
 	resolveQEMUBinary = fakeQEMUBinary
-	os.Exit(m.Run())
+	code := m.Run()
+	stopSharedJetStream()
+	os.Exit(code)
+}
+
+// memoizeEmptyHostVirtStack probes the host stack once with no QEMU and no
+// firmware, so a reboot test logs it without running host binaries.
+func memoizeEmptyHostVirtStack() {
+	origFirmware := FirmwarePathCandidates
+	resolveQEMUBinary = func(string) (string, error) { return "", errors.New("no QEMU in tests") }
+	FirmwarePathCandidates = map[string][]FirmwareCandidate{}
+	_ = CurrentHostVirtStack()
+	FirmwarePathCandidates = origFirmware
 }
 
 // fakeQEMUBinary stands in for hostos.QEMUBinary so Execute tests need no QEMU

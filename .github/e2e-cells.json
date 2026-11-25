@@ -129,7 +129,8 @@
     "arch": "x86_64",
     "runner": "ci-multi",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 75
   },
   {
     "cell": 31,

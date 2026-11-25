@@ -476,6 +476,11 @@ func unavailableDialer(cause error) guestmetadata.EndpointDialFunc {
 // proxy's certificate and, from version 2, answers the TLS session after a
 // header at that version. A refused certificate arrives on the first read.
 func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, addr netip.Addr, version uint8) error {
+	return gateAcceptsWithin(dial, gateVerdictWait)
+}
+
+// gateAcceptsWithin is gateAccepts with the verdict wait as an argument.
+func gateAcceptsWithin(dial guestmetadata.EndpointDialFunc, wait time.Duration) func(ctx context.Context, addr netip.Addr, version uint8) error {
 	return func(ctx context.Context, addr netip.Addr, version uint8) error {
 		var hdr []byte
 		if version >= endpointproxy.ContractVersion2 {
@@ -491,7 +496,7 @@ func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, 
 			return err
 		}
 		defer c.Close()
-		if err := c.SetDeadline(time.Now().Add(gateVerdictWait)); err != nil {
+		if err := c.SetDeadline(time.Now().Add(wait)); err != nil {
 			return err
 		}
 		if len(hdr) > 0 {

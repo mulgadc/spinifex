@@ -41,6 +41,7 @@ func requireOwed(t *testing.T, svc *MetaService, functionID string) {
 }
 
 func TestUpload_CreateRecordsItOwedAndCodeStoredAttachesIt(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	up, ok := upload(t, svc, "f1")
@@ -57,6 +58,7 @@ func TestUpload_CreateRecordsItOwedAndCodeStoredAttachesIt(t *testing.T) {
 }
 
 func TestUpload_IsRecordedBeforeTheNameIsClaimed(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccount)
 	require.NoError(t, err)
@@ -69,6 +71,7 @@ func TestUpload_IsRecordedBeforeTheNameIsClaimed(t *testing.T) {
 }
 
 func TestUpload_RefusedDuplicateLeavesNoRecord(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	mustCreate(t, svc, "hello", "f1")
 	_, err := svc.Create(t.Context(), createReq("hello", "f2"), testAccount)
@@ -79,6 +82,7 @@ func TestUpload_RefusedDuplicateLeavesNoRecord(t *testing.T) {
 }
 
 func TestUpload_RollbackKeepsItOwed(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	_, err := svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: rev}, testAccount)
@@ -88,6 +92,7 @@ func TestUpload_RollbackKeepsItOwed(t *testing.T) {
 }
 
 func TestUpload_ExpiredClaimIsNotTakenAsCompletion(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	c.t = c.t.Add(ClaimTTL + time.Second)
@@ -99,6 +104,7 @@ func TestUpload_ExpiredClaimIsNotTakenAsCompletion(t *testing.T) {
 // The original writer stalls past its claim, a second create takes the name,
 // and the original then finishes its write and reports it.
 func TestUpload_TakeoverAndLateWriterLeaveTheOriginalOwed(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	oldRev := mustCreate(t, svc, "hello", "f1")
 	c.t = c.t.Add(ClaimTTL + time.Second)
@@ -120,6 +126,7 @@ func TestUpload_TakeoverAndLateWriterLeaveTheOriginalOwed(t *testing.T) {
 }
 
 func TestUpload_RefusesIdentifiersThatCannotBeKeys(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for _, id := range []string{"a.b", "a b", "a*"} {
 		_, err := svc.Create(t.Context(), createReq("hello", id), testAccount)
@@ -129,6 +136,7 @@ func TestUpload_RefusesIdentifiersThatCannotBeKeys(t *testing.T) {
 }
 
 func TestUpload_SameIdentifiersInTwoRegionsAreTrackedApart(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	other := createReq("hello", "f1")
@@ -150,6 +158,7 @@ func TestUpload_SameIdentifiersInTwoRegionsAreTrackedApart(t *testing.T) {
 // An upload record the owner cannot vouch for refuses CodeStored, and neither
 // it nor the function record changes.
 func TestUpload_CodeStoredRefusesAnUnrecognisedRecord(t *testing.T) {
+	t.Parallel()
 	asJSON := func(mutate func(*Upload)) func([]byte) []byte {
 		return func(b []byte) []byte {
 			var up Upload
@@ -173,6 +182,7 @@ func TestUpload_CodeStoredRefusesAnUnrecognisedRecord(t *testing.T) {
 		"already attached": asJSON(func(u *Upload) { u.State, u.AttachedRevision = UploadAttached, 7 }),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newTestService(t)
 			rev := mustCreate(t, svc, "hello", "f1")
 			kv, err := svc.bucket(t.Context(), testAccount)

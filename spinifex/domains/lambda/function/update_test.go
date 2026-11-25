@@ -54,6 +54,7 @@ func uploadOf(t *testing.T, svc *MetaService, codeRevisionID string) (Upload, bo
 }
 
 func TestCodeUpdate_CommitChangesOnlyTheCodeReference(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	before := mustServe(t, svc)
 	c.t = c.t.Add(time.Minute)
@@ -85,6 +86,7 @@ func TestCodeUpdate_CommitChangesOnlyTheCodeReference(t *testing.T) {
 }
 
 func TestCodeUpdate_OnlyOneOfTwoUpdatesFromTheSameRevisionCommits(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	before := mustServe(t, svc)
 	for _, id := range []string{"rev-a", "rev-b"} {
@@ -109,6 +111,7 @@ func TestCodeUpdate_OnlyOneOfTwoUpdatesFromTheSameRevisionCommits(t *testing.T) 
 // Both commits read the same record before either writes: the loser is held
 // between its checks and its conditional write while the winner commits.
 func TestCodeUpdate_InterleavedCommitLosesTheConditionalWrite(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	before := mustServe(t, svc)
 	for _, id := range []string{"rev-a", "rev-b"} {
@@ -147,6 +150,7 @@ func TestCodeUpdate_InterleavedCommitLosesTheConditionalWrite(t *testing.T) {
 }
 
 func TestCodeUpdate_CommitNeedsItsOwnOwedUpload(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	before := mustServe(t, svc)
 	_, err := svc.CodeUpdated(t.Context(), commitReq(before.Revision, "rev-never-begun"), testAccount)
@@ -165,6 +169,7 @@ func TestCodeUpdate_CommitNeedsItsOwnOwedUpload(t *testing.T) {
 }
 
 func TestCodeUpdate_RefusesAFunctionThatIsNotServing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	_, err := svc.BeginCodeUpdate(t.Context(), beginReq(rev, "rev-2"), testAccount)
@@ -178,7 +183,9 @@ func TestCodeUpdate_RefusesAFunctionThatIsNotServing(t *testing.T) {
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
+//nolint:tparallel // the subtests share one record and the parent then checks that none of them changed it
 func TestCodeUpdate_RefusesMalformedRequests(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	before := mustServe(t, svc)
 	begins := map[string]func(*CodeUpdateBeginRequest){

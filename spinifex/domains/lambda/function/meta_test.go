@@ -53,6 +53,7 @@ func mustGet(t *testing.T, svc *MetaService, name string) *GetResponse {
 }
 
 func TestMeta_CreateOwnsStateAndRejectsDuplicate(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	req := createReq("hello", "f1")
 	req.Record.State = StateActive
@@ -80,6 +81,7 @@ func TestMeta_CreateOwnsStateAndRejectsDuplicate(t *testing.T) {
 }
 
 func TestMeta_CreateRefusesIncompleteRecords(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for name, mutate := range map[string]func(*Record){
 		"bad name":    func(r *Record) { r.FunctionName = "has space" },
@@ -87,6 +89,7 @@ func TestMeta_CreateRefusesIncompleteRecords(t *testing.T) {
 		"no revision": func(r *Record) { r.Code.RevisionID = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			req := createReq("ok", "f1")
 			mutate(&req.Record)
 			_, err := svc.Create(t.Context(), req, testAccount)
@@ -96,6 +99,7 @@ func TestMeta_CreateRefusesIncompleteRecords(t *testing.T) {
 }
 
 func TestMeta_CodeStoredUsesCAS(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 
@@ -125,6 +129,7 @@ func TestMeta_CodeStoredUsesCAS(t *testing.T) {
 }
 
 func TestMeta_RollbackDeletesOnlyStoringAtTheRightRevision(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 
@@ -149,6 +154,7 @@ func TestMeta_RollbackDeletesOnlyStoringAtTheRightRevision(t *testing.T) {
 }
 
 func TestMeta_GetMissingAndUnknownFormat(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	assert.False(t, mustGet(t, svc, "ghost").Found)
 
@@ -168,6 +174,7 @@ func TestMeta_GetMissingAndUnknownFormat(t *testing.T) {
 }
 
 func TestMeta_ExpiredStoringClaimIsTakenOver(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	oldRev := mustCreate(t, svc, "hello", "old")
 
@@ -194,6 +201,7 @@ func TestMeta_ExpiredStoringClaimIsTakenOver(t *testing.T) {
 }
 
 func TestMeta_StoredRecordIsNeverTakenOver(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	_, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 1}, testAccount)
@@ -206,6 +214,7 @@ func TestMeta_StoredRecordIsNeverTakenOver(t *testing.T) {
 }
 
 func TestMeta_CodeStoredAfterExpiryIsRefused(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 
@@ -218,6 +227,7 @@ func TestMeta_CodeStoredAfterExpiryIsRefused(t *testing.T) {
 }
 
 func TestMeta_RegionsAreIndependent(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	sydney := createReq("hello", "syd")
 	oregon := createReq("hello", "pdx")
@@ -239,6 +249,7 @@ func TestMeta_RegionsAreIndependent(t *testing.T) {
 }
 
 func TestMeta_RefusesBadRegion(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	for _, region := range []string{"", "AP-SOUTH", "a.b", "a b", "x/y"} {
 		req := createReq("hello", "f1")

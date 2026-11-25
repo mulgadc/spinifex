@@ -49,6 +49,7 @@ func storeCode(t *testing.T, svc *function.MetaService, name string, rev uint64)
 }
 
 func TestActivation_WithoutReadinessNothingLeavesPending(t *testing.T) {
+	t.Parallel()
 	svc := newOwner(t)
 	storeCode(t, svc, "hello", create(t, svc, "hello"))
 
@@ -63,6 +64,7 @@ func TestActivation_WithoutReadinessNothingLeavesPending(t *testing.T) {
 }
 
 func TestActivation_UnmetConditionStaysPendingWithItsReason(t *testing.T) {
+	t.Parallel()
 	svc := newOwner(t)
 	storeCode(t, svc, "hello", create(t, svc, "hello"))
 	svc.SetReadiness(func(context.Context, function.Record) error { return errors.New("The node is not serving.") })
@@ -78,6 +80,7 @@ func TestActivation_UnmetConditionStaysPendingWithItsReason(t *testing.T) {
 }
 
 func TestActivation_ReadyStoredFunctionBecomesActive(t *testing.T) {
+	t.Parallel()
 	svc := newOwner(t)
 	storeCode(t, svc, "hello", create(t, svc, "hello"))
 	storingRev := create(t, svc, "storing")
@@ -101,6 +104,7 @@ func TestActivation_ReadyStoredFunctionBecomesActive(t *testing.T) {
 }
 
 func TestActivation_CodeStoredWakesTheLoop(t *testing.T) {
+	t.Parallel()
 	svc := newOwner(t)
 	storeCode(t, svc, "first", create(t, svc, "first"))
 	// Readiness is enabled after first is stored, so no wake is buffered and

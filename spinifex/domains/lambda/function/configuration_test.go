@@ -19,6 +19,7 @@ var newConfig = Configuration{Role: "arn:aws:iam::000000000001:role/other", Hand
 	Timeout: 8, MemorySize: 256, EnvCipher: "sealed-after"}
 
 func TestConfigurationUpdate_ChangesOnlyTheSettings(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	before := mustServe(t, svc)
 	c.t = c.t.Add(time.Minute)
@@ -45,6 +46,7 @@ func TestConfigurationUpdate_ChangesOnlyTheSettings(t *testing.T) {
 }
 
 func TestConfigurationUpdate_StaleRevisionIsRefused(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	before := mustServe(t, svc)
 	_, err := svc.UpdateConfiguration(t.Context(), configReq(before.Revision, newConfig), testAccount)
@@ -61,6 +63,7 @@ func TestConfigurationUpdate_StaleRevisionIsRefused(t *testing.T) {
 // The loser passes readServing at the shared revision, then pauses before its
 // conditional write while the winner commits.
 func TestConfigurationUpdate_InterleavedUpdateLosesTheConditionalWrite(t *testing.T) {
+	t.Parallel()
 	svc, c := newTestService(t)
 	before := mustServe(t, svc)
 	paused, release := make(chan struct{}), make(chan struct{})
@@ -91,6 +94,7 @@ func TestConfigurationUpdate_InterleavedUpdateLosesTheConditionalWrite(t *testin
 }
 
 func TestConfigurationUpdate_RefusesAFunctionThatIsNotServing(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	rev := mustCreate(t, svc, "hello", "f1")
 	_, err := svc.UpdateConfiguration(t.Context(), configReq(rev, newConfig), testAccount)
@@ -108,7 +112,9 @@ func TestConfigurationUpdate_RefusesAFunctionThatIsNotServing(t *testing.T) {
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 }
 
+//nolint:tparallel // the subtests share one record and the parent then checks that none of them changed it
 func TestConfigurationUpdate_RefusesMalformedRequests(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestService(t)
 	before := mustServe(t, svc)
 	cases := map[string]func(*ConfigurationUpdatedRequest){

@@ -65,7 +65,6 @@ func TestRegistration_GetVersion_Admin(t *testing.T) {
 }
 
 func TestRegistration_EveryActionDeniesNonAdminAccount(t *testing.T) {
-	t.Parallel()
 	for _, name := range append(AdminActionNames(), GetNodeMetricsAction) {
 		t.Run(name, func(t *testing.T) {
 			_, err := serve(t, Deps{}, "000000000002", action(name), nil)
@@ -119,7 +118,6 @@ func TestRegistration_NoAccountIDIsServerInternal(t *testing.T) {
 }
 
 func TestRegistration_NATSActionsWithoutConnectionAreServerInternal(t *testing.T) {
-	t.Parallel()
 	for _, name := range []string{"GetNodes", "GetVMs", "GetStorageStatus"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := serve(t, Deps{}, awsidentifiers.DefaultAccountID(), action(name), nil)

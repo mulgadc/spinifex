@@ -132,7 +132,6 @@ func TestAdminPutAccountQuotaClears(t *testing.T) {
 // Storing an override against an account that does not exist would leave a
 // record that never applies to anything, so a bad ID is refused.
 func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
-	t.Parallel()
 	gw, _ := quotaTestGateway(t)
 
 	tests := []struct {

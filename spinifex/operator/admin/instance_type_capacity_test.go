@@ -136,7 +136,6 @@ func TestRegistration_InstanceTypeCapacityServesTheAdminAccount(t *testing.T) {
 // The inventory feeds the coverage surface and is not cross-checked against the
 // dispatcher, so an action added to one and not the other fails nothing.
 func TestRegistration_InventoryNamesEveryDispatchedAction(t *testing.T) {
-	t.Parallel()
 	assert.Contains(t, ActionNames(), GetInstanceTypeCapacityAction)
 	assert.Contains(t, ActionNames(), GetInstanceMetricsAction)
 

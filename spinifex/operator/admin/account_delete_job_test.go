@@ -485,6 +485,7 @@ func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
 	// The system account and the super admin, whichever names they carry.
 	for _, accountID := range []string{"000000000000", "000000000001"} {
 		t.Run(accountID, func(t *testing.T) {
+			t.Parallel()
 			_, err := gw.deleteAccount(t.Context(),
 				deleteAccountBody(t, accountID, "super-admin@example.com", deleteClientToken))
 

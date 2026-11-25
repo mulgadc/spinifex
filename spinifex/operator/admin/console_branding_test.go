@@ -117,7 +117,6 @@ func TestConsoleBranding_InvalidFieldIsNamed(t *testing.T) {
 
 // Every identity gate denies both methods with the same AccessDenied.
 func TestConsoleBranding_OnlyTheOperatorIsAuthorized(t *testing.T) {
-	t.Parallel()
 	with := func(mod func(*dispatch.Actor)) dispatch.Actor {
 		a := adminActor()
 		mod(&a)
@@ -174,7 +173,6 @@ func TestConsoleBranding_PrincipalGrantsAreExplicit(t *testing.T) {
 }
 
 func TestDispatchREST_BodyLimitIsPerMethod(t *testing.T) {
-	t.Parallel()
 	d, _ := brandingDeps(t)
 	tests := []struct {
 		method string

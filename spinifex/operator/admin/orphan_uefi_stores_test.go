@@ -150,6 +150,7 @@ func TestFindOrphanUEFIStores_EmptyClusterReportsNothing(t *testing.T) {
 func TestFindOrphanUEFIStores_UnreadableInputsAbortTheScan(t *testing.T) {
 	t.Parallel()
 	t.Run("store record", func(t *testing.T) {
+		t.Parallel()
 		_, _, js := testutil.StartTestJetStream(t)
 		stores := uefistore.NewStore(js)
 		require.NoError(t, stores.Open(t.Context()))
@@ -163,12 +164,14 @@ func TestFindOrphanUEFIStores_UnreadableInputsAbortTheScan(t *testing.T) {
 		require.ErrorIs(t, err, uefistore.ErrInvalidRecord)
 	})
 	t.Run("instance index", func(t *testing.T) {
+		t.Parallel()
 		f := newUEFIOrphanFixture(t)
 		f.index.err = errors.New("kv unavailable")
 		_, err := f.scan(t)
 		require.Error(t, err)
 	})
 	t.Run("AMI document", func(t *testing.T) {
+		t.Parallel()
 		f := newUEFIOrphanFixture(t)
 		putRawAMIDocument(t, f.objects, "ami-corrupted000", []byte("{not json"))
 		_, err := f.scan(t)

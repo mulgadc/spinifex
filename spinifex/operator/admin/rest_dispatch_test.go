@@ -17,7 +17,6 @@ import (
 )
 
 func TestPathMethod(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name   string
 		path   string
@@ -82,7 +81,6 @@ func denyAll(_, _ string, _ []string, _ iampolicy.ConditionKeys) error {
 // Every gate must deny on its own, and every denial must be indistinguishable
 // from the others so a caller cannot learn which one it failed.
 func TestAuthorizeREST_Gates(t *testing.T) {
-	t.Parallel()
 	with := func(mod func(*dispatch.Actor)) dispatch.Actor {
 		a := adminActor()
 		mod(&a)

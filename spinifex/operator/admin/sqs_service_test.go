@@ -195,6 +195,7 @@ func TestEnableSQS_RefusesUnsupportedRecordsBeforeAnyWrite(t *testing.T) {
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, _, js := testutil.StartTestJetStream(t)
 			ctx := context.Background()
 			kv, rev := tc.seed(t, js)

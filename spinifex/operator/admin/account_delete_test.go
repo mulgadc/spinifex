@@ -35,7 +35,6 @@ func (m *listAccountsIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 // A real delete needs the name confirmation and a client token; a dry run
 // deletes nothing, so it needs neither.
 func TestValidateDeleteAccountRequest(t *testing.T) {
-	t.Parallel()
 	token := strings.Repeat("a", clientTokenMinLen)
 
 	tests := []struct {
@@ -126,7 +125,6 @@ func TestValidateDeleteAccountRequestTrimsInput(t *testing.T) {
 // this wrong in either direction is bad: too eager runs two teardowns on one
 // account, too slow wedges the account until an operator intervenes.
 func TestDeletionJobStale(t *testing.T) {
-	t.Parallel()
 	now := time.Now().UTC()
 
 	tests := []struct {
@@ -152,7 +150,6 @@ func TestDeletionJobStale(t *testing.T) {
 // A protected account must answer exactly as an unauthorized caller would: no
 // credential grants deleting it, so the refusal describes nothing.
 func TestTeardownErrorMapping(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name string
 		err  error

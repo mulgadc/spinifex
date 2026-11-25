@@ -42,7 +42,6 @@ func (m *capMockIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 }
 
 func TestValidateCreateAccountRequest(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name    string
 		req     operatorv1.CreateAccountRequest
@@ -195,7 +194,6 @@ func TestClaimClientTokenReplaysCompletedResult(t *testing.T) {
 }
 
 func TestCheckAccountCap(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name     string
 		max      int

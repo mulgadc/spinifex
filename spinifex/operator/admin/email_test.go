@@ -37,7 +37,6 @@ func TestValidateEmail(t *testing.T) {
 }
 
 func TestReadOperatorEmail(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 
 	write := func(name, body string) string {

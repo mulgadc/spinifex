@@ -584,6 +584,16 @@ func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	require.Equal(t, "platform", aws.StringValue(lt.Tags["team"]))
 	_, hasEnv := lt.Tags["env"]
 	require.False(t, hasEnv)
+
+	// An earlier incarnation's ARN must not reach this group.
+	const stale = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/def456"
+	_, err = svc.TagResource(context.Background(), &eks.TagResourceInput{
+		ResourceArn: aws.String(stale),
+		Tags:        aws.StringMap(map[string]string{"team": "old"}),
+	}, testAccountID)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
+	_, err = svc.ListTagsForResource(context.Background(), &eks.ListTagsForResourceInput{ResourceArn: aws.String(stale)}, testAccountID)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {

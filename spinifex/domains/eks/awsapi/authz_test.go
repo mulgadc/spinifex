@@ -1,11 +1,13 @@
 package awsapi_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,18 +17,27 @@ const (
 	authzAccountID = "123456789012"
 )
 
+// The UUID on the one stored nodegroup record, prod/workers.
+const storedNodegroupUUID = "0f6e2c1a-9d4b-4a57-8e21-3b7c5d9a1f04"
+
+// storedNodegroups stands in for the record store. The record's ARN is spelled
+// under another region so a test sees the gate keep only its UUID.
+func storedNodegroups(cluster, name string) (string, error) {
+	if cluster == "prod" && name == "workers" {
+		return arn.FormatEKSNodegroup("us-west-2", authzAccountID, cluster, name, storedNodegroupUUID), nil
+	}
+	return "", nil
+}
+
 func resolveARNs(t *testing.T, action string, params []string, body string) []string {
 	t.Helper()
-	resources, err := eksawsapi.ResourceARNs(action, authzRegion, authzAccountID, params, []byte(body))
+	resources, err := eksawsapi.ResourceARNs(action, authzRegion, authzAccountID, params, []byte(body), storedNodegroups)
 	require.NoError(t, err)
 	return resources
 }
 
-// The nodegroup ARN the create path persists for the same identifiers. Spelled
-// through the shared builders so the test cannot pass by agreeing with itself.
-func nodegroupARN(cluster, name string) string {
-	return arn.FormatEKSNodegroup(authzRegion, authzAccountID, cluster, name,
-		arn.EKSNodegroupDiscriminator(authzAccountID, cluster, name))
+func nodegroupARN(cluster, name, discriminator string) string {
+	return arn.FormatEKSNodegroup(authzRegion, authzAccountID, cluster, name, discriminator)
 }
 
 // One assertion per resource class: the ARN handed to the evaluator must name
@@ -51,7 +62,13 @@ func TestResourceARNsFidelity(t *testing.T) {
 		{
 			action: "DeleteNodegroup",
 			params: []string{"prod", "workers"},
-			want:   []string{nodegroupARN("prod", "workers")},
+			want:   []string{nodegroupARN("prod", "workers", storedNodegroupUUID)},
+		},
+		{
+			// No record, so no UUID: only a pattern wildcarding it can match.
+			action: "DescribeNodegroup",
+			params: []string{"prod", "batch"},
+			want:   []string{nodegroupARN("prod", "batch", "*")},
 		},
 		{
 			action: "CreateNodegroup",
@@ -59,7 +76,7 @@ func TestResourceARNsFidelity(t *testing.T) {
 			body:   `{"nodegroupName":"workers"}`,
 			want: []string{
 				"arn:aws:eks:ap-southeast-2:123456789012:cluster/prod",
-				nodegroupARN("prod", "workers"),
+				nodegroupARN("prod", "workers", "*"),
 			},
 		},
 		{
@@ -141,9 +158,9 @@ func TestResourceARNsTagARNIsReanchored(t *testing.T) {
 			want:        []string{"arn:aws:eks:ap-southeast-2:123456789012:cluster/prod"},
 		},
 		{
-			name:        "nodegroup discriminator is re-derived, as the handler ignores it",
+			name:        "nodegroup discriminator is read from the record, as the handler ignores it",
 			resourceARN: "arn:aws:eks:ap-southeast-2:123456789012:nodegroup/prod/workers/8ac0f0b1",
-			want:        []string{nodegroupARN("prod", "workers")},
+			want:        []string{nodegroupARN("prod", "workers", storedNodegroupUUID)},
 		},
 		{
 			name:        "addon",
@@ -210,6 +227,16 @@ func TestResourceARNsIdentifierIsAValue(t *testing.T) {
 }
 
 func TestResourceARNsUnknownActionFailsClosed(t *testing.T) {
-	_, err := eksawsapi.ResourceARNs("NotAnAction", authzRegion, authzAccountID, nil, nil)
+	_, err := eksawsapi.ResourceARNs("NotAnAction", authzRegion, authzAccountID, nil, nil, storedNodegroups)
 	require.Error(t, err)
+}
+
+// A record the gate cannot read must not authorize against a guessed ARN that
+// an exact-ARN Deny would miss.
+func TestResourceARNsNodegroupLookupFailureFailsClosed(t *testing.T) {
+	broken := func(string, string) (string, error) { return "", errors.New("kv unavailable") }
+	_, err := eksawsapi.ResourceARNs("DeleteNodegroup", authzRegion, authzAccountID,
+		[]string{"prod", "workers"}, nil, broken)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorServerInternal, code)
 }

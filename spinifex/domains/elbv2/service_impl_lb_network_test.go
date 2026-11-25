@@ -96,6 +96,52 @@ func TestSetIpAddressType_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
 }
 
+// A record with a non-appliance realization keeps its stored address type, while
+// a matching legacy record still takes the ipv4 write.
+func TestSetIpAddressType_RetainedOVNRecordRefusesApplianceChange(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	newRecord := func(id, realization string) *LoadBalancerRecord {
+		lb := newTestLB(id, "addr-"+id)
+		lb.LoadBalancerArn = "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/net/addr-" + id + "/" + id
+		lb.Type = LoadBalancerTypeNetwork
+		lb.Realization = realization
+		lb.IPAddressType = ""
+		require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+		return lb
+	}
+	ovn := newRecord("ovnaddr00000001", "ovn")
+	legacy := newRecord("legacyaddr00001", "")
+	setIPv4 := func(lb *LoadBalancerRecord, accountID string) error {
+		_, err := svc.SetIpAddressType(t.Context(), &elbv2.SetIpAddressTypeInput{
+			LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+			IpAddressType:   aws.String(IPAddressTypeIPv4),
+		}, accountID)
+		return err
+	}
+
+	err := setIPv4(ovn, "999999999999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
+
+	err = setIPv4(ovn, testAccountID)
+	assert.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorELBv2InvalidConfigurationRequest, code)
+	got, err := svc.store.GetLoadBalancer(t.Context(), ovn.LoadBalancerID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ovn", got.Realization)
+	assert.Empty(t, got.IPAddressType, "the refused request must not write the address type")
+
+	require.NoError(t, setIPv4(legacy, testAccountID))
+	got, err = svc.store.GetLoadBalancer(t.Context(), legacy.LoadBalancerID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, IPAddressTypeIPv4, got.IPAddressType)
+	assert.Empty(t, got.Realization)
+}
+
 func TestSetSecurityGroups_UpdatesRecord(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

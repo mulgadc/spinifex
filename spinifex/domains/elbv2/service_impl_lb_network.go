@@ -37,6 +37,11 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.Se
 	if lb == nil || lb.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
+	// The address-family update below applies to the appliance realization only.
+	if lb.Realization != "" {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2InvalidConfigurationRequest,
+			"SetIpAddressType is not supported for load balancer %s with realization %q.", lb.LoadBalancerID, lb.Realization)
+	}
 
 	if lb.IPAddressType != IPAddressTypeIPv4 {
 		lb.IPAddressType = IPAddressTypeIPv4

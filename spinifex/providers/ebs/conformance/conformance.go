@@ -265,7 +265,8 @@ func (c SuiteConfig) id(base string) string {
 }
 
 // RunSuite runs the full EBSProvider conformance suite against a provider
-// newProvider constructs fresh for each subtest.
+// newProvider constructs fresh for each subtest. Subtests run in parallel, each
+// on its own volume and snapshot IDs, so newProvider must be safe to call concurrently.
 func RunSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider) {
 	RunSuiteWithConfig(t, newProvider, SuiteConfig{})
 }
@@ -285,6 +286,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	capabilities, contractVersions := advertised.Capabilities, advertised.ContractVersions
 
 	t.Run("GetCapabilities", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		versioned := ebsprovider.NewVersioned()
 		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: versioned})
@@ -300,7 +302,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("ContractVersions", func(t *testing.T) {
+		t.Parallel()
 		t.Run("listed versions are ascending and include the legacy version", func(t *testing.T) {
+			t.Parallel()
 			require.NotEmpty(t, contractVersions, "a provider must list the contract versions it serves")
 			assert.Contains(t, contractVersions, ebsprovider.LegacySchemaVersion,
 				"callers send version-neutral requests at the legacy version, so a provider must serve it")
@@ -310,6 +314,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("every listed version is answered in that version", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			for _, version := range contractVersions {
 				resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}})
@@ -319,6 +324,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("an unlisted version is refused without changing state", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			unknown := ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion + 1}
@@ -338,7 +344,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("CreateVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			vol, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-create-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -352,6 +360,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("already_exists on conflicting recreate", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -361,12 +370,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument on empty volume id", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 
 		t.Run("not_found on absent source snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-from-missing-snap"),
@@ -380,6 +391,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// a provider may need to resolve the snapshot's blocks. Omitting it is a
 		// malformed request, not a request for behaviour the provider lacks.
 		t.Run("invalid_argument when a source snapshot has no source volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snapsrc-noorigin"),
@@ -389,6 +401,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("volume is created from a snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
@@ -412,6 +425,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// one is checkable and wrong. Accepting it resolves the snapshot's
 		// blocks against a volume they were never written to.
 		t.Run("invalid_argument on a source volume the snapshot did not come from", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
@@ -430,6 +444,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				VolumeID: cfg.id("vol-noversion"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
@@ -438,6 +453,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("seeded volume is created", func(t *testing.T) {
+			t.Parallel()
 			if !capabilities.VolumeSeeding {
 				t.Skip("provider does not advertise VolumeSeeding")
 			}
@@ -455,6 +471,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// A provider that cannot seed must say so, not accept the seed and
 		// drop it: the caller has no other way to learn the volume is blank.
 		t.Run("unsupported_capability on seed when seeding is not advertised", func(t *testing.T) {
+			t.Parallel()
 			if capabilities.VolumeSeeding {
 				t.Skip("provider advertises VolumeSeeding")
 			}
@@ -471,6 +488,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// reaching the transport, where NATS would refuse the oversized publish
 		// with an error that says nothing about firmware.
 		t.Run("invalid_argument on oversized seed", func(t *testing.T) {
+			t.Parallel()
 			if !capabilities.VolumeSeeding {
 				t.Skip("provider does not advertise VolumeSeeding")
 			}
@@ -484,6 +502,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument when seed exceeds capacity", func(t *testing.T) {
+			t.Parallel()
 			if !capabilities.VolumeSeeding {
 				t.Skip("provider does not advertise VolumeSeeding")
 			}
@@ -498,7 +517,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("GetVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			created, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-get-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -510,12 +531,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed")})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("invalid_argument on empty volume id", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
@@ -523,7 +546,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("ListVolumes", func(t *testing.T) {
+		t.Parallel()
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
+			t.Parallel()
 			if capabilities.VolumeEnumeration {
 				t.Skip("provider advertises volume enumeration")
 			}
@@ -536,6 +561,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		}
 
 		t.Run("a created volume is enumerated and a deleted one is not", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-list-visible")
@@ -550,6 +576,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("pagination returns every volume exactly once", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			want := []string{cfg.id("vol-list-page-a"), cfg.id("vol-list-page-b"), cfg.id("vol-list-page-c")}
@@ -573,6 +600,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			want := []string{cfg.id("vol-list-cap-a"), cfg.id("vol-list-cap-b")}
@@ -594,13 +622,16 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {
+			t.Parallel()
 			_, err := newProvider(t).ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion + 1}})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
 	})
 
 	t.Run("ExpandVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -611,12 +642,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.ExpandVolume(context.Background(), ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("invalid_argument on shrink", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-shrink"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
@@ -629,6 +662,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// describes, so both answers are contractual: succeed, or refuse with
 		// volume_in_use. Silently doing nothing is neither.
 		t.Run("expanding a published volume matches OnlineExpansion", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -648,7 +682,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("DeleteVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -661,11 +697,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// CSI's controller service treats DeleteVolume on an absent volume as
 		// success (idempotent-when-absent), not not_found.
 		t.Run("absent target is idempotent", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			require.NoError(t, provider.DeleteVolume(context.Background(), ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed")}))
 		})
 
 		t.Run("volume_in_use when published", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -678,7 +716,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("CreateSnapshot", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -692,6 +732,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// the snapshot the first call took, so a caller whose answer was lost
 		// can ask again without taking a second snapshot.
 		t.Run("a repeat with the same source returns the first snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID, snapshotID := cfg.id("vol-snap-repeat"), cfg.id("snap-repeat")
@@ -716,6 +757,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// A caller that lost the first answer may only ask again after the
 		// source volume is gone, so the repeat must not need the volume.
 		t.Run("a repeat after the source volume is deleted returns the first snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID, snapshotID := cfg.id("vol-snap-gone"), cfg.id("snap-gone")
@@ -735,12 +777,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("not_found on absent source volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-orphan"), VolumeID: cfg.id("vol-never-existed")})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("already_exists on conflicting source volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-a"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -753,6 +797,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
@@ -762,6 +807,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// place must refuse rather than snapshot a checkpoint the owner has not
 		// flushed. The owner's own snapshot then succeeds.
 		t.Run("refused on the queue subject while another node holds the volume", func(t *testing.T) {
+			t.Parallel()
 			if !capabilities.OwnerRouting || !capabilities.Exclusion.SingleWriter() {
 				t.Skip("no owner routing behind cluster exclusion, so no node answers in place of an owner")
 			}
@@ -791,7 +837,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("DeleteSnapshot", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delsnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -803,13 +851,16 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// memory.go implements delete-of-absent-snapshot as a no-op success,
 		// matching CSI's idempotency rule the same way DeleteVolume does.
 		t.Run("absent target is idempotent", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			require.NoError(t, provider.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-never-existed")}))
 		})
 	})
 
 	t.Run("CopySnapshot", func(t *testing.T) {
+		t.Parallel()
 		t.Run("unsupported_version", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
 				SourceSnapshotID: cfg.id("snap-a"), DestinationSnapshotID: cfg.id("snap-b"), VolumeID: cfg.id("vol-a"),
@@ -820,6 +871,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// A provider that cannot copy must say so, or a caller reads the
 		// refusal as a failed copy worth retrying.
 		t.Run("unsupported_capability when copy is not advertised", func(t *testing.T) {
+			t.Parallel()
 			if capabilities.SnapshotCopy {
 				t.Skip("provider advertises snapshot copy")
 			}
@@ -842,6 +894,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		}
 
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -864,6 +917,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("not_found on absent source snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-nosrc"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -875,6 +929,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("already_exists on conflicting destination", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -888,12 +943,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 
 		t.Run("invalid_argument when source and destination match", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-same"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -906,6 +963,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument when volume id does not own the source snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-owner"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -921,7 +979,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("ListSnapshots", func(t *testing.T) {
+		t.Parallel()
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
+			t.Parallel()
 			if capabilities.SnapshotEnumeration {
 				t.Skip("provider advertises snapshot enumeration")
 			}
@@ -930,6 +990,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a filtered read returns the one snapshot", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snapfilter-src")
@@ -955,6 +1016,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a filtered read of an absent snapshot returns none", func(t *testing.T) {
+			t.Parallel()
 			resp, err := newProvider(t).ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: filterVersion, SnapshotID: cfg.id("snap-filter-absent")})
 			require.NoError(t, err, "absence is an answer, not an error")
 			require.NotNil(t, resp)
@@ -965,6 +1027,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// A provider at an earlier version would drop the filter and answer with
 		// every snapshot it holds, which a caller would read as the one it asked for.
 		t.Run("the filter below the version that defines it is refused as unsupported", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			for _, version := range contractVersions {
 				if version >= ebsprovider.SnapshotFilterSchemaVersion {
@@ -982,6 +1045,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		}
 
 		t.Run("state is enumerated only from the version that defines it", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snaplist-state-src")
@@ -1017,6 +1081,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a created snapshot is enumerated and a deleted one is not", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snaplist-src")
@@ -1033,6 +1098,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("pagination returns every snapshot exactly once", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snaplist-page-src")
@@ -1058,6 +1124,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snaplist-cap-src")
@@ -1081,13 +1148,16 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {
+			t.Parallel()
 			_, err := newProvider(t).ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion + 1}})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
 	})
 
 	t.Run("PublishVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -1106,8 +1176,10 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// A republish succeeds at every listed version, so a caller at any of
 		// them gets the running export back rather than a refusal.
 		t.Run("idempotent republish to the same node", func(t *testing.T) {
+			t.Parallel()
 			for _, version := range contractVersions {
 				t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+					t.Parallel()
 					provider := newProvider(t)
 					ctx := context.Background()
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-idem-v%d", version))
@@ -1127,6 +1199,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("volume_in_use when published to a different node", func(t *testing.T) {
+			t.Parallel()
 			if cfg.otherNode() == "" {
 				t.Skip("no second node configured")
 			}
@@ -1141,11 +1214,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("held elsewhere is reported only from the version that defines it", func(t *testing.T) {
+			t.Parallel()
 			if cfg.otherNode() == "" {
 				t.Skip("no second node configured")
 			}
 			for _, version := range contractVersions {
 				t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+					t.Parallel()
 					provider := newProvider(t)
 					ctx := context.Background()
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-held-v%d", version))
@@ -1171,11 +1246,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a republish in the other access mode is in use, not held elsewhere", func(t *testing.T) {
+			t.Parallel()
 			if !capabilities.ReadOnlyPublish {
 				t.Skip("read-only publish is not advertised")
 			}
 			for _, version := range contractVersions {
 				t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+					t.Parallel()
 					provider := newProvider(t)
 					ctx := context.Background()
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-mode-v%d", version))
@@ -1197,6 +1274,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a republish after the export died returns a serving export", func(t *testing.T) {
+			t.Parallel()
 			if cfg.KillExport == nil {
 				t.Skip("no way to kill this provider's export")
 			}
@@ -1219,6 +1297,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("revoking a live export sends a fence notice to its node", func(t *testing.T) {
+			t.Parallel()
 			if cfg.RevokeExport == nil {
 				t.Skip("this provider never revokes a live export")
 			}
@@ -1237,12 +1316,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
@@ -1250,7 +1331,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("UnpublishVolume", func(t *testing.T) {
+		t.Parallel()
 		t.Run("success", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
@@ -1261,11 +1344,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("absent target is idempotent", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			require.NoError(t, unpublish(context.Background(), provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()}))
 		})
 
 		t.Run("torn down reports whether an export was removed", func(t *testing.T) {
+			t.Parallel()
 			if !slices.Contains(contractVersions, ebsprovider.NoSealSchemaVersion) {
 				t.Skipf("torn_down is defined from version %d, which the provider does not list", ebsprovider.NoSealSchemaVersion)
 			}
@@ -1287,11 +1372,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("no_seal below the version that defines it is refused", func(t *testing.T) {
+			t.Parallel()
 			for _, version := range contractVersions {
 				if version >= ebsprovider.NoSealSchemaVersion {
 					continue
 				}
 				t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+					t.Parallel()
 					provider := newProvider(t)
 					ctx := context.Background()
 					volumeID := cfg.id(fmt.Sprintf("vol-unpub-noseal-v%d", version))
@@ -1310,6 +1397,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("no_seal is honoured or refused as unsupported", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-unpub-noseal")
@@ -1333,6 +1421,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			err := unpublish(context.Background(), provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
@@ -1340,7 +1429,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("HoldsUnsealedWrites", func(t *testing.T) {
+		t.Parallel()
 		t.Run("answers with a subset of the volumes asked about", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-unsealed")
@@ -1356,6 +1447,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("empty request answers none", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			held, err := provider.HoldsUnsealedWrites(context.Background(), cfg.node(), nil)
 			require.NoError(t, err, "the daemon reads an error here as its node's provider not serving")
@@ -1364,12 +1456,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("Exclusion", func(t *testing.T) {
+		t.Parallel()
 		exclusion := capabilities.Exclusion
 
 		// An advertised guarantee that contradicts itself is worse than a
 		// missing one: a caller reads it and plans around something the
 		// provider never claimed to do.
 		t.Run("advertised semantics are self-consistent", func(t *testing.T) {
+			t.Parallel()
 			switch exclusion.Scope {
 			case ebsprovider.ExclusionScopeNone, ebsprovider.ExclusionScopeNode, ebsprovider.ExclusionScopeCluster:
 			default:
@@ -1393,6 +1487,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		}
 
 		t.Run("a second publish elsewhere is refused while the first holds", func(t *testing.T) {
+			t.Parallel()
 			if cfg.otherNode() == "" {
 				t.Skip("no second node configured")
 			}
@@ -1419,6 +1514,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// corruption case; both failing means the claim was lost by neither
 		// and the volume is stranded.
 		t.Run("racing publishes from two nodes produce exactly one winner", func(t *testing.T) {
+			t.Parallel()
 			if cfg.otherNode() == "" {
 				t.Skip("no second node configured")
 			}
@@ -1459,6 +1555,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		// publication, not race it. Deleting under a live writer destroys
 		// blocks the writer still believes it owns.
 		t.Run("delete racing a live publication is refused", func(t *testing.T) {
+			t.Parallel()
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-excl-delrace")

@@ -92,6 +92,7 @@ func (f *uefiOrphanFixture) seedEveryCase(t *testing.T) {
 }
 
 func TestFindOrphanUEFIStores_ListsEachUnownedShape(t *testing.T) {
+	t.Parallel()
 	f := newUEFIOrphanFixture(t)
 	f.seedEveryCase(t)
 
@@ -111,6 +112,7 @@ func TestFindOrphanUEFIStores_ListsEachUnownedShape(t *testing.T) {
 // an absent instance record is not a terminate, so a scan that lists every
 // unowned store leaves every object and every record as it found them.
 func TestS7_UEFIOrphanReportDeletesNothing(t *testing.T) {
+	t.Parallel()
 	f := newUEFIOrphanFixture(t)
 	f.seedEveryCase(t)
 	objectsBefore := f.objects.Count()
@@ -136,6 +138,7 @@ func TestS7_UEFIOrphanReportDeletesNothing(t *testing.T) {
 }
 
 func TestFindOrphanUEFIStores_EmptyClusterReportsNothing(t *testing.T) {
+	t.Parallel()
 	f := newUEFIOrphanFixture(t)
 	orphans, err := f.scan(t)
 	require.NoError(t, err)
@@ -145,7 +148,9 @@ func TestFindOrphanUEFIStores_EmptyClusterReportsNothing(t *testing.T) {
 // Reading an unreadable record or a failed index as absent would point an
 // operator at live data, so either aborts the scan.
 func TestFindOrphanUEFIStores_UnreadableInputsAbortTheScan(t *testing.T) {
+	t.Parallel()
 	t.Run("store record", func(t *testing.T) {
+		t.Parallel()
 		_, _, js := testutil.StartTestJetStream(t)
 		stores := uefistore.NewStore(js)
 		require.NoError(t, stores.Open(t.Context()))
@@ -159,12 +164,14 @@ func TestFindOrphanUEFIStores_UnreadableInputsAbortTheScan(t *testing.T) {
 		require.ErrorIs(t, err, uefistore.ErrInvalidRecord)
 	})
 	t.Run("instance index", func(t *testing.T) {
+		t.Parallel()
 		f := newUEFIOrphanFixture(t)
 		f.index.err = errors.New("kv unavailable")
 		_, err := f.scan(t)
 		require.Error(t, err)
 	})
 	t.Run("AMI document", func(t *testing.T) {
+		t.Parallel()
 		f := newUEFIOrphanFixture(t)
 		putRawAMIDocument(t, f.objects, "ami-corrupted000", []byte("{not json"))
 		_, err := f.scan(t)

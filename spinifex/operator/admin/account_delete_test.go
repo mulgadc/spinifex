@@ -107,6 +107,7 @@ func TestValidateDeleteAccountRequest(t *testing.T) {
 // Whitespace around a confirmation name is a copy-paste artefact, not a
 // mismatch — but it must be trimmed before the comparison, not after.
 func TestValidateDeleteAccountRequestTrimsInput(t *testing.T) {
+	t.Parallel()
 	request := operatorv1.DeleteAccountRequest{
 		AccountID:   "  000000000042 ",
 		AccountName: " t@example.com ",
@@ -177,6 +178,7 @@ func TestTeardownErrorMapping(t *testing.T) {
 // The listing is an operator's index of tenants. It must carry the status —
 // that is how a stuck TERMINATING account is noticed — and no key material.
 func TestAdminListAccountsReportsStatus(t *testing.T) {
+	t.Parallel()
 	gw := Deps{IAM: &listAccountsIAMService{
 		accounts: []*iamdomain.Account{
 			{AccountID: "000000000042", AccountName: "t@example.com", Status: iamdomain.AccountStatusActive},
@@ -198,6 +200,7 @@ func TestAdminListAccountsReportsStatus(t *testing.T) {
 // Failing closed matters here: an empty listing reads as "no accounts", which
 // is exactly what an operator would act on.
 func TestAdminListAccountsFailsClosed(t *testing.T) {
+	t.Parallel()
 	gw := Deps{IAM: &listAccountsIAMService{
 		err: errors.New("kv unavailable"),
 	}}
@@ -211,6 +214,7 @@ func TestAdminListAccountsFailsClosed(t *testing.T) {
 // A missing account id must be refused before anything reads the cluster, so
 // DescribeAccountDeletion cannot be used to probe with junk.
 func TestDescribeAccountDeletionValidatesTheAccountID(t *testing.T) {
+	t.Parallel()
 	gw := Deps{}
 
 	_, err := gw.describeAccountDeletion(context.Background(), []byte(`{}`))

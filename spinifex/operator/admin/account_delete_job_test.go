@@ -292,6 +292,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 // and holding the call open for it would make every timeout-and-retry start a
 // second one.
 func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -304,8 +305,6 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	assert.NotEmpty(t, response.DeletionID)
 	assert.Equal(t, account.AccountID, response.AccountID)
 	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
-	// Parallel only once the teardown is running, so it overlaps the serial tests.
-	t.Parallel()
 
 	// Progress is polled, so the record has to reach a terminal state on its own.
 	require.Eventually(t, func() bool {
@@ -325,6 +324,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 // The record outlives the account it describes, so a retry that arrives after
 // the teardown finished is answered from it rather than as a missing account.
 func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	body := deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken)
@@ -332,8 +332,6 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	first, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 	started := first.(*DeleteAccountResponse)
-	// Parallel only once the teardown is running, so it overlaps the serial tests.
-	t.Parallel()
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
@@ -480,12 +478,14 @@ func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 // The protected accounts are refused the same way an unauthorized caller is:
 // no credential grants deleting them, so the answer describes nothing.
 func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	newTenantAccount(t, gw, "tenant@example.com")
 
 	// The system account and the super admin, whichever names they carry.
 	for _, accountID := range []string{"000000000000", "000000000001"} {
 		t.Run(accountID, func(t *testing.T) {
+			t.Parallel()
 			_, err := gw.deleteAccount(t.Context(),
 				deleteAccountBody(t, accountID, "super-admin@example.com", deleteClientToken))
 
@@ -683,6 +683,7 @@ func (b *blockedCompute) ComputeRemaining(_ context.Context, accountID string) (
 // A job that ends FAILED naming a blocker the loop cannot clear keeps the
 // account, and an operator rerun after the blocker clears converges it.
 func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	compute := &blockedCompute{}
 	compute.blocked.Store(true)
@@ -692,8 +693,6 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
 	require.NoError(t, err)
-	// Parallel only once the teardown is running, so it overlaps the serial tests.
-	t.Parallel()
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateFailed

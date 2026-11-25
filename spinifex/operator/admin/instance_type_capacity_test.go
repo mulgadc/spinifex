@@ -34,6 +34,7 @@ func node(name string, types ...clusterv1.InstanceTypeCap) clusterv1.NodeStatusR
 }
 
 func TestGetInstanceTypeCapacitySumsAcrossNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answerNodeStatus(t, nc,
 		node("node1", clusterv1.InstanceTypeCap{Name: "t3.micro", Available: 60}, clusterv1.InstanceTypeCap{Name: "c6a.large", Available: 4}),
@@ -51,6 +52,7 @@ func TestGetInstanceTypeCapacitySumsAcrossNodes(t *testing.T) {
 // The reply carries a count per type, so its size follows the catalogue and not
 // how much capacity is free. This is the property the EC2 listing lost.
 func TestGetInstanceTypeCapacityReplyIsBoundedByTypeCount(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answerNodeStatus(t, nc, node("node1",
 		clusterv1.InstanceTypeCap{Name: "t3.micro", Available: 40000},
@@ -70,6 +72,7 @@ func TestGetInstanceTypeCapacityReplyIsBoundedByTypeCount(t *testing.T) {
 // A type the cluster supports but cannot currently admit is absent rather than
 // reported as zero, so a client reads one answer and not two.
 func TestGetInstanceTypeCapacityOmitsTypesWithNoFreeSlot(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answerNodeStatus(t, nc, node("node1",
 		clusterv1.InstanceTypeCap{Name: "t3.micro", Available: 3},
@@ -84,6 +87,7 @@ func TestGetInstanceTypeCapacityOmitsTypesWithNoFreeSlot(t *testing.T) {
 
 // A node answering twice would double the cluster's apparent capacity.
 func TestGetInstanceTypeCapacityCountsEachNodeOnce(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answerNodeStatus(t, nc,
 		node("node1", clusterv1.InstanceTypeCap{Name: "t3.micro", Available: 5}),
@@ -100,6 +104,7 @@ func TestGetInstanceTypeCapacityCountsEachNodeOnce(t *testing.T) {
 // Capacity is not operator-only: the launch form a tenant uses is what needs
 // the figure, so this action must not be account-gated the way GetNodes is.
 func TestRegistration_InstanceTypeCapacityIsNotAdminOnly(t *testing.T) {
+	t.Parallel()
 	assert.False(t, adminActions[GetInstanceTypeCapacityAction])
 	assert.NotContains(t, AdminActionNames(), GetInstanceTypeCapacityAction)
 
@@ -117,6 +122,7 @@ func TestRegistration_InstanceTypeCapacityIsNotAdminOnly(t *testing.T) {
 // The action is reachable for the super-admin account too, so the operator
 // console and a tenant console read the same figure.
 func TestRegistration_InstanceTypeCapacityServesTheAdminAccount(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answerNodeStatus(t, nc, node("node1", clusterv1.InstanceTypeCap{Name: "t3.micro", Available: 7}))
 

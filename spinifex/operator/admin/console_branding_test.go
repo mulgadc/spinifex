@@ -56,6 +56,7 @@ func errorCode(t *testing.T, err error) string {
 }
 
 func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
+	t.Parallel()
 	d, _ := brandingDeps(t)
 	logo, err := json.Marshal(operatorv1.BrandingImage{ContentType: consolebranding.TypeSVG, Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)})
 	require.NoError(t, err)
@@ -90,6 +91,7 @@ func TestConsoleBranding_SaveReadAndReset(t *testing.T) {
 }
 
 func TestConsoleBranding_LastSaveWins(t *testing.T) {
+	t.Parallel()
 	d, _ := brandingDeps(t)
 	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{ProductName: "First"})
 	require.NoError(t, err)
@@ -102,6 +104,7 @@ func TestConsoleBranding_LastSaveWins(t *testing.T) {
 }
 
 func TestConsoleBranding_InvalidFieldIsNamed(t *testing.T) {
+	t.Parallel()
 	d, _ := brandingDeps(t)
 
 	_, err := runBranding(t, d, "PutConsoleBranding", operatorv1.PutConsoleBrandingRequest{Primary: operatorv1.BrandingColors{Light: "blue"}})
@@ -158,6 +161,7 @@ func principalAuthorize(t *testing.T, methods []string) dispatch.AuthorizeFunc {
 // Grants stay explicit: a principal minted before the methods existed holds
 // the method list of that day and is denied; one minted with them succeeds.
 func TestConsoleBranding_PrincipalGrantsAreExplicit(t *testing.T) {
+	t.Parallel()
 	before := slices.DeleteFunc(operatorv1.AdminMethodNames(), func(m string) bool { return slices.Contains(brandingMethods, m) })
 	for _, method := range brandingMethods {
 		inv, _ := restInvocation(http.MethodPost, "/admin/"+method, "{}", principalAuthorize(t, before), ServiceName)

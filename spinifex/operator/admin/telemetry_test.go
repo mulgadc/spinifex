@@ -68,9 +68,13 @@ func TestSendTelemetry_RespectsTimeout(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Outlive the 100ms client deadline so SendTelemetry aborts on its own
-		// context, but return quickly enough that server.Close() does not block.
-		time.Sleep(300 * time.Millisecond)
+		// Outlive the 100ms client deadline, and return once the client hangs up
+		// so server.Close() does not block. The hang-up is seen once the body is read.
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()

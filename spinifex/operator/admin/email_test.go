@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidateEmail(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in      string
 		wantErr bool

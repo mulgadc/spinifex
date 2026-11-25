@@ -58,6 +58,12 @@ const metaNodeQueryTimeout = 2 * time.Second
 // trusted. A single-host cluster opens no QUIC socket, so its nodes are read
 // from their host's /readyz instead.
 func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutput, error) {
+	return getStorageStatus(nc, rootCAs, metaNodeQueryTimeout)
+}
+
+// getStorageStatus is GetStorageStatus with the meta node round bounded by
+// queryTimeout, so tests need not wait out the production bound.
+func getStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool, queryTimeout time.Duration) (*StorageStatusOutput, error) {
 	msg, err := nc.Request(operatorv1.StorageConfigSubject, []byte("{}"), 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("storage config request: %w", err)
@@ -70,7 +76,7 @@ func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutp
 
 	metaStatuses := make([]MetaNodeStatus, len(cfg.MetaNodes))
 	var wg sync.WaitGroup
-	ctx, cancel := context.WithTimeout(context.Background(), metaNodeQueryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
 	for i, meta := range cfg.MetaNodes {

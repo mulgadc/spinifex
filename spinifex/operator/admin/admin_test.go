@@ -37,6 +37,7 @@ func certHasIP(t *testing.T, certPath, ip string) bool {
 // --- Key / Token generation ---
 
 func TestGenerateNATSToken_Format(t *testing.T) {
+	t.Parallel()
 	token, err := GenerateNATSToken()
 	assert.NoError(t, err)
 	assert.True(t, strings.HasPrefix(token, "nats_"))
@@ -47,6 +48,7 @@ func TestGenerateNATSToken_Format(t *testing.T) {
 }
 
 func TestGenerateNATSToken_Uniqueness(t *testing.T) {
+	t.Parallel()
 	t1, err := GenerateNATSToken()
 	assert.NoError(t, err)
 	t2, err := GenerateNATSToken()
@@ -57,6 +59,7 @@ func TestGenerateNATSToken_Uniqueness(t *testing.T) {
 // --- Config file generation ---
 
 func TestGenerateConfigFile_Success(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.conf")
 
@@ -76,6 +79,7 @@ func TestGenerateConfigFile_Success(t *testing.T) {
 }
 
 func TestGenerateConfigFile_InvalidTemplate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.conf")
 	err := GenerateConfigFile(path, "{{.Unclosed", ConfigSettings{})
@@ -84,12 +88,14 @@ func TestGenerateConfigFile_InvalidTemplate(t *testing.T) {
 }
 
 func TestGenerateConfigFile_InvalidPath(t *testing.T) {
+	t.Parallel()
 	err := GenerateConfigFile("/nonexistent/dir/file.conf", "ok", ConfigSettings{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create config file")
 }
 
 func TestGenerateConfigFile_OverwritesExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "overwrite.conf")
 
@@ -102,6 +108,7 @@ func TestGenerateConfigFile_OverwritesExisting(t *testing.T) {
 }
 
 func TestGenerateConfigFiles_AllSucceed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	configs := []ConfigFile{
 		{Name: "a", Path: filepath.Join(dir, "a.conf"), Template: "a={{.Region}}"},
@@ -116,6 +123,7 @@ func TestGenerateConfigFiles_AllSucceed(t *testing.T) {
 }
 
 func TestGenerateConfigFiles_StopsOnFirstError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	configs := []ConfigFile{
 		{Name: "ok", Path: filepath.Join(dir, "ok.conf"), Template: "ok"},
@@ -131,6 +139,7 @@ func TestGenerateConfigFiles_StopsOnFirstError(t *testing.T) {
 // --- FileExists ---
 
 func TestFileExists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "exists.txt")
 	require.NoError(t, os.WriteFile(existing, []byte("hi"), 0644))
@@ -143,6 +152,7 @@ func TestFileExists(t *testing.T) {
 // --- UpdateAWSINIFile ---
 
 func TestUpdateAWSINIFile_CreateNew(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials")
 
@@ -160,6 +170,7 @@ func TestUpdateAWSINIFile_CreateNew(t *testing.T) {
 }
 
 func TestUpdateAWSINIFile_UpdateExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials")
 
@@ -174,6 +185,7 @@ func TestUpdateAWSINIFile_UpdateExisting(t *testing.T) {
 }
 
 func TestUpdateAWSINIFile_AddNewSection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials")
 
@@ -209,6 +221,7 @@ func resolveProfileEndpoint(t *testing.T, configPath, profile, sdkID string) str
 }
 
 func TestWriteAWSProfileConfig_SendsS3ToPredastoreAndTheRestToTheGateway(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config")
 	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "10.11.12.1"))
 
@@ -220,6 +233,7 @@ func TestWriteAWSProfileConfig_SendsS3ToPredastoreAndTheRestToTheGateway(t *test
 // A rewrite must not flatten nested settings an operator added, which is how a
 // hand-written s3 block used to be lost on every re-init.
 func TestWriteAWSProfileConfig_KeepsNestedSettingsAcrossARewrite(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config")
 	require.NoError(t, os.WriteFile(path, []byte(`[profile spinifex]
 s3 =
@@ -253,6 +267,7 @@ s3 =
 // Account profiles each get their own services section, so a tenant profile
 // resolves S3 the same way as the operator's without sharing its section.
 func TestWriteAWSProfileConfig_ProfilesDoNotShareAServicesSection(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config")
 	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "localhost"))
 	require.NoError(t, WriteAWSProfileConfig(path, "spinifex-acme", "ap-southeast-2", "/ca.pem", "10.0.0.5"))
@@ -810,6 +825,7 @@ func TestAWSGWServiceDNSNames(t *testing.T) {
 // --- Directory creation ---
 
 func TestCreateServiceDirectories_CreatesAll(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	CreateServiceDirectories(dir)
 
@@ -825,6 +841,7 @@ func TestCreateServiceDirectories_CreatesAll(t *testing.T) {
 }
 
 func TestCreateServiceDirectories_Idempotent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	CreateServiceDirectories(dir)
 	// Should not error on second call
@@ -838,6 +855,7 @@ func TestCreateServiceDirectories_Idempotent(t *testing.T) {
 // --- Predastore multi-node config ---
 
 func TestGenerateMultiNodePredastoreConfig_Success(t *testing.T) {
+	t.Parallel()
 	tmpl := `{{range .Nodes}}[[host]]
 id = {{.ID}}
 addr = "{{.Host}}"
@@ -859,6 +877,7 @@ data_dir = "{{$.PredastoreDataDir}}"
 // Each machine hosts a gate, a blob node and a meta node, with node IDs unique
 // across all three roles so the topology validates.
 func TestGenerateMultiNodePredastoreConfig_Topology(t *testing.T) {
+	t.Parallel()
 	tmpl := `{{range .ClusterNodes}}[[host.node]]
 id = {{.ID}}
 host_id = {{.HostID}}
@@ -882,6 +901,7 @@ port = {{.Port}}
 }
 
 func TestPredastoreTopology_UniqueIDsAcrossRoles(t *testing.T) {
+	t.Parallel()
 	topology := PredastoreTopology([]formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
@@ -903,6 +923,7 @@ func TestPredastoreTopology_UniqueIDsAcrossRoles(t *testing.T) {
 // multi-node predastore config silently rendered the empty-key path: no zone
 // bucket and no credential the resolver could authenticate with.
 func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *testing.T) {
+	t.Parallel()
 	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
 	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
@@ -918,6 +939,7 @@ func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *
 // A zero credential must leave every northstar field empty, which is what the
 // production template's guards key off to omit the stanzas entirely.
 func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) {
+	t.Parallel()
 	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
 	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
@@ -931,6 +953,7 @@ func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) 
 }
 
 func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
+	t.Parallel()
 	tmpl := "{{range .Nodes}}{{.ID}}{{end}}"
 
 	_, err := GenerateMultiNodePredastoreConfig(tmpl, []formation.PredastoreNodeConfig{
@@ -941,6 +964,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 }
 
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
+	t.Parallel()
 	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "a"}, {ID: 2, Host: "b"}, {ID: 3, Host: "c"},
 	}, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
@@ -951,6 +975,7 @@ func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
 // --- FindNodeIDByIP ---
 
 func TestFindNodeIDByIP(t *testing.T) {
+	t.Parallel()
 	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
@@ -965,6 +990,7 @@ func TestFindNodeIDByIP(t *testing.T) {
 // --- Integration: Full config generation flow ---
 
 func TestGenerateConfigFile_SpinifexTomlTemplate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spinifex.toml")
 
@@ -995,6 +1021,7 @@ secretkey = "{{.SecretKey}}"
 }
 
 func TestChownRecursive_InvalidUser(t *testing.T) {
+	t.Parallel()
 	// ChownRecursive must report a non-nil error naming the user when the
 	// user cannot be resolved, rather than silently doing nothing.
 	tmpDir := t.TempDir()
@@ -1012,6 +1039,7 @@ func TestChownRecursive_InvalidUser(t *testing.T) {
 }
 
 func TestChownRecursive_CurrentUser(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	subDir := filepath.Join(tmpDir, "sub")
 	os.MkdirAll(subDir, 0755)
@@ -1032,6 +1060,7 @@ func TestChownRecursive_CurrentUser(t *testing.T) {
 }
 
 func TestChownRecursive_NonExistentPath(t *testing.T) {
+	t.Parallel()
 	// Should not panic on a path that doesn't exist; OpenRoot fails and the
 	// fallback Lchown fails too, but both are logged, not returned — the
 	// user itself resolved fine, so this is not one of the abort cases.
@@ -1043,6 +1072,7 @@ func TestChownRecursive_NonExistentPath(t *testing.T) {
 }
 
 func TestChownServicePaths_MissingUser(t *testing.T) {
+	t.Parallel()
 	// chownServicePaths is the map-walking core extracted from
 	// SetServiceOwnership so it can be exercised against a small map
 	// instead of the hardcoded /etc/spinifex and /var/lib/spinifex paths,
@@ -1058,6 +1088,7 @@ func TestChownServicePaths_MissingUser(t *testing.T) {
 }
 
 func TestChownServicePaths_SkipsMissingPath(t *testing.T) {
+	t.Parallel()
 	// A path that doesn't exist on disk is never attempted, so it can't
 	// produce a "user not found" failure even for a bogus user.
 	err := chownServicePaths(map[string]string{
@@ -1086,6 +1117,7 @@ func readToml(t *testing.T, path string) string {
 }
 
 func TestSetGPUPassthrough_NoOp(t *testing.T) {
+	t.Parallel()
 	toml := "[nodes.node1.daemon]\ngpu_passthrough = true\n"
 	path := writeToml(t, toml)
 	require.NoError(t, SetGPUPassthrough(path, "node1", true))
@@ -1093,12 +1125,14 @@ func TestSetGPUPassthrough_NoOp(t *testing.T) {
 }
 
 func TestSetGPUPassthrough_Flip(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.daemon]\ngpu_passthrough = false\n")
 	require.NoError(t, SetGPUPassthrough(path, "node1", true))
 	assert.Contains(t, readToml(t, path), "gpu_passthrough = true")
 }
 
 func TestSetGPUPassthrough_AddKeyToSection(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.daemon]\nsome_other = true\n")
 	require.NoError(t, SetGPUPassthrough(path, "node1", true))
 	got := readToml(t, path)
@@ -1107,6 +1141,7 @@ func TestSetGPUPassthrough_AddKeyToSection(t *testing.T) {
 }
 
 func TestSetGPUPassthrough_AppendSection(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.network]\ncidr = \"10.0.0.0/24\"\n")
 	require.NoError(t, SetGPUPassthrough(path, "node1", true))
 	got := readToml(t, path)
@@ -1115,6 +1150,7 @@ func TestSetGPUPassthrough_AppendSection(t *testing.T) {
 }
 
 func TestSetGPUPassthrough_DisableNoOp(t *testing.T) {
+	t.Parallel()
 	toml := "[nodes.node1.daemon]\ngpu_passthrough = false\n"
 	path := writeToml(t, toml)
 	require.NoError(t, SetGPUPassthrough(path, "node1", false))
@@ -1122,11 +1158,13 @@ func TestSetGPUPassthrough_DisableNoOp(t *testing.T) {
 }
 
 func TestSetGPUPassthrough_ReadError(t *testing.T) {
+	t.Parallel()
 	err := SetGPUPassthrough("/nonexistent/path/spinifex.toml", "node1", true)
 	require.Error(t, err)
 }
 
 func TestSetGPUPassthrough_SectionBoundary(t *testing.T) {
+	t.Parallel()
 	// gpu_passthrough = true exists but in a DIFFERENT node's section; should still write.
 	path := writeToml(t, "[nodes.node2.daemon]\ngpu_passthrough = true\n[nodes.node1.daemon]\nsome_key = 1\n")
 	require.NoError(t, SetGPUPassthrough(path, "node1", true))
@@ -1138,6 +1176,7 @@ func TestSetGPUPassthrough_SectionBoundary(t *testing.T) {
 // --- SetMIGProfile ---
 
 func TestSetMIGProfile_SectionDoesNotExist_CreatesWithProfile(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.network]\ncidr = \"10.0.0.0/24\"\n")
 	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
 	got := readToml(t, path)
@@ -1146,6 +1185,7 @@ func TestSetMIGProfile_SectionDoesNotExist_CreatesWithProfile(t *testing.T) {
 }
 
 func TestSetMIGProfile_SectionExistsMIGProfileMissing_AddsIt(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.daemon]\nsome_other = true\n")
 	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
 	got := readToml(t, path)
@@ -1154,6 +1194,7 @@ func TestSetMIGProfile_SectionExistsMIGProfileMissing_AddsIt(t *testing.T) {
 }
 
 func TestSetMIGProfile_AlreadyCorrectValue_Idempotent(t *testing.T) {
+	t.Parallel()
 	toml := "[nodes.node1.daemon]\nmig_profile = \"1g.10gb\"\n"
 	path := writeToml(t, toml)
 	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
@@ -1161,6 +1202,7 @@ func TestSetMIGProfile_AlreadyCorrectValue_Idempotent(t *testing.T) {
 }
 
 func TestSetMIGProfile_DifferentValue_UpdatesIt(t *testing.T) {
+	t.Parallel()
 	path := writeToml(t, "[nodes.node1.daemon]\nmig_profile = \"1g.10gb\"\n")
 	require.NoError(t, SetMIGProfile(path, "node1", "7g.80gb"))
 	got := readToml(t, path)
@@ -1169,6 +1211,7 @@ func TestSetMIGProfile_DifferentValue_UpdatesIt(t *testing.T) {
 }
 
 func TestSetMIGProfile_FileDoesNotExist_ReturnsError(t *testing.T) {
+	t.Parallel()
 	err := SetMIGProfile(filepath.Join(t.TempDir(), "nonexistent.toml"), "node1", "1g.10gb")
 	require.Error(t, err)
 }

@@ -18,6 +18,7 @@ import (
 )
 
 func TestGetNodeMetricsAsksThePolicyBeforeAnythingElse(t *testing.T) {
+	t.Parallel()
 	var asked []string
 	deny := func(_, act string, _ []string, _ iampolicy.ConditionKeys) error {
 		asked = append(asked, act)
@@ -29,6 +30,7 @@ func TestGetNodeMetricsAsksThePolicyBeforeAnythingElse(t *testing.T) {
 }
 
 func TestGetNodeMetricsRefusesANodeOutsideTheCluster(t *testing.T) {
+	t.Parallel()
 	d := Deps{NodeIDs: []string{"node1", "node2"}}
 	for _, node := range []string{"node9", "node1.>", "*"} {
 		_, err := serve(t, d, awsidentifiers.DefaultAccountID(), action(GetNodeMetricsAction, "NodeId", node), nil)
@@ -38,6 +40,7 @@ func TestGetNodeMetricsRefusesANodeOutsideTheCluster(t *testing.T) {
 }
 
 func TestNetworkTestPairs(t *testing.T) {
+	t.Parallel()
 	nodes := []string{"c", "a", "b"}
 
 	pair, err := networkTestPairs(nodes, "a", "b")
@@ -72,6 +75,7 @@ func directions(runs []NetworkTestResult) [][2]string {
 }
 
 func TestStartNetworkTestValidatesBeforeClaiming(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}
 	for _, args := range []map[string]string{
@@ -89,6 +93,7 @@ func TestStartNetworkTestValidatesBeforeClaiming(t *testing.T) {
 }
 
 func TestNetworkTestClaimIsClusterWide(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	first, second := NewKVNetworkTests(js), NewKVNetworkTests(js)
@@ -139,6 +144,7 @@ func fakeNode(t *testing.T, nc *nats.Conn, node, addr string, bps float64, broke
 }
 
 func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b", "c"}}
@@ -201,6 +207,7 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 }
 
 func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	const serveTimeout = 100 * time.Millisecond
@@ -212,8 +219,6 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 
 	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
 	require.NoError(t, err)
-	// Parallel only once the test is running, so it overlaps the serial tests.
-	t.Parallel()
 
 	var done NetworkTest
 	require.Eventually(t, func() bool {
@@ -232,6 +237,7 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 }
 
 func TestDescribeNetworkTestsUnknownID(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	d := Deps{NetworkTests: NewKVNetworkTests(js)}
 	_, err := d.DescribeNetworkTests(context.Background(), map[string]string{"TestId": "nt-missing"})
@@ -240,6 +246,7 @@ func TestDescribeNetworkTestsUnknownID(t *testing.T) {
 }
 
 func TestDescribeNetworkTestsReportsARunningTestWithoutItsClaimAsInterrupted(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	store := NewKVNetworkTests(js)
@@ -284,6 +291,7 @@ func (s finishingStore) Holder(ctx context.Context) (string, error) {
 }
 
 func TestDescribeNetworkTestsReportsATestThatFinishesDuringTheReadAsComplete(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	kv := NewKVNetworkTests(js)

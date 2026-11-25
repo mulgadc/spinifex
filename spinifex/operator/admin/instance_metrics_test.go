@@ -163,8 +163,8 @@ func TestGetInstanceMetrics_StreamsTheRingThenLiveSamplesOnce(t *testing.T) {
 }
 
 func TestGetInstanceMetrics_RenewsTheWatchAndEndsTheStream(t *testing.T) {
-	shorten(t, &liveWatchInterval, 50*time.Millisecond)
-	shorten(t, &liveStreamDuration, 300*time.Millisecond)
+	shorten(t, &liveWatchInterval, 20*time.Millisecond)
+	shorten(t, &liveStreamDuration, 120*time.Millisecond)
 	d, nc := metricsDeps(t)
 	watches := fakeSampler(t, nc, metricsAccount, nil)
 	srv := metricsServer(t, d, allowEverything())
@@ -175,7 +175,7 @@ func TestGetInstanceMetrics_RenewsTheWatchAndEndsTheStream(t *testing.T) {
 	_, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	assert.GreaterOrEqual(t, time.Since(start), 300*time.Millisecond, "the stream lasts its segment")
+	assert.GreaterOrEqual(t, time.Since(start), 120*time.Millisecond, "the stream lasts its segment")
 	assert.GreaterOrEqual(t, len(watches), 3, "the first watch plus renewals while open")
 }
 

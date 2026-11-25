@@ -41,7 +41,8 @@ func TestGetStorageStatus_Success(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	out, err := GetStorageStatus(nc, nil)
+	// Nothing answers the QUIC dial, so the round lasts its whole bound.
+	out, err := getStorageStatus(nc, nil, 100*time.Millisecond)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Reed-Solomon", out.Encoding.Type)
@@ -57,6 +58,7 @@ func TestGetStorageStatus_Success(t *testing.T) {
 }
 
 func TestGetStorageStatus_NoNATSResponse(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 	// No subscriber — should timeout
 	_, err := GetStorageStatus(nc, nil)
@@ -65,6 +67,7 @@ func TestGetStorageStatus_NoNATSResponse(t *testing.T) {
 }
 
 func TestApplyMetaStatus_MapsRaftFields(t *testing.T) {
+	t.Parallel()
 	out := &MetaNodeStatus{ID: 1, Host: "10.0.0.1", Port: 6100}
 	applyMetaStatus(out, pds.Status{
 		NodeID:       "1",
@@ -87,6 +90,7 @@ func TestApplyMetaStatus_MapsRaftFields(t *testing.T) {
 }
 
 func TestApplyMetaStatus_NoLeaderStaysHealthy(t *testing.T) {
+	t.Parallel()
 	// A replica that answers but observes no leader is still a replica that
 	// answered: Healthy describes reachability, not raft convergence.
 	out := &MetaNodeStatus{ID: 2}
@@ -153,6 +157,7 @@ func singleHostMeta(addr string) operatorv1.StorageConfigResponse {
 }
 
 func TestGetStorageStatus_SingleHostReadsReadyz(t *testing.T) {
+	t.Parallel()
 	addr := readyzServer(t, http.StatusOK,
 		`{"checks":{"blob_nodes":"ok","meta_leader":"ok","meta_reachable":"ok"},"status":"ready"}`)
 
@@ -166,6 +171,7 @@ func TestGetStorageStatus_SingleHostReadsReadyz(t *testing.T) {
 // /readyz answers 503 when any check fails; a blob failure must not mark a
 // meta node that observes a leader unreachable.
 func TestGetStorageStatus_ReadyzBlobFailureKeepsMetaHealthy(t *testing.T) {
+	t.Parallel()
 	addr := readyzServer(t, http.StatusServiceUnavailable,
 		`{"checks":{"blob_nodes":"fewer than 1 blob nodes answered","meta_leader":"ok"},"status":"unready"}`)
 
@@ -173,6 +179,7 @@ func TestGetStorageStatus_ReadyzBlobFailureKeepsMetaHealthy(t *testing.T) {
 }
 
 func TestGetStorageStatus_ReadyzWithoutLeaderStaysUnhealthy(t *testing.T) {
+	t.Parallel()
 	addr := readyzServer(t, http.StatusServiceUnavailable,
 		`{"checks":{"meta_leader":"no raft leader observed"},"status":"unready"}`)
 
@@ -181,12 +188,14 @@ func TestGetStorageStatus_ReadyzWithoutLeaderStaysUnhealthy(t *testing.T) {
 
 // Before the sampler's first cycle /readyz names no checks at all.
 func TestGetStorageStatus_ReadyzBeforeFirstSampleStaysUnhealthy(t *testing.T) {
+	t.Parallel()
 	addr := readyzServer(t, http.StatusServiceUnavailable, `{"checks":{},"status":"unready"}`)
 
 	assert.False(t, serveStorageConfig(t, singleHostMeta(addr)).MetaNodes[0].Healthy)
 }
 
 func TestQueryMetaNodeReadyz_Unreachable(t *testing.T) {
+	t.Parallel()
 	out := &MetaNodeStatus{ID: 3}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

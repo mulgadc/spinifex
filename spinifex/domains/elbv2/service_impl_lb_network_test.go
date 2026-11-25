@@ -759,7 +759,8 @@ func TestSetSubnets_RetainedOVNRecordRefusesApplianceChange(t *testing.T) {
 	lb.VpcId = vid
 	lb.SecurityGroups = nil
 	lb.Subnets = []string{sub1}
-	lb.AvailZones = []AvailZoneInfo{{ZoneName: "us-east-1a", SubnetId: sub1}}
+	origZones := []AvailZoneInfo{{ZoneName: "us-east-1a", SubnetId: sub1}}
+	lb.AvailZones = append([]AvailZoneInfo(nil), origZones...)
 	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
 
 	_, err := svc.SetSubnets(t.Context(), &elbv2.SetSubnetsInput{
@@ -791,7 +792,12 @@ func TestSetSubnets_RetainedOVNRecordRefusesApplianceChange(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "ovn", got.Realization)
 	assert.Equal(t, []string{sub1}, got.Subnets)
+	assert.Equal(t, origZones, got.AvailZones)
 	assert.Empty(t, got.ENIs)
+
+	health, err := svc.store.GetLBHealth(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Nil(t, health, "a refused change may not write a health record")
 }
 
 func subnetIDsOfLB(lb *elbv2.LoadBalancer) []string {

@@ -72,6 +72,7 @@ func createActive(t *testing.T, e *env, names ...string) {
 }
 
 func TestListFunctions_WalksEveryFunctionAcrossPagesOnBothPaths(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	createActive(t, e, "second", "third")
 
@@ -89,6 +90,7 @@ func TestListFunctions_WalksEveryFunctionAcrossPagesOnBothPaths(t *testing.T) {
 // ListFunctions renders each function as GetFunctionConfiguration does, with
 // its environment opened, less the state and last-update members.
 func TestListFunctions_RendersTheConfigurationSubset(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	rec, err := e.do(http.MethodGet, helloPath+"/configuration", nil)
 	require.NoError(t, err)
@@ -109,6 +111,7 @@ func TestListFunctions_RendersTheConfigurationSubset(t *testing.T) {
 }
 
 func TestListFunctions_EmptyAccountReturnsAnEmptyList(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	rec, err := e.do(http.MethodGet, listPath+"?FunctionVersion=ALL", nil)
 	require.NoError(t, err)
@@ -116,6 +119,7 @@ func TestListFunctions_EmptyAccountReturnsAnEmptyList(t *testing.T) {
 }
 
 func TestListFunctions_PageHoldsAtMostFifty(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	for i := range function.MaxListPage + 1 {
 		_, err := e.do(http.MethodPost, listPath, createBody(fmt.Sprintf("fn-%02d", i), nil))
@@ -131,6 +135,7 @@ func TestListFunctions_PageHoldsAtMostFifty(t *testing.T) {
 // with their own environments, on first and continuation pages, and neither
 // can continue the other's walk.
 func TestListFunctions_AccountsAreIsolated(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	const other = "210987654321"
 	e.deps.Roles = roleSet{roleARN: true, "arn:aws:iam::" + other + ":role/lambda-exec": true}
@@ -194,6 +199,7 @@ func TestListFunctions_ParameterValidation(t *testing.T) {
 }
 
 func TestListFunctions_AuthorizesOnEveryResource(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	e.h = gwtest.Scoped(gwtest.Statement("Allow", "lambda:ListFunctions", helloARN))
 	_, err := e.do(http.MethodGet, listPath, nil)
@@ -204,6 +210,7 @@ func TestListFunctions_AuthorizesOnEveryResource(t *testing.T) {
 }
 
 func TestListFunctions_OwnerFailuresAreRetryable(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	e.meta.listErr = fmt.Errorf("NATS request to %s: %w", function.SubjectList, nats.ErrNoResponders)
 	_, err := e.do(http.MethodGet, listPath, nil)
@@ -231,6 +238,7 @@ func (e *env) deletion(t *testing.T, functionID string) (function.Deletion, bool
 }
 
 func TestDeleteFunction_RemovesTheFunctionAndRetainsItsRecordsAndCode(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, _ := e.record(t, "hello")
 	copies := e.store.count()
@@ -267,6 +275,7 @@ func TestDeleteFunction_RemovesTheFunctionAndRetainsItsRecordsAndCode(t *testing
 // Every explicit qualifier, in the query or the name, and every query that
 // cannot be read exactly, is refused before the owner is asked to delete.
 func TestDeleteFunction_RefusesEveryQualifierWithoutMutation(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		path string
 		code string
@@ -289,6 +298,7 @@ func TestDeleteFunction_RefusesEveryQualifierWithoutMutation(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newUpdateEnv(t)
 			before, beforeRev := e.record(t, "hello")
 			_, err := e.do(http.MethodDelete, tc.path, nil)
@@ -302,8 +312,10 @@ func TestDeleteFunction_RefusesEveryQualifierWithoutMutation(t *testing.T) {
 }
 
 func TestDeleteFunction_Authorization(t *testing.T) {
+	t.Parallel()
 	allowAll := gwtest.Statement("Allow", "*", "*")
 	t.Run("denied on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t)
 		e.h = gwtest.Scoped(allowAll, gwtest.Statement("Deny", "lambda:DeleteFunction", helloARN))
 		before, beforeRev := e.record(t, "hello")
@@ -312,12 +324,14 @@ func TestDeleteFunction_Authorization(t *testing.T) {
 		requireConfigUnchanged(t, e, before, beforeRev)
 	})
 	t.Run("another function's grant does not reach it", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t)
 		e.h = gwtest.Scoped(gwtest.Statement("Allow", "lambda:DeleteFunction", helloARN+"-other"))
 		_, err := e.do(http.MethodDelete, helloPath, nil)
 		gwtest.AssertDenied(t, err)
 	})
 	t.Run("allowed on the function ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newUpdateEnv(t)
 		e.h = gwtest.Scoped(gwtest.Statement("Allow", "lambda:DeleteFunction", helloARN))
 		rec, err := e.do(http.MethodDelete, helloPath, nil)
@@ -327,6 +341,7 @@ func TestDeleteFunction_Authorization(t *testing.T) {
 }
 
 func TestDeleteFunction_LostReplyIsAnErrorButTheDeleteStands(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	e.meta.loseDeleteReply = true
 	_, err := e.do(http.MethodDelete, helloPath, nil)
@@ -337,6 +352,7 @@ func TestDeleteFunction_LostReplyIsAnErrorButTheDeleteStands(t *testing.T) {
 }
 
 func TestDeleteFunction_OwnerWithoutTheSubjectIsRetryableAndChangesNothing(t *testing.T) {
+	t.Parallel()
 	e := newUpdateEnv(t)
 	before, beforeRev := e.record(t, "hello")
 	e.meta.deleteErr = fmt.Errorf("NATS request to %s: %w", function.SubjectDelete, nats.ErrNoResponders)
@@ -347,6 +363,7 @@ func TestDeleteFunction_OwnerWithoutTheSubjectIsRetryableAndChangesNothing(t *te
 }
 
 func TestDeleteFunction_UpdateBetweenReadAndDeleteWins(t *testing.T) {
+	t.Parallel()
 	e := newConfigEnv(t)
 	e.meta.beforeCommit = func() {
 		_, err := e.do(http.MethodPut, configPath, map[string]any{"Handler": "handler.winner"})
@@ -359,6 +376,7 @@ func TestDeleteFunction_UpdateBetweenReadAndDeleteWins(t *testing.T) {
 }
 
 func TestDeleteFunction_LeavesMappingsInPlace(t *testing.T) {
+	t.Parallel()
 	e, store, _ := newMappingEnv(t)
 	rec, err := e.do(http.MethodPost, mappingsPath, mappingBody(nil))
 	require.NoError(t, err)
@@ -376,6 +394,7 @@ func TestDeleteFunction_LeavesMappingsInPlace(t *testing.T) {
 }
 
 func TestDeleteFunction_LaterInvokeIsNotFound(t *testing.T) {
+	t.Parallel()
 	e, ex := newInvokeEnv(t)
 	_, err := e.do(http.MethodDelete, helloPath, nil)
 	require.NoError(t, err)

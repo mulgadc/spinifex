@@ -66,6 +66,7 @@ func decodeMapping(t *testing.T, raw []byte) map[string]any {
 }
 
 func TestEventSourceMapping_CreateGetDelete(t *testing.T) {
+	t.Parallel()
 	e, store, src := newMappingEnv(t)
 	rec, err := e.do(http.MethodPost, mappingsPath, mappingBody(func(b map[string]any) { b["BatchSize"] = 4 }))
 	require.NoError(t, err)
@@ -100,6 +101,7 @@ func TestEventSourceMapping_CreateGetDelete(t *testing.T) {
 }
 
 func TestEventSourceMapping_ConcurrentDuplicateCreatesYieldOneMapping(t *testing.T) {
+	t.Parallel()
 	first, store, src := newMappingEnv(t)
 	const n = 8
 	gateways := []*env{first}
@@ -136,6 +138,7 @@ func TestEventSourceMapping_ConcurrentDuplicateCreatesYieldOneMapping(t *testing
 }
 
 func TestEventSourceMapping_ListIsRefusedWithoutReadingTheStore(t *testing.T) {
+	t.Parallel()
 	e, store, _ := newMappingEnv(t)
 	_, err := e.do(http.MethodPost, mappingsPath, mappingBody(nil))
 	require.NoError(t, err)
@@ -179,6 +182,7 @@ func TestEventSourceMapping_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
 }
 
 func TestEventSourceMapping_VisibilityTimeoutMustCoverTheFunctionTimeout(t *testing.T) {
+	t.Parallel()
 	e, store, src := newMappingEnv(t)
 	src.visibility = 29
 	_, err := e.do(http.MethodPost, mappingsPath, mappingBody(nil))
@@ -197,6 +201,7 @@ func TestEventSourceMapping_VisibilityTimeoutMustCoverTheFunctionTimeout(t *test
 }
 
 func TestEventSourceMapping_AnotherAccountsMappingIsNotFound(t *testing.T) {
+	t.Parallel()
 	e, store, _ := newMappingEnv(t)
 	m := eventsource.Mapping{
 		FormatVersion: eventsource.FormatVersion, UUID: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", AccountID: "210987654321",
@@ -213,6 +218,7 @@ func TestEventSourceMapping_AnotherAccountsMappingIsNotFound(t *testing.T) {
 }
 
 func TestEventSourceMapping_GetAndDeleteAuthorizeAgainstTheMappingARN(t *testing.T) {
+	t.Parallel()
 	const uuid = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 	mapping := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":event-source-mapping:" + uuid
 	e, store, _ := newMappingEnv(t, gwtest.Statement("Allow", "*", "*"), gwtest.Statement("Deny", "lambda:*", mapping))

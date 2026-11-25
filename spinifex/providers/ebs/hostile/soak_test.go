@@ -39,7 +39,7 @@ func soakFromEnv(t *testing.T) soakBudget {
 	t.Helper()
 	raw := os.Getenv("EBS_SOAK_DURATION")
 	if raw == "" {
-		return countBudget(3600)
+		return countBudget(leakSoakVolumesPerWorker)
 	}
 	parsed, err := time.ParseDuration(raw)
 	require.NoError(t, err, "EBS_SOAK_DURATION")
@@ -219,7 +219,7 @@ func TestSoak_EveryLeakIsAttributable(t *testing.T) {
 func TestSoak_ConcurrentRunsWithTheSameSeedMatch(t *testing.T) {
 	t.Parallel()
 	const seed = 99
-	budget := countBudget(1400)
+	budget := countBudget(matchSoakVolumesPerWorker)
 
 	first := runSoak(t, seed, 4, budget)
 	second := runSoak(t, seed, 4, budget)

@@ -30,6 +30,7 @@ func TestListSnapshotsFilterOnlyNamesSnapshotFiles(t *testing.T) {
 		{snapshotID: "../volumes/vol-1"},
 	} {
 		t.Run(tt.snapshotID, func(t *testing.T) {
+			t.Parallel()
 			resp, err := provider.ListSnapshots(t.Context(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: tt.snapshotID})
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, resp.Snapshots)

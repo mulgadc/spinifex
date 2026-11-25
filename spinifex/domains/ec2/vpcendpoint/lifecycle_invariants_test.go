@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 // countingKV records every read, listing and write a handler makes, runs
@@ -141,21 +142,28 @@ func stallBeforeRecordUpdate(kv *countingKV, during func()) {
 // table claim, so a handler that scans the bucket reads them.
 func seedUnrelated(t *testing.T, f *fixture, n int) {
 	t.Helper()
+	g, ctx := errgroup.WithContext(t.Context())
+	g.SetLimit(32)
 	for i := range n {
 		rec := &EndpointRecord{
 			ID: fmt.Sprintf("vpce-%017x", 9000+i), AccountID: otherAccount, VpcID: fmt.Sprintf("vpc-%017x", 9000+i),
 			ServiceName: s3Service, Type: TypeGateway, RouteTableIds: []string{fmt.Sprintf("rtb-%017x", 9000+i)},
 			State: StateAvailable, Generation: 1, CreatedAt: f.clock.now(),
 		}
-		ctx := t.Context()
-		require.NoError(t, putJSON(ctx, f.svc.kv, recordKey(rec.AccountID, rec.ID), rec))
-		require.NoError(t, putJSON(ctx, f.svc.kv, claimKey(rec.RouteTableIds[0]), claim{VpceID: rec.ID, AccountID: rec.AccountID, ClaimedAt: rec.CreatedAt}))
+		g.Go(func() error {
+			if err := putJSON(ctx, f.svc.kv, recordKey(rec.AccountID, rec.ID), rec); err != nil {
+				return err
+			}
+			return putJSON(ctx, f.svc.kv, claimKey(rec.RouteTableIds[0]), claim{VpceID: rec.ID, AccountID: rec.AccountID, ClaimedAt: rec.CreatedAt})
+		})
 	}
+	require.NoError(t, g.Wait())
 }
 
 // Delete fences and removes the record, whatever the number of associations.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_DeleteWritesTwiceWhateverTheTables(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA2, rtbA3)
 	kv := instrument(f)
@@ -172,6 +180,7 @@ func TestADR0003S8_DeleteWritesTwiceWhateverTheTables(t *testing.T) {
 // caller's records, and reads a bounded number of keys.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_CreateReadsOnlyCallerKeys(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	kv := instrument(f)
@@ -186,6 +195,7 @@ func TestADR0003S8_CreateReadsOnlyCallerKeys(t *testing.T) {
 // Describe lists only the caller's records, and by ID lists nothing.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_DescribeListsOnlyCallerRecords(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	id := f.create(t, rtbA1)
@@ -205,6 +215,7 @@ func TestADR0003S8_DescribeListsOnlyCallerRecords(t *testing.T) {
 // DeleteVpc's endpoint check reads only the owner's records and writes nothing.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_DeleteVpcCheckReadsOnlyOwnerRecords(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	id := f.create(t, rtbA1)
@@ -222,6 +233,7 @@ func TestADR0003S8_DeleteVpcCheckReadsOnlyOwnerRecords(t *testing.T) {
 // owner read visits, cannot grow past the cap.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_ResidueHoldsQuota(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	for i := range accountLimit {
 		state := StatePending
@@ -242,6 +254,7 @@ func TestADR0003S8_ResidueHoldsQuota(t *testing.T) {
 // whatever else the bucket holds.
 // Verifies: ADR-0003:S8.
 func TestADR0003S8_DescribeRouteTablesReadsTwicePerTable(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	seedUnrelated(t, f, 2000)
 	id := f.create(t, rtbA1)
@@ -258,6 +271,7 @@ func TestADR0003S8_DescribeRouteTablesReadsTwicePerTable(t *testing.T) {
 // once its claim is stale, and then fails rather than reporting a route it lost.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_StalledCreateIsFencedByTaker(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := instrument(f)
 	var taker string
@@ -278,6 +292,7 @@ func TestADR0003S5_StalledCreateIsFencedByTaker(t *testing.T) {
 // Within the grace, a create in flight keeps its claim against another create.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_YoungClaimProtectsCreateInFlight(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := instrument(f)
 	stallBeforeRecordUpdate(kv, func() {
@@ -294,6 +309,7 @@ func TestADR0003S5_YoungClaimProtectsCreateInFlight(t *testing.T) {
 // once stale, retries against the new holder and fails.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_StalledModifyIsFencedByTaker(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	kv := instrument(f)
@@ -314,6 +330,7 @@ func TestADR0003S5_StalledModifyIsFencedByTaker(t *testing.T) {
 // answers not found, and the claim it took is stale at once.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_DeleteFenceStopsModifyInFlight(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1)
 	kv := instrument(f)
@@ -330,6 +347,7 @@ func TestADR0003S5_DeleteFenceStopsModifyInFlight(t *testing.T) {
 // table, leaves the re-added association effective.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_DelayedRemovalKeepsReAdd(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA2)
 	kv := instrument(f)
@@ -346,6 +364,7 @@ func TestADR0003S5_DelayedRemovalKeepsReAdd(t *testing.T) {
 // publishes, leave the published association effective.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_FailedModifyKeepsWinnersClaim(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA3)
 	kv := instrument(f)
@@ -360,6 +379,7 @@ func TestADR0003S5_FailedModifyKeepsWinnersClaim(t *testing.T) {
 // A create whose VPC is deleted while it publishes abandons and leaves nothing.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_CreateAbandonsWhenVpcGoes(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := instrument(f)
 	stallBefore(kv, "create", testAccount+".", func() {
@@ -374,6 +394,7 @@ func TestADR0003S5_CreateAbandonsWhenVpcGoes(t *testing.T) {
 // A final write that landed but answered an error is the create's success.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_CreateResolvesAnUnknownFinalWrite(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	kv := instrument(f)
 	kv.lostUpdates = true
@@ -388,6 +409,7 @@ func TestADR0003S5_CreateResolvesAnUnknownFinalWrite(t *testing.T) {
 // past the grace, and is removed by the sweep only once older than the grace.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_CrashResidueIsInertAndSwept(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	ctx := t.Context()
 	now := f.clock.now()
@@ -425,6 +447,7 @@ func TestADR0003S5_CrashResidueIsInertAndSwept(t *testing.T) {
 // whose table is gone.
 // Verifies: ADR-0003:S5.
 func TestADR0003S5_SweepKeepsEffectiveAssociations(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	id := f.create(t, rtbA1, rtbA2)
 	f.tables.drop(testAccount, rtbA2)

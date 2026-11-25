@@ -58,6 +58,7 @@ func (m *memTagStore) get(account, id string) map[string]string {
 // delete clears them. Absence of a record is no evidence of a delete, so the
 // sweep leaves tags on an ID with no record.
 func TestCentralTags_FollowTheEndpoint(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	central := &memTagStore{tags: map[string]map[string]map[string]string{}}
 	f.svc.SetCentralTagStore(central)
@@ -89,6 +90,7 @@ func TestCentralTags_FollowTheEndpoint(t *testing.T) {
 // and the next pass drops the tags before it removes the record.
 // Verifies: ADR-0003:S2.
 func TestCentralTags_FailedDropIsRetriedBySweep(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	central := &memTagStore{tags: map[string]map[string]map[string]string{}}
 	f.svc.SetCentralTagStore(central)

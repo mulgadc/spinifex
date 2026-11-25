@@ -65,7 +65,7 @@ func prewarmParse(paths []string) {
 var (
 	repoRootOnce sync.Once
 	repoRootPath string
-	repoRootErr  error
+	errRepoRoot  error
 )
 
 // repoRoot returns the spinifex module root via `go env GOMOD`.
@@ -74,18 +74,18 @@ func repoRoot(t *testing.T) string {
 	repoRootOnce.Do(func() {
 		out, err := exec.Command("go", "env", "GOMOD").Output()
 		if err != nil {
-			repoRootErr = fmt.Errorf("go env GOMOD: %w", err)
+			errRepoRoot = fmt.Errorf("go env GOMOD: %w", err)
 			return
 		}
 		gomod := strings.TrimSpace(string(out))
 		if gomod == "" || gomod == "/dev/null" {
-			repoRootErr = fmt.Errorf("not in a go module (GOMOD=%q)", gomod)
+			errRepoRoot = fmt.Errorf("not in a go module (GOMOD=%q)", gomod)
 			return
 		}
 		repoRootPath = strings.TrimSuffix(gomod, "/go.mod")
 	})
-	if repoRootErr != nil {
-		t.Fatalf("%v", repoRootErr)
+	if errRepoRoot != nil {
+		t.Fatalf("%v", errRepoRoot)
 	}
 	return repoRootPath
 }
@@ -93,7 +93,7 @@ func repoRoot(t *testing.T) string {
 var (
 	goListOnce sync.Once
 	goListPkgs []goListPackage
-	goListErr  error
+	errGoList  error
 )
 
 // goListNetwork lists every package under networkRoot, invariants included.
@@ -105,25 +105,24 @@ func goListNetwork(t *testing.T) []goListPackage {
 		cmd.Dir = root
 		out, err := cmd.Output()
 		if err != nil {
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
+			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				err = fmt.Errorf("%w: %s", err, ee.Stderr)
 			}
-			goListErr = fmt.Errorf("go list: %w", err)
+			errGoList = fmt.Errorf("go list: %w", err)
 			return
 		}
 		dec := json.NewDecoder(strings.NewReader(string(out)))
 		for dec.More() {
 			var p goListPackage
 			if err := dec.Decode(&p); err != nil {
-				goListErr = fmt.Errorf("decode go list output: %w", err)
+				errGoList = fmt.Errorf("decode go list output: %w", err)
 				return
 			}
 			goListPkgs = append(goListPkgs, p)
 		}
 	})
-	if goListErr != nil {
-		t.Fatalf("%v", goListErr)
+	if errGoList != nil {
+		t.Fatalf("%v", errGoList)
 	}
 	return goListPkgs
 }

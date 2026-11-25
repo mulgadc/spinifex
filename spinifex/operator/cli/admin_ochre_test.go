@@ -290,6 +290,7 @@ func TestDownloadWeightsPrefix_FlattensToBasename(t *testing.T) {
 // must not touch the object store or materialize anything at all, and must
 // report the existing snapshot.
 func TestRunStageWeights_IdempotentReStageIsNoop(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -315,6 +316,7 @@ func TestRunStageWeights_IdempotentReStageIsNoop(t *testing.T) {
 // replaced -- distinctly from the different-source-URI replace wording --
 // so an operator never has to run 'weights remove' first.
 func TestRunStageWeights_SelfHealsWhenSnapshotGone(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-missing"))
@@ -347,6 +349,7 @@ func TestRunStageWeights_SelfHealsWhenSnapshotGone(t *testing.T) {
 // path: a real liveness-check failure (as opposed to a definitive not-found)
 // must be returned rather than guessed at either way.
 func TestRunStageWeights_LiveCheckErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -366,6 +369,7 @@ func TestRunStageWeights_LiveCheckErrorSurfaces(t *testing.T) {
 // source/snapshot, and the result reports the previous snapshot ID so an
 // operator can reclaim it.
 func TestRunStageWeights_ReStageDifferentSourceReplacesAndReportsPrevious(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b-old/", "snap-old"))
@@ -393,6 +397,7 @@ func TestRunStageWeights_ReStageDifferentSourceReplacesAndReportsPrevious(t *tes
 // TestRunStageWeights_UnknownModelIDRefused covers refusal on a model ID
 // absent from the catalog entirely, before any store or materialize work.
 func TestRunStageWeights_UnknownModelIDRefused(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 
 	_, err := runStageWeights(context.Background(), explodingObjectStore{t: t}, weightsStore, t.TempDir(),
@@ -423,6 +428,7 @@ func TestWeightsStagingRefusal_ProviderServedDistinguishesFromUnknown(t *testing
 // refusal on an S3 prefix missing required Hugging Face files: validation
 // must fail before download or materialisation is ever attempted.
 func TestRunStageWeights_MissingRequiredFilesRefusedBeforeMaterializing(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	store := objectstore.NewMemoryObjectStore()
 	// Deliberately incomplete: no config.json, tokenizer files, or safetensors.
@@ -441,6 +447,7 @@ func TestRunStageWeights_MissingRequiredFilesRefusedBeforeMaterializing(t *testi
 
 // TestListWeightsOutput_NoModelsStaged covers the empty-catalog case.
 func TestListWeightsOutput_NoModelsStaged(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 
 	out, err := listWeightsOutput(context.Background(), weightsStore, explodingSnapshotChecker(t))
@@ -452,6 +459,7 @@ func TestListWeightsOutput_NoModelsStaged(t *testing.T) {
 // every staged model's ID, source URI and snapshot ID must appear in the
 // rendered output.
 func TestListWeightsOutput_ListsSeveralStagedModels(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -472,6 +480,7 @@ func TestListWeightsOutput_ListsSeveralStagedModels(t *testing.T) {
 // from a live entry, so an operator sees at a glance which staged models can
 // actually serve.
 func TestListWeightsOutput_MarksDanglingEntry(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-live"))
@@ -504,6 +513,7 @@ func TestListWeightsOutput_MarksDanglingEntry(t *testing.T) {
 // anything outside the KV bucket -- removeWeights takes no object store at
 // all, so there is nothing for it to delete there.
 func TestRemoveWeights_RoundTrip(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 	require.NoError(t, weightsStore.PutWeights(ctx, selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -521,6 +531,7 @@ func TestRemoveWeights_RoundTrip(t *testing.T) {
 // TestRemoveWeights_UnknownModelIsRefused covers remove against a model with
 // no staged entry: a clear error, not a silent no-op.
 func TestRemoveWeights_UnknownModelIsRefused(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 
 	_, err := removeWeights(context.Background(), weightsStore, selfHostModelID)

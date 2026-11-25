@@ -14,6 +14,7 @@ import (
 )
 
 func TestLeaseNodeLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		vendorClass string
 		want        string
@@ -30,6 +31,7 @@ func TestLeaseNodeLabel(t *testing.T) {
 }
 
 func TestFormatLeaseExpiry(t *testing.T) {
+	t.Parallel()
 	// A lease the server has already aged out is the one an operator needs to
 	// spot, so it reads as a word rather than a negative duration.
 	aged := dhcp.Entry{Lease: &dhcp.Lease{
@@ -48,6 +50,7 @@ func TestFormatLeaseExpiry(t *testing.T) {
 }
 
 func TestListDHCPLeasesReadsEveryAZBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -77,6 +80,7 @@ func TestListDHCPLeasesReadsEveryAZBucket(t *testing.T) {
 }
 
 func TestListDHCPLeasesWithoutBuckets(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	entries, err := listDHCPLeases(t.Context(), nc)
@@ -85,6 +89,7 @@ func TestListDHCPLeasesWithoutBuckets(t *testing.T) {
 }
 
 func TestDHCPLeaseOwnerStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		reply any
@@ -104,6 +109,7 @@ func TestDHCPLeaseOwnerStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			payload := []byte("not json")
 			if reply, ok := tt.reply.(dhcp.OwnerCheckReply); ok {
@@ -125,6 +131,7 @@ func TestDHCPLeaseOwnerStatus(t *testing.T) {
 
 // No daemon answering means the lease's owner is unproven, not gone.
 func TestDHCPLeaseOwnerStatusWithoutResponder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	entry := dhcp.Entry{Purpose: dhcp.PurposeEIP, Lease: &dhcp.Lease{ClientID: "eipalloc-1"}}

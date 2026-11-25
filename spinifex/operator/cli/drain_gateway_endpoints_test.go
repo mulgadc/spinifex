@@ -84,6 +84,7 @@ func (f *drainFixture) proxy(node string, change func(*projection.EndpointProxyS
 }
 
 func TestGatewayEndpointDrain_IdleFormationDrains(t *testing.T) {
+	t.Parallel()
 	f := newDrainFixture(t)
 	n, err := f.drain.check(t.Context())
 	require.NoError(t, err)
@@ -92,6 +93,7 @@ func TestGatewayEndpointDrain_IdleFormationDrains(t *testing.T) {
 
 // Each kind of dependent work holds the rollback on its own.
 func TestGatewayEndpointDrain_CountsEveryDependent(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(f *drainFixture){
 		"a live endpoint": func(f *drainFixture) { f.live = 1 },
 		"an open session": func(f *drainFixture) {
@@ -113,6 +115,7 @@ func TestGatewayEndpointDrain_CountsEveryDependent(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newDrainFixture(t)
 			mutate(f)
 			n, err := f.drain.check(t.Context())
@@ -125,6 +128,7 @@ func TestGatewayEndpointDrain_CountsEveryDependent(t *testing.T) {
 // A node that cannot say it has read the rollback, a vpcd too old to report
 // prefix-list state, or a count that cannot be read, is not idle.
 func TestGatewayEndpointDrain_UnreadNodeFails(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(f *drainFixture){
 		"silent vpcd": func(f *drainFixture) { f.silent["n2"] = true },
 		"stale vpcd": func(f *drainFixture) {
@@ -146,6 +150,7 @@ func TestGatewayEndpointDrain_UnreadNodeFails(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newDrainFixture(t)
 			mutate(f)
 			_, err := f.drain.check(t.Context())
@@ -155,11 +160,13 @@ func TestGatewayEndpointDrain_UnreadNodeFails(t *testing.T) {
 }
 
 func TestGatewayEndpointDrain_UnconnectedFails(t *testing.T) {
+	t.Parallel()
 	_, err := (&gatewayEndpointDrain{}).check(t.Context())
 	require.Error(t, err)
 }
 
 func TestRequestProxyStatus_RefusesAnotherNodesAnswer(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answer := func(st projection.EndpointProxyStatus) {
 		sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject("n1"), func(m *nats.Msg) {
@@ -180,6 +187,7 @@ func TestRequestProxyStatus_RefusesAnotherNodesAnswer(t *testing.T) {
 }
 
 func TestRequestProxyStatus_ReadsTheAnswer(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject("n1"), func(m *nats.Msg) {
 		var req projection.EndpointProxyStatusRequest
@@ -202,6 +210,7 @@ func TestRequestProxyStatus_ReadsTheAnswer(t *testing.T) {
 
 // The count spans accounts and both directions, and ignores other peers.
 func TestCountPrefixListRules(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	n, err := ec2vpc.CountPrefixListRules(t.Context(), js)
 	require.NoError(t, err)

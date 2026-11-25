@@ -125,6 +125,8 @@ region = "us-east-1"
 }
 
 func TestDerivePredastoreBind_MissingHostErrors(t *testing.T) {
+	// Tests that load a config leave its keys in the global viper, so start clean.
+	viper.Reset()
 	resetGlobalViper(t)
 
 	clusterConfig := &config.ClusterConfig{

@@ -130,6 +130,7 @@ func TestReadPullManifest_MissingIsNotError(t *testing.T) {
 // side: when the source prefix carries a pull manifest, stage must record
 // its commit SHA against the model.
 func TestRunStageWeights_RecordsSourceRevisionFromManifest(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 
@@ -153,6 +154,7 @@ func TestRunStageWeights_RecordsSourceRevisionFromManifest(t *testing.T) {
 // path explicitly: an operator-supplied prefix with no pull manifest stages
 // fine and records an empty SourceRevision, not an error or a fabricated one.
 func TestRunStageWeights_NoManifestLeavesSourceRevisionEmpty(t *testing.T) {
+	t.Parallel()
 	weightsStore := newWeightsStoreForTest(t)
 	ctx := context.Background()
 

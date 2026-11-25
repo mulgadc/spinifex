@@ -246,13 +246,17 @@ func TestIntegration_FileOperations_Complete(t *testing.T) {
 
 	fixture := testpredastore.Start(t)
 
-	client := createS3Client(fixture, validAccessKey, validSecretKey)
-
 	// Test with both buckets
 	buckets := []string{testBucket, publicBucket}
 
 	for _, bucket := range buckets {
 		t.Run(bucket, func(t *testing.T) {
+			t.Parallel()
+
+			// A client per subtest: a transport shared by parallel requests can dial
+			// a spare connection it never uses, and the gate's shutdown waits 5s on it.
+			client := createS3Client(fixture, validAccessKey, validSecretKey)
+
 			key := "lifecycle-test.txt"
 			content := fmt.Sprintf("hello-world-test-1-%s", bucket)
 

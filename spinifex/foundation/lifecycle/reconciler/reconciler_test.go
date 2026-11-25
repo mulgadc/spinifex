@@ -22,6 +22,19 @@ type record struct {
 	Name string `json:"name"`
 }
 
+// Test timings, kept short so the package runs fast. Each settling window
+// outlasts the debounce it follows, so a spurious extra pass shows up inside it.
+// A burst of KV writes keeps a long debounce: every gap between writes must fit.
+const (
+	quickDebounce        = 10 * time.Millisecond
+	triggerBurstDebounce = 50 * time.Millisecond
+	writeBurstDebounce   = 200 * time.Millisecond
+	shortResync          = 50 * time.Millisecond
+	shortDeadline        = 30 * time.Millisecond
+	settleWindow         = 150 * time.Millisecond
+	writeBurstWindow     = 300 * time.Millisecond
+)
+
 // passes counts reconcile calls and lets a test wait for the count to reach a
 // value, so no test sleeps for a fixed duration hoping a pass happened.
 type passes struct {
@@ -67,11 +80,11 @@ func (p *passes) waitFor(t *testing.T, n int, why string) {
 	}
 }
 
-// stillAt asserts no further pass ran during a short settling window, for the
-// tests whose point is that something did NOT trigger a pass.
-func (p *passes) stillAt(t *testing.T, n int, why string) {
+// stillAt asserts no further pass ran during a settling window, for the tests
+// whose point is that something did NOT trigger a pass.
+func (p *passes) stillAt(t *testing.T, n int, window time.Duration, why string) {
 	t.Helper()
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(window)
 	assert.Equal(t, n, p.now(), why)
 }
 
@@ -111,10 +124,11 @@ func TestRun_ReconcilesOnceAtStartup(t *testing.T) {
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 1, "the startup pass")
-	p.stillAt(t, 1, "an idle bucket must not produce further passes")
+	p.stillAt(t, 1, settleWindow, "an idle bucket must not produce further passes")
 }
 
 func TestRun_AnUpdateTriggersAPass(t *testing.T) {
@@ -127,6 +141,7 @@ func TestRun_AnUpdateTriggersAPass(t *testing.T) {
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -147,7 +162,7 @@ func TestRun_ABurstCollapsesIntoOnePass(t *testing.T) {
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
-		Debounce:  200 * time.Millisecond,
+		Debounce:  writeBurstDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -156,7 +171,7 @@ func TestRun_ABurstCollapsesIntoOnePass(t *testing.T) {
 	}
 
 	p.waitFor(t, 2, "the pass covering the burst")
-	p.stillAt(t, 2, "eight writes in one burst must produce one pass, not eight")
+	p.stillAt(t, 2, writeBurstWindow, "eight writes in one burst must produce one pass, not eight")
 }
 
 func TestRun_ResyncFiresWithNoWatchTraffic(t *testing.T) {
@@ -168,7 +183,8 @@ func TestRun_ResyncFiresWithNoWatchTraffic(t *testing.T) {
 		Name:      "resync",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
-		Resync:    150 * time.Millisecond,
+		Resync:    shortResync,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 4, "repeated resync passes against a bucket nobody is writing to")
@@ -183,7 +199,8 @@ func TestRun_NoSourcesStillReconcilesOnTheResync(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "no-sources",
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
-		Resync:    150 * time.Millisecond,
+		Resync:    shortResync,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 3, "resync passes with no sources configured")
@@ -207,7 +224,8 @@ func TestRun_AFailedPassDoesNotStopTheLoop(t *testing.T) {
 			}
 			return 0, nil
 		},
-		Resync: 150 * time.Millisecond,
+		Resync:   shortResync,
+		Debounce: quickDebounce,
 	})
 
 	p.waitFor(t, 3, "passes after the first one failed")
@@ -226,11 +244,12 @@ func TestRun_AFilterExcludesOtherKeys(t *testing.T) {
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, "lb.*")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
+		Debounce:  quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
 	require.NoError(t, store.Set(t.Context(), "rule.one", &record{Name: "rule"}))
-	p.stillAt(t, 1, "a write outside the filter must not trigger a pass")
+	p.stillAt(t, 1, settleWindow, "a write outside the filter must not trigger a pass")
 
 	require.NoError(t, store.Set(t.Context(), "lb.one", &record{Name: "lb"}))
 	p.waitFor(t, 2, "the pass triggered by a write inside the filter")
@@ -273,7 +292,8 @@ func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
 		Name:      "dynamic",
 		Sources:   []reconciler.Source{reconciler.Dynamic(set.list, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
-		Resync:    200 * time.Millisecond,
+		Resync:    shortResync,
+		Debounce:  quickDebounce,
 	})
 	p.waitFor(t, 1, "the startup pass")
 
@@ -305,7 +325,8 @@ func TestRun_AnUnwatchableSourceStillResyncs(t *testing.T) {
 		Name:      "unwatchable",
 		Sources:   []reconciler.Source{reconciler.Fixed(unwatchable, ">")},
 		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
-		Resync:    150 * time.Millisecond,
+		Resync:    shortResync,
+		Debounce:  quickDebounce,
 	})
 
 	p.waitFor(t, 3, "resync passes despite the watch never establishing")

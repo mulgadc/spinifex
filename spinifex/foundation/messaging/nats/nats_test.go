@@ -39,6 +39,7 @@ func startTestNATSServer(t *testing.T) *server.Server {
 }
 
 func TestConnectNATS_Success(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := ConnectNATS(ns.ClientURL(), "", "")
@@ -49,6 +50,7 @@ func TestConnectNATS_Success(t *testing.T) {
 }
 
 func TestConnectNATS_WithToken(t *testing.T) {
+	t.Parallel()
 	opts := &server.Options{
 		Host:          "127.0.0.1",
 		Port:          -1,
@@ -71,6 +73,7 @@ func TestConnectNATS_WithToken(t *testing.T) {
 }
 
 func TestConnectNATS_WrongToken(t *testing.T) {
+	t.Parallel()
 	opts := &server.Options{
 		Host:          "127.0.0.1",
 		Port:          -1,
@@ -91,12 +94,14 @@ func TestConnectNATS_WrongToken(t *testing.T) {
 }
 
 func TestConnectNATS_BadAddress(t *testing.T) {
+	t.Parallel()
 	_, err := ConnectNATS("nats://127.0.0.1:1", "", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "NATS connect failed")
 }
 
 func TestConnectNATS_MissingCACert(t *testing.T) {
+	t.Parallel()
 	_, err := ConnectNATS("nats://127.0.0.1:4222", "", "/nonexistent/ca.pem")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrCACertRead)
@@ -104,6 +109,7 @@ func TestConnectNATS_MissingCACert(t *testing.T) {
 }
 
 func TestConnectNATS_MalformedCACert(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	badCert := filepath.Join(tmp, "bad-ca.pem")
 	require.NoError(t, os.WriteFile(badCert, []byte("not a PEM certificate"), 0o644))
@@ -211,6 +217,7 @@ func startTLSNATSServer(t *testing.T, serverCertPath, serverKeyPath, caCertPath 
 }
 
 func TestConnectNATS_TLSSuccess(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	caCertPath, caKeyPath := generateTestCA(t, tmp, "ca")
 	serverCertPath, serverKeyPath := generateTestServerCert(t, tmp, caCertPath, caKeyPath)
@@ -224,6 +231,7 @@ func TestConnectNATS_TLSSuccess(t *testing.T) {
 }
 
 func TestConnectNATS_WrongCA(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	caCertPath, caKeyPath := generateTestCA(t, tmp, "ca")
 	serverCertPath, serverKeyPath := generateTestServerCert(t, tmp, caCertPath, caKeyPath)
@@ -236,6 +244,7 @@ func TestConnectNATS_WrongCA(t *testing.T) {
 }
 
 func TestNATSRequest_Success(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -265,6 +274,7 @@ func TestNATSRequest_Success(t *testing.T) {
 }
 
 func TestNATSRequest_ErrorResponse(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -292,6 +302,7 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 // gateway/auth.go's IAM-not-found branch): the decoded error's Error() text
 // must still contain the wire code even when a message rides alongside it.
 func TestNATSRequest_DecodedErrorContainsCode(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -312,6 +323,7 @@ func TestNATSRequest_DecodedErrorContainsCode(t *testing.T) {
 }
 
 func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -337,6 +349,7 @@ func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
 }
 
 func TestServeNATSRequest_WrappedErrorPreservesCodeButDropsWrapperContext(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -364,6 +377,7 @@ func TestServeNATSRequest_WrappedErrorPreservesCodeButDropsWrapperContext(t *tes
 }
 
 func TestServeNATSRequest_ErrorfMessageSurvivesOuterWrapperContext(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -392,6 +406,7 @@ func TestServeNATSRequest_ErrorfMessageSurvivesOuterWrapperContext(t *testing.T)
 }
 
 func TestNATSRequest_NoResponders(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -404,6 +419,7 @@ func TestNATSRequest_NoResponders(t *testing.T) {
 }
 
 func TestNATSRequest_Timeout(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -422,6 +438,7 @@ func TestNATSRequest_Timeout(t *testing.T) {
 }
 
 func TestNATSRequest_InvalidUnmarshal(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -445,6 +462,7 @@ func TestNATSRequest_InvalidUnmarshal(t *testing.T) {
 // --- NATSRequest with account ID tests ---
 
 func TestNATSRequest_AccountIDHeader(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -477,6 +495,7 @@ func TestNATSRequest_AccountIDHeader(t *testing.T) {
 }
 
 func TestNATSRequest_MarshalError(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -493,6 +512,7 @@ func TestNATSRequest_MarshalError(t *testing.T) {
 // --- AccountIDFromMsg tests ---
 
 func TestAccountIDFromMsg(t *testing.T) {
+	t.Parallel()
 	msg := nats.NewMsg("test")
 	msg.Header.Set(AccountIDHeader, "444455556666")
 
@@ -500,15 +520,18 @@ func TestAccountIDFromMsg(t *testing.T) {
 }
 
 func TestAccountIDFromMsg_Missing(t *testing.T) {
+	t.Parallel()
 	msg := nats.NewMsg("test")
 	assert.Empty(t, AccountIDFromMsg(msg))
 }
 
 func TestAccountIDFromMsg_NilMsg(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, AccountIDFromMsg(nil))
 }
 
 func TestAccountIDFromMsg_NilHeader(t *testing.T) {
+	t.Parallel()
 	msg := &nats.Msg{Subject: "test"}
 	assert.Empty(t, AccountIDFromMsg(msg))
 }
@@ -516,6 +539,7 @@ func TestAccountIDFromMsg_NilHeader(t *testing.T) {
 // --- ConnectNATSWithRetry tests ---
 
 func TestConnectNATSWithRetry_Success(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	nc, err := ConnectNATSWithRetry(ns.ClientURL(), "", "")
@@ -525,6 +549,7 @@ func TestConnectNATSWithRetry_Success(t *testing.T) {
 }
 
 func TestConnectNATSWithRetry_RetriesOnFailure(t *testing.T) {
+	t.Parallel()
 	start := time.Now()
 	_, err := ConnectNATSWithRetry("nats://127.0.0.1:14222", "", "",
 		WithMaxWait(100*time.Millisecond),
@@ -541,6 +566,7 @@ func TestConnectNATSWithRetry_RetriesOnFailure(t *testing.T) {
 }
 
 func TestConnectNATSWithRetry_TLSErrorNoRetry(t *testing.T) {
+	t.Parallel()
 	start := time.Now()
 	_, err := ConnectNATSWithRetry("nats://127.0.0.1:4222", "", "/nonexistent/ca.pem",
 		WithMaxWait(5*time.Second),
@@ -556,6 +582,7 @@ func TestConnectNATSWithRetry_TLSErrorNoRetry(t *testing.T) {
 // --- Disconnect/Reconnect callback tests ---
 
 func TestConnectNATS_DisconnectCallbackFires(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 
 	disconnected := make(chan struct{}, 1)
@@ -581,6 +608,7 @@ func TestConnectNATS_DisconnectCallbackFires(t *testing.T) {
 }
 
 func TestConnectNATS_ReconnectCallbackFires(t *testing.T) {
+	t.Parallel()
 	// Pin the test NATS to a specific port so we can restart it on the same URL.
 	port := freePort(t)
 	ns := startTestNATSOnPort(t, port)
@@ -617,6 +645,7 @@ func TestConnectNATS_ReconnectCallbackFires(t *testing.T) {
 // --- Fast-fail when disconnected ---
 
 func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := ConnectNATS(ns.ClientURL(), "", "")
 	require.NoError(t, err)
@@ -636,6 +665,7 @@ func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
 // --- 1c fail-fast tests: NATS request helpers reject when conn is down ---
 
 func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
+	t.Parallel()
 	type Resp struct{}
 	_, err := NATSRequest[Resp](context.Background(), nil, "test.never", struct{}{}, 50*time.Millisecond, "")
 	require.Error(t, err)
@@ -643,6 +673,7 @@ func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
 }
 
 func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -657,6 +688,7 @@ func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 // --- 1c callback hook plumbing: WithDisconnectHandler / WithReconnectHandler ---
 
 func TestConnectNATS_DisconnectReconnectCallbacks(t *testing.T) {
+	t.Parallel()
 	port := freePort(t)
 	ns := startTestNATSOnPort(t, port)
 
@@ -867,6 +899,7 @@ func TestGather_Client4xxErrorKeepsNodeMessage(t *testing.T) {
 }
 
 func TestSummary_Client4xxError(t *testing.T) {
+	t.Parallel()
 	assert.NoError(t, Summary{}.Client4xxError())
 
 	code, msg, ok := awserrors.ResolveErrorDetail(Summary{FirstClient4xx: awserrors.ErrorInvalidInstanceIDNotFound}.Client4xxError())
@@ -1215,6 +1248,7 @@ func TestGather_CollectUntilDeadline_RestartOverlap_SurfacesConflictAndMissingNo
 }
 
 func TestGather_Settled_EndsCollectionBeforeTheDeadline(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.settled.hit", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1325,6 +1359,7 @@ func TestGather_ResponderGrace_PartialCoverageStillRunsToTheDeadline(t *testing.
 // The window is armed once and never extended, so a node replying over and
 // over cannot hold the fan-out open past it.
 func TestGather_ResponderGrace_ArmedOnceNotExtendedByRepeatReplies(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.grace.chatty", "node-a", []byte(`{"ok":true}`), 0)
 	// Extra subscriptions on the same node id keep frames trickling in past

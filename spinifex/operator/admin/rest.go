@@ -56,6 +56,10 @@ func (d Deps) RunMethod(ctx context.Context, method string, caller dispatch.Acto
 		return d.getAccountQuota(ctx, body)
 	case "PutAccountQuota":
 		return d.putAccountQuota(ctx, caller, body)
+	case "GetConsoleBranding":
+		return d.getConsoleBranding(ctx, body)
+	case "PutConsoleBranding":
+		return d.putConsoleBranding(ctx, caller, body)
 	}
 	// The caller's method set is gated by the contract list, so this is
 	// unreachable; failing closed keeps a name added there without a case from
@@ -70,6 +74,19 @@ const pathPrefix = "/admin/"
 // few hundred bytes; the cap stops a mistaken caller making the gateway buffer
 // megabytes.
 const maxBodyBytes = 8 << 10
+
+// methodBodyBytes raises the cap for a method that carries more. A branding
+// save holds its images base64-encoded, under the record's stored cap.
+var methodBodyBytes = map[string]int{
+	"PutConsoleBranding": 720 << 10,
+}
+
+func bodyLimit(method string) int {
+	if n, ok := methodBodyBytes[method]; ok {
+		return n
+	}
+	return maxBodyBytes
+}
 
 // clusterUnavailableMsg is the 503 body when NATS is disconnected.
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
@@ -123,13 +140,14 @@ func (d Deps) dispatchREST(w http.ResponseWriter, inv dispatch.Invocation) error
 		return awserrors.Errorf(awserrors.ErrorServiceUnavailable, "%s", clusterUnavailableMsg)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	limit := bodyLimit(method)
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "Admin: failed to read request body", "method", method, "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
-	if len(body) > maxBodyBytes {
-		return awserrors.Errorf(awserrors.ErrorInvalidRequest, "request body exceeds 8 KiB")
+	if len(body) > limit {
+		return awserrors.Errorf(awserrors.ErrorInvalidRequest, "request body exceeds %d KiB", limit>>10)
 	}
 
 	output, err := d.RunMethod(r.Context(), method, caller, body)

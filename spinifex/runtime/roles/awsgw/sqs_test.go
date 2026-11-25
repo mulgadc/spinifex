@@ -20,7 +20,7 @@ func composeWithSQS(t *testing.T, host string) *dispatch.Registry {
 	gw, err := composeGateway(gatewayInputs{
 		Credentials:  credverify.New(nil, nil),
 		Admission:    accountadmission.New(nil),
-		PublicRoutes: PublicRoutes(nil, nil),
+		PublicRoutes: PublicRoutes(nil, nil, nil),
 	}, regs...)
 	require.NoError(t, err)
 	return gw.Services

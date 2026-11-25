@@ -61,7 +61,7 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 		DisableLogging: true,
 		Region:         ecrTestRegion,
 	}, gwfix.Deps{IAM: iamSvc, STS: stsSvc}))
-	gw.PublicRoutes = awsgw.PublicRoutes(nil, newTestRegistryHandler(t, gw, iss, verify))
+	gw.PublicRoutes = awsgw.PublicRoutes(nil, newTestRegistryHandler(t, gw, iss, verify), nil)
 	return &v2Env{handler: gw.SetupRoutes(), iam: iamSvc, sts: stsSvc, issuer: iss}
 }
 

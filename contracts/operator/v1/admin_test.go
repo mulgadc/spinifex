@@ -81,6 +81,28 @@ func TestAdminWire_ListAccountsResponse(t *testing.T) {
 func TestAdminWire_AdminMethodNames(t *testing.T) {
 	require.Equal(t, []string{
 		"CreateAccount", "DeleteAccount", "DescribeAccountDeletion",
-		"GetAccountQuota", "ListAccounts", "PutAccountQuota",
+		"GetAccountQuota", "GetConsoleBranding", "ListAccounts",
+		"PutAccountQuota", "PutConsoleBranding",
 	}, AdminMethodNames())
+}
+
+// An absent image field keeps the stored image and null removes it, so the
+// request must keep the two apart on the wire.
+func TestAdminWire_PutConsoleBrandingRequest(t *testing.T) {
+	var req PutConsoleBrandingRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"revision":3,"docsUrl":"","logo":null}`), &req))
+	require.Equal(t, uint64(3), req.Revision)
+	require.NotNil(t, req.DocsURL)
+	require.Equal(t, "null", string(req.Logo))
+	require.Nil(t, req.LogoDark)
+
+	goldenJSON(t, PutConsoleBrandingRequest{Revision: 3}, `{"revision":3}`)
+}
+
+func TestAdminWire_ConsoleBrandingResponse(t *testing.T) {
+	goldenJSON(t, ConsoleBrandingResponse{
+		Enabled: true, Revision: 4, ProductName: "Acme", Primary: BrandingColors{Light: "#0A4A8F"},
+		Logo: &BrandingImageInfo{ContentType: "image/png", Size: 10},
+	}, `{"enabled":true,"revision":4,"productName":"Acme","primary":{"light":"#0A4A8F"},"logo":{"contentType":"image/png","size":10}}`)
+	goldenJSON(t, ConsoleBrandingResponse{}, `{"enabled":false,"revision":0}`)
 }

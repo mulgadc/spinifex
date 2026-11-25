@@ -9,8 +9,10 @@ var adminMethodNames = []string{
 	"DeleteAccount",
 	"DescribeAccountDeletion",
 	"GetAccountQuota",
+	"GetConsoleBranding",
 	"ListAccounts",
 	"PutAccountQuota",
+	"PutConsoleBranding",
 }
 
 // AdminMethodNames returns the callable /admin/<Method> names in sorted order.

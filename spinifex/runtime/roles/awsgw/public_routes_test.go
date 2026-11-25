@@ -14,7 +14,7 @@ import (
 
 func TestOCIRegistry_StubReturns501(t *testing.T) {
 	r := chi.NewRouter()
-	awsgw.PublicRoutes(nil, nil)(r)
+	awsgw.PublicRoutes(nil, nil, nil)(r)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v2/team/app/tags/list", nil))

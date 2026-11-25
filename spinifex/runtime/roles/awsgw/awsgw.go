@@ -39,6 +39,7 @@ import (
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/operator/consolebranding"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
@@ -214,6 +215,10 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 	}
 	return cfg, nil
 }
+
+// brandingRefreshInterval is how often each gateway rereads the console
+// branding, well inside the one minute a change may take to show.
+const brandingRefreshInterval = 10 * time.Second
 
 // openAccountUsageBucket opens (or idempotently creates) the gateway-owned
 // per-account vCPU usage bucket. History is 1: each account key holds a single
@@ -578,7 +583,20 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
-	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()))
+	// Every gateway keeps its own copy of the console branding, so the public
+	// route never waits on NATS; only the [console] gate allows writes.
+	brandingKV, err := consolebranding.OpenBucket(janitorCtx, js)
+	if err != nil {
+		return fmt.Errorf("init console branding bucket: %w", err)
+	}
+	branding := &operatoradmin.ConsoleBranding{
+		Enabled: config.Console.BrandingEnabled,
+		Store:   consolebranding.Store{KV: brandingKV},
+		Cache:   &consolebranding.Cache{},
+	}
+	go branding.Cache.Run(janitorCtx, branding.Store, brandingRefreshInterval)
+	brandingRoutes := consolebranding.Handler{Enabled: branding.Enabled, Cache: branding.Cache}
+	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()), brandingRoutes)
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
 		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
@@ -733,6 +751,7 @@ func launchService(config *config.ClusterConfig) error {
 
 		NetworkTests:           operatoradmin.NewKVNetworkTests(js),
 		Quota:                  quotaSvc,
+		Branding:               branding,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,
 		Region:                 nodeConfig.Region,

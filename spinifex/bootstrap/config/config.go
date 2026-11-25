@@ -27,7 +27,16 @@ type ClusterConfig struct {
 	Bootstrap BootstrapConfig        `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
 	AWS       AWSConfig              `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
 	Northstar NorthstarClusterConfig `mapstructure:"northstar"` // cluster-wide authoritative DNS settings
+	Console   ConsoleConfig          `mapstructure:"console"`   // cluster-wide console settings
 	Nodes     map[string]Config      `mapstructure:"nodes"`     // full config for every node
+}
+
+// ConsoleConfig is the cluster-wide [console] block. The operator sets it on
+// every node; the gateway reads it at start.
+type ConsoleConfig struct {
+	// BrandingEnabled lets the cluster administrator brand the console. Off,
+	// the console shows the built-in brand and branding writes are refused.
+	BrandingEnabled bool `mapstructure:"branding_enabled"`
 }
 
 // MaxNameservers caps the nsN names a cluster publishes for its zones. Every

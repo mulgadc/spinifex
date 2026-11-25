@@ -64,6 +64,8 @@ type Deps struct {
 	ComputeCleaner    accountteardown.ComputeStage
 	StorageCleaner    accountteardown.StorageStage
 	Quota             *quota.Service
+	// Branding serves the console branding methods; nil refuses them.
+	Branding *ConsoleBranding
 	ExpectedNodes     int
 	NodeIDs           []string
 	GatewayNodeIDs    []string

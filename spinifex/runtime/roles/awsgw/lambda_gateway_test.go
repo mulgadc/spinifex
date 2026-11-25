@@ -46,7 +46,7 @@ func defaultGateway(t *testing.T, regs ...dispatch.Registration) http.Handler {
 		IAM:          iam,
 		Credentials:  credverify.New(iam, nil),
 		Admission:    accountadmission.New(iam),
-		PublicRoutes: PublicRoutes(nil, nil),
+		PublicRoutes: PublicRoutes(nil, nil, nil),
 		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})},
 	}, regs...)
 	require.NoError(t, err)

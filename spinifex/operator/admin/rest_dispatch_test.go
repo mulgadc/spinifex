@@ -17,6 +17,7 @@ import (
 )
 
 func TestPathMethod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		path   string
@@ -43,6 +44,7 @@ func TestPathMethod(t *testing.T) {
 // The credential-minting CLI grants these by name. A method served but absent
 // from the list would be uncallable by every key an operator issues.
 func TestPathMethod_AcceptsExactlyTheContractList(t *testing.T) {
+	t.Parallel()
 	names := operatorv1.AdminMethodNames()
 
 	require.Len(t, names, len(methods))
@@ -57,6 +59,7 @@ func TestPathMethod_AcceptsExactlyTheContractList(t *testing.T) {
 // The registration labels a request with the method its path names, so the
 // throttle bucket and trace span are per-method rather than one shared bucket.
 func TestResolveAction_LabelsAdminPathByMethod(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/admin/ListAccounts", strings.NewReader("{}"))
 
 	assert.Equal(t, "ListAccounts", resolveAction(req))
@@ -79,6 +82,7 @@ func denyAll(_, _ string, _ []string, _ iampolicy.ConditionKeys) error {
 // Every gate must deny on its own, and every denial must be indistinguishable
 // from the others so a caller cannot learn which one it failed.
 func TestAuthorizeREST_Gates(t *testing.T) {
+	t.Parallel()
 	with := func(mod func(*dispatch.Actor)) dispatch.Actor {
 		a := adminActor()
 		mod(&a)
@@ -122,6 +126,7 @@ func TestAuthorizeREST_Gates(t *testing.T) {
 // The policy check is asked for the spinifex service, the method as the
 // action and the account-wide resource.
 func TestAuthorizeREST_AsksPolicyForTheMethod(t *testing.T) {
+	t.Parallel()
 	var service, action string
 	var resources []string
 	authorize := func(s, a string, r []string, _ iampolicy.ConditionKeys) error {
@@ -151,6 +156,7 @@ func restInvocation(method, path, body string, authorize dispatch.AuthorizeFunc,
 // The verb and the method are checked before authorization, so a probe learns
 // nothing about the caller's permissions from either rejection.
 func TestDispatchREST_VerbAndMethodBeforeAuthorization(t *testing.T) {
+	t.Parallel()
 	var authorized bool
 	authorize := func(_, _ string, _ []string, _ iampolicy.ConditionKeys) error {
 		authorized = true
@@ -173,6 +179,7 @@ func TestDispatchREST_VerbAndMethodBeforeAuthorization(t *testing.T) {
 // A denied caller learns nothing about whether the cluster is up: the policy
 // check runs before the NATS check.
 func TestDispatchREST_AuthorizationBeforeClusterCheck(t *testing.T) {
+	t.Parallel()
 	inv, w := restInvocation(http.MethodPost, "/admin/CreateAccount", "{}", denyAll, ServiceName)
 
 	err := Deps{}.dispatchREST(w, inv)
@@ -183,6 +190,7 @@ func TestDispatchREST_AuthorizationBeforeClusterCheck(t *testing.T) {
 }
 
 func TestDispatchREST_AuthorizedWithoutClusterIsUnavailable(t *testing.T) {
+	t.Parallel()
 	inv, w := restInvocation(http.MethodPost, "/admin/CreateAccount", "{}", allowAll, ServiceName)
 
 	err := Deps{}.dispatchREST(w, inv)

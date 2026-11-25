@@ -72,6 +72,7 @@ func putRawAMIDocument(t *testing.T, store objectstore.ObjectStore, imageID stri
 // consolidated boundary made unrecoverable: the volume vanishes from
 // DescribeVolumes and from the leak reaper, both of which read documents.
 func TestFindOrphanVolumes_FindsAVolumeWhoseDocumentIsGone(t *testing.T) {
+	t.Parallel()
 	provider, metadata := newOrphanScanFixture(t)
 	createProviderVolume(t, provider, "vol-documented000")
 	documentVolume(t, metadata, "vol-documented000")
@@ -89,6 +90,7 @@ func TestFindOrphanVolumes_FindsAVolumeWhoseDocumentIsGone(t *testing.T) {
 // orphan carries data, and the evidence it is still wanted is the very
 // document that is missing. The scan may only report.
 func TestFindOrphanVolumes_NeverDeletes(t *testing.T) {
+	t.Parallel()
 	provider, metadata := newOrphanScanFixture(t)
 	createProviderVolume(t, provider, "vol-stranded00000")
 
@@ -106,6 +108,7 @@ func TestFindOrphanVolumes_NeverDeletes(t *testing.T) {
 // A <root>-efi volume has no owner once UEFI stores left the provider, so it
 // is listed like any other undocumented volume even beside a documented root.
 func TestFindOrphanVolumes_EFISuffixedVolumeReportedBesideItsDocumentedRoot(t *testing.T) {
+	t.Parallel()
 	provider, metadata := newOrphanScanFixture(t)
 	createProviderVolume(t, provider, "vol-live00000000")
 	createProviderVolume(t, provider, "vol-live00000000-efi")
@@ -122,6 +125,7 @@ func TestFindOrphanVolumes_EFISuffixedVolumeReportedBesideItsDocumentedRoot(t *t
 // an AMI document rather than a volume one. A live env19 run reported every
 // registered image as an orphan before this was handled.
 func TestFindOrphanVolumes_AMIBackedVolumeIsNotAnOrphan(t *testing.T) {
+	t.Parallel()
 	provider, metadata := newOrphanScanFixture(t)
 	createProviderVolume(t, provider, "ami-dd7f063caded1ff82")
 	require.NoError(t, metadata.PutAMI(t.Context(), ebsmetadata.AMI{
@@ -137,6 +141,7 @@ func TestFindOrphanVolumes_AMIBackedVolumeIsNotAnOrphan(t *testing.T) {
 // undecodable volume document does: absence and unreadability are different
 // answers, and only one of them means orphaned.
 func TestFindOrphanVolumes_UndecodableAMIDocumentAbortsTheScan(t *testing.T) {
+	t.Parallel()
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true})
 	store := objectstore.NewMemoryObjectStore()
 	metadata := ebsmetadata.NewStore(store, orphanTestBucket)
@@ -151,6 +156,7 @@ func TestFindOrphanVolumes_UndecodableAMIDocumentAbortsTheScan(t *testing.T) {
 // a volume as orphaned because its document failed to decode would point an
 // operator at live data.
 func TestFindOrphanVolumes_UndecodableDocumentAbortsTheScan(t *testing.T) {
+	t.Parallel()
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true})
 	store := objectstore.NewMemoryObjectStore()
 	metadata := ebsmetadata.NewStore(store, orphanTestBucket)
@@ -162,6 +168,7 @@ func TestFindOrphanVolumes_UndecodableDocumentAbortsTheScan(t *testing.T) {
 }
 
 func TestFindOrphanVolumes_RequiresEnumerationCapability(t *testing.T) {
+	t.Parallel()
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
 	metadata := ebsmetadata.NewStore(objectstore.NewMemoryObjectStore(), orphanTestBucket)
 
@@ -170,6 +177,7 @@ func TestFindOrphanVolumes_RequiresEnumerationCapability(t *testing.T) {
 }
 
 func TestFindOrphanVolumes_EmptyProviderReportsNothing(t *testing.T) {
+	t.Parallel()
 	provider, metadata := newOrphanScanFixture(t)
 	orphans, err := FindOrphanVolumes(t.Context(), provider, metadata)
 	require.NoError(t, err)

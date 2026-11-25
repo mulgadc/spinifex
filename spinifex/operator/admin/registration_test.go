@@ -54,6 +54,7 @@ func requireCode(t *testing.T, err error, want string) {
 }
 
 func TestRegistration_GetVersion_Admin(t *testing.T) {
+	t.Parallel()
 	w, err := serve(t, Deps{Version: "v0.5.0-43-gae1deb5", Commit: "ae1deb5"}, awsidentifiers.DefaultAccountID(), action("GetVersion"), nil)
 
 	require.NoError(t, err)
@@ -64,6 +65,7 @@ func TestRegistration_GetVersion_Admin(t *testing.T) {
 }
 
 func TestRegistration_EveryActionDeniesNonAdminAccount(t *testing.T) {
+	t.Parallel()
 	for _, name := range append(AdminActionNames(), GetNodeMetricsAction) {
 		t.Run(name, func(t *testing.T) {
 			_, err := serve(t, Deps{}, "000000000002", action(name), nil)
@@ -75,6 +77,7 @@ func TestRegistration_EveryActionDeniesNonAdminAccount(t *testing.T) {
 // Authorization is asked first, with the wildcard resource, so a caller the
 // policy refuses is told so before the account or action is looked at.
 func TestRegistration_PolicyDenialPrecedesAccountAndActionChecks(t *testing.T) {
+	t.Parallel()
 	var calls []authzCall
 	deny := func(service, act string, resources []string, _ iampolicy.ConditionKeys) error {
 		calls = append(calls, authzCall{service, act})
@@ -90,6 +93,7 @@ func TestRegistration_PolicyDenialPrecedesAccountAndActionChecks(t *testing.T) {
 }
 
 func TestRegistration_UnknownAndMissingAction(t *testing.T) {
+	t.Parallel()
 	_, err := serve(t, Deps{}, awsidentifiers.DefaultAccountID(), action("DoesNotExist"), nil)
 	requireCode(t, err, awserrors.ErrorInvalidAction)
 
@@ -102,17 +106,20 @@ func TestRegistration_UnknownAndMissingAction(t *testing.T) {
 }
 
 func TestRegistration_MalformedQueryString(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetVersion&Bad=%ZZ"))
 	err := Deps{}.dispatch(httptest.NewRecorder(), dispatch.Invocation{Request: req, AccountID: awsidentifiers.DefaultAccountID()})
 	requireCode(t, err, awserrors.ErrorMalformedQueryString)
 }
 
 func TestRegistration_NoAccountIDIsServerInternal(t *testing.T) {
+	t.Parallel()
 	_, err := serve(t, Deps{}, "", action("GetVersion"), nil)
 	requireCode(t, err, awserrors.ErrorServerInternal)
 }
 
 func TestRegistration_NATSActionsWithoutConnectionAreServerInternal(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"GetNodes", "GetVMs", "GetStorageStatus"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := serve(t, Deps{}, awsidentifiers.DefaultAccountID(), action(name), nil)
@@ -125,12 +132,14 @@ func TestRegistration_NATSActionsWithoutConnectionAreServerInternal(t *testing.T
 }
 
 func TestRegistration_PromoteImageRequiresImageID(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	_, err := serve(t, Deps{NATS: nc}, awsidentifiers.DefaultAccountID(), action("PromoteImage"), nil)
 	requireCode(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestRegistration_ListOchreCatalogNeedsNoStore(t *testing.T) {
+	t.Parallel()
 	w, err := serve(t, Deps{}, awsidentifiers.DefaultAccountID(), action("ListOchreCatalog"), nil)
 
 	require.NoError(t, err)
@@ -142,6 +151,7 @@ func TestRegistration_ListOchreCatalogNeedsNoStore(t *testing.T) {
 // With nothing wired, the catalog resolves no credentials and grants no
 // access, so no entry is available to the account.
 func TestRegistration_DefaultResolversGrantNothing(t *testing.T) {
+	t.Parallel()
 	d := Deps{}
 	assert.Equal(t, ochre.NoopCredentialResolver, d.credentials())
 
@@ -160,6 +170,7 @@ type grantAll struct{}
 func (grantAll) Granted(context.Context, string, string) (bool, error) { return true, nil }
 
 func TestRegistration_ActiveNodesIsOptional(t *testing.T) {
+	t.Parallel()
 	assert.Zero(t, Deps{}.activeNodes(context.Background()))
 	assert.Equal(t, 3, Deps{ActiveNodes: func(context.Context) int { return 3 }}.activeNodes(context.Background()))
 }
@@ -173,6 +184,7 @@ func accessDeps(t *testing.T) Deps {
 // The operator's whole loop: an account starts with nothing, a grant shows up
 // in the listing, and a revoke takes it away again.
 func TestRegistration_ModelAccess_GrantListRevoke(t *testing.T) {
+	t.Parallel()
 	d := accessDeps(t)
 	adminAccount := awsidentifiers.DefaultAccountID()
 	target := "000000000002"
@@ -198,6 +210,7 @@ func TestRegistration_ModelAccess_GrantListRevoke(t *testing.T) {
 }
 
 func TestRegistration_ModelAccess_MissingParameters(t *testing.T) {
+	t.Parallel()
 	d := accessDeps(t)
 	cases := []url.Values{
 		action("GrantModelAccess", "ModelId", accessTestModelID),
@@ -212,6 +225,7 @@ func TestRegistration_ModelAccess_MissingParameters(t *testing.T) {
 }
 
 func TestRegistration_ModelAccess_NoStoreIsServerInternal(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"GrantModelAccess", "RevokeModelAccess", "ListModelAccess"} {
 		_, err := serve(t, Deps{}, awsidentifiers.DefaultAccountID(),
 			action(name, "AccountId", "000000000002", "ModelId", accessTestModelID), nil)
@@ -228,6 +242,7 @@ func (failingAccess) List(context.Context, string) ([]string, error) {
 }
 
 func TestRegistration_ModelAccess_StoreErrorsPropagate(t *testing.T) {
+	t.Parallel()
 	d := Deps{ModelAccess: failingAccess{}}
 	for _, name := range []string{"GrantModelAccess", "RevokeModelAccess", "ListModelAccess"} {
 		w, err := serve(t, d, awsidentifiers.DefaultAccountID(),
@@ -238,6 +253,7 @@ func TestRegistration_ModelAccess_StoreErrorsPropagate(t *testing.T) {
 }
 
 func TestNewRegistration_DeclaresTheAdminActionsAsItsInventory(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistration(Deps{})
 
 	assert.Equal(t, ServiceName, reg.Service)

@@ -10,6 +10,7 @@ import (
 // Missing or unsafe parameters are refused before any NATS request, so a nil
 // connection is never reached.
 func TestEnsureSQSWorker_RefusesBadParametersBeforeRequesting(t *testing.T) {
+	t.Parallel()
 	nodes := []string{"node-1"}
 	cases := []struct {
 		name, node, typ, code string

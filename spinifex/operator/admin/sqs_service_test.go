@@ -24,6 +24,7 @@ func enableInput() SQSEnableInput {
 
 // Outside a single-node cluster, enable is refused before any state exists.
 func TestEnableSQS_RefusesAMultiNodeClusterWritingNothing(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -42,6 +43,7 @@ func TestEnableSQS_RefusesAMultiNodeClusterWritingNothing(t *testing.T) {
 // An enable whose launch fails stays recorded as desired, and status shows
 // it as requested but not ready rather than as disabled or done.
 func TestEnableSQS_InterruptedEnableStaysRequestedAndNotReady(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	before, err := DescribeSQS(ctx, js, testRegion, SQSObservers{})
@@ -100,6 +102,7 @@ func boundVM(t *testing.T, js jetstream.JetStream, fingerprint string) workeride
 // Ready needs the VM bound with its receipt key recorded, a polling worker
 // whose local store is up, and the tenant API registered here.
 func TestDescribeSQS_ReadyNeedsTheReceiptKeyTenantAPIAndAPollingWorker(t *testing.T) {
+	t.Parallel()
 	clustersize.DeclareForTest(t, 1)
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
@@ -167,6 +170,7 @@ func stripContract(t *testing.T, kv jetstream.KeyValue, key string) uint64 {
 // anything, is left untouched, and is named by status. nc is nil: any launch
 // attempt would panic.
 func TestEnableSQS_RefusesUnsupportedRecordsBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
 	clustersize.DeclareForTest(t, 1)
 	for _, tc := range []struct {
 		name, reason string

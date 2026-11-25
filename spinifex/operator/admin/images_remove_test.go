@@ -141,6 +141,7 @@ func putVolume(t *testing.T, store *objectstore.MemoryObjectStore, volID, snapsh
 }
 
 func TestRemoveSystemImage_HappyPath(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
@@ -170,6 +171,7 @@ func TestRemoveSystemImage_HappyPath(t *testing.T) {
 // TestRemoveSystemImage_OrphanedBlocksAreReclaimable covers the state the
 // orphan report points operators at: a provider volume with no document.
 func TestRemoveSystemImage_OrphanedBlocksAreReclaimable(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-orphaned0001"
@@ -184,6 +186,7 @@ func TestRemoveSystemImage_OrphanedBlocksAreReclaimable(t *testing.T) {
 // A volume and snapshot another remover already deleted are done: the
 // provider's deletes are idempotent on an absent target.
 func TestRemoveSystemImage_AbsentProviderTargetsAreDone(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-racing000001"
@@ -197,6 +200,7 @@ func TestRemoveSystemImage_AbsentProviderTargetsAreDone(t *testing.T) {
 // A failed snapshot delete stops the removal before the volume, so the
 // snapshot never outlives the blocks it may refer to.
 func TestRemoveSystemImage_SnapshotDeleteFailureKeepsTheVolume(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	provider.deleteSnapshotErr = &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "delete snapshot objects: boom"}
@@ -216,6 +220,7 @@ func TestRemoveSystemImage_SnapshotDeleteFailureKeepsTheVolume(t *testing.T) {
 // the half-removed image --force salvages: the preview reports the capacity
 // as unknown instead of failing, and the removal still deletes both.
 func TestRemoveSystemImage_UnreadableVolumePreviewsUnknownAndForceRemoves(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-unreadable01"
@@ -237,6 +242,7 @@ func TestRemoveSystemImage_UnreadableVolumePreviewsUnknownAndForceRemoves(t *tes
 }
 
 func TestRemoveSystemImage_AccountOwned_Refused(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-acct-001"
@@ -254,6 +260,7 @@ func TestRemoveSystemImage_AccountOwned_Refused(t *testing.T) {
 }
 
 func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-acct-002"
@@ -267,6 +274,7 @@ func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
 }
 
 func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-missing"
@@ -279,6 +287,7 @@ func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
 }
 
 func TestRemoveSystemImage_CorruptConfig_NotFound(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-corrupt"
@@ -291,6 +300,7 @@ func TestRemoveSystemImage_CorruptConfig_NotFound(t *testing.T) {
 }
 
 func TestRemoveSystemImage_DependentVolume_Direct_Refused(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
@@ -307,6 +317,7 @@ func TestRemoveSystemImage_DependentVolume_Direct_Refused(t *testing.T) {
 }
 
 func TestRemoveSystemImage_DependentVolume_Transitive_Refused(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
@@ -328,6 +339,7 @@ func TestRemoveSystemImage_DependentVolume_Transitive_Refused(t *testing.T) {
 }
 
 func TestRemoveSystemImage_DependentAMI_Refused(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
@@ -347,6 +359,7 @@ func TestRemoveSystemImage_DependentAMI_Refused(t *testing.T) {
 }
 
 func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
@@ -366,6 +379,7 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 }
 
 func TestRemoveSystemImage_Salvage_MissingConfig_ForceCleans(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-salvage-1"
@@ -385,6 +399,7 @@ func TestRemoveSystemImage_Salvage_MissingConfig_ForceCleans(t *testing.T) {
 }
 
 func TestRemoveSystemImage_Salvage_CorruptConfig_ForceCleans(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-salvage-2"
@@ -404,6 +419,7 @@ func TestRemoveSystemImage_Salvage_CorruptConfig_ForceCleans(t *testing.T) {
 }
 
 func TestRemoveSystemImage_IdempotentRerun(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-rerun"
@@ -427,6 +443,7 @@ func TestRemoveSystemImage_IdempotentRerun(t *testing.T) {
 }
 
 func TestRemoveSystemImage_MalformedID(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	_, err := RemoveSystemImage(t.Context(), store, newRemoveProvider(), testRemoveBucket, RemoveImageOpts{ImageID: "vol-wrong"})
 	require.Error(t, err)
@@ -434,6 +451,7 @@ func TestRemoveSystemImage_MalformedID(t *testing.T) {
 }
 
 func TestPreviewRemoveSystemImage_Salvage(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-salvage-preview"
@@ -449,6 +467,7 @@ func TestPreviewRemoveSystemImage_Salvage(t *testing.T) {
 
 // A provider answering not_found is an absent volume, not an unknown one.
 func TestPreviewRemoveSystemImage_AbsentVolume(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	provider := newRemoveProvider()
 	const id = "ami-sys-novolume"
@@ -461,6 +480,7 @@ func TestPreviewRemoveSystemImage_AbsentVolume(t *testing.T) {
 }
 
 func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-corrupt-preview"
 	putCorruptAMI(t, store, id)
@@ -472,6 +492,7 @@ func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
 }
 
 func TestFindAMIDependents_SkipsTargetAMI(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-sys-only"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
@@ -495,6 +516,7 @@ func putUEFIStore(t *testing.T, store objectstore.ObjectStore, imageID string) s
 // RemoveSystemImage deletes the image's UEFI variable store and no other
 // image's.
 func TestRemoveSystemImage_DeletesOnlyItsOwnUEFIStore(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	const id, other = "ami-sys-deb13", "ami-sys-deb13x"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
@@ -526,6 +548,7 @@ func (s failingUEFIDeletes) DeleteObject(ctx context.Context, in *awss3.DeleteOb
 // The store goes before the document, so a failed delete keeps the image for
 // a rerun to finish.
 func TestRemoveSystemImage_FailedUEFIStoreDeleteKeepsTheDocument(t *testing.T) {
+	t.Parallel()
 	mem := objectstore.NewMemoryObjectStore()
 	const id = "ami-sys-deb13"
 	putAMI(t, mem, id, "debian-13", "system", SnapPrefix(id))

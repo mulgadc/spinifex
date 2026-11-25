@@ -42,6 +42,7 @@ func (m *capMockIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 }
 
 func TestValidateCreateAccountRequest(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		req     operatorv1.CreateAccountRequest
@@ -120,6 +121,7 @@ func TestValidateCreateAccountRequest(t *testing.T) {
 // A validation message names the offending field, never its value: `name` is a
 // customer email address.
 func TestValidateCreateAccountRequestNeverEchoesTheValue(t *testing.T) {
+	t.Parallel()
 	req := operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: "short"}
 	err := validateCreateAccountRequest(&req)
 	require.Error(t, err)
@@ -127,6 +129,7 @@ func TestValidateCreateAccountRequestNeverEchoesTheValue(t *testing.T) {
 }
 
 func TestClientTokenKeyHidesTheToken(t *testing.T) {
+	t.Parallel()
 	key := clientTokenKey(testClientToken)
 
 	assert.NotContains(t, key, testClientToken)
@@ -192,6 +195,7 @@ func TestClaimClientTokenReplaysCompletedResult(t *testing.T) {
 }
 
 func TestCheckAccountCap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		max      int
@@ -224,6 +228,7 @@ func TestCheckAccountCap(t *testing.T) {
 
 // A cap that cannot be evaluated must not be treated as "not reached".
 func TestCheckAccountCapFailsClosedOnListError(t *testing.T) {
+	t.Parallel()
 	gw := Deps{
 		IAM:               &capMockIAMService{err: assert.AnError},
 		SignupMaxAccounts: 128,

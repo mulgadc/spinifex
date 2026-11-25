@@ -7,6 +7,7 @@ import (
 )
 
 func TestSuggestPoolRange(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		subnet    string
@@ -45,6 +46,7 @@ func TestSuggestPoolRange(t *testing.T) {
 }
 
 func TestIsVirtualInterface(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		iface           string

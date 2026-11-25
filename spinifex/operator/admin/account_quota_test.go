@@ -68,6 +68,7 @@ func quotaRequestBody(t *testing.T, req AccountQuotaRequest) []byte {
 // An account with no override must report the configured baseline, with every
 // dimension attributed to the config.
 func TestAdminGetAccountQuotaInherits(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 
 	output, err := gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
@@ -82,6 +83,7 @@ func TestAdminGetAccountQuotaInherits(t *testing.T) {
 // A stored override must come back on the next read, with only the dimension it
 // named changed.
 func TestAdminPutThenGetAccountQuota(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	ctx := t.Context()
 
@@ -108,6 +110,7 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 
 // Clearing must return the account to the configured limits.
 func TestAdminPutAccountQuotaClears(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	ctx := t.Context()
 
@@ -129,6 +132,7 @@ func TestAdminPutAccountQuotaClears(t *testing.T) {
 // Storing an override against an account that does not exist would leave a
 // record that never applies to anything, so a bad ID is refused.
 func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
+	t.Parallel()
 	gw, _ := quotaTestGateway(t)
 
 	tests := []struct {
@@ -156,6 +160,7 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 // A gateway with quotas disabled has no override bucket; the admin surface must
 // report that rather than pretend the write landed.
 func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
+	t.Parallel()
 	gw := Deps{IAM: &quotaIAMService{known: "000000000042"}}
 
 	_, err := gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
@@ -166,6 +171,7 @@ func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
 // Every dimension must appear in the response, and each must be labelled with
 // the layer it came from: a limit with no provenance cannot be debugged.
 func TestAccountQuotaResponseReportsSource(t *testing.T) {
+	t.Parallel()
 	limits := admissionquota.Limits{
 		Enabled: true, VCPUs: 32, VPCs: 4, Subnets: 16, EIPs: 4,
 		Volumes: 16, VolumesGiB: 200, RDSInstances: 2, LoadBalancers: 2,
@@ -188,6 +194,7 @@ func TestAccountQuotaResponseReportsSource(t *testing.T) {
 // An explicit zero is an override, not an absent field, so it must be reported
 // as one rather than looking like an inherited limit that happens to be zero.
 func TestAccountQuotaResponseExplicitZeroIsAnOverride(t *testing.T) {
+	t.Parallel()
 	resp := accountQuotaResponse("000000000002",
 		admissionquota.Overrides{VPCs: quotaPtr(0)},
 		admissionquota.Limits{VPCs: 0, VCPUs: 16})
@@ -211,6 +218,7 @@ func (c *quotaStubChecker) AccountTerminating(_ context.Context, accountID strin
 // "state":"sealed" in the overrides object is simply unknown to the wire
 // type, the stored record stays active, and the response never shows state.
 func TestAdminRequestCannotCarryState(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	ctx := t.Context()
 
@@ -233,6 +241,7 @@ func TestAdminRequestCannotCarryState(t *testing.T) {
 // Admin get and the put read-back on a sealed record must return Blocked,
 // not the generic InternalError every other read failure maps to.
 func TestAdminQuotaReadsMapBlocked(t *testing.T) {
+	t.Parallel()
 	gw, account := quotaTestGateway(t)
 	gw.Quota.SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
 	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)

@@ -13,6 +13,7 @@ import (
 // Every method in the contract list must have a handler, or the route accepts
 // the name and then answers InvalidAction on a cluster that looks configured.
 func TestRunMethod_HandlesEveryContractMethod(t *testing.T) {
+	t.Parallel()
 	for _, method := range operatorv1.AdminMethodNames() {
 		t.Run(method, func(t *testing.T) {
 			_, err := Deps{}.RunMethod(t.Context(), method, dispatch.Actor{}, []byte(`{`))
@@ -26,6 +27,7 @@ func TestRunMethod_HandlesEveryContractMethod(t *testing.T) {
 }
 
 func TestRunMethod_UnknownMethodFailsClosed(t *testing.T) {
+	t.Parallel()
 	_, err := Deps{}.RunMethod(t.Context(), "NoSuchMethod", dispatch.Actor{}, nil)
 
 	require.Error(t, err)

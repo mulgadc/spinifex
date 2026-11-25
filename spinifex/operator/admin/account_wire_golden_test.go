@@ -20,6 +20,7 @@ func goldenJSON(t *testing.T, v any, want string) {
 func intPtr(v int) *int { return &v }
 
 func TestAdminWire_DeleteAccountResponse(t *testing.T) {
+	t.Parallel()
 	goldenJSON(t, DeleteAccountResponse{DeletionID: "del-1", AccountID: "000000000042", State: operatorv1.DeletionStateRunning},
 		`{"deletionId":"del-1","accountId":"000000000042","state":"RUNNING","dryRun":false}`)
 
@@ -47,12 +48,14 @@ func TestAdminWire_DeleteAccountResponse(t *testing.T) {
 }
 
 func TestAdminWire_AccountQuotaRequest(t *testing.T) {
+	t.Parallel()
 	goldenJSON(t, AccountQuotaRequest{AccountID: "000000000042"}, `{"accountId":"000000000042"}`)
 	goldenJSON(t, AccountQuotaRequest{AccountID: "000000000042", Overrides: quota.Overrides{VCPUs: intPtr(0), VPCs: intPtr(5)}},
 		`{"accountId":"000000000042","overrides":{"vcpus":0,"vpcs":5}}`)
 }
 
 func TestAdminWire_AccountQuotaResponse(t *testing.T) {
+	t.Parallel()
 	goldenJSON(t, AccountQuotaResponse{
 		AccountID: "000000000042",
 		Limits:    map[string]int{"vcpus": 8},

@@ -13,6 +13,7 @@ import (
 )
 
 func TestGetVersion_OpenSource(t *testing.T) {
+	t.Parallel()
 	out, err := GetVersion("v0.5.0-43-gae1deb5", "ae1deb5")
 	require.NoError(t, err)
 	assert.Equal(t, "v0.5.0-43-gae1deb5", out.Version)
@@ -23,12 +24,14 @@ func TestGetVersion_OpenSource(t *testing.T) {
 }
 
 func TestGetVersion_Commercial(t *testing.T) {
+	t.Parallel()
 	out, err := GetVersion("v1.0.0 [commercial]", "abc1234")
 	require.NoError(t, err)
 	assert.Equal(t, "commercial", out.License)
 }
 
 func TestGetVersion_Dev(t *testing.T) {
+	t.Parallel()
 	out, err := GetVersion("dev", "unknown")
 	require.NoError(t, err)
 	assert.Equal(t, "dev", out.Version)
@@ -42,6 +45,7 @@ func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn) {
 }
 
 func TestGetNodes_NoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	out, err := GetNodes(t.Context(), nc, 0)
@@ -51,6 +55,7 @@ func TestGetNodes_NoResponders(t *testing.T) {
 }
 
 func TestGetNodes_SingleNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	sub, err := nc.Subscribe(clusterv1.NodeStatusSubject, func(msg *nats.Msg) {
@@ -88,6 +93,7 @@ func TestGetNodes_SingleNode(t *testing.T) {
 }
 
 func TestGetNodes_MultiNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	for _, name := range []string{"node1", "node2", "node3"} {
@@ -109,6 +115,7 @@ func TestGetNodes_MultiNode(t *testing.T) {
 }
 
 func TestGetVMs_NoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	out, err := GetVMs(t.Context(), nc, 0)
@@ -117,6 +124,7 @@ func TestGetVMs_NoResponders(t *testing.T) {
 }
 
 func TestGetVMs_WithVMs(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
@@ -145,6 +153,7 @@ func TestGetVMs_WithVMs(t *testing.T) {
 }
 
 func TestGetVMs_MultiNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	for _, name := range []string{"node1", "node2"} {

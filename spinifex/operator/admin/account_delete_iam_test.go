@@ -33,14 +33,13 @@ func sampleQuiescence(fence uint64) operatorv1.IAMQuiescence {
 // A normal deletion leaves the evaluation on the record, read back from the real
 // IAM account record, and DescribeAccountDeletion returns it.
 func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
-	// Parallel only once the teardown is running, so it overlaps the serial tests.
-	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 10*time.Millisecond)
@@ -115,6 +114,7 @@ func TestTakeoverClearsTheQuiescenceAndTheNewHolderRecordsItsOwn(t *testing.T) {
 // The field is optional on the wire: a record from before it decodes without it
 // and prints without it, and one with it keeps the lists as arrays.
 func TestAdminWire_DeletionJobIAMIsOptional(t *testing.T) {
+	t.Parallel()
 	var old accountDeletionJob
 	require.NoError(t, json.Unmarshal([]byte(`{"deletionId":"d","accountId":"000000000042","state":"RUNNING"}`), &old))
 	assert.Nil(t, old.IAM)

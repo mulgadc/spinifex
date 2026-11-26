@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,9 +64,7 @@ func scriptLabels(extra map[string]string) map[string]string {
 		"/var/lib/spinifex/wait-for-nats.sh":    binLabel,
 		"/var/lib/spinifex/nats-js-watchdog.sh": binLabel,
 	}
-	for k, v := range extra {
-		l[k] = v
-	}
+	maps.Copy(l, extra)
 	return l
 }
 

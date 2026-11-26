@@ -29,6 +29,7 @@ func newVCPUService(t *testing.T, limits Limits) *Service {
 }
 
 func TestCheckVCPUBoundaries(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 
 	// Empty counter: at-limit passes, over-limit rejects.
@@ -75,6 +76,7 @@ func TestVCPUExemptShortCircuits(t *testing.T) {
 }
 
 func TestAddVCPUAccumulatesAndIgnoresShrinks(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	for _, delta := range []int{4, 2, 0, -3} {
@@ -95,6 +97,7 @@ func TestAddVCPUAccumulatesAndIgnoresShrinks(t *testing.T) {
 // Concurrent grows under CAS must not lose updates: the final counter equals the
 // sum of every increment.
 func TestAddVCPUConcurrentNoLostUpdates(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 1000})
 
 	const goroutines, perGoroutine = 10, 5

@@ -49,6 +49,7 @@ func staticResolver(instanceType string, ok bool, err error) InstanceTypeResolve
 // to the daemon. Each case uses its own account so the embedded JetStream is
 // started once for the whole table.
 func TestEnforceRetype(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8}) // t3.micro=2, m5.xlarge=4
 
 	tests := []struct {
@@ -72,6 +73,7 @@ func TestEnforceRetype(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if tt.reserve > 0 {
 				if err := s.AddVCPU(t.Context(), tt.account, tt.reserve); err != nil {
 					t.Fatalf("AddVCPU(%d): %v", tt.reserve, err)
@@ -95,6 +97,7 @@ func TestEnforceRetype(t *testing.T) {
 // the grow delta, then AddVCPU charges it so the counter reflects the new type.
 // A retype from t3.micro (2) to m5.xlarge (4) on a 2/8 account lands at 4/8.
 func TestRetypeChargesDelta(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 2); err != nil { // the t3.micro is already counted
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -113,6 +116,7 @@ func TestRetypeChargesDelta(t *testing.T) {
 // gate returns a negative delta and AddVCPU no-ops it, so reconcile remains the
 // only path that lowers the counter.
 func TestRetypeDownDoesNotCharge(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 4); err != nil { // the m5.xlarge is already counted
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -133,6 +137,7 @@ func TestRetypeDownDoesNotCharge(t *testing.T) {
 // TestEnforceRetypeResolverError surfaces a describe failure to the caller so the
 // modify is rejected rather than charged on a guessed type.
 func TestEnforceRetypeResolverError(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	sentinel := errors.New("describe boom")
 	delta, err := s.EnforceRetype(t.Context(), staticResolver("t3.micro", false, sentinel), testAccount, "i-a", "m5.xlarge")
@@ -211,7 +216,7 @@ func TestInstanceTypeFromReservations(t *testing.T) {
 // silentNodeFanoutTimeout bounds the describe fan-out in tests where a node never
 // answers, so they wait this long instead of the 3s production deadline. Local
 // replies land in milliseconds, leaving wide margin under -race.
-const silentNodeFanoutTimeout = 500 * time.Millisecond
+const silentNodeFanoutTimeout = 200 * time.Millisecond
 
 // replyAsNode answers every request on subject with reply, attributed to node.
 func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, reply any) {

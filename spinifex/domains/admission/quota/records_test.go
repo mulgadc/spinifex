@@ -37,6 +37,7 @@ func putRecord(t *testing.T, store *kvstore.Store[vm.InstanceRecord], id, accoun
 
 // The sum is per account, from the record space, in one read.
 func TestRecordVCPULister_TotalsPerAccount(t *testing.T) {
+	t.Parallel()
 	store := recordStore(t)
 	const a, b = "111111111111", "222222222222"
 	putRecord(t, store, "i-1", a, "m5.xlarge", vm.StateRunning) // 4
@@ -52,6 +53,7 @@ func TestRecordVCPULister_TotalsPerAccount(t *testing.T) {
 // A stopped instance still exists and is charged; only shutting-down and
 // terminated leave the counted set, so a reaped instance frees quota.
 func TestRecordVCPULister_ChargesStoppedButNotTerminal(t *testing.T) {
+	t.Parallel()
 	store := recordStore(t)
 	const account = "111111111111"
 	putRecord(t, store, "i-1", account, "t3.micro", vm.StateRunning)       // 2
@@ -68,6 +70,7 @@ func TestRecordVCPULister_ChargesStoppedButNotTerminal(t *testing.T) {
 // The system account is never charged, and an account holding nothing is absent
 // rather than present as zero — the caller's account list is what zeroes it.
 func TestRecordVCPULister_SkipsSystemAccountAndReportsNothingAsAbsent(t *testing.T) {
+	t.Parallel()
 	store := recordStore(t)
 	putRecord(t, store, "i-1", awsidentifiers.GlobalAccountID, "m5.xlarge", vm.StateRunning)
 
@@ -80,6 +83,7 @@ func TestRecordVCPULister_SkipsSystemAccountAndReportsNothingAsAbsent(t *testing
 // An unknown instance type contributes nothing rather than failing the sweep,
 // matching the sum the fan-out produced.
 func TestRecordVCPULister_UnknownInstanceTypeContributesNothing(t *testing.T) {
+	t.Parallel()
 	store := recordStore(t)
 	const account = "111111111111"
 	putRecord(t, store, "i-1", account, "not-a-real-type", vm.StateRunning)
@@ -124,6 +128,7 @@ func stubItem(id, accountID, instanceType string, state vm.InstanceState) kvstor
 // A snapshot that reached the watermark saw every write that had completed
 // when the pass began, so it is good enough to lower a counter.
 func TestRecordVCPULister_CompleteWhenTheSnapshotReachesTheWatermark(t *testing.T) {
+	t.Parallel()
 	const account = "111111111111"
 	source := &stubSource{
 		items:     []kvstore.Item[vm.InstanceRecord]{stubItem("i-1", account, "m5.xlarge", vm.StateRunning)},
@@ -142,6 +147,7 @@ func TestRecordVCPULister_CompleteWhenTheSnapshotReachesTheWatermark(t *testing.
 // up. The totals are still returned so the pass can raise; complete is false
 // so it cannot lower and undo a charge for an instance it never saw.
 func TestRecordVCPULister_IncompleteWhenTheSnapshotIsBehindTheWatermark(t *testing.T) {
+	t.Parallel()
 	const account = "111111111111"
 	source := &stubSource{
 		items:     []kvstore.Item[vm.InstanceRecord]{stubItem("i-1", account, "m5.xlarge", vm.StateRunning)},
@@ -158,6 +164,7 @@ func TestRecordVCPULister_IncompleteWhenTheSnapshotIsBehindTheWatermark(t *testi
 // A watermark that cannot be read is not a reason to fail the pass, but it is
 // a reason not to trust the snapshot's currency.
 func TestRecordVCPULister_IncompleteWhenTheWatermarkIsUnavailable(t *testing.T) {
+	t.Parallel()
 	const account = "111111111111"
 	source := &stubSource{
 		items:        []kvstore.Item[vm.InstanceRecord]{stubItem("i-1", account, "t3.micro", vm.StateRunning)},
@@ -175,6 +182,7 @@ func TestRecordVCPULister_IncompleteWhenTheWatermarkIsUnavailable(t *testing.T) 
 // bucket the snapshot and the watermark agree, including when the newest
 // event is the delete that releases the quota.
 func TestRecordVCPULister_CompleteAgainstALiveBucketAfterADelete(t *testing.T) {
+	t.Parallel()
 	store := recordStore(t)
 	const account = "111111111111"
 	putRecord(t, store, "i-1", account, "m5.xlarge", vm.StateRunning)

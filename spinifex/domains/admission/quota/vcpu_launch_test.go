@@ -26,6 +26,7 @@ func reservationOf(instanceType string, n int) *ec2.Reservation {
 // reject (charged nothing here). Each case uses its own account so the embedded
 // JetStream is started once for the whole table.
 func TestEnforceLaunch(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8}) // t3.micro = 2 vCPU
 
 	tests := []struct {
@@ -48,6 +49,7 @@ func TestEnforceLaunch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if tt.reserve > 0 {
 				if err := s.AddVCPU(t.Context(), tt.account, tt.reserve); err != nil {
 					t.Fatalf("AddVCPU(%d): %v", tt.reserve, err)
@@ -68,6 +70,7 @@ func TestEnforceLaunch(t *testing.T) {
 // checked worst case: an EnforceLaunch sized for maxCount=4 passes, but when the
 // daemon returns only 2 instances the counter rises by their vCPUs alone.
 func TestChargeLaunchActual(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 
 	if err := s.EnforceLaunch(t.Context(), testAccount, "t3.micro", 4); err != nil {
@@ -91,6 +94,7 @@ func TestChargeLaunchActual(t *testing.T) {
 // overshoots the cap — but only by the in-flight launches. CAS loses no update,
 // so the final counter is exactly their sum, never unbounded.
 func TestLaunchSoftCapBounded(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 
 	// Pre-charge to 6/8 so each 2-vCPU launch individually fits the headroom.

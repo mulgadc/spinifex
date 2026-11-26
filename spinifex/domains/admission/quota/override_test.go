@@ -27,6 +27,7 @@ func baseLimits() Limits {
 // An override replaces only the dimensions it sets; every other dimension must
 // come through from the configured baseline untouched.
 func TestOverridesApplyIsSparse(t *testing.T) {
+	t.Parallel()
 	got := Overrides{VCPUs: ptr(32), RDSInstances: ptr(8)}.apply(baseLimits())
 
 	if got.VCPUs != 32 {
@@ -46,6 +47,7 @@ func TestOverridesApplyIsSparse(t *testing.T) {
 // An empty override must leave the baseline exactly as it is: this is the state
 // of nearly every account and the reason no migration is needed.
 func TestOverridesApplyEmptyInherits(t *testing.T) {
+	t.Parallel()
 	if got := (Overrides{}).apply(baseLimits()); got != baseLimits() {
 		t.Fatalf("empty override = %+v, want %+v", got, baseLimits())
 	}
@@ -54,6 +56,7 @@ func TestOverridesApplyEmptyInherits(t *testing.T) {
 // Enablement is a cluster-wide switch, so no override may turn quotas off for
 // one account.
 func TestOverridesCannotDisableEnforcement(t *testing.T) {
+	t.Parallel()
 	if got := (Overrides{VCPUs: ptr(0)}).apply(baseLimits()); !got.Enabled {
 		t.Fatal("override cleared Enabled, want it preserved")
 	}
@@ -62,6 +65,7 @@ func TestOverridesCannotDisableEnforcement(t *testing.T) {
 // Zero is a real limit that denies every request, so it must survive a JSON
 // round trip rather than marshalling away and silently meaning "inherit".
 func TestOverridesZeroSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(Overrides{VCPUs: ptr(0)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -85,6 +89,7 @@ func TestOverridesZeroSurvivesRoundTrip(t *testing.T) {
 // An absent field must stay absent through a round trip, so inheritance is not
 // silently converted into an explicit zero.
 func TestOverridesAbsentStaysAbsent(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(Overrides{VPCs: ptr(8)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -125,6 +130,7 @@ func TestOverridesEmpty(t *testing.T) {
 // A nil override bucket is what a quota-disabled gateway holds; resolution must
 // fall through to the configured limits rather than panicking.
 func TestLimitsForWithoutBucket(t *testing.T) {
+	t.Parallel()
 	svc := New(baseLimits(), nil)
 	got, err := svc.limitsFor(t.Context(), "123456789012")
 	if err != nil {
@@ -138,6 +144,7 @@ func TestLimitsForWithoutBucket(t *testing.T) {
 // The Unlimited sentinel disables one dimension for one account, which zero
 // cannot express because zero is a real limit that denies everything.
 func TestExceedsUnlimited(t *testing.T) {
+	t.Parallel()
 	if err := exceeds(9000, 9000, Unlimited); err != nil {
 		t.Fatalf("exceeds with Unlimited = %v, want nil", err)
 	}

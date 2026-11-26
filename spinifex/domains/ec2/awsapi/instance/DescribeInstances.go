@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 )
 
@@ -114,6 +116,10 @@ func ValidateDescribeInstancesInput(input *ec2.DescribeInstancesInput) error {
 // caller that does not supply one leaves at 0 — never complete, so the
 // assertion is never made.
 func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
+	pageReq, err := describeInstancesPaging.Parse(input.MaxResults, input.NextToken, len(input.InstanceIds))
+	if err != nil {
+		return nil, err
+	}
 	reservations, complete, client4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nodeIDs, accountID, opts...)
 	if err != nil {
 		return nil, err
@@ -139,7 +145,54 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 		}
 	}
 
-	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+	page, next := pageReservations(reservations, pageReq)
+	return &ec2.DescribeInstancesOutput{Reservations: page, NextToken: next}, nil
+}
+
+// describeInstancesPaging carries AWS's DescribeInstances answers. AWS accepts
+// any MaxResults from 5 up, despite the 1000 its API reference gives.
+var describeInstancesPaging = paging.EC2{
+	MaxResults: math.MaxInt64,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter instancesSet cannot be used with the parameter maxResults",
+}
+
+// pageReservations pages the merged instances by instance ID and keeps each
+// page's instances in their own reservations, so a reservation can span pages.
+func pageReservations(reservations []*ec2.Reservation, req paging.Request) ([]*ec2.Reservation, *string) {
+	if req.Limit <= 0 && req.From == "" {
+		return reservations, nil
+	}
+	var instances []*ec2.Instance
+	for _, res := range reservations {
+		for _, inst := range res.Instances {
+			if inst != nil {
+				instances = append(instances, inst)
+			}
+		}
+	}
+	page, next := paging.EC2Page(instances, func(i *ec2.Instance) string { return aws.StringValue(i.InstanceId) }, req)
+	onPage := make(map[*ec2.Instance]bool, len(page))
+	for _, inst := range page {
+		onPage[inst] = true
+	}
+	out := make([]*ec2.Reservation, 0, len(reservations))
+	for _, res := range reservations {
+		var kept []*ec2.Instance
+		for _, inst := range res.Instances {
+			if onPage[inst] {
+				kept = append(kept, inst)
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		pageRes := *res
+		pageRes.Instances = kept
+		out = append(out, &pageRes)
+	}
+	return out, next
 }
 
 // describeIncompleteRetryAfter is the suggested backoff surfaced to a caller

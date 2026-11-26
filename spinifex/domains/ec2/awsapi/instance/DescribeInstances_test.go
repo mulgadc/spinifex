@@ -1069,3 +1069,137 @@ func TestDescribeInstances_ExplicitIDOnSilentNode_IsAnEmptySuccess(t *testing.T)
 		WithFanoutTimeout(silentNodeWindow))
 	assertIncompleteSweepUnavailable(t, err, "i-on-the-silent-node")
 }
+
+// subscribeInstanceSet answers the fan-out with the instances in ids, split
+// over two reservations so a page can cut through one of them.
+func subscribeInstanceSet(t *testing.T, nc *nats.Conn, mu *sync.Mutex, ids *[]string) {
+	t.Helper()
+	subscribeEmptyInstanceBuckets(t, nc)
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		mu.Lock()
+		defer mu.Unlock()
+		byRes := map[string]*ec2.Reservation{}
+		var out ec2.DescribeInstancesOutput
+		for i, id := range *ids {
+			resID := "r-a"
+			if i%2 == 1 {
+				resID = "r-b"
+			}
+			res, ok := byRes[resID]
+			if !ok {
+				res = &ec2.Reservation{ReservationId: aws.String(resID)}
+				byRes[resID] = res
+				out.Reservations = append(out.Reservations, res)
+			}
+			res.Instances = append(res.Instances, &ec2.Instance{InstanceId: aws.String(id)})
+		}
+		data, _ := json.Marshal(&out)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+}
+
+func describePage(t *testing.T, nc *nats.Conn, token *string) *ec2.DescribeInstancesOutput {
+	t.Helper()
+	out, err := DescribeInstancesChecked(context.Background(),
+		&ec2.DescribeInstancesInput{MaxResults: aws.Int64(5), NextToken: token}, nc, 1, nil, "123456789012")
+	require.NoError(t, err)
+	return out
+}
+
+func pageInstanceIDs(out *ec2.DescribeInstancesOutput) []string {
+	var ids []string
+	for _, res := range out.Reservations {
+		for _, inst := range res.Instances {
+			ids = append(ids, *inst.InstanceId)
+		}
+	}
+	return ids
+}
+
+func TestDescribeInstancesChecked_PageWalkSeesEachInstanceOnce(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	var mu sync.Mutex
+	// i-11 is alone on the last page, so its page holds no r-b instance.
+	ids := []string{"i-07", "i-02", "i-11", "i-05", "i-01", "i-09", "i-03", "i-10", "i-04", "i-06", "i-08"}
+	subscribeInstanceSet(t, nc, &mu, &ids)
+
+	all, err := DescribeInstancesChecked(context.Background(), &ec2.DescribeInstancesInput{}, nc, 1, nil, "123456789012")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, ids, pageInstanceIDs(all))
+	assert.Nil(t, all.NextToken)
+
+	var seen []string
+	var token *string
+	pages := 0
+	for {
+		out := describePage(t, nc, token)
+		pages++
+		got := pageInstanceIDs(out)
+		assert.LessOrEqual(t, len(got), 5)
+		for _, res := range out.Reservations {
+			assert.NotEmpty(t, res.Instances)
+		}
+		seen = append(seen, got...)
+		token = out.NextToken
+		if token == nil {
+			break
+		}
+		require.Less(t, pages, 10, "page walk did not end")
+	}
+	assert.Equal(t, 3, pages)
+	assert.ElementsMatch(t, ids, seen)
+	assert.Len(t, seen, len(ids))
+}
+
+func TestDescribeInstancesChecked_FirstPageSplitsReservation(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	var mu sync.Mutex
+	ids := []string{"i-01", "i-02", "i-03", "i-04", "i-05", "i-06", "i-07"}
+	subscribeInstanceSet(t, nc, &mu, &ids)
+
+	out := describePage(t, nc, nil)
+	require.NotNil(t, out.NextToken)
+	assert.Equal(t, []string{"i-01", "i-03", "i-05", "i-02", "i-04"}, pageInstanceIDs(out))
+	require.Len(t, out.Reservations, 2)
+	assert.Equal(t, "r-a", *out.Reservations[0].ReservationId)
+	assert.Equal(t, "r-b", *out.Reservations[1].ReservationId)
+}
+
+func TestDescribeInstancesChecked_PageBoundarySurvivesDeletedInstance(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	var mu sync.Mutex
+	ids := []string{"i-01", "i-02", "i-03", "i-04", "i-05", "i-06", "i-07", "i-08"}
+	subscribeInstanceSet(t, nc, &mu, &ids)
+
+	first := describePage(t, nc, nil)
+	require.NotNil(t, first.NextToken)
+
+	// i-06 is the first instance the token resumes at; delete it.
+	mu.Lock()
+	ids = []string{"i-01", "i-02", "i-03", "i-04", "i-05", "i-07", "i-08"}
+	mu.Unlock()
+
+	second := describePage(t, nc, first.NextToken)
+	assert.ElementsMatch(t, []string{"i-07", "i-08"}, pageInstanceIDs(second))
+	assert.Nil(t, second.NextToken)
+}
+
+func TestDescribeInstancesChecked_ForeignNextTokenRefused(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	var mu sync.Mutex
+	ids := []string{"i-01"}
+	subscribeInstanceSet(t, nc, &mu, &ids)
+
+	_, err := DescribeInstancesChecked(context.Background(),
+		&ec2.DescribeInstancesInput{NextToken: aws.String("bm90LW91cnM")}, nc, 1, nil, "123456789012")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err = %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "NextToken")
+}

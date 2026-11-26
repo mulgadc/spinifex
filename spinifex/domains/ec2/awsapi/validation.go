@@ -147,7 +147,7 @@ var ec2MaxResultsRanges = map[string]maxResultsRange{
 }
 
 // validateMaxResults refuses a MaxResults outside the action's range. It does
-// not page; an in-range value is still answered with every result.
+// not page; each action that pages does so itself.
 func validateMaxResults(action string, input any) error {
 	// AWS refuses the combination before it checks the range.
 	if in, ok := input.(*ec2.DescribeInstancesInput); ok && in.MaxResults != nil && len(in.InstanceIds) > 0 {

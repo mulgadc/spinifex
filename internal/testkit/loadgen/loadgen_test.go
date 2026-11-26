@@ -70,7 +70,7 @@ func TestClosedLoopHoldsTheRequestedConcurrency(t *testing.T) {
 func TestOpenLoopIssuesRoughlyTheRequestedRate(t *testing.T) {
 	t.Parallel()
 
-	stages := []loadgen.Stage{{Mode: loadgen.ModeOpen, RPS: 100, Duration: 300 * time.Millisecond}}
+	stages := []loadgen.Stage{{Mode: loadgen.ModeOpen, RPS: 200, Duration: 150 * time.Millisecond}}
 	ops := []loadgen.Op{fixedOp("Probe", loadgen.KindRead, time.Millisecond, nil)}
 
 	report, err := loadgen.Run(context.Background(), targets(1), ops, stages, loadgen.SLO{})
@@ -78,12 +78,12 @@ func TestOpenLoopIssuesRoughlyTheRequestedRate(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// 100/s for 300ms is 30 requests. Timer granularity makes the exact count
+	// 200/s for 150ms is 30 requests. Timer granularity makes the exact count
 	// unstable, so this asserts the order of magnitude, which is what a wrong
 	// pacing implementation would get wrong.
 	count := report.Stages[0].Ops["Probe"].Count
 	if count < 15 || count > 45 {
-		t.Errorf("count = %d, want roughly 30 for 100 rps over 300ms", count)
+		t.Errorf("count = %d, want roughly 30 for 200 rps over 150ms", count)
 	}
 }
 
@@ -104,7 +104,7 @@ func TestOpenLoopShedsRatherThanQueueingWithoutBound(t *testing.T) {
 		}}
 
 	stages := []loadgen.Stage{{
-		Mode: loadgen.ModeOpen, RPS: 200, Duration: 300 * time.Millisecond, MaxInFlight: 2,
+		Mode: loadgen.ModeOpen, RPS: 200, Duration: 100 * time.Millisecond, MaxInFlight: 2,
 	}}
 	report, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{op}, stages, loadgen.SLO{})
 	close(release)
@@ -208,39 +208,47 @@ func TestFirstBreachNamesTheStageThatCrossedTheSLO(t *testing.T) {
 
 	// The fast op sits far below the SLO, and the slow op ignores the stage
 	// deadline so every sample it records is at least its sleep, past the SLO.
-	slo := loadgen.SLO{ReadP99: 500 * time.Millisecond}
-	fast := fixedOp("Op", loadgen.KindRead, 2*time.Millisecond, nil)
-	slow := loadgen.Op{Name: "Op", Kind: loadgen.KindRead, Call: func(context.Context, *loadgen.Target) error {
-		time.Sleep(slo.ReadP99 + 100*time.Millisecond)
-		return nil
-	}}
+	slo := loadgen.SLO{ReadP99: 100 * time.Millisecond}
 
-	first, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{fast},
-		[]loadgen.Stage{{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 100 * time.Millisecond}}, slo)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(first.Stages[0].Breached) != 0 {
-		t.Fatalf("fast stage reported a breach: %v", first.Stages[0].Breached)
-	}
+	t.Run("fast stage does not breach", func(t *testing.T) {
+		t.Parallel()
 
-	stages := []loadgen.Stage{
-		{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 100 * time.Millisecond},
-		{Mode: loadgen.ModeClosed, Concurrency: 2, Duration: 200 * time.Millisecond},
-	}
-	report, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{slow}, stages, slo)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+		fast := fixedOp("Op", loadgen.KindRead, 2*time.Millisecond, nil)
+		first, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{fast},
+			[]loadgen.Stage{{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 50 * time.Millisecond}}, slo)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(first.Stages[0].Breached) != 0 {
+			t.Fatalf("fast stage reported a breach: %v", first.Stages[0].Breached)
+		}
+	})
 
-	breach := report.FirstBreach[loadgen.ModeClosed]
-	if breach == nil {
-		t.Fatal("no breach recorded for a stage well past the SLO")
-	}
-	if breach.StageIndex != 0 || breach.Concurrency != 1 {
-		t.Errorf("breach = stage %d concurrency %d, want the first stage that crossed",
-			breach.StageIndex, breach.Concurrency)
-	}
+	t.Run("first slow stage is named", func(t *testing.T) {
+		t.Parallel()
+
+		slow := loadgen.Op{Name: "Op", Kind: loadgen.KindRead, Call: func(context.Context, *loadgen.Target) error {
+			time.Sleep(slo.ReadP99 + 20*time.Millisecond)
+			return nil
+		}}
+		stages := []loadgen.Stage{
+			{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 20 * time.Millisecond},
+			{Mode: loadgen.ModeClosed, Concurrency: 2, Duration: 40 * time.Millisecond},
+		}
+		report, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{slow}, stages, slo)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		breach := report.FirstBreach[loadgen.ModeClosed]
+		if breach == nil {
+			t.Fatal("no breach recorded for a stage well past the SLO")
+		}
+		if breach.StageIndex != 0 || breach.Concurrency != 1 {
+			t.Errorf("breach = stage %d concurrency %d, want the first stage that crossed",
+				breach.StageIndex, breach.Concurrency)
+		}
+	})
 }
 
 // A quota rejection means the cluster is working. Counting it as a failure

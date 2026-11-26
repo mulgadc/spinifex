@@ -68,3 +68,24 @@ func TestCertificateReaperTreatsAMissingCertificateAsDeleted(t *testing.T) {
 	reaper := &certificateReaper{nc: nc}
 	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "arn:acm/gone"}, false))
 }
+
+// ListCertificates lists only RSA_1024 and RSA_2048 by default, so the reaper
+// must name every key type or it leaves EC and larger RSA certificates behind.
+func TestCertificateReaperListsEveryKeyType(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	var input acm.ListCertificatesInput
+	sub, err := nc.Subscribe("acm.ListCertificates", func(msg *nats.Msg) {
+		assert.NoError(t, json.Unmarshal(msg.Data, &input))
+		assert.NoError(t, msg.Respond([]byte(`{"CertificateSummaryList":[]}`)))
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	_, err = (&certificateReaper{nc: nc}).List(t.Context(), "000000000002")
+	require.NoError(t, err)
+	require.NotNil(t, input.Includes)
+	assert.ElementsMatch(t, acm.KeyAlgorithm_Values(), aws.StringValueSlice(input.Includes.KeyTypes))
+	assert.Nil(t, input.MaxItems, "an unpaged request returns every certificate in one answer")
+}

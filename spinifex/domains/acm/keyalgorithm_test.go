@@ -46,7 +46,7 @@ func describeAndListKeyAlgorithm(t *testing.T, svc *ACMServiceImpl, certArn stri
 	}, testAccountID)
 	require.NoError(t, err)
 
-	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	list, err := svc.ListCertificates(context.Background(), allKeyTypes(), testAccountID)
 	require.NoError(t, err)
 	for _, s := range list.CertificateSummaryList {
 		if aws.StringValue(s.CertificateArn) == certArn {

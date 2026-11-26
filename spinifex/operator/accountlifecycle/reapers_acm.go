@@ -29,9 +29,12 @@ type certificateReaper struct {
 func (r *certificateReaper) Kind() string { return "acm-certificate" }
 func (r *certificateReaper) Stage() Stage { return StagePlatform }
 
+// List names every key type because ListCertificates lists only RSA_1024 and
+// RSA_2048 by default. It sends no MaxItems, so one answer holds every match.
 func (r *certificateReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
 	out, err := natsmsg.NATSRequest[acm.ListCertificatesOutput](ctx, r.nc, "acm.ListCertificates",
-		&acm.ListCertificatesInput{}, acmNATSTimeout, accountID)
+		&acm.ListCertificatesInput{Includes: &acm.Filters{KeyTypes: aws.StringSlice(acm.KeyAlgorithm_Values())}},
+		acmNATSTimeout, accountID)
 	if err != nil {
 		return nil, err
 	}

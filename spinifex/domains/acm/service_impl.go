@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 )
@@ -554,18 +556,32 @@ func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCerti
 	}, nil
 }
 
-// ListCertificates returns summaries for every cert owned by accountID.
+// ListCertificates returns the summaries of accountID's certs that match the
+// filters, in the requested order, one page at a time.
 // Summaries carry no key material, so this takes the metadata-only accessor.
 //
 // The list is built with make, never appended into a nil field: the SDK's JSON
 // marshaller drops a nil slice whatever the struct tag says, so an account with
 // no certificates would answer {} and hand an SDK caller a nil to range over.
 func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
+	if input == nil {
+		input = &acm.ListCertificatesInput{}
+	}
+	req, err := parseListCertificatesPage(input)
+	if err != nil {
+		return nil, err
+	}
 	recs, err := s.store.ListCertMetadata(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	summaries := make([]*acm.CertificateSummary, 0, len(recs))
+	filter := newCertificateFilter(input)
+	keyOf := listCertificatesSortKey(input)
+	type entry struct {
+		key string
+		sum *acm.CertificateSummary
+	}
+	entries := make([]entry, 0, len(recs))
 	for _, rec := range recs {
 		sum := &acm.CertificateSummary{
 			CertificateArn:     aws.String(rec.CertificateArn),
@@ -580,9 +596,124 @@ func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCe
 			RenewalEligibility: aws.String(renewalEligibilityOrDefault(rec)),
 		}
 		applyLeafSummary(sum, rec)
-		summaries = append(summaries, sum)
+		if filter.matches(sum) {
+			entries = append(entries, entry{key: keyOf(rec), sum: sum})
+		}
 	}
-	return &acm.ListCertificatesOutput{CertificateSummaryList: summaries}, nil
+	page, next := paging.Page(entries, func(e entry) string { return e.key }, req)
+	summaries := make([]*acm.CertificateSummary, 0, len(page))
+	for _, e := range page {
+		summaries = append(summaries, e.sum)
+	}
+	out := &acm.ListCertificatesOutput{CertificateSummaryList: summaries}
+	if next != "" {
+		out.NextToken = aws.String(next)
+	}
+	return out, nil
+}
+
+// maxListCertificatesItems is the largest MaxItems ListCertificates accepts.
+const maxListCertificatesItems = 1000
+
+func parseListCertificatesPage(input *acm.ListCertificatesInput) (paging.Request, error) {
+	if input.MaxItems != nil {
+		n := *input.MaxItems
+		if n < 1 {
+			return paging.Request{}, awserrors.Errorf(awserrors.ErrorValidationException,
+				"1 validation error detected: Value '%d' at 'maxItems' failed to satisfy constraint: Member must have value greater than or equal to 1", n)
+		}
+		if n > maxListCertificatesItems {
+			return paging.Request{}, awserrors.Errorf(awserrors.ErrorValidationException,
+				"1 validation error detected: Value '%d' at 'maxItems' failed to satisfy constraint: Member must have value less than or equal to %d", n, maxListCertificatesItems)
+		}
+	}
+	from, err := paging.DecodeToken(aws.StringValue(input.NextToken))
+	if err != nil {
+		return paging.Request{}, awserrors.Errorf(awserrors.ErrorACMInvalidArgs, "The NextToken is not valid.")
+	}
+	return paging.Request{Limit: int(aws.Int64Value(input.MaxItems)), From: from}, nil
+}
+
+// defaultKeyTypes are the only key types AWS lists when Includes.keyTypes is unset.
+var defaultKeyTypes = []string{acm.KeyAlgorithmRsa1024, acm.KeyAlgorithmRsa2048}
+
+// certificateFilter holds the ListCertificates filters. An empty set matches all.
+type certificateFilter struct {
+	statuses, keyTypes, keyUsages, extKeyUsages map[string]bool
+}
+
+func newCertificateFilter(input *acm.ListCertificatesInput) certificateFilter {
+	f := certificateFilter{statuses: stringSet(input.CertificateStatuses)}
+	var keyTypes []*string
+	if inc := input.Includes; inc != nil {
+		keyTypes = inc.KeyTypes
+		f.keyUsages = stringSet(inc.KeyUsage)
+		f.extKeyUsages = stringSet(inc.ExtendedKeyUsage)
+	}
+	if len(keyTypes) == 0 {
+		keyTypes = aws.StringSlice(defaultKeyTypes)
+	}
+	f.keyTypes = stringSet(keyTypes)
+	return f
+}
+
+func (f certificateFilter) matches(sum *acm.CertificateSummary) bool {
+	if len(f.statuses) > 0 && !f.statuses[aws.StringValue(sum.Status)] {
+		return false
+	}
+	if !f.keyTypes[summaryKeyType(sum)] {
+		return false
+	}
+	if len(f.keyUsages) > 0 && !anyIn(f.keyUsages, sum.KeyUsages) {
+		return false
+	}
+	return len(f.extKeyUsages) == 0 || anyIn(f.extKeyUsages, sum.ExtendedKeyUsages)
+}
+
+// summaryKeyType returns the KeyAlgorithm enum spelling (RSA_2048) of a summary's
+// RSA-2048. A requested cert has no key yet and takes AWS's request default.
+func summaryKeyType(sum *acm.CertificateSummary) string {
+	alg := aws.StringValue(sum.KeyAlgorithm)
+	if alg == "" {
+		return acm.KeyAlgorithmRsa2048
+	}
+	return strings.Replace(alg, "-", "_", 1)
+}
+
+// listCertificatesSortKey returns the paging key for SortBy and SortOrder. The
+// ARN suffix keeps keys unique, so a resume token names one position.
+func listCertificatesSortKey(input *acm.ListCertificatesInput) func(*CertRecord) string {
+	if aws.StringValue(input.SortBy) != acm.SortByCreatedAt {
+		return func(rec *CertRecord) string { return rec.CertificateArn }
+	}
+	descending := aws.StringValue(input.SortOrder) == acm.SortOrderDescending
+	return func(rec *CertRecord) string {
+		var ns int64
+		if t := importedCreatedAt(rec); !t.IsZero() {
+			ns = t.UnixNano()
+		}
+		if descending {
+			ns = math.MaxInt64 - ns
+		}
+		return fmt.Sprintf("%020d/%s", ns, rec.CertificateArn)
+	}
+}
+
+func stringSet(values []*string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[aws.StringValue(v)] = true
+	}
+	return set
+}
+
+func anyIn(set map[string]bool, values []*string) bool {
+	for _, v := range values {
+		if set[aws.StringValue(v)] {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteCertificate removes an owned cert; unknown ARN → ResourceNotFound.

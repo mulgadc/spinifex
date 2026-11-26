@@ -4,12 +4,14 @@ package vpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,7 +81,11 @@ func TestDescribeVpcs_PagesAfterFilteringAndSeesEachVpcOnce(t *testing.T) {
 	for i := range 7 {
 		want[createTestVPC(t, svc, fmt.Sprintf("10.%d.0.0/16", i))] = true
 	}
-	createTestVPC(t, svc, "172.16.0.0/16")
+	// Sorts first, so a page cut before the filter comes up short.
+	data, err := json.Marshal(VPCRecord{VpcId: "vpc-0", CidrBlock: "172.16.0.0/16", State: "available"})
+	require.NoError(t, err)
+	_, err = svc.vpcKV.Put(context.Background(), kvstore.AccountKey(testAccountID, "vpc-0"), data)
+	require.NoError(t, err)
 	filter := []*ec2.Filter{{Name: aws.String("cidr"), Values: []*string{aws.String("10.*")}}}
 
 	got := map[string]bool{}
@@ -90,7 +96,9 @@ func TestDescribeVpcs_PagesAfterFilteringAndSeesEachVpcOnce(t *testing.T) {
 			Filters: filter, MaxResults: aws.Int64(5), NextToken: token,
 		}, testAccountID)
 		require.NoError(t, err)
-		require.LessOrEqual(t, len(out.Vpcs), 5)
+		if out.NextToken != nil {
+			require.Len(t, out.Vpcs, 5)
+		}
 		for _, v := range out.Vpcs {
 			assert.False(t, got[*v.VpcId], "vpc %s returned twice", *v.VpcId)
 			got[*v.VpcId] = true

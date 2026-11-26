@@ -41,7 +41,9 @@ func TestDescribeNatGateways_PagesAfterFilteringAndSeesEachGatewayOnce(t *testin
 			Filter: filter, MaxResults: aws.Int64(5), NextToken: token,
 		}, testAccountID)
 		require.NoError(t, err)
-		require.LessOrEqual(t, len(out.NatGateways), 5)
+		if out.NextToken != nil {
+			require.Len(t, out.NatGateways, 5)
+		}
 		for _, g := range out.NatGateways {
 			assert.False(t, got[*g.NatGatewayId], "gateway %s returned twice", *g.NatGatewayId)
 			got[*g.NatGatewayId] = true

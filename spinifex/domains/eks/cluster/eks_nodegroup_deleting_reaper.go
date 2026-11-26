@@ -114,7 +114,7 @@ func (s *EKSServiceImpl) startNodegroupDelete(accountID string, kv jetstream.Key
 	s.teardownWG.Go(func() {
 		deleted := false
 		defer func() { release(deleted) }()
-		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
+		ctx, cancel := context.WithTimeout(s.bgCtx, s.passTimeout())
 		defer cancel()
 		if err := s.convergeNodegroupDeletion(ctx, accountID, kv, cluster, ng); err != nil {
 			slog.Warn("eks: nodegroup delete incomplete, the record stays DELETING for retry",

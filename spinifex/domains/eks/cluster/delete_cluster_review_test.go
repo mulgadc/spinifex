@@ -217,10 +217,9 @@ func TestS2_EKSLastNodegroupDeletedResumesTheClusterDelete(t *testing.T) {
 // never returns cannot hold the gate and the lease for ever; the pass is
 // recorded as failed and the cluster can be handed out again.
 func TestS8_EKSHungTeardownStepReleasesTheGate(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
-	orig := teardownPassTimeout
-	teardownPassTimeout = 150 * time.Millisecond
-	t.Cleanup(func() { teardownPassTimeout = orig })
+	f.svc.passTimeoutOverride = 150 * time.Millisecond
 	var once sync.Once
 	f.nlb.describeLBHook = func(ctx context.Context) { once.Do(func() { <-ctx.Done() }) }
 

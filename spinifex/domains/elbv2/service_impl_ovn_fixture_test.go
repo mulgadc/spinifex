@@ -44,6 +44,25 @@ type opKV struct {
 	failGet    error
 	failPrefix string
 	onUpdate   func(key string, value []byte, update func() (uint64, error)) (uint64, error)
+	lagging    map[string]jetstream.KeyValueEntry
+}
+
+// lag makes ordinary Gets of key answer as a lagging replica would: with
+// stale, or as absent when stale is nil. The stream keeps the committed value.
+func (kv *opKV) lag(key string, stale jetstream.KeyValueEntry) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.lagging == nil {
+		kv.lagging = map[string]jetstream.KeyValueEntry{}
+	}
+	kv.lagging[key] = stale
+}
+
+func (kv *opKV) lagged(key string) (jetstream.KeyValueEntry, bool) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	stale, ok := kv.lagging[key]
+	return stale, ok
 }
 
 func (kv *opKV) record(op, key string) error {
@@ -87,6 +106,12 @@ func opsOf(ops []string, names []string) []string {
 func (kv *opKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
 	if err := kv.record("Get", key); err != nil {
 		return nil, err
+	}
+	if stale, ok := kv.lagged(key); ok {
+		if stale == nil {
+			return nil, jetstream.ErrKeyNotFound
+		}
+		return stale, nil
 	}
 	return kv.KeyValue.Get(ctx, key)
 }

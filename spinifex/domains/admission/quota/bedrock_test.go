@@ -54,12 +54,14 @@ func TestCheckBedrockTokens_Boundaries(t *testing.T) {
 }
 
 func TestCheckBedrockTokens_DisabledIsNoop(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{}, nil)
 	s.SetBedrockUsage(stubBedrockUsageReader{tokens: 1_000_000_000})
 	assert.NoError(t, s.CheckBedrockTokens(context.Background(), testAccount))
 }
 
 func TestCheckBedrockTokens_ExemptSystemAccount(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{TokensPerMonthEnabled: true, TokensPerMonth: 1}, nil)
 	s.SetBedrockUsage(stubBedrockUsageReader{tokens: 1_000_000})
 	assert.NoError(t, s.CheckBedrockTokens(context.Background(), awsidentifiers.GlobalAccountID))
@@ -70,6 +72,7 @@ func TestCheckBedrockTokens_ExemptSystemAccount(t *testing.T) {
 // than blocking every Bedrock call) is a deliberate choice, distinct from a
 // live read failure, which fails closed below.
 func TestCheckBedrockTokens_NoReaderIsNoop(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{TokensPerMonthEnabled: true, TokensPerMonth: 1}, nil)
 	assert.NoError(t, s.CheckBedrockTokens(context.Background(), testAccount))
 }
@@ -78,6 +81,7 @@ func TestCheckBedrockTokens_NoReaderIsNoop(t *testing.T) {
 // (e.g. the usage KV bucket is unreachable): this fails closed, surfacing
 // the error rather than silently allowing the call through.
 func TestCheckBedrockTokens_ReaderErrorPropagates(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{TokensPerMonthEnabled: true, TokensPerMonth: 1000}, nil)
 	s.SetBedrockUsage(stubBedrockUsageReader{err: errors.New("boom")})
 	err := s.CheckBedrockTokens(context.Background(), testAccount)
@@ -89,11 +93,13 @@ func TestCheckBedrockTokens_ReaderErrorPropagates(t *testing.T) {
 // route handlers call gw.Quota.CheckBedrockTokens unconditionally, and
 // gw.Quota is nil in test harnesses/unconfigured gateways.
 func TestCheckBedrockTokens_NilServiceIsNoop(t *testing.T) {
+	t.Parallel()
 	var s *Service
 	assert.NoError(t, s.CheckBedrockTokens(context.Background(), testAccount))
 }
 
 func TestCheckBedrockRPM_DisabledIsNoop(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{}, nil)
 	for range 1000 {
 		assert.NoError(t, s.CheckBedrockRPM(testAccount))
@@ -101,6 +107,7 @@ func TestCheckBedrockRPM_DisabledIsNoop(t *testing.T) {
 }
 
 func TestCheckBedrockRPM_ExemptSystemAccount(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 1}, nil)
 	for range 10 {
 		assert.NoError(t, s.CheckBedrockRPM(awsidentifiers.GlobalAccountID))
@@ -108,6 +115,7 @@ func TestCheckBedrockRPM_ExemptSystemAccount(t *testing.T) {
 }
 
 func TestCheckBedrockRPM_NilServiceIsNoop(t *testing.T) {
+	t.Parallel()
 	var s *Service
 	assert.NoError(t, s.CheckBedrockRPM(testAccount))
 }
@@ -116,6 +124,7 @@ func TestCheckBedrockRPM_NilServiceIsNoop(t *testing.T) {
 // enforcement: the (capacity+1)th request within the same instant is
 // throttled, and a different account is unaffected.
 func TestCheckBedrockRPM_ThrottlesAfterCapacityExhausted(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 3}, nil)
 
 	for i := range 3 {
@@ -132,6 +141,7 @@ func TestCheckBedrockRPM_ThrottlesAfterCapacityExhausted(t *testing.T) {
 // TestTokenBucket_RefillsOverTime drives the bucket with a fake clock so
 // refill behaviour is deterministic rather than sleep-based.
 func TestTokenBucket_RefillsOverTime(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	l := newRPMLimiter()
 	l.now = func() time.Time { return now }
@@ -159,6 +169,7 @@ func TestTokenBucket_RefillsOverTime(t *testing.T) {
 // TestRPMLimiter_PerAccountIsolation covers that one account's bucket never
 // interferes with another's.
 func TestRPMLimiter_PerAccountIsolation(t *testing.T) {
+	t.Parallel()
 	l := newRPMLimiter()
 	assert.True(t, l.allow("a", 1))
 	assert.False(t, l.allow("a", 1))
@@ -169,6 +180,7 @@ func TestRPMLimiter_PerAccountIsolation(t *testing.T) {
 // sync: after consuming from an account's bucket, a sync pass writes its
 // current occupancy to KV for cross-node observability.
 func TestService_SyncBedrockRPMOnce_WritesSnapshotToKV(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: KVBucketBedrockRPMUsage, History: 1})
@@ -192,6 +204,7 @@ func TestService_SyncBedrockRPMOnce_WritesSnapshotToKV(t *testing.T) {
 // (here nil) JetStream client when the dimension is disabled — a real
 // deployment leaves js valid, but the short-circuit must come first.
 func TestRunBedrockRPMSync_DisabledNoop(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{}, nil)
 	done := make(chan struct{})
 	go func() {
@@ -209,6 +222,7 @@ func TestRunBedrockRPMSync_DisabledNoop(t *testing.T) {
 // to the two new Ochre dimensions, including confirming they default to
 // disabled when absent from the TOML source.
 func TestLimitsTOMLRoundTrip_BedrockDimensions(t *testing.T) {
+	t.Parallel()
 	const src = `
 [quota]
 enabled                     = true

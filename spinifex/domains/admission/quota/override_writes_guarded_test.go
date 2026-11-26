@@ -35,6 +35,7 @@ func quotaPackageDir(t *testing.T) string {
 // CAS loop, clearAccountQuota's guarded delete, or SealAccountOverrides' CAS
 // loop.
 func TestOverrideWritesAreRevisionGuarded(t *testing.T) {
+	t.Parallel()
 	root := quotaPackageDir(t)
 	fset := token.NewFileSet()
 	scanned := 0

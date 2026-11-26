@@ -30,6 +30,7 @@ func newOverrideService(t *testing.T) (*Service, jetstream.KeyValue) {
 // An account with no record is the normal state, and it must inherit the
 // configured baseline without erroring.
 func TestLimitsForAbsentKeyInherits(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 
 	got, err := svc.limitsFor(t.Context(), "123456789012")
@@ -40,6 +41,7 @@ func TestLimitsForAbsentKeyInherits(t *testing.T) {
 // The property the whole tier rests on: two accounts on one gateway resolve to
 // different limits.
 func TestLimitsForIsPerAccount(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 	const upgraded, sandbox = "000000000002", "000000000003"
 
@@ -59,6 +61,7 @@ func TestLimitsForIsPerAccount(t *testing.T) {
 // A stored override must round-trip through KV with its provenance, and an
 // unset dimension must still inherit.
 func TestPutAndGetAccountQuota(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 	const account = "000000000002"
 
@@ -77,6 +80,7 @@ func TestPutAndGetAccountQuota(t *testing.T) {
 // Clearing must delete the record rather than leave an empty one, so "has this
 // account been touched?" stays a single existence check.
 func TestPutAccountQuotaEmptyClears(t *testing.T) {
+	t.Parallel()
 	svc, kv := newOverrideService(t)
 	const account = "000000000002"
 
@@ -93,6 +97,7 @@ func TestPutAccountQuotaEmptyClears(t *testing.T) {
 // Clearing an account that never had a record must succeed rather than fail on
 // the missing key.
 func TestPutAccountQuotaEmptyOnAbsentKey(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 	require.NoError(t, svc.PutAccountQuota(t.Context(), "000000000009", Overrides{}, "operator"))
 }
@@ -100,6 +105,7 @@ func TestPutAccountQuotaEmptyOnAbsentKey(t *testing.T) {
 // An explicit zero must survive the store and deny every request, which is the
 // difference between a limit of zero and an absent override.
 func TestPutAccountQuotaExplicitZero(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 	const account = "000000000002"
 
@@ -114,6 +120,7 @@ func TestPutAccountQuotaExplicitZero(t *testing.T) {
 // A corrupt record is a read failure, not an absent one: it must fall back to
 // the configured limits rather than to no limit at all.
 func TestLimitsForCorruptRecordFailsClosed(t *testing.T) {
+	t.Parallel()
 	svc, kv := newOverrideService(t)
 	const account = "000000000002"
 
@@ -132,6 +139,7 @@ func TestLimitsForCorruptRecordFailsClosed(t *testing.T) {
 // A gateway with no override bucket must refuse a write rather than silently
 // accept one it cannot store.
 func TestPutAccountQuotaWithoutBucket(t *testing.T) {
+	t.Parallel()
 	svc := New(baseLimits(), nil)
 	require.Error(t, svc.PutAccountQuota(t.Context(), "000000000002", Overrides{VCPUs: ptr(32)}, "operator"))
 }
@@ -139,6 +147,7 @@ func TestPutAccountQuotaWithoutBucket(t *testing.T) {
 // The cap DescribeAccountLimits reports follows the account's stored override
 // and falls back to the configured baseline for an account without one.
 func TestLoadBalancerLimit_FollowsPerAccountOverride(t *testing.T) {
+	t.Parallel()
 	svc, _ := newOverrideService(t)
 	const upgraded, plain = "000000000002", "000000000003"
 	require.NoError(t, svc.PutAccountQuota(t.Context(), upgraded, Overrides{LoadBalancers: ptr(31)}, "operator"))
@@ -155,6 +164,7 @@ func TestLoadBalancerLimit_FollowsPerAccountOverride(t *testing.T) {
 // A sealed account is refused with Blocked, and an unreadable record is an
 // InternalError, never a made-up number.
 func TestLoadBalancerLimit_RefusesSealedAndUnreadableRecords(t *testing.T) {
+	t.Parallel()
 	svc, kv := newOverrideService(t)
 	const sealed, corrupt = "000000000004", "000000000005"
 	_, err := kv.Put(t.Context(), sealed, []byte(`{"state":"sealed"}`))

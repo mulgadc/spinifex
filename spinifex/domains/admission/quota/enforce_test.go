@@ -46,6 +46,7 @@ func vpcList(n int) *ec2.DescribeVpcsOutput {
 
 // The account is one below its cap, so one more is allowed and two are not.
 func TestEnforceVPCsAtBoundary(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVpcs", vpcList(3))
 	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4})
@@ -59,6 +60,7 @@ func TestEnforceVPCsAtBoundary(t *testing.T) {
 
 // An account already at its cap must be refused outright.
 func TestEnforceVPCsAtCap(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVpcs", vpcList(4))
 	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4})
@@ -69,6 +71,7 @@ func TestEnforceVPCsAtCap(t *testing.T) {
 }
 
 func TestEnforceSubnets(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeSubnets", &ec2.DescribeSubnetsOutput{
 		Subnets: []*ec2.Subnet{{SubnetId: aws.String("subnet-a")}, {SubnetId: aws.String("subnet-b")}},
@@ -79,6 +82,7 @@ func TestEnforceSubnets(t *testing.T) {
 }
 
 func TestEnforceEIPs(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeAddresses", &ec2.DescribeAddressesOutput{
 		Addresses: []*ec2.Address{{PublicIp: aws.String("203.0.113.1")}},
@@ -90,6 +94,7 @@ func TestEnforceEIPs(t *testing.T) {
 }
 
 func TestEnforceLoadBalancers(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "elbv2.DescribeLoadBalancers", &elbv2.DescribeLoadBalancersOutput{
 		LoadBalancers: []*elbv2.LoadBalancer{{LoadBalancerArn: aws.String("arn:a")}, {LoadBalancerArn: aws.String("arn:b")}},
@@ -102,6 +107,7 @@ func TestEnforceLoadBalancers(t *testing.T) {
 }
 
 func TestEnforceRDSInstances(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "rds.DescribeDBInstances", &rds.DescribeDBInstancesOutput{
 		DBInstances: []*rds.DBInstance{{DBInstanceIdentifier: aws.String("db-a")}},
@@ -115,6 +121,7 @@ func TestEnforceRDSInstances(t *testing.T) {
 // The volume count and the capacity sum are separate caps, and either alone
 // must be able to refuse a create.
 func TestEnforceVolumeCreateCountAndCapacity(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVolumes", &ec2.DescribeVolumesOutput{
 		Volumes: []*ec2.Volume{
@@ -134,6 +141,7 @@ func TestEnforceVolumeCreateCountAndCapacity(t *testing.T) {
 }
 
 func TestEnforceVolumeModify(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVolumes", &ec2.DescribeVolumesOutput{
 		Volumes: []*ec2.Volume{
@@ -150,6 +158,7 @@ func TestEnforceVolumeModify(t *testing.T) {
 // A describe that cannot be answered must fail the check rather than be read as
 // "the account holds nothing", which would wave every create past the cap.
 func TestEnforceFailsWhenDescribeFails(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4, EIPs: 4, Subnets: 4, LoadBalancers: 2, RDSInstances: 2, Volumes: 4})
 

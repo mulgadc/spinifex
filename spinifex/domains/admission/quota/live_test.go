@@ -85,6 +85,7 @@ func TestEnforceLiveExemptShortCircuits(t *testing.T) {
 }
 
 func TestLoadBalancerLimit_ExemptAccountReportsAWSDefault(t *testing.T) {
+	t.Parallel()
 	var disabled *Service
 	got, err := disabled.LoadBalancerLimit(t.Context(), "123456789012")
 	if err != nil {
@@ -96,6 +97,7 @@ func TestLoadBalancerLimit_ExemptAccountReportsAWSDefault(t *testing.T) {
 }
 
 func TestLoadBalancerLimit_EnabledAccountReportsConfiguredLimit(t *testing.T) {
+	t.Parallel()
 	svc := New(Limits{Enabled: true, LoadBalancers: 7}, nil)
 	got, err := svc.LoadBalancerLimit(t.Context(), "123456789012")
 	if err != nil {

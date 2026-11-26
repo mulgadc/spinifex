@@ -13,6 +13,7 @@ type quotaTOML struct {
 }
 
 func TestLimitsTOMLRoundTrip(t *testing.T) {
+	t.Parallel()
 	const src = `
 [quota]
 enabled     = true
@@ -56,6 +57,7 @@ volumes_gib = 100
 // A config without a [quota] block must decode to the zero value, which is a
 // disabled no-op so existing gateways are unaffected.
 func TestLimitsAbsentIsZeroValue(t *testing.T) {
+	t.Parallel()
 	var parsed quotaTOML
 	if err := toml.Unmarshal([]byte("region = \"us-west-1\"\n"), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)

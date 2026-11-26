@@ -200,6 +200,7 @@ func decodeOverride(t *testing.T, entry jetstream.KeyValueEntry) overrideRecord 
 // write at all (see TestClearOnMissingKeyWritesNothing), so only the four
 // cells with a real write are exercised here.
 func TestSealRaceMutation_SealLandsBetweenReadAndWrite(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		state string
@@ -212,6 +213,7 @@ func TestSealRaceMutation_SealLandsBetweenReadAndWrite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newSealService(t)
 			ctx := context.Background()
 			seedOverrideState(t, svc, tc.state)
@@ -250,9 +252,11 @@ func TestSealRaceMutation_SealLandsBetweenReadAndWrite(t *testing.T) {
 // the seal retries against the mutation's write and wins, leaving the sealed
 // value with no overridden dimension.
 func TestSealRaceMutation_MutationLandsBetweenSealReadAndWrite(t *testing.T) {
+	t.Parallel()
 	for _, m := range mutationTable() {
 		for _, state := range []string{"present", "absent", "tombstone"} {
 			t.Run(m.name+"_"+state, func(t *testing.T) {
+				t.Parallel()
 				svc, _ := newSealService(t)
 				ctx := context.Background()
 				seedOverrideState(t, svc, state)
@@ -287,8 +291,10 @@ func TestSealRaceMutation_MutationLandsBetweenSealReadAndWrite(t *testing.T) {
 
 // Neither mutation can act on an already-sealed record.
 func TestMutationOnSealedRecordIsRejected(t *testing.T) {
+	t.Parallel()
 	for _, m := range mutationTable() {
 		t.Run(m.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newSealService(t)
 			ctx := context.Background()
 			svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -313,6 +319,7 @@ func TestMutationOnSealedRecordIsRejected(t *testing.T) {
 // record is sealed and stays sealed, so no success among them could have
 // landed after the seal.
 func TestSealConcurrentMutations(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -356,6 +363,7 @@ func TestSealConcurrentMutations(t *testing.T) {
 // A Get pinned to a revision the record has already moved past exhausts the
 // mutation's retries without ever writing.
 func TestMutationStaleReadExhaustsWithoutWriting(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 
@@ -376,6 +384,7 @@ func TestMutationStaleReadExhaustsWithoutWriting(t *testing.T) {
 // A Get that always reports absent, while a sealed record actually exists,
 // never gets to recreate it: every Create attempt conflicts.
 func TestMutationStaleAbsentDoesNotRecreate(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -394,6 +403,7 @@ func TestMutationStaleAbsentDoesNotRecreate(t *testing.T) {
 // the seal spin forever: it gives up, bounded by its attempt budget, and its
 // own write never lands.
 func TestSealSustainedConflictFailsWithoutWriting(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -420,6 +430,7 @@ func TestSealSustainedConflictFailsWithoutWriting(t *testing.T) {
 
 // A store error on the seal's read reports failed, never written.
 func TestSealStoreErrorWritesNothing(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -436,7 +447,9 @@ func TestSealStoreErrorWritesNothing(t *testing.T) {
 // a tombstoned key, and a sealed key hidden behind a stale not-found Get all
 // leave the stream exactly where they found it.
 func TestClearOnMissingKeyWritesNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("absent", func(t *testing.T) {
+		t.Parallel()
 		svc, js := newSealService(t)
 		ctx := context.Background()
 		before := lastOverrideSeq(t, js)
@@ -446,6 +459,7 @@ func TestClearOnMissingKeyWritesNothing(t *testing.T) {
 	})
 
 	t.Run("tombstone", func(t *testing.T) {
+		t.Parallel()
 		svc, js := newSealService(t)
 		ctx := context.Background()
 		require.NoError(t, svc.PutAccountQuota(ctx, testAccount, Overrides{VCPUs: ptr(8)}, "operator"))
@@ -457,6 +471,7 @@ func TestClearOnMissingKeyWritesNothing(t *testing.T) {
 	})
 
 	t.Run("sealed_hidden_by_stale_not_found", func(t *testing.T) {
+		t.Parallel()
 		svc, js := newSealService(t)
 		ctx := context.Background()
 		svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -480,8 +495,10 @@ func TestClearOnMissingKeyWritesNothing(t *testing.T) {
 
 // A seal against an absent or a tombstoned key creates the sealed record.
 func TestSealOnMissingKeyCreatesSealedRecord(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"absent", "tombstone"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			svc, _ := newSealService(t)
 			ctx := context.Background()
 			svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -526,6 +543,7 @@ func (f *alwaysConflictThenErrorKV) Create(context.Context, string, []byte, ...j
 }
 
 func TestSealNeverSucceedsWithoutAWrite(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -541,8 +559,10 @@ func TestSealNeverSucceedsWithoutAWrite(t *testing.T) {
 // An account IAM does not hold as TERMINATING refuses the seal before any
 // override-KV write, whether the key is present or absent.
 func TestSealRefusedForActiveAccount(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"present", "absent"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			svc, js := newSealService(t)
 			ctx := context.Background()
 			if state == "present" {
@@ -559,6 +579,7 @@ func TestSealRefusedForActiveAccount(t *testing.T) {
 }
 
 func TestSealRefusedForMissingIAMRecord(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(&stubTerminationChecker{terminating: map[string]bool{}})
@@ -570,6 +591,7 @@ func TestSealRefusedForMissingIAMRecord(t *testing.T) {
 }
 
 func TestSealRefusedWhenIAMReadFails(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(&stubTerminationChecker{err: errors.New("iam unavailable")})
@@ -581,6 +603,7 @@ func TestSealRefusedWhenIAMReadFails(t *testing.T) {
 }
 
 func TestSealRefusedWithNoCheckerWired(t *testing.T) {
+	t.Parallel()
 	svc, js := newSealService(t)
 	ctx := context.Background()
 
@@ -591,6 +614,7 @@ func TestSealRefusedWithNoCheckerWired(t *testing.T) {
 }
 
 func TestSealAcceptedForTerminatingAccount(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -607,7 +631,9 @@ func TestSealAcceptedForTerminatingAccount(t *testing.T) {
 // A refused seal, on a gateway that disabled quotas and so holds no override
 // bucket, never creates one.
 func TestSealRefusalDoesNotCreateBucket(t *testing.T) {
+	t.Parallel()
 	t.Run("not_terminating", func(t *testing.T) {
+		t.Parallel()
 		svc, js := newDisabledSealService(t)
 		ctx := context.Background()
 		svc.SetAccountTerminationChecker(&stubTerminationChecker{terminating: map[string]bool{}})
@@ -619,6 +645,7 @@ func TestSealRefusalDoesNotCreateBucket(t *testing.T) {
 	})
 
 	t.Run("iam_read_fails", func(t *testing.T) {
+		t.Parallel()
 		svc, js := newDisabledSealService(t)
 		ctx := context.Background()
 		svc.SetAccountTerminationChecker(&stubTerminationChecker{err: errors.New("iam unavailable")})
@@ -633,6 +660,7 @@ func TestSealRefusalDoesNotCreateBucket(t *testing.T) {
 // A seal accepted on a gateway whose quotas were disabled at startup creates
 // the override bucket at seal time, never at startup.
 func TestSealOnQuotaDisabledGatewayCreatesBucket(t *testing.T) {
+	t.Parallel()
 	svc, js := newDisabledSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -652,6 +680,7 @@ func TestSealOnQuotaDisabledGatewayCreatesBucket(t *testing.T) {
 // JetStream, every read and write refuses it, and a re-seal gets a higher
 // revision.
 func TestSealSurvivesServiceReconstruction(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 
@@ -691,6 +720,7 @@ func TestSealSurvivesServiceReconstruction(t *testing.T) {
 }
 
 func TestSealRefusesEmptyInvalidAndGlobalAccount(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 
@@ -705,6 +735,7 @@ func TestSealRefusesEmptyInvalidAndGlobalAccount(t *testing.T) {
 }
 
 func TestSealLeavesOtherAccountsUntouched(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	accountB := "222222222222"
@@ -723,6 +754,7 @@ func TestSealLeavesOtherAccountsUntouched(t *testing.T) {
 // A record written before the state field existed has none and is treated as
 // active by both reads and writes; a write on it preserves the old shape.
 func TestRecordWithoutStateIsActive(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 
@@ -745,6 +777,7 @@ func TestRecordWithoutStateIsActive(t *testing.T) {
 // A record whose state is neither active nor sealed fails every read and
 // write closed, rather than being treated as active.
 func TestUnknownStateFailsClosed(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 
@@ -766,6 +799,7 @@ func TestUnknownStateFailsClosed(t *testing.T) {
 // caller (admin read, ELBv2 DescribeAccountLimits, every Enforce* method)
 // shares.
 func TestAdmissionOnSealedRecordIsBlocked(t *testing.T) {
+	t.Parallel()
 	svc, _ := newSealService(t)
 	ctx := context.Background()
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccount))
@@ -784,6 +818,7 @@ func TestAdmissionOnSealedRecordIsBlocked(t *testing.T) {
 // falls back to the configured limits) is unchanged by the seal work: it is
 // distinct from a successfully read sealed record, which refuses instead.
 func TestAdmissionReadFailureFallbackUnchanged(t *testing.T) {
+	t.Parallel()
 	svc, kv := newOverrideService(t)
 
 	_, err := kv.Put(t.Context(), testAccount, []byte("{not json"))

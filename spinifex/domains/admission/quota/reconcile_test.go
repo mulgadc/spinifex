@@ -24,6 +24,7 @@ func accountList(ids ...string) AccountLister {
 }
 
 func TestReconcileCorrectsOverCount(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	// Counter drifted high (e.g. a stale increment); the account truly holds one
@@ -43,6 +44,7 @@ func TestReconcileCorrectsOverCount(t *testing.T) {
 // which is the only signal that it now holds nothing, so it must be zeroed
 // rather than skipped.
 func TestReconcileZeroesAccountAbsentFromScan(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
@@ -58,6 +60,7 @@ func TestReconcileZeroesAccountAbsentFromScan(t *testing.T) {
 
 // One scan covers every account, where the fan-out cost one describe each.
 func TestReconcileScansOnceForEveryAccount(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	const a, b, c = "111111111111", "222222222222", "333333333333"
@@ -77,6 +80,7 @@ func TestReconcileScansOnceForEveryAccount(t *testing.T) {
 // The system account is exempt: any counter parked under its key is left
 // untouched even when the scan reports a total against it.
 func TestReconcileSkipsSystemAccount(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	// Park a non-zero value directly under the system key; AddVCPU would no-op it.
@@ -94,6 +98,7 @@ func TestReconcileSkipsSystemAccount(t *testing.T) {
 // per-account outage that the pass can continue past: no counter may move, and
 // the error is returned for the next pass to retry.
 func TestReconcileScanFailureLeavesEveryCounterUntouched(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	const a, b = "111111111111", "222222222222"
@@ -118,6 +123,7 @@ func TestReconcileScanFailureLeavesEveryCounterUntouched(t *testing.T) {
 // the counter left for the next clean pass. A higher observed count still
 // raises it, since those instances do exist.
 func TestReconcileIncompleteSweepDoesNotLower(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
@@ -140,6 +146,7 @@ func TestReconcileIncompleteSweepDoesNotLower(t *testing.T) {
 // revision read and the write moves the revision, so the charge stands and the
 // scan is dropped. Without it the overwrite would silently undo the launch.
 func TestReconcileDoesNotClobberAChargeLandingMidScan(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	if err := s.AddVCPU(t.Context(), testAccount, 4); err != nil {
@@ -164,6 +171,7 @@ func TestReconcileDoesNotClobberAChargeLandingMidScan(t *testing.T) {
 // given and leaves every other account alone, which is what makes a change to
 // one instance cost one account's work.
 func TestReconcileAccountTouchesOnlyThatAccount(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	const mine, other = "111111111111", "222222222222"
@@ -183,6 +191,7 @@ func TestReconcileAccountTouchesOnlyThatAccount(t *testing.T) {
 }
 
 func TestReconcileAccountSkipsSystemAccount(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	seedCounter(t, s, awsidentifiers.GlobalAccountID, 42)
@@ -196,6 +205,7 @@ func TestReconcileAccountSkipsSystemAccount(t *testing.T) {
 // A disabled service never reaches the KV: both entry points are a no-op even
 // with a nil lister and account enumerator that would otherwise panic.
 func TestReconcileDisabledNoop(t *testing.T) {
+	t.Parallel()
 	s := New(Limits{Enabled: false}, nil)
 	if err := s.Reconcile(context.Background(), nil, nil); err != nil {
 		t.Fatalf("disabled Reconcile = %v, want nil", err)

@@ -11,6 +11,7 @@ import (
 )
 
 func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.T) {
+	t.Parallel()
 	sts, err := awsmodel.CompareOperations(awsmodel.STS, awsmodel.DispatchInventory{
 		Registered:  []string{"AssumeRole", "GetCallerIdentity", "GetSessionToken"},
 		Stubbed:     []string{"GetSessionToken"},
@@ -76,6 +77,7 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 }
 
 func TestWriteCoverageJSONWritesTheSameDocument(t *testing.T) {
+	t.Parallel()
 	coverage, err := awsmodel.CompareOperations(awsmodel.STS, awsmodel.DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)

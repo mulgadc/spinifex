@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidateResponseEC2XML(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<DescribeInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
   <requestId>req-1</requestId>
   <reservationSet><item><instancesSet><item>
@@ -29,6 +30,7 @@ func TestValidateResponseEC2XML(t *testing.T) {
 }
 
 func TestValidateResponseQueryXML(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<GetUserResponse><GetUserResult><User>
   <Path>/</Path><UserId>AIDAEXAMPLE</UserId>
   <Arn>arn:aws:iam::123456789012:user/alice</Arn>
@@ -46,6 +48,7 @@ func TestValidateResponseQueryXML(t *testing.T) {
 }
 
 func TestValidateResponseJSON(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"tasks":[{"launchType":"ON_PREMISES"}]}`)
 	violations, err := ValidateResponse(ECS, "DescribeTasks", body)
 	if err != nil {
@@ -57,6 +60,7 @@ func TestValidateResponseJSON(t *testing.T) {
 }
 
 func TestValidateResponseConformingEmptyEC2List(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<DescribeInstancesResponse><requestId>req-1</requestId><reservationSet></reservationSet></DescribeInstancesResponse>`)
 	violations, err := ValidateResponse(EC2, "DescribeInstances", body)
 	if err != nil {
@@ -68,6 +72,7 @@ func TestValidateResponseConformingEmptyEC2List(t *testing.T) {
 }
 
 func TestValidateResponseOperationWithoutOutputShape(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<AttachInternetGatewayResponse><requestId>req-1</requestId></AttachInternetGatewayResponse>`)
 	violations, err := ValidateResponse(EC2, "AttachInternetGateway", body)
 	if err != nil {
@@ -79,6 +84,7 @@ func TestValidateResponseOperationWithoutOutputShape(t *testing.T) {
 }
 
 func TestValidateResponseRejectsWrongWrapper(t *testing.T) {
+	t.Parallel()
 	_, err := ValidateResponse(IAM, "GetUser", []byte(`<GetUserResponse><WrongResult/></GetUserResponse>`))
 	if err == nil || !strings.Contains(err.Error(), `result wrapper "GetUserResult" is missing`) {
 		t.Fatalf("error = %v", err)

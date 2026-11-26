@@ -32,6 +32,7 @@ var sdkSession = session.Must(session.NewSession(&aws.Config{
 // restxml marshaller for the same input, so the expected wire form is the
 // SDK's rather than one written by hand.
 func TestEncodeRequestRestXMLMatchesSDK(t *testing.T) {
+	t.Parallel()
 	r53 := route53.New(sdkSession)
 	tests := []struct {
 		name      string
@@ -150,6 +151,7 @@ func TestEncodeRequestRestXMLMatchesSDK(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require.NoError(t, test.sdk.Build())
 			want := test.sdk.HTTPRequest
 			wantBody, err := io.ReadAll(test.sdk.GetBody())
@@ -204,6 +206,7 @@ func canonicalXML(t *testing.T, body []byte) xmlTree {
 }
 
 func TestEncodeRequestRestXMLPutsRootInServiceNamespace(t *testing.T) {
+	t.Parallel()
 	request, err := awsmodel.EncodeRequest(awsmodel.Route53, "CreateHostedZone", map[string]any{"Name": "example.com", "CallerReference": "ref"})
 	require.NoError(t, err)
 	tree := canonicalXML(t, request.Body)

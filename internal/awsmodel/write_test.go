@@ -35,6 +35,7 @@ func stsCoverage(t *testing.T) OperationCoverage {
 }
 
 func TestWritePagesWritesAServicePageAndTheIndex(t *testing.T) {
+	t.Parallel()
 	dir := stagePages(t)
 
 	if err := WritePages(dir, []OperationCoverage{stsCoverage(t)}); err != nil {
@@ -60,6 +61,7 @@ func TestWritePagesWritesAServicePageAndTheIndex(t *testing.T) {
 // The gaps the pages leave out are still written down, in a file the docs site
 // is not configured to render.
 func TestWritePagesWritesTheInternalReport(t *testing.T) {
+	t.Parallel()
 	dir := stagePages(t)
 	coverage := stsCoverage(t)
 
@@ -82,6 +84,7 @@ func TestWritePagesWritesTheInternalReport(t *testing.T) {
 }
 
 func TestWritePagesIncludesAnIntroAndOverwritesTheGeneratedPage(t *testing.T) {
+	t.Parallel()
 	dir := stagePages(t)
 	pageDir := filepath.Join(dir, "sts")
 	if err := os.MkdirAll(pageDir, 0o755); err != nil {
@@ -113,6 +116,7 @@ func TestWritePagesIncludesAnIntroAndOverwritesTheGeneratedPage(t *testing.T) {
 // A service the page set does not describe is skipped rather than crashing the
 // run or publishing a page with no metadata on it.
 func TestWritePagesSkipsAServiceWithNoMetadata(t *testing.T) {
+	t.Parallel()
 	dir := stageWithout(t, S3)
 	coverage, err := CompareOperations(S3, DispatchInventory{Registered: []string{"ListBuckets"}})
 	if err != nil {
@@ -160,6 +164,7 @@ func stageWithout(t *testing.T, service Service) string {
 }
 
 func TestWritePagesReportsMissingMetadata(t *testing.T) {
+	t.Parallel()
 	if err := WritePages(t.TempDir(), nil); err == nil {
 		t.Fatal("WritePages accepted a directory with no pages.json")
 	}

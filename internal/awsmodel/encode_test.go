@@ -20,6 +20,7 @@ func encodedForm(t *testing.T, request *awsmodel.EncodedRequest) url.Values {
 }
 
 func TestEncodeRequestAWSQueryWrapsListMembers(t *testing.T) {
+	t.Parallel()
 	request, err := awsmodel.EncodeRequest(awsmodel.IAM, "CreateRole", map[string]any{
 		"RoleName":                 "app",
 		"AssumeRolePolicyDocument": "{}",
@@ -39,6 +40,7 @@ func TestEncodeRequestAWSQueryWrapsListMembers(t *testing.T) {
 }
 
 func TestEncodeRequestEC2UsesQueryNamesWithoutMemberWrapper(t *testing.T) {
+	t.Parallel()
 	request, err := awsmodel.EncodeRequest(awsmodel.EC2, "RunInstances", map[string]any{
 		"ImageId":          "ami-0123456789abcdef0",
 		"MinCount":         int64(1),
@@ -64,6 +66,7 @@ func TestEncodeRequestEC2UsesQueryNamesWithoutMemberWrapper(t *testing.T) {
 }
 
 func TestEncodeRequestJSONTargetsOperation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		service   awsmodel.Service
 		operation string
@@ -75,6 +78,7 @@ func TestEncodeRequestJSONTargetsOperation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(string(test.service), func(t *testing.T) {
+			t.Parallel()
 			request, err := awsmodel.EncodeRequest(test.service, test.operation, map[string]any{"maxResults": int64(5)})
 			if test.service == awsmodel.ACM {
 				request, err = awsmodel.EncodeRequest(test.service, test.operation, map[string]any{"MaxItems": int64(5)})
@@ -91,6 +95,7 @@ func TestEncodeRequestJSONTargetsOperation(t *testing.T) {
 }
 
 func TestEncodeRequestRestJSONPlacesMembers(t *testing.T) {
+	t.Parallel()
 	describe, err := awsmodel.EncodeRequest(awsmodel.EKS, "DescribeCluster", map[string]any{"name": "prod cluster"})
 	require.NoError(t, err)
 	require.Equal(t, http.MethodGet, describe.Method)
@@ -114,6 +119,7 @@ func TestEncodeRequestRestJSONPlacesMembers(t *testing.T) {
 }
 
 func TestEncodeRequestRejectsUnmodelledMember(t *testing.T) {
+	t.Parallel()
 	_, err := awsmodel.EncodeRequest(awsmodel.IAM, "GetRole", map[string]any{"RoleName": "app", "Bogus": "x"})
 	require.ErrorContains(t, err, `no member "Bogus"`)
 }

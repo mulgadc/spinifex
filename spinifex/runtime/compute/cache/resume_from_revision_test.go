@@ -22,6 +22,7 @@ import (
 // straight at the cause, rather than the cache's own tests failing in a way
 // that looks like a cache bug.
 func TestResumeFromRevision_ReplaysWhatTheSnapshotMissed(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 

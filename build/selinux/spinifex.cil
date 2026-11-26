@@ -1,0 +1,18 @@
+; Spinifex policy module for Oracle Linux hosts that run SELinux.
+; Install: semodule -X 300 -i spinifex.cil. Remove: semodule -X 300 -r spinifex.
+; It holds file contexts and the fewest allow rules that measured denials need.
+
+; systemd runs these from the data dir as ExecStartPre and as the NATS watchdog.
+(filecon "/var/lib/spinifex/wait-for-nats\.sh" file (system_u object_r bin_t ((s0) (s0))))
+(filecon "/var/lib/spinifex/nats-js-watchdog\.sh" file (system_u object_r bin_t ((s0) (s0))))
+
+; setup.sh creates the host swap file; swapon needs swapfile_t.
+(filecon "/swapfile" file (system_u object_r swapfile_t ((s0) (s0))))
+
+; ovs-monitor-ipsec runs certutil and pk12util in openvswitch_t to load the
+; node certificates into the libreswan NSS database in /var/lib/ipsec/nss.
+(allow openvswitch_t ipsec_key_file_t (dir (getattr)))
+
+; The ovn-controller log-level hook runs ovs-appctl in openvswitch_t, and
+; ovn-controller itself runs unconfined, so the hook connects across domains.
+(allow openvswitch_t unconfined_service_t (unix_stream_socket (connectto)))

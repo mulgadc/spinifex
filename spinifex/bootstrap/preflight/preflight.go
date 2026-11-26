@@ -63,7 +63,7 @@ func (s Status) String() string {
 // Result is the outcome of checking one managed asset against this build's manifest.
 type Result struct {
 	Path   string
-	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware" | "hostnet" | "host-firewall" | "host-dns"
+	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware" | "hostnet" | "host-firewall" | "host-dns" | "selinux"
 	Status Status
 	Detail string
 }
@@ -111,6 +111,7 @@ func checkHostAt(root string, runningBinaries bool) []Result {
 	results = append(results, checkHostnet(root))
 	results = append(results, checkHostFirewalls(root)...)
 	results = append(results, checkHostDNS(root))
+	results = append(results, checkSELinux(root)...)
 	return results
 }
 

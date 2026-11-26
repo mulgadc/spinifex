@@ -23,13 +23,14 @@ UEK_R8="6.12.0-207.111.5.4.el10uek.x86_64"
 
 # gate <os-release body> [machine] [kernel] [cpu flags] — runs detect_os and
 # sets RC and OUT (stdout and stderr together). SELINUX_NOW is what getenforce
-# prints; SELINUX_BOOT is the config file's SELINUX=, or "none" for no file.
+# prints; SELINUX_BOOT is the config file's SELINUX=, or "none" for no file;
+# SELINUX_TYPE is its SELINUXTYPE=.
 gate() {
     printf '%s\n' "$1" > "$TMP/os-release"
     printf 'processor\t: 0\nflags\t\t: %s\n' "${4:-$V3_FLAGS}" > "$TMP/cpuinfo"
     rm -f "$TMP/selinux-config"
     if [ "${SELINUX_BOOT:-permissive}" != none ]; then
-        printf '# fixture\nSELINUX=%s\nSELINUXTYPE=targeted\n' "${SELINUX_BOOT:-permissive}" > "$TMP/selinux-config"
+        printf '# fixture\nSELINUX=%s\nSELINUXTYPE=%s\n' "${SELINUX_BOOT:-permissive}" "${SELINUX_TYPE:-targeted}" > "$TMP/selinux-config"
     fi
     mkdir -p "$TMP/bin"
     printf '#!/bin/sh\necho %s\n' "${SELINUX_NOW:-Permissive}" > "$TMP/bin/getenforce"
@@ -47,7 +48,7 @@ EOF
     OUT=$(PATH="$TMP/bin:$PATH" SPINIFEX_OS_RELEASE="$TMP/os-release" SPINIFEX_CPUINFO="$TMP/cpuinfo" \
         SPINIFEX_SELINUX_CONFIG="$TMP/selinux-config" INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. "$1"; detect_os' _ "$SETUP" 2>&1) || RC=$?
     # Some shells keep a prefix assignment to a function call after it returns.
-    unset SELINUX_NOW SELINUX_BOOT
+    unset SELINUX_NOW SELINUX_BOOT SELINUX_TYPE
 }
 accepts() {
     if [ "$RC" = 0 ]; then pass "accepts $1"; else fail "rejects $1: $OUT"; fi
@@ -138,14 +139,20 @@ rejects "Oracle Linux on an x86-64-v2 CPU" "missing: avx avx2 bmi1 bmi2 f16c fma
 OL102="$OL
 VERSION_ID=\"10.2\""
 
-SELINUX_NOW=Enforcing gate "$OL102"
-rejects "Oracle Linux with SELinux enforcing" "SELinux is enforcing"
+SELINUX_NOW=Enforcing SELINUX_BOOT=enforcing gate "$OL102"
+accepts "Oracle Linux with SELinux enforcing"
 
 SELINUX_BOOT=enforcing gate "$OL102"
-rejects "Oracle Linux with SELinux permissive now but enforcing at next boot" "enforcing at next boot"
+accepts "Oracle Linux with SELinux permissive now but enforcing at next boot"
 
-SELINUX_BOOT='"enforcing"' gate "$OL102"
-rejects "Oracle Linux with a quoted SELINUX=\"enforcing\"" "enforcing at next boot"
+SELINUX_NOW=Enforcing SELINUX_BOOT=enforcing SELINUX_TYPE=mls gate "$OL102"
+rejects "Oracle Linux with the mls policy" "supports only the targeted policy"
+
+SELINUX_NOW=Permissive SELINUX_TYPE='"minimum"' gate "$OL102"
+rejects "Oracle Linux with a quoted SELINUXTYPE=\"minimum\"" "supports only the targeted policy"
+
+SELINUX_NOW=Disabled SELINUX_BOOT=disabled SELINUX_TYPE=mls gate "$OL102"
+accepts "Oracle Linux with the mls policy and SELinux disabled"
 
 SELINUX_NOW=Disabled SELINUX_BOOT=disabled gate "$OL102"
 accepts "Oracle Linux with SELinux disabled"
@@ -153,9 +160,8 @@ accepts "Oracle Linux with SELinux disabled"
 SELINUX_NOW=Disabled SELINUX_BOOT=none gate "$OL102"
 accepts "Oracle Linux with no SELinux config file"
 
-# Spinifex has no SELinux policy on any OS, but refusing enforcing on Debian
-# would change Debian behaviour, so only the Oracle Linux gate checks it.
-SELINUX_NOW=Enforcing SELINUX_BOOT=enforcing gate 'ID=debian
+# Only the Oracle Linux gate reads the SELinux policy type.
+SELINUX_NOW=Enforcing SELINUX_BOOT=enforcing SELINUX_TYPE=mls gate 'ID=debian
 VERSION_ID="13"'
 accepts "Debian 13 regardless of SELinux"
 

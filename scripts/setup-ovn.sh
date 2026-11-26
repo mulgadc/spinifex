@@ -1754,11 +1754,12 @@ echo "Step 5: Starting ovn-controller..."
 # Set ovn-controller file log level to WARN so it doesn't spam the log with
 # connection-retry INFO messages ("OVNSB commit failed") when the SB DB
 # isn't running. Uses a systemd ExecStartPost so it persists across restarts.
+# The '-' prefix keeps a failed log-level change from failing ovn-controller.
 OVN_CTRL_OVERRIDE="/etc/systemd/system/ovn-controller.service.d/log-level.conf"
 sudo mkdir -p "$(dirname "$OVN_CTRL_OVERRIDE")"
 sudo tee "$OVN_CTRL_OVERRIDE" >/dev/null <<'OVERRIDE'
 [Service]
-ExecStartPost=/bin/sh -c 'OVS_RUNDIR=/var/run/ovn exec /usr/bin/ovs-appctl -t ovn-controller vlog/set file:warn'
+ExecStartPost=-/bin/sh -c 'OVS_RUNDIR=/var/run/ovn exec /usr/bin/ovs-appctl -t ovn-controller vlog/set file:warn'
 OVERRIDE
 sudo systemctl daemon-reload
 echo "  ovn-controller log level: file:warn (via systemd drop-in)"

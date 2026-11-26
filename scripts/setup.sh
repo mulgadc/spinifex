@@ -17,7 +17,7 @@
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, dns, users, sudoers, firewall, timesync, files,
 #                                directories, env, systemd, sysctl, needrestart, modules,
-#                                logrotate, udev, ocibsd, fixown, migrations
+#                                logrotate, udev, ocibsd, selinux, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -212,25 +212,67 @@ check_oracle_linux() {
     esac
 
     check_x86_64_v3
-    check_selinux_not_enforcing
+    check_selinux_policy_type
 }
 
-# Spinifex ships no SELinux policy yet. Oracle's templates boot enforcing, and
-# setenforce alone reverts on reboot, so the config file is checked as well.
-check_selinux_not_enforcing() {
-    local config="${SPINIFEX_SELINUX_CONFIG:-/etc/selinux/config}" now="" boot=""
+# The Spinifex module is written for the targeted policy. Any SELinux mode is
+# accepted, and the installer never changes it.
+check_selinux_policy_type() {
+    local config="${SPINIFEX_SELINUX_CONFIG:-/etc/selinux/config}" now="" boot="" type=""
     if command -v getenforce >/dev/null 2>&1; then
         now=$(getenforce 2>/dev/null | tr '[:upper:]' '[:lower:]')
     fi
     if [ -f "$config" ]; then
         boot=$(os_release_field SELINUX "$config" | tr '[:upper:]' '[:lower:]')
+        type=$(os_release_field SELINUXTYPE "$config")
     fi
-    if [ "$now" = "enforcing" ]; then
-        fatal "SELinux is enforcing, and Spinifex has no SELinux policy. Run 'sudo setenforce 0', set SELINUX=permissive in $config, then re-run this installer"
+    if [ "${now:-disabled}" = disabled ] && [ "${boot:-disabled}" = disabled ]; then
+        return 0
     fi
-    if [ "$boot" = "enforcing" ]; then
-        fatal "SELinux is set to enforcing at next boot (SELINUX=enforcing in $config). Set SELINUX=permissive there, then re-run this installer"
+    if [ "${type:-targeted}" != targeted ]; then
+        fatal "SELinux uses the '$type' policy (SELINUXTYPE in $config). Spinifex supports only the targeted policy"
     fi
+}
+
+# True when SELinux is enabled, in enforcing or permissive mode.
+selinux_enabled() {
+    command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled
+}
+
+# Installed paths that restorecon may relabel, each one entry only. Guest
+# runtime and UEFI directories are never recursed, so a re-run cannot reset the
+# label of a guest that is running.
+SELINUX_RELABEL_PATHS="/usr/local/bin/spx /usr/bin/spx /etc/spinifex /etc/tmpfiles.d/spinifex.conf
+/etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex /etc/ipsec.secrets
+/var/lib/spinifex /var/lib/spinifex/wait-for-nats.sh /var/lib/spinifex/nats-js-watchdog.sh
+/var/log/spinifex /run/spinifex /run/spinifex/nbd /swapfile"
+# Trees that hold only installed files, relabelled with everything below them.
+SELINUX_RELABEL_TREES="/usr/local/share/spinifex /usr/local/lib/spinifex /usr/share/spinifex"
+
+install_selinux_policy() {
+    stage "installing the SELinux policy module"
+    if ! selinux_enabled; then
+        info "SELinux is disabled; the Spinifex policy module is not installed"
+        return 0
+    fi
+    local cil="$EXTRACT_DIR/selinux/spinifex.cil"
+    [ -f "$cil" ] || fatal "SELinux is enabled, but this release has no selinux/spinifex.cil"
+    $SUDO semodule -X 300 -i "$cil" || fatal "semodule could not install $cil"
+    info "  SELinux module spinifex (priority 300)"
+
+    # ovs-monitor-ipsec cannot create this file in /etc from openvswitch_t, but
+    # it can write it once it exists with the ipsec_key_file_t context.
+    if [ -x "${SPINIFEX_PLUTO:-/usr/libexec/ipsec/pluto}" ] && ! $SUDO test -e /etc/ipsec.secrets; then
+        $SUDO install -m 0600 /dev/null /etc/ipsec.secrets
+    fi
+
+    # The lists are unquoted so they split into paths. -i skips a missing path.
+    resolve_nbdkit_plugindir
+    $SUDO restorecon -F -i $SELINUX_RELABEL_PATHS /etc/systemd/system/spinifex* \
+        /etc/sysctl.d/*spinifex* /etc/udev/rules.d/*spinifex* \
+        || fatal "restorecon could not relabel the installed files"
+    $SUDO restorecon -RF -i $SELINUX_RELABEL_TREES "$NBDKIT_PLUGINDIR/nbdkit-viperblock-plugin.so" \
+        || fatal "restorecon could not relabel the installed trees"
 }
 
 # The NFV SIG OVS/OVN and the KVM Utilities QEMU are built for x86-64-v3, so an
@@ -2333,6 +2375,10 @@ EOF
         $SUDO chmod 0600 "$swapfile"
         $SUDO mkswap "$swapfile" > /dev/null
     fi
+    # The module maps /swapfile to swapfile_t, which swapon needs under SELinux.
+    if selinux_enabled; then
+        $SUDO restorecon -F "$swapfile" || fatal "restorecon could not label $swapfile"
+    fi
     $SUDO swapon "$swapfile"
     grep -q "^$swapfile " /etc/fstab 2>/dev/null \
         || echo "$swapfile none swap sw 0 0" | $SUDO tee -a /etc/fstab > /dev/null
@@ -2376,7 +2422,7 @@ main() {
     # anything on the host changes, so the hand-off finds it untouched.
     if stage_enabled files || stage_enabled directories \
         || stage_enabled systemd || stage_enabled logrotate \
-        || stage_enabled udev || stage_enabled ocibsd; then
+        || stage_enabled udev || stage_enabled ocibsd || stage_enabled selinux; then
         download_spinifex
         hand_off_to_packaged_setup "${args[@]}"
     fi
@@ -2405,6 +2451,7 @@ main() {
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled ocibsd     && install_ocibsd
+    stage_enabled selinux    && install_selinux_policy
     stage_enabled swap       && setup_swap
 
     # Migrations are only safe on a live system (need a running NATS and a

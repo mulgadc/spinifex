@@ -42,6 +42,8 @@ mkdir -p "$STAGING/udev"
 cp "$PROJECT_ROOT/build/udev/"* "$STAGING/udev/"
 cp -r "$PROJECT_ROOT/build/ocibsd" "$STAGING/ocibsd"
 cp "$PROJECT_ROOT/build/logrotate/spinifex" "$STAGING/logrotate-spinifex"
+mkdir -p "$STAGING/selinux"
+cp "$PROJECT_ROOT/build/selinux/spinifex.cil" "$STAGING/selinux/"
 tar czf /tmp/spinifex-local.tar.gz -C "$STAGING" .
 
 echo "=== Cleaning stale state from previous installs ==="

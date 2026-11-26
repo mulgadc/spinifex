@@ -160,9 +160,10 @@ Before rebooting into a new kernel, check `rpm -q kernel-uek-core kernel-uek-mod
 
 ## Troubleshooting
 
-### Installer stops on SELinux, the kernel or kernel modules
+### Installer stops on the SELinux policy, the kernel or kernel modules
 
-Set SELinux permissive both now and in `/etc/selinux/config`, or update and boot into the current UEK R8 kernel, then run the installer again:
+The installer supports only the `targeted` SELinux policy (`SELINUXTYPE=targeted` in `/etc/selinux/config`), in any mode.
+For a kernel or kernel module error, update and boot into the current UEK R8 kernel, then run the installer again:
 
 ```bash
 sudo dnf update -y kernel-uek

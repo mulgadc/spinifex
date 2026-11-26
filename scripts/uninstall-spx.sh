@@ -114,6 +114,11 @@ CA_TRUST=$(PATH="/usr/sbin:/sbin:$PATH" distro_ca_trust) \
     || { echo "ERROR: cannot tell which trust store to remove the Spinifex CA from" >&2; exit 1; }
 
 log() { echo "[uninstall-spx] $*"; }
+# True when the Spinifex module is loaded at priority 300.
+spinifex_selinux_module() {
+    command -v semodule >/dev/null 2>&1 &&
+        sudo semodule -lfull 2>/dev/null | awk '$1 == 300 && $2 == "spinifex" { found = 1 } END { exit !found }'
+}
 run() {
     if $DRY_RUN; then
         echo "  would run: $*"
@@ -474,6 +479,16 @@ if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
     run sudo nmcli general reload conf 2>/dev/null || true
 fi
 
+# The SELinux policy module setup.sh loads where SELinux is enabled, and the
+# /etc/ipsec.secrets it creates empty. A file with content may hold other keys.
+if spinifex_selinux_module; then
+    log "removing the SELinux policy module"
+    run sudo semodule -X 300 -r spinifex
+fi
+if sudo test -f /etc/ipsec.secrets && ! sudo test -s /etc/ipsec.secrets; then
+    rm_path /etc/ipsec.secrets
+fi
+
 # ---------------------------------------------------------------------------
 # 10. Spinifex directories.
 #
@@ -641,6 +656,7 @@ if ! $DRY_RUN; then
     done
     $FIREWALLD_UNMASKED && systemctl is-enabled --quiet firewalld.service 2>/dev/null &&
         LEFT+=("firewalld.service is enabled")
+    spinifex_selinux_module && LEFT+=("SELinux module spinifex at priority 300")
     # A unit we broke and could not restart is a failed uninstall, not a wart.
     for u in "${RESTART_UNITS[@]}"; do
         systemctl is-failed --quiet "$u" 2>/dev/null && LEFT+=("${u%.service}.service is failed")
@@ -695,7 +711,7 @@ distro_has_libreswan && IPSEC_UNITS+=(ipsec.service)
 for u in "${IPSEC_UNITS[@]}"; do
     [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] && kept "$u: masked, as IPsec was off"
 done
-command -v getenforce >/dev/null 2>&1 && kept "SELinux: $(getenforce 2>/dev/null); setup.sh refuses enforcing, so it was set for the install"
+command -v getenforce >/dev/null 2>&1 && kept "SELinux: $(getenforce 2>/dev/null); setup.sh never changes the mode"
 GPU_FILES=""
 for gpu in /etc/modprobe.d/vfio-pci.conf /etc/dracut.conf.d/spinifex-vfio.conf; do
     exists "$gpu" && GPU_FILES="${GPU_FILES:+$GPU_FILES, }$gpu"

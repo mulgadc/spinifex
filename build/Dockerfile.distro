@@ -57,6 +57,7 @@ RUN mkdir -p /out/lib && cp spinifex/scripts/lib/distro.sh /out/lib/distro.sh
 RUN mkdir -p /out/systemd && cp spinifex/build/systemd/* /out/systemd/
 RUN mkdir -p /out/scripts && cp spinifex/build/scripts/* /out/scripts/
 RUN cp spinifex/build/logrotate/spinifex /out/logrotate-spinifex
+RUN mkdir -p /out/selinux && cp spinifex/build/selinux/spinifex.cil /out/selinux/spinifex.cil
 
 FROM scratch AS export
 COPY --from=builder /out/ /

@@ -1144,15 +1144,6 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
-	// First heartbeat: transition provisioning → active
-	stateChanged := false
-	if lb.State == StateProvisioning {
-		lb.State = StateActive
-		lb.StateReason = ""
-		stateChanged = true
-		slog.InfoContext(ctx, "LB transitioned to active via heartbeat", "lbId", lbID)
-	}
-
 	now := time.Now().UTC()
 	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
 	lb.LastHeartbeat = now
@@ -1160,9 +1151,12 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	// Both writes touch only the fields this heartbeat owns, under CAS, so a
 	// concurrent config re-render of the same LB is never rolled back.
 	switch {
-	case stateChanged:
+	case lb.State == StateProvisioning:
+		// First heartbeat: transition provisioning → active.
+		activated := false
 		committed, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
-			if rec.State == StateProvisioning {
+			activated = rec.State == StateProvisioning
+			if activated {
 				rec.State = StateActive
 				rec.StateReason = ""
 				rec.ActiveSince = now
@@ -1174,11 +1168,13 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist activation", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		// A concurrent timeout can win the CAS; report the committed record and
-		// build no activation config for it.
-		if committed.State != StateActive {
-			lb = committed
+		lb = committed
+		// A concurrent timeout can win the CAS; then report it and build no config.
+		if lb.State != StateActive {
 			break
+		}
+		if activated {
+			slog.InfoContext(ctx, "LB transitioned to active via heartbeat", "lbId", lbID)
 		}
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.

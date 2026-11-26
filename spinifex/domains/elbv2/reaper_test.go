@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,6 +191,12 @@ func TestS7_ReapStuckProvisioningLBsKeepsTheFailedLBsENIAttached(t *testing.T) {
 	}
 }
 
+func terminateCallsOf(l *mockSystemInstanceLauncher) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.terminateCalls...)
+}
+
 // An explicit delete still reclaims the VM and ENI the timeout retained.
 func TestDeleteLoadBalancerReclaimsATimedOutAppliance(t *testing.T) {
 	t.Parallel()
@@ -213,9 +220,7 @@ func TestDeleteLoadBalancerReclaimsATimedOutAppliance(t *testing.T) {
 	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, got.State)
-	launcher.mu.Lock()
-	require.Empty(t, launcher.terminateCalls)
-	launcher.mu.Unlock()
+	require.Empty(t, terminateCallsOf(launcher), "the timeout retains the VM")
 
 	_, err = svc.DeleteLoadBalancer(t.Context(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
@@ -223,11 +228,10 @@ func TestDeleteLoadBalancerReclaimsATimedOutAppliance(t *testing.T) {
 	require.NoError(t, err)
 
 	launcher.waitTerminate()
-	launcher.mu.Lock()
-	assert.Equal(t, []string{"i-stuck"}, launcher.terminateCalls)
-	launcher.mu.Unlock()
+	assert.Equal(t, []string{"i-stuck"}, terminateCallsOf(launcher))
 	_, err = vpcSvc.GetENIRecord(testAccountID, eniID)
-	assert.Error(t, err, "the delete removes the retained ENI")
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, code, "the delete removes the retained ENI")
 	got, err = svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
 	require.NoError(t, err)
 	assert.Nil(t, got)

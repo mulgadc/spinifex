@@ -6,7 +6,9 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -151,6 +153,11 @@ func TestClientCertificate_RedactsKey(t *testing.T) {
 	iss, _ := newTestIssuer(t)
 	cc, err := iss.Issue("123456789012", "c")
 	require.NoError(t, err)
-	assert.NotContains(t, cc.String(), cc.Key.D.String())
-	assert.NotContains(t, cc.GoString(), cc.Key.D.String())
+	raw, err := cc.Key.Bytes()
+	require.NoError(t, err)
+	secret := hex.EncodeToString(raw)
+	for _, out := range []string{cc.String(), cc.GoString(), fmt.Sprintf("%+v", cc), fmt.Sprintf("%#v", cc)} {
+		assert.NotContains(t, out, secret)
+	}
+	assert.Equal(t, "<nil>", (*ClientCertificate)(nil).LogValue().String())
 }

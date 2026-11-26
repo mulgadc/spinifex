@@ -257,11 +257,6 @@ type Config struct {
 	// guessing at a sleep.
 	ready chan struct{}
 
-	// volumeTurns orders the publishes and unpublishes of each volume, and
-	// publishSlots bounds the publishes running at once.
-	volumeTurns  volumeTurns
-	publishSlots chan struct{}
-
 	mu sync.Mutex
 }
 

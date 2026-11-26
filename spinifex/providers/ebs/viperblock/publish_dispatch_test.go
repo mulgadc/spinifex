@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -217,8 +218,8 @@ func assertNotExported(t *testing.T, cfg *Config, volume string) {
 	t.Helper()
 	_, mounted := findMountedVolume(cfg, volume)
 	assert.False(t, mounted, "%s is still exported", volume)
-	_, held := cfg.leases.currentOwner(t.Context(), volume)
-	assert.False(t, held, "%s is still leased", volume)
+	_, err := cfg.leases.kv.Get(t.Context(), volume)
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "%s is still leased, or its lease could not be read", volume)
 }
 
 // An unpublish that arrives while a publish of the same volume is in flight
@@ -256,7 +257,10 @@ func TestProviderDispatch_RollbackAfterDelayedPublishLeavesNoExport(t *testing.T
 	expectNoReply(t, rollback, "the rollback replied before the publish it rolls back had finished")
 
 	held.releaseAll()
-	awaitReply(t, rollback)
+	var unpublished ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(awaitReply(t, rollback).Data, &unpublished))
+	require.Nil(t, unpublished.Error)
+	assert.True(t, unpublished.TornDown, "the rollback must tear down the export the delayed publish made")
 	assertNotExported(t, cfg, "vol-a")
 }
 

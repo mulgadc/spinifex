@@ -58,6 +58,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 }
 
 func TestNATSIGWService_CreateInternetGateway(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSIGWServiceTest(t)
 
 	out, err := client.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
@@ -67,6 +68,7 @@ func TestNATSIGWService_CreateInternetGateway(t *testing.T) {
 }
 
 func TestNATSIGWService_DescribeInternetGateways(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSIGWServiceTest(t)
 
 	_, err := client.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
@@ -78,6 +80,7 @@ func TestNATSIGWService_DescribeInternetGateways(t *testing.T) {
 }
 
 func TestNATSIGWService_DeleteInternetGateway(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSIGWServiceTest(t)
 
 	createOut, err := client.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
@@ -90,6 +93,7 @@ func TestNATSIGWService_DeleteInternetGateway(t *testing.T) {
 }
 
 func TestNATSIGWService_AttachAndDetach(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSIGWServiceTest(t)
 
 	createOut, err := client.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)

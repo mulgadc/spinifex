@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -102,3 +103,50 @@ func (acceptingVolumeState) UpdateVolumeState(_, _, _, _, _ string) error { retu
 type nopPlumber struct{ recordingPlumber }
 
 func (*nopPlumber) CleanupTap(string) error { return nil }
+
+// An unmount holds EBSRequests.Mu across its seals, so a Mount that commits its
+// exports meanwhile must wait for that lock without holding the manager lock.
+func TestVolumeMounterAdapter_CommitExportsWaitsOutsideTheManagerLock(t *testing.T) {
+	mgr := vm.NewManager()
+	adapter := newVolumeMounterAdapter(&stubMounterProvider{}, "node-commit", mgr)
+	instance := &vm.VM{ID: "i-0000000000000003a"}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-commit"}}
+	mgr.Insert(instance)
+
+	instance.EBSRequests.Mu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			instance.EBSRequests.Mu.Unlock()
+		}
+	}()
+	committed := make(chan struct{})
+	go func() {
+		adapter.commitExports(instance, []vm.EBSRequest{{Name: "vol-commit", NBDURI: "nbd://commit"}})
+		close(committed)
+	}()
+	assert.Never(t, func() bool {
+		select {
+		case <-committed:
+			return true
+		default:
+			return false
+		}
+	}, 200*time.Millisecond, 10*time.Millisecond, "the commit did not wait for the requests lock")
+
+	inspected := make(chan struct{})
+	go func() {
+		mgr.Inspect(instance, func(*vm.VM) {})
+		close(inspected)
+	}()
+	select {
+	case <-inspected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the manager lock was held while the commit waited for the requests lock")
+	}
+
+	instance.EBSRequests.Mu.Unlock()
+	unlocked = true
+	<-committed
+	assert.Equal(t, "nbd://commit", instance.EBSRequests.Requests[0].NBDURI)
+}

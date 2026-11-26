@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 )
 
@@ -42,6 +43,13 @@ func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapaci
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// The gateway checks the MaxResults range; Parse here checks only the token.
+	pageReq, err := paging.EC2{}.Parse(nil, input.NextToken, 0)
+	if err != nil {
+		return output, err
+	}
+	pageReq.Limit = int(aws.Int64Value(input.MaxResults))
+
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return output, fmt.Errorf("failed to marshal input: %w", err)
@@ -61,7 +69,9 @@ func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapaci
 		}
 	}
 
-	output.CapacityReservations = filterReservations(all, aws.StringValueSlice(input.CapacityReservationIds), filters)
+	matched := filterReservations(all, aws.StringValueSlice(input.CapacityReservationIds), filters)
+	output.CapacityReservations, output.NextToken = paging.EC2Page(matched,
+		func(r *ec2.CapacityReservation) string { return aws.StringValue(r.CapacityReservationId) }, pageReq)
 	return output, nil
 }
 

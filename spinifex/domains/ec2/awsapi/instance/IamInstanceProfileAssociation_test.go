@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -770,4 +771,79 @@ func TestResolveAndAuthorizeProfile_DanglingRoleSurfacesNoSuchEntityBeforePassRo
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
 	assert.False(t, checkCalled, "a dangling role is reported without evaluating iam:PassRole")
+}
+
+func answerAssociations(t *testing.T, nc *nats.Conn, n int) {
+	t.Helper()
+	var assocs []*ec2.IamInstanceProfileAssociation
+	for i := range n {
+		assocs = append(assocs, &ec2.IamInstanceProfileAssociation{
+			AssociationId: aws.String(fmt.Sprintf("iip-assoc-%03d", i)),
+			InstanceId:    aws.String(fmt.Sprintf("i-%03d", i)),
+		})
+	}
+	resp, err := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{IamInstanceProfileAssociations: assocs})
+	require.NoError(t, err)
+	_, err = nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) { _ = msg.Respond(resp) })
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+}
+
+func TestDescribeIamInstanceProfileAssociations_PagesThroughEveryAssociationOnce(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	answerAssociations(t, nc, 7)
+
+	got := map[string]bool{}
+	var token *string
+	pages := 0
+	for {
+		out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
+			MaxResults: aws.Int64(5), NextToken: token,
+		}, nc, 1, testGwAccountID)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(out.IamInstanceProfileAssociations), 5)
+		for _, a := range out.IamInstanceProfileAssociations {
+			assert.False(t, got[*a.AssociationId], "%s returned twice", *a.AssociationId)
+			got[*a.AssociationId] = true
+		}
+		pages++
+		if out.NextToken == nil {
+			break
+		}
+		token = out.NextToken
+	}
+	assert.Equal(t, 2, pages)
+	assert.Len(t, got, 7)
+}
+
+// AWS answers MaxResults 4 and 1001 without an error; the page holds 5 and 1000.
+func TestDescribeIamInstanceProfileAssociations_ClampsOutOfRangeMaxResults(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	answerAssociations(t, nc, 7)
+
+	out, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
+		MaxResults: aws.Int64(4), AssociationIds: []*string{aws.String("iip-assoc-000")},
+	}, nc, 1, testGwAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.IamInstanceProfileAssociations, 5)
+	assert.NotNil(t, out.NextToken)
+
+	out, err = DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
+		MaxResults: aws.Int64(1001),
+	}, nc, 1, testGwAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.IamInstanceProfileAssociations, 7)
+	assert.Nil(t, out.NextToken)
+}
+
+func TestDescribeIamInstanceProfileAssociations_RefusesForeignToken(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	_, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
+		NextToken: aws.String("not-a-token"),
+	}, nc, 1, testGwAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
 }

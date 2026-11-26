@@ -12,12 +12,13 @@ import (
 // Enum sets the List* operations accept, in the order AWS lists them in its
 // refusal. launchType also accepts FMI, which AWS takes but the model omits.
 var (
-	listLaunchTypes             = []string{"EC2", "FARGATE", "EXTERNAL", "FMI", "MANAGED_INSTANCES"}
-	listSchedulingStrategies    = []string{"REPLICA", "DAEMON"}
-	listResourceManagementTypes = []string{"CUSTOMER", "ECS"}
-	listSortOrders              = []string{"ASC", "DESC"}
-	listTaskDefinitionStatuses  = []string{"ACTIVE", "INACTIVE", "DELETE_IN_PROGRESS"}
-	listDesiredStatuses         = []string{"RUNNING", "PENDING", "STOPPED"}
+	listLaunchTypes                  = []string{"EC2", "FARGATE", "EXTERNAL", "FMI", "MANAGED_INSTANCES"}
+	listSchedulingStrategies         = []string{"REPLICA", "DAEMON"}
+	listResourceManagementTypes      = []string{"CUSTOMER", "ECS"}
+	listSortOrders                   = []string{"ASC", "DESC"}
+	listTaskDefinitionStatuses       = []string{"ACTIVE", "INACTIVE", "DELETE_IN_PROGRESS"}
+	listTaskDefinitionFamilyStatuses = []string{"ACTIVE", "INACTIVE", "ALL"}
+	listDesiredStatuses              = []string{"RUNNING", "PENDING", "STOPPED"}
 )
 
 // checkListEnum refuses a set value outside allowed, naming the member as

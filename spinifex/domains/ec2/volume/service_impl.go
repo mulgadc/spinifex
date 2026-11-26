@@ -378,11 +378,12 @@ var describeVolumesValidFilters = map[string]bool{
 	"tag-value":              true,
 }
 
-// The ranges are the botocore model's: 5 to 500 for DescribeVolumes and
-// DescribeVolumesModifications, 5 to 1000 for DescribeVolumeStatus.
+// The ranges are 5 to 500 for DescribeVolumes and DescribeVolumesModifications
+// and 5 to 1000 for DescribeVolumeStatus. DescribeVolumes caps a larger value at
+// 500, because the AWS CLI sends 1000 by default.
 var describeVolumesPaging = paging.EC2{
 	MaxResults: 500,
-	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value less than or equal to 500.",
+	Clamp:      true,
 	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
 	WithIDs:    "The parameter volumeIdSet cannot be used with the parameter maxResults",
 }

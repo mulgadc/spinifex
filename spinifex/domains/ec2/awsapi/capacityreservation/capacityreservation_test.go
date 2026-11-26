@@ -3,6 +3,7 @@ package capacityreservation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
@@ -302,4 +303,58 @@ func TestCancelCapacityReservation_Found(t *testing.T) {
 	}, nc, 1, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, aws.BoolValue(out.Return))
+}
+
+// Reservations from every node page together after the filter; cr-01, which
+// the filter drops, sorts inside the first page.
+func TestDescribeCapacityReservations_PageWalkFollowsFilters(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	var node1, node2 ec2.DescribeCapacityReservationsOutput
+	var want []string
+	for i := range 10 {
+		id := fmt.Sprintf("cr-%02d", i)
+		r := reservation(id, "t3.micro", "az-1")
+		if i == 1 {
+			r.InstanceType = aws.String("t3.small")
+		} else {
+			want = append(want, id)
+		}
+		if i%2 == 0 {
+			node1.CapacityReservations = append(node1.CapacityReservations, r)
+		} else {
+			node2.CapacityReservations = append(node2.CapacityReservations, r)
+		}
+	}
+	sub, err := nc.Subscribe("ec2.DescribeCapacityReservations", func(msg *nats.Msg) {
+		for _, o := range []ec2.DescribeCapacityReservationsOutput{node1, node2} {
+			data, _ := json.Marshal(o)
+			_ = nc.Publish(msg.Reply, data)
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	filters := []*ec2.Filter{{Name: aws.String("instance-type"), Values: aws.StringSlice([]string{"t3.micro"})}}
+
+	var seen []string
+	var token *string
+	for range 10 {
+		out, err := DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{
+			Filters: filters, MaxResults: aws.Int64(4), NextToken: token,
+		}, nc, 2, testAccountID)
+		require.NoError(t, err)
+		for _, r := range out.CapacityReservations {
+			seen = append(seen, *r.CapacityReservationId)
+		}
+		if out.NextToken == nil {
+			break
+		}
+		require.Len(t, out.CapacityReservations, 4, "a page before the last is full")
+		token = out.NextToken
+	}
+	require.NotNil(t, token, "the walk took more than one page")
+	assert.Equal(t, want, seen)
+
+	_, err = DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{NextToken: aws.String("garbage")}, nc, 2, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value ( garbage ) for parameter NextToken is invalid. The token is invalid.")
 }

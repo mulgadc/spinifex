@@ -173,3 +173,24 @@ func TestReads_UseTheGossipedDerivationWhenSet(t *testing.T) {
 	gossiped = true
 	assert.Equal(t, []string{"10.0.0.10/32"}, read())
 }
+
+// The one-list reads still refuse a MaxResults outside their range and a token
+// this service did not issue.
+func TestDescribePrefixLists_ValidatePaging(t *testing.T) {
+	s := newService(map[string]config.Config{"n1": node("10.0.0.2", "")})
+	ctx := context.Background()
+	bad := aws.String("5")
+
+	_, err := s.DescribePrefixLists(ctx, &ec2.DescribePrefixListsInput{MaxResults: aws.Int64(4)}, "")
+	require.ErrorContains(t, err, "Value ( 4 ) for parameter maxResults is invalid. Expecting a value greater than or equal to 5.")
+	_, err = s.DescribePrefixLists(ctx, &ec2.DescribePrefixListsInput{NextToken: bad}, "")
+	require.ErrorContains(t, err, "Value ( 5 ) for parameter NextToken is invalid. The token is invalid.")
+
+	_, err = s.DescribeManagedPrefixLists(ctx, &ec2.DescribeManagedPrefixListsInput{MaxResults: aws.Int64(101)}, "")
+	require.ErrorContains(t, err, "Value ( 101 ) for parameter maxResults is invalid. Expecting a value between 1 and 100.")
+	_, err = s.DescribeManagedPrefixLists(ctx, &ec2.DescribeManagedPrefixListsInput{NextToken: bad}, "")
+	require.ErrorContains(t, err, "Value ( 5 ) for parameter NextToken is invalid. The token is invalid.")
+	out, err := s.DescribeManagedPrefixLists(ctx, &ec2.DescribeManagedPrefixListsInput{MaxResults: aws.Int64(1)}, "")
+	require.NoError(t, err)
+	assert.Len(t, out.PrefixLists, 1)
+}

@@ -116,3 +116,11 @@ func TestDescribePrincipalIdFormat_ResourcesKeepFixedOrder(t *testing.T) {
 	_, err = DescribePrincipalIdFormat(&ec2.DescribePrincipalIdFormatInput{Resources: aws.StringSlice([]string{"instance", "bogus"})}, idFormatAccount)
 	assertInvalidResourceType(t, err)
 }
+
+func TestDescribePrincipalIdFormat_ForeignTokenRefused(t *testing.T) {
+	_, err := DescribePrincipalIdFormat(&ec2.DescribePrincipalIdFormatInput{NextToken: aws.String("1")}, idFormatAccount)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err = %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value ( 1 ) for parameter NextToken is invalid. The token is invalid.", msg)
+}

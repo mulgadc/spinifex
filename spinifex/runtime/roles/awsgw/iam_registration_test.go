@@ -17,7 +17,7 @@ func iamRegistration(gw *pipeline.Config) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: gwfix.DepsOf(gw).IAM,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gwfix.DepsOf(gw).NATS, (&awsgw.NodeDiscovery{NATS: gwfix.DepsOf(gw).NATS, Expected: gwfix.DepsOf(gw).Nodes}).ActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gwfix.DepsOf(gw).NATS, (&awsgw.NodeDiscovery{NATS: gwfix.DepsOf(gw).NATS, Expected: gwfix.DepsOf(gw).Nodes}).DiscoverNow(ctx), accountID, profileARN)
 		},
 	})
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -877,6 +878,11 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		}
 	}
 
+	pageReq, err := parsePageToken(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+
 	nameSet := awsidentifiers.Set(input.LaunchTemplateNames)
 	idSet := awsidentifiers.Set(input.LaunchTemplateIds)
 
@@ -933,8 +939,17 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		}
 	}
 
+	templates, nextToken := paging.EC2Page(templates, func(t *ec2.LaunchTemplate) string { return *t.LaunchTemplateId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeLaunchTemplates completed", "count", len(templates), "accountID", accountID)
-	return &ec2.DescribeLaunchTemplatesOutput{LaunchTemplates: templates}, nil
+	return &ec2.DescribeLaunchTemplatesOutput{LaunchTemplates: templates, NextToken: nextToken}, nil
+}
+
+// parsePageToken checks only NextToken: the gateway checks the MaxResults range.
+func parsePageToken(maxResults *int64, nextToken *string) (paging.Request, error) {
+	req, err := paging.EC2{}.Parse(nil, nextToken, 0)
+	req.Limit = int(aws.Int64Value(maxResults))
+	return req, err
 }
 
 func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string) bool {
@@ -980,6 +995,11 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.C
 		return nil, err
 	}
 
+	pageReq, err := parsePageToken(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+
 	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
@@ -1002,8 +1022,16 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.C
 		versions = append(versions, versionRecToEC2(header, rec, n == header.DefaultVersionNumber))
 	}
 
+	// Paging sorts by key, so only a paged request reorders explicit Versions.
+	var nextToken *string
+	if pageReq != (paging.Request{}) {
+		versions, nextToken = paging.EC2Page(versions, func(v *ec2.LaunchTemplateVersion) string {
+			return fmt.Sprintf("%020d", aws.Int64Value(v.VersionNumber))
+		}, pageReq)
+	}
+
 	slog.InfoContext(ctx, "DescribeLaunchTemplateVersions completed", "launchTemplateId", header.LaunchTemplateId, "count", len(versions), "accountID", accountID)
-	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: versions}, nil
+	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: versions, NextToken: nextToken}, nil
 }
 
 // selectVersionNumbers resolves the requested Versions/MinVersion/MaxVersion into

@@ -67,6 +67,11 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 	}
 	m.endpointDemux.pass.Lock()
 	defer m.endpointDemux.pass.Unlock()
+	// The last pass left no flow and only this loop installs one, so with no
+	// guest to demux there is nothing to read.
+	if m.endpointDemux.clear.Load() && len(m.imdsDatapathTargets()) == 0 {
+		return nil
+	}
 	// A pass may install flows from intent read before a delete, so the node
 	// reads held from before that read until the pass ends.
 	m.endpointDemux.clear.Store(false)

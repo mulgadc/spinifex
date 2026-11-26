@@ -1,6 +1,7 @@
 package spotinstance
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -344,4 +345,52 @@ func TestDescribe_MergesBothBuckets(t *testing.T) {
 	assert.Equal(t, ec2.SpotInstanceStateActive, states["sir-active"])
 	assert.Equal(t, ec2.SpotInstanceStateCancelled, states["sir-cancel"])
 	assert.Equal(t, ec2.SpotInstanceStateClosed, states["sir-close"])
+}
+
+func TestDescribe_PagesThroughEveryRequestOnce(t *testing.T) {
+	svc := setupTestService(t)
+	for i := range 7 {
+		putSIRs(t, svc, makeSIR(fmt.Sprintf("sir-%03d", i), fmt.Sprintf("i-%03d", i)))
+	}
+
+	got := map[string]bool{}
+	var token *string
+	pages := 0
+	for {
+		out, err := svc.DescribeSpotInstanceRequests(t.Context(), &ec2.DescribeSpotInstanceRequestsInput{
+			MaxResults: aws.Int64(5), NextToken: token,
+		}, testAccountID)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(out.SpotInstanceRequests), 5)
+		for _, r := range out.SpotInstanceRequests {
+			id := aws.StringValue(r.SpotInstanceRequestId)
+			assert.False(t, got[id], "%s returned twice", id)
+			got[id] = true
+		}
+		pages++
+		if out.NextToken == nil {
+			break
+		}
+		token = out.NextToken
+	}
+	assert.Equal(t, 2, pages)
+	assert.Len(t, got, 7)
+}
+
+func TestDescribe_RefusesForeignToken(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeSpotInstanceRequests(t.Context(), &ec2.DescribeSpotInstanceRequestsInput{
+		NextToken: aws.String("not-a-token"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
+}
+
+func TestDescribe_RefusesMaxResultsBelowFive(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeSpotInstanceRequests(t.Context(), &ec2.DescribeSpotInstanceRequestsInput{
+		MaxResults: aws.Int64(4),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
 }

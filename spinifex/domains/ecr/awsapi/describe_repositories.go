@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 // describeRepositoriesRequest is the camelCase AWS JSON 1.1 input shape. The
@@ -19,12 +20,13 @@ type describeRepositoriesRequest struct {
 	RegistryID      string   `json:"registryId"`
 	RepositoryNames []string `json:"repositoryNames"`
 	MaxResults      *int64   `json:"maxResults"`
+	NextToken       *string  `json:"nextToken"`
 }
 
 // DescribeRepositories lists repositories visible in the caller's account.
 // A registryId for a different account is denied until registry-policy v2
-// implements the Q8 cross-account policy model. Pagination (Q9) is not yet
-// implemented, so an unfiltered request returns the complete local list.
+// implements the cross-account policy model. An unnamed request is paged by
+// repository name.
 //
 // The caller supplies the advertised endpoint profile because it is deployment
 // composition, rather than ECR resource state.
@@ -49,18 +51,20 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 		return nil, ConstraintError("RepositoryNameList", fmt.Sprintf("Must have length less than or equal to %d", maxRepositoryNameList))
 	}
 
-	if err := validateMaxResults(req.MaxResults); err != nil {
+	page, err := parsePage(req.MaxResults, req.NextToken, "repositoryNames", len(req.RepositoryNames))
+	if err != nil {
 		return nil, err
 	}
 
 	names := req.RepositoryNames
+	var next *string
 	if len(names) == 0 {
-		var err error
 		names, err = store.ListRepos(ctx, accountID)
 		if err != nil {
 			slog.ErrorContext(ctx, "ECR DescribeRepositories: list repositories failed", "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		names, next = paging.EC2Page(names, func(name string) string { return name }, page)
 	}
 
 	repositories := make([]*ecr.Repository, 0, len(names))
@@ -76,5 +80,5 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 		repositories = append(repositories, endpoint.RepositoryFromMeta(accountID, name, meta))
 	}
 
-	return &ecr.DescribeRepositoriesOutput{Repositories: repositories}, nil
+	return &ecr.DescribeRepositoriesOutput{Repositories: repositories, NextToken: next}, nil
 }

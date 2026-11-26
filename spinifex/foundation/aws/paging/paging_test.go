@@ -102,3 +102,14 @@ func TestEC2Parse(t *testing.T) {
 	_, err = p.Parse(nil, aws.String("garbage"), 0)
 	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidPaginationToken, "Next token 'garbage' is invalid")
 }
+
+func TestEC2Parse_ClampCapsALargerMaxResults(t *testing.T) {
+	p := paging.EC2{MaxResults: 500, Clamp: true, TooSmall: "too small %d"}
+
+	req, err := p.Parse(aws.Int64(1000), nil, 0)
+	require.NoError(t, err)
+	assert.Equal(t, paging.Request{Limit: 500}, req)
+
+	_, err = p.Parse(aws.Int64(4), nil, 0)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "too small 4")
+}

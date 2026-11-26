@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -158,6 +159,13 @@ var describeEIGWValidFilters = map[string]bool{
 func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, accountID string) (*ec2.DescribeEgressOnlyInternetGatewaysOutput, error) {
 	var egressOnlyIGWs []*ec2.EgressOnlyInternetGateway
 
+	// The gateway refuses an out-of-range MaxResults with this action's own text.
+	pageReq, err := paging.EC2{}.Parse(nil, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
+	pageReq.Limit = int(aws.Int64Value(input.MaxResults))
+
 	eigwIDs := awsidentifiers.Set(input.EgressOnlyInternetGatewayIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeEIGWValidFilters)
@@ -208,10 +216,13 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 		egressOnlyIGWs = append(egressOnlyIGWs, s.recordToEC2(&record))
 	}
 
+	egressOnlyIGWs, nextToken := paging.EC2Page(egressOnlyIGWs, func(g *ec2.EgressOnlyInternetGateway) string { return *g.EgressOnlyInternetGatewayId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeEgressOnlyInternetGateways completed", "count", len(egressOnlyIGWs), "accountID", accountID)
 
 	return &ec2.DescribeEgressOnlyInternetGatewaysOutput{
 		EgressOnlyInternetGateways: egressOnlyIGWs,
+		NextToken:                  nextToken,
 	}, nil
 }
 

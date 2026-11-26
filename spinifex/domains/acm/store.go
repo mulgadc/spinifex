@@ -110,8 +110,8 @@ type CertRecord struct {
 	// CertificateDetail.InUseBy field.
 	InUseBy []string `json:"in_use_by,omitempty"`
 
-	// CreatedAt is the first import and survives re-imports, which move
-	// ImportedAt. Zero on records stored before it was kept.
+	// CreatedAt is the request or first import time and survives re-imports,
+	// which move ImportedAt. Zero on records stored before it was kept.
 	CreatedAt time.Time `json:"created_at"`
 
 	// Type is the ACM certificate type: AMAZON_ISSUED, PRIVATE or IMPORTED.

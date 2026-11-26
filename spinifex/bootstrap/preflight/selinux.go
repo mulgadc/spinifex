@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -16,9 +17,11 @@ import (
 const (
 	selinuxEnforce = "/sys/fs/selinux/enforce"
 	selinuxConfig  = "/etc/selinux/config"
-	// selinuxModuleDir is the policy store entry semodule -X 300 -i creates;
-	// %s is the policy type from the SELINUXTYPE line.
-	selinuxModuleDir = "/var/lib/selinux/%s/active/modules/300/spinifex"
+	// selinuxModulesDir is the policy store semodule writes; %s is the policy
+	// type. It holds <priority>/<name> per module and disabled/<name> markers.
+	selinuxModulesDir = "/var/lib/selinux/%s/active/modules"
+	selinuxModule     = "spinifex"
+	selinuxPriority   = 300
 )
 
 // selinuxLabel is a path whose SELinux type the Spinifex module sets. A path
@@ -87,21 +90,43 @@ func checkSELinuxMode(mode string) Result {
 	}
 }
 
+// checkSELinuxModule passes only when the priority-300 spinifex module is the
+// one in effect: present, not disabled, and not overridden at a higher priority.
 func checkSELinuxModule(root string) Result {
-	dir := fmt.Sprintf(selinuxModuleDir, selinuxPolicyType(root))
-	_, err := os.Stat(filepath.Join(root, dir))
+	dir := fmt.Sprintf(selinuxModulesDir, selinuxPolicyType(root))
+	fail := func(detail string) Result {
+		return Result{Path: dir, Kind: "selinux", Status: Failed, Detail: detail}
+	}
+	entries, err := os.ReadDir(filepath.Join(root, dir))
 	switch {
-	case err == nil:
-		return Result{Path: dir, Kind: "selinux", Status: OK}
 	case errors.Is(err, fs.ErrPermission):
 		return Result{Path: dir, Kind: "selinux", Status: Warning,
 			Detail: "cannot read the SELinux policy store; run 'sudo spx admin preflight' to check the spinifex module"}
-	case errors.Is(err, fs.ErrNotExist):
-		return Result{Path: dir, Kind: "selinux", Status: Failed,
-			Detail: "the spinifex SELinux module is not loaded; re-run the Spinifex installer"}
-	default:
-		return Result{Path: dir, Kind: "selinux", Status: Failed, Detail: err.Error()}
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return fail(err.Error())
 	}
+	loaded, top := false, 0
+	for _, e := range entries {
+		prio, perr := strconv.Atoi(e.Name())
+		if perr != nil || !e.IsDir() {
+			continue
+		}
+		if _, serr := os.Stat(filepath.Join(root, dir, e.Name(), selinuxModule)); serr != nil {
+			continue
+		}
+		loaded = loaded || prio == selinuxPriority
+		top = max(top, prio)
+	}
+	if !loaded {
+		return fail("the spinifex SELinux module is not loaded at priority 300; re-run the Spinifex installer")
+	}
+	if top > selinuxPriority {
+		return fail(fmt.Sprintf("a spinifex module at priority %d overrides the one the installer loads; remove it with 'semodule -X %d -r spinifex'", top, top))
+	}
+	if _, err := os.Stat(filepath.Join(root, dir, "disabled", selinuxModule)); err == nil {
+		return fail("the spinifex SELinux module is disabled; run 'semodule -e spinifex'")
+	}
+	return Result{Path: dir, Kind: "selinux", Status: OK}
 }
 
 // selinuxPolicyType reads SELINUXTYPE from the config, as libselinux does,

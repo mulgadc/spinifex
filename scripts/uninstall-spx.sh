@@ -479,14 +479,10 @@ if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
     run sudo nmcli general reload conf 2>/dev/null || true
 fi
 
-# The SELinux policy module setup.sh loads where SELinux is enabled, and the
-# /etc/ipsec.secrets it creates empty. A file with content may hold other keys.
+# The SELinux policy module setup.sh loads on Oracle Linux with SELinux enabled.
 if spinifex_selinux_module; then
     log "removing the SELinux policy module"
     run sudo semodule -X 300 -r spinifex
-fi
-if sudo test -f /etc/ipsec.secrets && ! sudo test -s /etc/ipsec.secrets; then
-    rm_path /etc/ipsec.secrets
 fi
 
 # ---------------------------------------------------------------------------
@@ -712,6 +708,7 @@ for u in "${IPSEC_UNITS[@]}"; do
     [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] && kept "$u: masked, as IPsec was off"
 done
 command -v getenforce >/dev/null 2>&1 && kept "SELinux: $(getenforce 2>/dev/null); setup.sh never changes the mode"
+exists /etc/ipsec.secrets && kept "/etc/ipsec.secrets: setup.sh creates it empty where libreswan and SELinux are on, and libreswan may use it"
 GPU_FILES=""
 for gpu in /etc/modprobe.d/vfio-pci.conf /etc/dracut.conf.d/spinifex-vfio.conf; do
     exists "$gpu" && GPU_FILES="${GPU_FILES:+$GPU_FILES, }$gpu"

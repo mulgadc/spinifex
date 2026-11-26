@@ -27,9 +27,9 @@ exit 0
 EOF
 chmod +x "$TMP/sudo"
 
-# run_case <name> <selinux on|off|absent> <extract dir> <pluto yes|no>
+# run_case <name> <selinux on|off|absent> <extract dir> <pluto yes|no> [os id]
 run_case() {
-    name="$1" mode="$2" extract="$3" pluto="$4"
+    name="$1" mode="$2" extract="$3" pluto="$4" os="${5:-ol}"
     bin="$TMP/$name/bin"
     CALLS="$TMP/$name/calls"
     mkdir -p "$bin"
@@ -46,7 +46,7 @@ run_case() {
     RC=0
     # PATH keeps only the stubs and the base tools, so a host selinuxenabled is never found.
     OUT=$(PATH="$bin:/usr/bin:/bin" SPINIFEX_PLUTO="$PLUTO" INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '
-        . "$1"; SUDO="$2"; EXTRACT_DIR="$3"; install_selinux_policy' _ "$SETUP" "$TMP/sudo" "$extract" 2>&1) || RC=$?
+        . "$1"; SUDO="$2"; EXTRACT_DIR="$3"; ID="$4"; install_selinux_policy' _ "$SETUP" "$TMP/sudo" "$extract" "$os" 2>&1) || RC=$?
 }
 
 # recursed <path> — true when an -RF restorecon call names exactly this path.
@@ -118,6 +118,23 @@ if [ "$RC" = 0 ] && ! grep -q "^install .*/etc/ipsec.secrets" "$CALLS"; then
     pass "creates no /etc/ipsec.secrets without libreswan"
 else
     fail "created /etc/ipsec.secrets without libreswan: $(cat "$CALLS")"
+fi
+
+run_case debian on "$EXTRACT" yes debian
+if [ "$RC" = 0 ] && [ ! -s "$CALLS" ]; then
+    pass "does nothing on Debian with SELinux enabled"
+else
+    fail "ran commands on Debian with SELinux enabled (rc $RC): $(cat "$CALLS") $OUT"
+fi
+
+# The systemd stage starts the NATS watchdog timer, which executes a script this
+# stage labels, so main must run this stage first.
+selinux_line=$(grep -n '^ *stage_enabled selinux *&& install_selinux_policy' "$SETUP" | cut -d: -f1)
+systemd_line=$(grep -n '^ *stage_enabled systemd *&& install_systemd' "$SETUP" | cut -d: -f1)
+if [ -n "$selinux_line" ] && [ -n "$systemd_line" ] && [ "$selinux_line" -lt "$systemd_line" ]; then
+    pass "main labels the scripts before the systemd stage starts units"
+else
+    fail "main runs the systemd stage before the selinux stage (lines ${selinux_line:-none}, ${systemd_line:-none})"
 fi
 
 mkdir -p "$TMP/empty"

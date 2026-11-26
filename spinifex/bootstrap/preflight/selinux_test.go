@@ -22,6 +22,7 @@ type selinuxHost struct {
 	enforce string // "" leaves selinuxfs unmounted
 	config  string // "" writes no /etc/selinux/config
 	module  string // policy type whose store holds the module; "" for none
+	extra   []string // more store paths, relative to that type's modules dir
 	labels  map[string]string
 }
 
@@ -44,8 +45,12 @@ func (h selinuxHost) build(t *testing.T) string {
 		write(selinuxConfig, h.config)
 	}
 	if h.module != "" {
-		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf(selinuxModuleDir, h.module)), 0o755); err != nil {
+		store := fmt.Sprintf(selinuxModulesDir, h.module)
+		if err := os.MkdirAll(filepath.Join(root, store, "300", selinuxModule), 0o755); err != nil {
 			t.Fatal(err)
+		}
+		for _, p := range h.extra {
+			write(filepath.Join(store, p), "")
 		}
 	}
 	orig := fileLabel
@@ -112,11 +117,27 @@ func TestCheckHostAt_SELinux(t *testing.T) {
 		},
 		"module missing": {
 			host: selinuxHost{enforce: "1", config: cfg, labels: scriptLabels(nil)},
-			path: fmt.Sprintf(selinuxModuleDir, "targeted"), want: Failed, detail: "not loaded", problem: true,
+			path: fmt.Sprintf(selinuxModulesDir, "targeted"), want: Failed, detail: "not loaded", problem: true,
+		},
+		"module loaded": {
+			host: selinuxHost{enforce: "1", config: cfg, module: "targeted", extra: []string{"100/base/cil"}, labels: scriptLabels(nil)},
+			path: fmt.Sprintf(selinuxModulesDir, "targeted"), want: OK,
+		},
+		"module disabled": {
+			host: selinuxHost{enforce: "1", config: cfg, module: "targeted", extra: []string{"disabled/spinifex"}, labels: scriptLabels(nil)},
+			path: fmt.Sprintf(selinuxModulesDir, "targeted"), want: Failed, detail: "semodule -e spinifex", problem: true,
+		},
+		"module overridden at a higher priority": {
+			host: selinuxHost{enforce: "1", config: cfg, module: "targeted", extra: []string{"400/spinifex/cil"}, labels: scriptLabels(nil)},
+			path: fmt.Sprintf(selinuxModulesDir, "targeted"), want: Failed, detail: "priority 400", problem: true,
+		},
+		"a lower-priority copy does not override": {
+			host: selinuxHost{enforce: "1", config: cfg, module: "targeted", extra: []string{"200/spinifex/cil"}, labels: scriptLabels(nil)},
+			path: fmt.Sprintf(selinuxModulesDir, "targeted"), want: OK,
 		},
 		"module looked up under the configured policy type": {
 			host: selinuxHost{enforce: "1", config: "SELINUXTYPE=\"mls\"\n", module: "targeted", labels: scriptLabels(nil)},
-			path: fmt.Sprintf(selinuxModuleDir, "mls"), want: Failed, detail: "not loaded", problem: true,
+			path: fmt.Sprintf(selinuxModulesDir, "mls"), want: Failed, detail: "not loaded", problem: true,
 		},
 		"script left var_lib_t": {
 			host: selinuxHost{enforce: "1", config: cfg, module: "targeted", labels: scriptLabels(map[string]string{

@@ -234,9 +234,10 @@ check_selinux_policy_type() {
     fi
 }
 
-# True when SELinux is enabled, in enforcing or permissive mode.
+# True on an Oracle Linux host with SELinux enabled, in enforcing or permissive
+# mode. The module is written for Oracle's targeted policy only.
 selinux_enabled() {
-    command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled
+    [ "${ID:-}" = ol ] && command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled
 }
 
 # Installed paths that restorecon may relabel, each one entry only. Guest
@@ -252,7 +253,7 @@ SELINUX_RELABEL_TREES="/usr/local/share/spinifex /usr/local/lib/spinifex /usr/sh
 install_selinux_policy() {
     stage "installing the SELinux policy module"
     if ! selinux_enabled; then
-        info "SELinux is disabled; the Spinifex policy module is not installed"
+        info "Not Oracle Linux with SELinux enabled; the Spinifex policy module is not installed"
         return 0
     fi
     local cil="$EXTRACT_DIR/selinux/spinifex.cil"
@@ -2444,6 +2445,8 @@ main() {
     stage_enabled directories && create_directories
     stage_enabled env        && install_systemd_env
     stage_enabled fixown     && fix_file_ownership
+    # Before systemd: the units it starts execute scripts this stage labels.
+    stage_enabled selinux    && install_selinux_policy
     stage_enabled systemd    && install_systemd
     stage_enabled sysctl     && install_sysctl
     stage_enabled needrestart && install_needrestart_conf
@@ -2451,7 +2454,6 @@ main() {
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled ocibsd     && install_ocibsd
-    stage_enabled selinux    && install_selinux_policy
     stage_enabled swap       && setup_swap
 
     # Migrations are only safe on a live system (need a running NATS and a

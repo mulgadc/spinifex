@@ -384,7 +384,7 @@ func TestReapStuckProvisioningLBsKeepsAConcurrentDelete(t *testing.T) {
 }
 
 // A timeout that commits before the heartbeat's activation write keeps the LB
-// failed, and the heartbeat neither reports activation nor renders its config.
+// failed; the heartbeat reports no activation and changes no target health or config.
 func TestLBAgentHeartbeatLosingToTimeoutDoesNotActivate(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -393,8 +393,24 @@ func TestLBAgentHeartbeatLosingToTimeoutDoesNotActivate(t *testing.T) {
 	now := time.Now().UTC()
 
 	lb := testLBRecord("racetmo00000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	lb.Type = LoadBalancerTypeNetwork
 	lb.InstanceID = "i-racetmo"
 	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+	const tgArn = "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":targetgroup/racetmo/tg-racetmo"
+	require.NoError(t, svc.store.PutTargetGroup(t.Context(), &TargetGroupRecord{
+		TargetGroupArn: tgArn,
+		TargetGroupID:  "tg-racetmo",
+		Protocol:       ProtocolTCP,
+		Port:           5432,
+		HealthCheck:    nlbHealthCheck(),
+		Targets:        []Target{{Id: "i-backend", Port: 5432, PrivateIP: "10.0.1.10", HealthState: TargetHealthInitial}},
+	}))
+	l := tcpListener(lb.LoadBalancerArn+"/l1", "racetmo-l1", ProtocolTCP, 5432, tgArn)
+	l.LoadBalancerArn = lb.LoadBalancerArn
+	require.NoError(t, svc.store.PutListener(t.Context(), l))
+	tgs, err := svc.store.TargetGroupsForLB(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	require.Len(t, tgs, 1, "the listener associates the target group with the LB")
 
 	inner := svc.store.kv
 	var afterTimeout *LoadBalancerRecord
@@ -407,6 +423,7 @@ func TestLBAgentHeartbeatLosingToTimeoutDoesNotActivate(t *testing.T) {
 
 	out, err := svc.LBAgentHeartbeat(t.Context(), &LBAgentHeartbeatInput{
 		LBID: aws.String(lb.LoadBalancerID), InstanceID: aws.String(lb.InstanceID),
+		Servers: []*LBAgentServerStatus{{Server: aws.String(sanitizeName("srv", "i-backend")), Status: aws.String("UP")}},
 	}, testAccountID)
 	svc.store.kv = inner
 
@@ -426,4 +443,10 @@ func TestLBAgentHeartbeatLosingToTimeoutDoesNotActivate(t *testing.T) {
 	assert.Equal(t, provisioningTimeoutReason(), got.StateReason)
 	assert.Empty(t, got.ConfigHash, "a rejected activation renders no config")
 	assert.Empty(t, got.ConfigText, "a rejected activation renders no config")
+
+	tg, err := svc.store.GetTargetGroup(t.Context(), "tg-racetmo")
+	require.NoError(t, err)
+	require.NotNil(t, tg)
+	require.Len(t, tg.Targets, 1)
+	assert.Equal(t, TargetHealthInitial, tg.Targets[0].HealthState, "a failed LB's report changes no target health")
 }

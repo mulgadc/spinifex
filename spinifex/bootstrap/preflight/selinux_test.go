@@ -19,11 +19,11 @@ const (
 // selinuxHost is one host state: the enforce file, the config, the module
 // store entry and the labels fileLabel returns, keyed by host path.
 type selinuxHost struct {
-	enforce string // "" leaves selinuxfs unmounted
-	config  string // "" writes no /etc/selinux/config
-	module  string // policy type whose store holds the module; "" for none
-	extra   []string // more store paths, relative to that type's modules dir
-	labels  map[string]string
+	enforce string            // "" leaves selinuxfs unmounted
+	config  string            // "" writes no /etc/selinux/config
+	module  string            // policy type whose store holds the module; "" for none
+	extra   []string          // more store paths, relative to that type's modules dir
+	labels  map[string]string // fileLabel results, keyed by host path
 }
 
 func (h selinuxHost) build(t *testing.T) string {

@@ -4,9 +4,10 @@ EXTENDS EBSProvider
 -----------------------------------------------------------------------------------------------------------------------
 \* Interface methods
 
-GetCapabilitiesRequests == {<<>>}
-
 GetCapabilities(req) ==
+  (*******************************************************************************************************************)
+  (* The implementation reports which optional behaviour it supports.                                                *)
+  (*******************************************************************************************************************)
      \* The provider failed to answer.
   \/ /\ val' = None
      /\ err' \in ProviderErrors

@@ -1,15 +1,6 @@
 --------------------------------------------------- MODULE Volumes ----------------------------------------------------
 EXTENDS EBSProvider
 
------------------------------------------------------------------------------------------------------------------------
-\* Interface methods
-
-CreateVolumeRequests == [volumeId               : VolumeIds,
-                         sizeBytes              : 0..MaxBytes,
-                         availabilityZone       : Optional(AvailabilityZones),
-                         sourceSnapshotId       : Optional(SnapshotIds),
-                         parameters             : Optional(Parameters)]
-
 CreateVolume(req) ==
   LET volId     == req.volumeId
       snapId    == req.sourceSnapshotId
@@ -63,8 +54,6 @@ CreateVolume(req) ==
         /\ err' = None
 
 
-GetVolumeRequests == [volumeId : VolumeIds]
-
 GetVolume(req) ==
   LET volId == req.volumeId
 
@@ -85,9 +74,6 @@ GetVolume(req) ==
         /\ err' = None
         /\ UNCHANGED state
 
-
-ListVolumesRequests == [maxResults    : -1..(MaxListResults + 1),
-                        startingToken : Optional(SUBSET VolumeIds)]
 
 ListVolumes(req) ==
   \* The set of errors that this call may return in the current system state. If there are multiple possible
@@ -119,9 +105,6 @@ ListVolumes(req) ==
         /\ UNCHANGED state
 
 
-ExpandVolumeRequests == [volumeId  : VolumeIds,
-                         sizeBytes : 0..MaxBytes]
-
 ExpandVolume(req) ==
   LET volId == req.volumeId
 
@@ -144,8 +127,7 @@ ExpandVolume(req) ==
      \/ /\ Errors = {}
         /\ \/ /\ req.sizeBytes > volumes[volId].sizeBytes
               /\ volumes' = [volumes EXCEPT ![volId].sizeBytes = req.sizeBytes ]
-              \* The new volume size propagates through to any nodes it is published on via the size field on the
-              \* export record.
+              \* The new volume size propagates through to any nodes it is published on.
               /\ publications' = [p \in DOMAIN publications |->
                                     IF p[1] = volId
                                     THEN [publications[p] EXCEPT !.export.sizeBytes = req.sizeBytes]
@@ -162,13 +144,8 @@ ExpandVolume(req) ==
               /\ UNCHANGED state
 
 
-PublishVolumeRequests == [volumeId : VolumeIds,
-                          nodeId   : NodeIds,
-                          readOnly : BOOLEAN]
-
 PublishVolume(req) ==
   LET volId  == req.volumeId
-      nodeId == req.nodeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
@@ -210,12 +187,8 @@ PublishVolume(req) ==
         /\ UNCHANGED <<volumes, snapshots>>
 
 
-UnpublishVolumeRequests == [volumeId : VolumeIds,
-                            nodeId   : NodeIds]
-
 UnpublishVolume(req) ==
   LET volId  == req.volumeId
-      nodeId == req.nodeId
 
      \* The provider failed to answer.
   IN \/ /\ val' = None
@@ -228,8 +201,6 @@ UnpublishVolume(req) ==
         /\ err' = None
         /\ UNCHANGED <<volumes, snapshots>>
 
-
-DeleteVolumeRequests == [volumeId : VolumeIds]
 
 DeleteVolume(req) ==
   LET volId == req.volumeId

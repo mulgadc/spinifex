@@ -4,9 +4,6 @@ EXTENDS EBSProvider
 -----------------------------------------------------------------------------------------------------------------------
 \* Interface methods
 
-CreateSnapshotRequests == [snapshotId : SnapshotIds,
-                           volumeId   : VolumeIds]
-
 CreateSnapshot(req) ==
   LET snapId == req.snapshotId
       volId  == req.volumeId
@@ -45,10 +42,6 @@ CreateSnapshot(req) ==
         /\ UNCHANGED <<volumes, publications>>
 
 
-CopySnapshotRequests == [sourceSnapshotId      : SnapshotIds,
-                         destinationSnapshotId : SnapshotIds,
-                         volumeId              : VolumeIds]
-
 CopySnapshot(req) ==
   LET srcSnapId == req.sourceSnapshotId
       dstSnapId == req.destinationSnapshotId
@@ -83,10 +76,6 @@ CopySnapshot(req) ==
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>
 
-
-ListSnapshotsRequests == [maxResults    : -1..(MaxListResults + 1),
-                          startingToken : Optional(SUBSET SnapshotIds),
-                          snapshotId    : Optional(SnapshotIds)]
 
 \* The ref that ListSnapshots returns for a snapshot.
 SnapshotRef(id) == [id             |-> id,
@@ -134,8 +123,6 @@ ListSnapshots(req) ==
                 /\ err' = None
         /\ UNCHANGED state
 
-
-DeleteSnapshotRequests == [snapshotId : SnapshotIds]
 
 DeleteSnapshot(req) ==
   LET snapId == req.snapshotId

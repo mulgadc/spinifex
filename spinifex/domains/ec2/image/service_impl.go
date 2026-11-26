@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -160,13 +161,26 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 		return nil, err
 	}
 
-	return s.describeImages(ctx, input, accountID, parsedFilters)
+	pageReq, err := describeImagesPaging.Parse(input.MaxResults, input.NextToken, len(input.ImageIds))
+	if err != nil {
+		return nil, err
+	}
+
+	return s.describeImages(ctx, input, accountID, parsedFilters, pageReq)
+}
+
+var describeImagesPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter ImageIds cannot be used with the parameter MaxResults",
 }
 
 // describeImages renders the AWS SDK image shape for every AMI the caller may
 // see. Named IDs read their own documents; an unnamed request enumerates the
 // whole catalog via Store.ListAMIs, which is proportional to its own answer.
-func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeImagesOutput, error) {
+func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string,
+	parsedFilters map[string][]string, pageReq paging.Request) (*ec2.DescribeImagesOutput, error) {
 	encryptedAtRest := s.clusterEncryptionEnabled()
 
 	if len(input.ImageIds) > 0 {
@@ -180,20 +194,27 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 	}
 
 	var images []*ec2.Image
-	var metas []ebsmetadata.AMI
+	metaByID := make(map[string]ebsmetadata.AMI)
 	for _, amiMeta := range amis {
 		if amiMeta.ImageID == "" {
 			continue
 		}
 		if image := renderVisibleImage(amiMeta, input, accountID, parsedFilters, encryptedAtRest); image != nil {
 			images = append(images, image)
-			metas = append(metas, amiMeta)
+			metaByID[amiMeta.ImageID] = amiMeta
 		}
+	}
+
+	// Page before the snapshot reads, so a page costs reads for its own images only.
+	images, nextToken := paging.EC2Page(images, func(image *ec2.Image) string { return *image.ImageId }, pageReq)
+	metas := make([]ebsmetadata.AMI, len(images))
+	for i, image := range images {
+		metas[i] = metaByID[*image.ImageId]
 	}
 	s.applySnapshotEncryption(ctx, metas, images, encryptedAtRest)
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
-	return &ec2.DescribeImagesOutput{Images: images}, nil
+	return &ec2.DescribeImagesOutput{Images: images, NextToken: nextToken}, nil
 }
 
 // describeImagesByIDs reads each named AMI's document directly. Enumerating

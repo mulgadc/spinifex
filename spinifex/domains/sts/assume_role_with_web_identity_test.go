@@ -625,6 +625,7 @@ func TestJWKToECDSAPublicKey_RoundTrip(t *testing.T) {
 }
 
 func TestJWKToECDSAPublicKey_RejectsUnsupportedShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		jwk  *JWK
@@ -648,6 +649,7 @@ func TestJWKToECDSAPublicKey_RejectsUnsupportedShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := jwkToECDSAPublicKey(tc.jwk)
 			require.Error(t, err)
 		})

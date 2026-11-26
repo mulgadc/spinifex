@@ -29,6 +29,7 @@ func (s roleGetterStub) GetRole(_ string, input *iam.GetRoleInput) (*iam.GetRole
 // on. The lookup discards any path the caller wrote, so an ARN that is not the
 // one IAM stored must not reach the role its trailing name happens to match.
 func TestResolveRoleByARN(t *testing.T) {
+	t.Parallel()
 	const account = "000000000000"
 	roles := roleGetterStub{
 		"admin":      "arn:aws:iam::000000000000:role/admin",
@@ -36,6 +37,7 @@ func TestResolveRoleByARN(t *testing.T) {
 	}
 
 	t.Run("stored ARN resolves", func(t *testing.T) {
+		t.Parallel()
 		gotAccount, role, err := stsdomain.ResolveRoleByARN(roles, "arn:aws:iam::000000000000:role/admin")
 		require.NoError(t, err)
 		assert.Equal(t, account, gotAccount)
@@ -43,28 +45,33 @@ func TestResolveRoleByARN(t *testing.T) {
 	})
 
 	t.Run("a pathed role resolves by its full stored ARN", func(t *testing.T) {
+		t.Parallel()
 		_, role, err := stsdomain.ResolveRoleByARN(roles, "arn:aws:iam::000000000000:role/team/app-worker")
 		require.NoError(t, err)
 		assert.Equal(t, "arn:aws:iam::000000000000:role/team/app-worker", aws.StringValue(role.Arn))
 	})
 
 	t.Run("an invented path does not reach the role it names", func(t *testing.T) {
+		t.Parallel()
 		// `app-x/admin` looks up `admin`, whose stored ARN carries no such path.
 		_, _, err := stsdomain.ResolveRoleByARN(roles, "arn:aws:iam::000000000000:role/app-x/admin")
 		require.ErrorIs(t, err, stsdomain.ErrRoleUnresolved)
 	})
 
 	t.Run("a pathed role is not reachable by its pathless ARN", func(t *testing.T) {
+		t.Parallel()
 		_, _, err := stsdomain.ResolveRoleByARN(roles, "arn:aws:iam::000000000000:role/app-worker")
 		require.ErrorIs(t, err, stsdomain.ErrRoleUnresolved)
 	})
 
 	t.Run("a role that does not exist is unresolved", func(t *testing.T) {
+		t.Parallel()
 		_, _, err := stsdomain.ResolveRoleByARN(roles, "arn:aws:iam::000000000000:role/nobody")
 		require.ErrorIs(t, err, stsdomain.ErrRoleUnresolved)
 	})
 
 	t.Run("a malformed ARN is a validation error", func(t *testing.T) {
+		t.Parallel()
 		_, _, err := stsdomain.ResolveRoleByARN(roles, "not-an-arn")
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, stsdomain.ErrRoleUnresolved)

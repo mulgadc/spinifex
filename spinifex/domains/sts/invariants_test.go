@@ -108,11 +108,12 @@ func TestInvariant_SessionCredentialsBucket_UserSessionPrefixEnforced(t *testing
 // console access to one cluster against any other cluster sharing the same
 // IAM trust — a complete authn bypass.
 func TestInvariant_PresignedGetCallerIdentity_CrossClusterReplayRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "invariant-xcluster")
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	urlA := presignTestURL(t, akid, secret, "cluster-A", signedAt, 900)
 
@@ -128,6 +129,7 @@ func TestInvariant_PresignedGetCallerIdentity_CrossClusterReplayRejected(t *test
 	otherClusters := []string{"cluster-B", "cluster-A-prod", "CLUSTER-A", "cluster-A-1"}
 	for _, other := range otherClusters {
 		t.Run(other, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.VerifyPresignedGetCallerIdentity(urlA, other)
 			require.Error(t, err, "URL signed for cluster-A must not verify under %q", other)
 			assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error(),

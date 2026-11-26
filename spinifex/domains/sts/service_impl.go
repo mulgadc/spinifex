@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -33,6 +34,8 @@ type STSServiceImpl struct {
 	iamSvc       iamdomain.IAMService
 	masterKey    []byte
 	jwksResolver ClusterJWKSResolver
+	// presignedNow is the presigned URL clock; tests pin it per service.
+	presignedNow func() time.Time
 }
 
 var (
@@ -79,5 +82,6 @@ func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc iamdomai
 		iamSvc:       iamSvc,
 		masterKey:    masterKey,
 		jwksResolver: jwksResolver,
+		presignedNow: presignedTimeNow,
 	}, nil
 }

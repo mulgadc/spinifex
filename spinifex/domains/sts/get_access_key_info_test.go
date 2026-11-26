@@ -107,6 +107,7 @@ func TestGetAccessKeyInfo_UnknownKeyIsValidationError(t *testing.T) {
 
 // A value that cannot name a stored key is refused on shape, before any KV read.
 func TestGetAccessKeyInfo_MalformedKeyRejectedWithoutLookup(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	stub := &lookupStubIAMService{err: errors.New(awserrors.ErrorIAMNoSuchEntity)}
 	svc.iamSvc = stub
@@ -129,17 +130,20 @@ func TestGetAccessKeyInfo_MalformedKeyRejectedWithoutLookup(t *testing.T) {
 				"Value 'AKIA-012' at 'accessKeyId' failed to satisfy constraint: Member must have length greater than or equal to 16"},
 	}
 
+	// Cleanup runs after the parallel subtests, so the count covers every case.
+	t.Cleanup(func() { assert.Zero(t, stub.calls, "malformed access key ID must not reach the KV bucket") })
+
+	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("")})
+	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String(tc.akid)})
 			assert.Nil(t, out)
 			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.want)
 		})
 	}
-
-	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("")})
-	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
-	assert.Zero(t, stub.calls, "malformed access key ID must not reach the KV bucket")
 }
 
 func TestGetAccessKeyInfo_NilInputIsMissingParameter(t *testing.T) {

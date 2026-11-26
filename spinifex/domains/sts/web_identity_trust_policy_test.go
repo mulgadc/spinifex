@@ -38,6 +38,7 @@ func irsaPolicy(condition string) string {
 }
 
 func TestEvalWebIdentity_ConditionKeys(t *testing.T) {
+	t.Parallel()
 	awsKey := strings.TrimPrefix(testIRSAIssuer, "https://")
 	legacy := testIRSAIssuer
 
@@ -120,6 +121,7 @@ func TestEvalWebIdentity_ConditionKeys(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := evalTrustPolicyForWebIdentity(irsaPolicy(tt.condition), irsaIdentity())
 			if tt.grant {
 				require.NoError(t, err)
@@ -237,6 +239,7 @@ func TestAssumeRoleWithWebIdentity_DenyLogsReasonWithoutToken(t *testing.T) {
 }
 
 func TestEvalWebIdentity_DenialReasons(t *testing.T) {
+	t.Parallel()
 	awsKey := strings.TrimPrefix(testIRSAIssuer, "https://")
 	otherPrincipal := strings.Replace(irsaPolicy(`{"StringEquals":{}}`), testIRSAFedARN, "arn:aws:iam::000000000001:oidc-provider/other", 1)
 	tests := []struct {
@@ -251,6 +254,7 @@ func TestEvalWebIdentity_DenialReasons(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := evalTrustPolicyForWebIdentity(tt.policy, irsaIdentity())
 			var denial *trustPolicyDeniedError
 			require.ErrorAs(t, err, &denial)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -557,7 +558,13 @@ func TestFixtureFence_Vpc(t *testing.T) {
 		// The cascade fails after the mark, so the marked record stays.
 		testutil.OverrideVpcdStubResponse(f.nc, "vpc.delete-sg", []byte(`{"success":false,"error":"held"}`))
 		require.Error(t, f.deleteVPC())
+		assert.Equal(t, 1, f.vpcCheck.runs(), "DeleteVpc ran the dependency check before its mark")
 		require.True(t, f.parentMarked(ec2vpc.KVBucketVPCs, f.vpcID), "the mark won the CAS")
+		// The default group record is deleted before the vpcd request that fails.
+		sg, err := f.vpcs.FindDefaultSGForVPC(testAccountID, f.vpcID)
+		require.NoError(t, err)
+		assert.Empty(t, sg, "the cascade removed the default security group record before it failed")
+		assert.Equal(t, 1, f.mainRouteTables(), "the failed cascade keeps the main route table")
 
 		slot.free()
 		require.ErrorIs(t, f.result(admission), errFixtureVPCUnavailable)
@@ -601,6 +608,52 @@ func TestFixtureFence_DependencyReadFailsAfterTouch(t *testing.T) {
 			if key == claim.Key {
 				require.ErrorIs(t, err, readFail, "the VPC check fails closed too")
 			}
+		})
+	}
+}
+
+// A failed point read of the VPC slot or its claim fails DeleteVpc closed:
+// the VPC record, its default security group and main route table stay.
+func TestFixtureFence_VpcDependencyReadFails(t *testing.T) {
+	t.Parallel()
+	readFail := errors.New("injected read failure")
+
+	for name, failKey := range map[string]func(f *fenceFixture, claim *fixtureClaim) string{
+		"slot read":  func(f *fenceFixture, _ *fixtureClaim) string { return f.vpcSlot() },
+		"claim read": func(_ *fenceFixture, claim *fixtureClaim) string { return claim.Key },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFenceFixture(t)
+			claim := f.begin(f.admit, f.root("aaaa000000000001"))
+			admission, slot := f.holdBeforeSlots(claim)
+			require.NoError(t, f.deleteSubnet())
+			touched := f.admitVPCKV.arm("Update", true, f.isVPC)
+			slot.free()
+			touched.wait(t)
+			require.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.vpcSlot()), "the VPC slot is live when DeleteVpc runs")
+			before := f.parentEntry(ec2vpc.KVBucketVPCs, f.vpcID)
+
+			key := failKey(f, claim)
+			var hit atomic.Bool
+			f.delKV.setFailGet(func(k string) error {
+				if k != key {
+					return nil
+				}
+				hit.Store(true)
+				return readFail
+			})
+			requireFenceCode(t, f.deleteVPC(), awserrors.ErrorServerInternal)
+			f.delKV.setFailGet(nil)
+			assert.True(t, hit.Load(), "DeleteVpc reached the failing read")
+			assert.Equal(t, 1, f.vpcCheck.runs(), "DeleteVpc reached the dependency check")
+			after := f.parentEntry(ec2vpc.KVBucketVPCs, f.vpcID)
+			assert.Equal(t, before.Revision(), after.Revision(), "the VPC record is not rewritten")
+			assert.Equal(t, before.Value(), after.Value())
+			f.assertVPCKept()
+
+			touched.free()
+			require.ErrorIs(t, f.result(admission), errFixtureSubnetUnavailable)
 		})
 	}
 }

@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **31 operations** in the ECS `2014-11-13` API model.
+Spinifex implements **32 operations** in the ECS `2014-11-13` API model.
 
 ### No Fargate
 
@@ -46,6 +46,7 @@ Clusters, services and tasks run on EC2 container instances. There is no Fargate
 | `ListContainerInstances` |
 | `ListServices` |
 | `ListTagsForResource` |
+| `ListTaskDefinitionFamilies` |
 | `ListTaskDefinitions` |
 | `ListTasks` |
 | `PutClusterCapacityProviders` |

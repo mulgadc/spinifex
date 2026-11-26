@@ -28,7 +28,7 @@ func TestNotImplemented(t *testing.T) {
 var wiredActions = map[string]bool{
 	"CreateCluster": true, "DeleteCluster": true, "DescribeClusters": true, "ListClusters": true,
 	"RegisterTaskDefinition": true, "DeregisterTaskDefinition": true,
-	"DescribeTaskDefinition": true, "ListTaskDefinitions": true,
+	"DescribeTaskDefinition": true, "ListTaskDefinitions": true, "ListTaskDefinitionFamilies": true,
 	"RegisterContainerInstance": true, "DeregisterContainerInstance": true,
 	"UpdateContainerInstancesState": true, "ProvisionCapacity": true,
 	"DescribeContainerInstances": true, "ListContainerInstances": true,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	instancesvc "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
@@ -343,6 +344,30 @@ func TestDescribeInstanceTypes_Paging(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, all.InstanceTypes, 7)
 	assert.Nil(t, all.NextToken)
+}
+
+// A token names the next instance type, so a page resumes there even when the
+// catalogue shrank before it, and the offset token once issued is refused.
+func TestDescribeInstanceTypes_TokenResumesByType(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1",
+		instanceTypesPayload(t, "c5.large", "c5.xlarge", "m5.large", "m5.xlarge", "t3.micro", "t3.nano", "t3.small"))
+
+	page1, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{MaxResults: aws.Int64(5)}, nc, 1, nil, "")
+	require.NoError(t, err)
+	require.NotNil(t, page1.NextToken)
+
+	_, shrunk := startTestNATSServer(t)
+	subscribeAsNode(t, shrunk, "ec2.DescribeInstanceTypes", "n1",
+		instanceTypesPayload(t, "c5.xlarge", "m5.large", "t3.micro", "t3.nano", "t3.small"))
+	page2, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{MaxResults: aws.Int64(5), NextToken: page1.NextToken}, shrunk, 1, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"t3.nano", "t3.small"}, instanceTypeNames(page2))
+
+	_, err = DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{MaxResults: aws.Int64(5), NextToken: aws.String("5")}, nc, 1, nil, "")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value ( 5 ) for parameter NextToken is invalid. The token is invalid.")
 }
 
 func TestDescribeInstanceTypes_InstanceTypeFilter(t *testing.T) {

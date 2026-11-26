@@ -805,7 +805,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## ecs
 
-`2014-11-13` — 31 of 88 modelled operations implemented (35.2%), 5 stubbed, 32 require SDK v2, 0 not applicable, 3 registered outside the pinned model.
+`2014-11-13` — 32 of 88 modelled operations implemented (36.4%), 4 stubbed, 32 require SDK v2, 0 not applicable, 3 registered outside the pinned model.
 
 ### Not implemented
 
@@ -869,7 +869,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 - `ListAccountSettings`
 - `ListServicesByNamespace`
-- `ListTaskDefinitionFamilies`
 - `PutAccountSetting`
 - `UpdateCluster`
 

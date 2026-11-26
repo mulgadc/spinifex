@@ -220,7 +220,7 @@ install_spinifex() {
         # rather than in it, and the later steps run the installed copy.
         on 'test -x /usr/local/share/spinifex/setup.sh || install -D -m 0755 /tmp/setup.sh /usr/local/share/spinifex/setup.sh'
     else
-        on "curl -sfL https://install.mulgadc.com | bash -s -- --channel $CHANNEL >/root/setup.log 2>&1" ||
+        on "curl -fsSL -o /root/install.sh https://install.mulgadc.com && bash /root/install.sh --channel $CHANNEL >/root/setup.log 2>&1" ||
             die "install failed; see /root/setup.log on $IP"
     fi
 }
@@ -334,17 +334,54 @@ restart_spinifex() {
 # accounts are seeded with it by the daemon, which now sees the pool.
 public_default_subnets() {
     log "auto-assigning public addresses in the default subnets"
-    on 'export AWS_PROFILE=spinifex
-        for s in $(aws ec2 describe-subnets --filters Name=default-for-az,Values=true \
-                --query "Subnets[?MapPublicIpOnLaunch==\`false\`].SubnetId" --output text); do
-            aws ec2 modify-subnet-attribute --subnet-id "$s" --map-public-ip-on-launch || exit 1
-        done' || die "could not turn on public addresses in the default subnets on $IP"
+    on 'bash -s' <<'REMOTE' || die "could not turn on public addresses in the default subnets on $IP"
+set -euo pipefail
+export AWS_PROFILE=spinifex
+subnets="$(aws ec2 describe-subnets --filters Name=default-for-az,Values=true --query "Subnets[].SubnetId" --output text)"
+[ -n "$subnets" ] || { echo "no default subnets found" >&2; exit 1; }
+for s in $subnets; do
+    aws ec2 modify-subnet-attribute --subnet-id "$s" --map-public-ip-on-launch
+    v="$(aws ec2 describe-subnets --subnet-ids "$s" --query "Subnets[0].MapPublicIpOnLaunch" --output text)"
+    [ "$v" = True ] || { echo "subnet $s MapPublicIpOnLaunch is '$v'" >&2; exit 1; }
+done
+REMOTE
 }
 
 import_image() {
     log "importing $IMAGE"
     on "spx admin images import --name $IMAGE --config /etc/spinifex/spinifex.toml >/root/image-import.log 2>&1" ||
         die "image import failed; see /root/image-import.log on $IP"
+}
+
+# write_credentials KEY SECRET sets the profile's keys in the shared credentials file without putting
+# the secret in any process argument: it reaches python on stdin. Other profiles are kept, the old
+# file is saved beside it, and the new one is 0600.
+write_credentials() {
+    local code
+    code='
+import configparser, os, shutil, sys, time
+profile = sys.argv[1]
+key, secret = sys.stdin.read().split("\n")[:2]
+path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or os.path.expanduser("~/.aws/credentials")
+os.umask(0o077)
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+cp = configparser.RawConfigParser()
+cp.optionxform = str
+if os.path.exists(path):
+    cp.read(path)
+    shutil.copy2(path, "%s.pre-vultr.%d" % (path, int(time.time())))
+if not cp.has_section(profile):
+    cp.add_section(profile)
+cp.set(profile, "aws_access_key_id", key)
+cp.set(profile, "aws_secret_access_key", secret)
+cp.remove_option(profile, "aws_session_token")
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    cp.write(f)
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+'
+    printf '%s\n%s\n' "$1" "$2" | python3 -I -c "$code" "$PROFILE" || die "could not write the credentials file"
 }
 
 write_profile() {
@@ -356,8 +393,7 @@ write_profile() {
     key="$(awk -F' *= *' '/aws_access_key_id/{print $2}' <<<"$creds")"
     secret="$(awk -F' *= *' '/aws_secret_access_key/{print $2}' <<<"$creds")"
     [ -n "$key" ] && [ -n "$secret" ] || die "no [spinifex] credentials on $IP"
-    aws configure set --profile "$PROFILE" aws_access_key_id "$key"
-    aws configure set --profile "$PROFILE" aws_secret_access_key "$secret"
+    write_credentials "$key" "$secret"
     aws configure set --profile "$PROFILE" region "$SPX_REGION"
     aws configure set --profile "$PROFILE" endpoint_url "https://$IP:9999"
     aws configure set --profile "$PROFILE" ca_bundle "$CA_FILE"

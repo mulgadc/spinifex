@@ -15,6 +15,9 @@ const ec2MinResults = 5
 type EC2 struct {
 	// MaxResults is the largest MaxResults the operation accepts.
 	MaxResults int64
+	// Clamp answers a larger MaxResults with a page of MaxResults items
+	// instead of TooLarge, as AWS does for some operations.
+	Clamp bool
 	// TooLarge and TooSmall answer a MaxResults outside the accepted range;
 	// %d is the requested value.
 	TooLarge string
@@ -31,6 +34,10 @@ type EC2 struct {
 func (p EC2) Parse(maxResults *int64, nextToken *string, ids int) (Request, error) {
 	if maxResults != nil {
 		n := *maxResults
+		if p.Clamp && n > p.MaxResults {
+			maxResults = &p.MaxResults
+			n = p.MaxResults
+		}
 		if n > p.MaxResults {
 			return Request{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, p.TooLarge, n)
 		}

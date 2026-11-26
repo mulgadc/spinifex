@@ -194,10 +194,25 @@ export function useDeleteLifecyclePolicy() {
 // synchronously, so the single Get call returns the full result.
 export function usePreviewLifecyclePolicy() {
   return useMutation({
+    // The preview is paged; follow nextToken so the table lists every result.
     mutationFn: async (repositoryName: string) => {
-      const command = new GetLifecyclePolicyPreviewCommand({ repositoryName })
+      const first = await getEcrClient().send(
+        new GetLifecyclePolicyPreviewCommand({ repositoryName }),
+      )
+      const previewResults = [...(first.previewResults ?? [])]
+      let { nextToken } = first
 
-      return await getEcrClient().send(command)
+      while (nextToken) {
+        // Each page needs the token the one before it returned.
+        // oxlint-disable-next-line no-await-in-loop
+        const page = await getEcrClient().send(
+          new GetLifecyclePolicyPreviewCommand({ repositoryName, nextToken }),
+        )
+        previewResults.push(...(page.previewResults ?? []))
+        nextToken = page.nextToken
+      }
+
+      return { ...first, previewResults, nextToken: undefined }
     },
   })
 }

@@ -84,10 +84,15 @@ func TestDescribeVolumes_Paging(t *testing.T) {
 	for _, in := range []*ec2.DescribeVolumesInput{
 		{NextToken: aws.String("garbage")},
 		{MaxResults: aws.Int64(4)},
-		{MaxResults: aws.Int64(501)},
 	} {
 		_, err := svc.DescribeVolumes(ctx, in, testVolAccountID)
 		assertAWSError(t, err, "InvalidParameterValue")
+	}
+	// The AWS CLI sends MaxResults=1000 by default; AWS returns at most 500.
+	for _, n := range []int64{501, 1000} {
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{MaxResults: aws.Int64(n)}, testVolAccountID)
+		require.NoError(t, err)
+		assert.Len(t, out.Volumes, pagingVolumeCount)
 	}
 	_, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{MaxResults: aws.Int64(5), VolumeIds: []*string{aws.String(ids[0])}}, testVolAccountID)
 	assertAWSError(t, err, "InvalidParameterCombination")

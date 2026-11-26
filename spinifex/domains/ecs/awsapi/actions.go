@@ -150,6 +150,20 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 	return ecsdomain.NewNATSECSService(nc).ListTaskDefinitions(ctx, input, accountID)
 }
 
+// ListTaskDefinitionFamilies implements the ECS ListTaskDefinitionFamilies action, listing
+// task definition family names. The JSON body (empty means a zero input) is decoded and
+// forwarded to the NATS ECS service for accountID.
+func ListTaskDefinitionFamilies(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
+	input := new(ecs.ListTaskDefinitionFamiliesInput)
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkListEnum(input.Status, "Status", listTaskDefinitionFamilyStatuses); err != nil {
+		return nil, err
+	}
+	return ecsdomain.NewNATSECSService(nc).ListTaskDefinitionFamilies(ctx, input, accountID)
+}
+
 // --- Container instance ---
 
 // RegisterContainerInstance implements the ECS RegisterContainerInstance action, registering an

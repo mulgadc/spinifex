@@ -171,6 +171,45 @@ func (o *Owner) List(ctx context.Context, kv jetstream.KeyValue, family, status 
 	return arns, nil
 }
 
+// Families returns the distinct family names that start with prefix, sorted.
+// status ACTIVE keeps families with an ACTIVE revision, INACTIVE keeps those
+// with none, and any other value keeps every family.
+func (o *Owner) Families(ctx context.Context, kv jetstream.KeyValue, prefix, status string) ([]string, error) {
+	keys, err := KeysWithPrefix(ctx, kv, FamiliesPrefix()+prefix)
+	if err != nil {
+		return nil, err
+	}
+	var order []string
+	active := map[string]bool{}
+	for _, k := range keys {
+		family, _, isRev := strings.Cut(strings.TrimPrefix(k, FamiliesPrefix()), "/revs/")
+		if !isRev {
+			continue
+		}
+		var rec Record
+		found, err := GetJSON(ctx, kv, k, &rec)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		if _, seen := active[family]; !seen {
+			order = append(order, family)
+		}
+		active[family] = active[family] || rec.Status == StatusActive
+	}
+	families := make([]string, 0, len(order))
+	for _, f := range order {
+		if (status == StatusActive && !active[f]) || (status == StatusInactive && active[f]) {
+			continue
+		}
+		families = append(families, f)
+	}
+	slices.Sort(families)
+	return families, nil
+}
+
 // GetJSON reads key into out. Returns (false, nil) when the key is absent.
 func GetJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
 	entry, err := kv.Get(ctx, key)

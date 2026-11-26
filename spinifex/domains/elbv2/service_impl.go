@@ -143,6 +143,9 @@ type ELBv2ServiceImpl struct {
 	// at shutdown to avoid blocking Close on a multi-minute boot. Exposed via
 	// WaitLaunches so tests can join the background launch deterministically.
 	launchWG sync.WaitGroup
+
+	// ovn selects the OVN create path; nil keeps the appliance path.
+	ovn *ovnFixture
 }
 
 // WaitLaunches blocks until every in-flight asynchronous LB-VM launch started by
@@ -1348,6 +1351,9 @@ func isCompatibleProtocol(listenerProto, tgProto string) bool {
 // need the LB's front-end address before proceeding — e.g. EKS, which bakes the
 // IP into the control-plane apiserver cert SAN — must use CreateLoadBalancerSync.
 func (s *ELBv2ServiceImpl) CreateLoadBalancer(ctx context.Context, input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	if s.ovn != nil {
+		return s.createOVNFixtureLoadBalancer(ctx, input, accountID)
+	}
 	return s.createLoadBalancer(ctx, input, accountID, false, nil)
 }
 
@@ -1907,6 +1913,11 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	if s.ovn != nil {
+		if err := s.refuseOVNFixtureDelete(ctx, *input.LoadBalancerArn, accountID); err != nil {
+			return nil, err
+		}
+	}
 
 	lb, err := s.store.GetLoadBalancerByArn(ctx, *input.LoadBalancerArn)
 	if err != nil {
@@ -2044,6 +2055,9 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	if (input.PageSize != nil || aws.StringValue(input.Marker) != "") && (len(input.Names) > 0 || len(input.LoadBalancerArns) > 0) {
 		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Pagination is not supported when specifying load balancers")
+	}
+	if s.ovn != nil {
+		return s.describeOVNFixtureLoadBalancer(ctx, input, accountID)
 	}
 
 	allLBs, err := s.store.ListLoadBalancers(ctx)

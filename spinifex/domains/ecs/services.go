@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"log/slog"
 	"strings"
 	"time"
@@ -354,9 +355,13 @@ func (s *Service) DescribeServices(ctx context.Context, input *ecs.DescribeServi
 	return out, nil
 }
 
-// ListServices returns the ARNs of every service in a cluster.
+// ListServices returns one page of the ARNs of the services in a cluster.
 func (s *Service) ListServices(ctx context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	req, err := parseListPage(input.MaxResults, input.NextToken, listServicesPageDefault, listPageMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -369,7 +374,8 @@ func (s *Service) ListServices(ctx context.Context, input *ecs.ListServicesInput
 	for i := range recs {
 		arns = append(arns, recs[i].ARN)
 	}
-	return &ecs.ListServicesOutput{ServiceArns: aws.StringSlice(arns)}, nil
+	page, next := paging.EC2Page(arns, identity, req)
+	return &ecs.ListServicesOutput{ServiceArns: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // --- Reconciliation ---

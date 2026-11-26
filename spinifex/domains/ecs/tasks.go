@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -325,6 +326,10 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 // call does not hand back every task the cluster has ever run.
 func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	req, err := parseListPage(input.MaxResults, input.NextToken, listPageMax, listPageMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -353,7 +358,8 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 			arns = append(arns, rec.ARN)
 		}
 	}
-	return &ecs.ListTasksOutput{TaskArns: aws.StringSlice(arns)}, nil
+	page, next := paging.EC2Page(arns, identity, req)
+	return &ecs.ListTasksOutput{TaskArns: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // taskFilter is ListTasks' input reduced to the fields a task record can be

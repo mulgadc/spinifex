@@ -33,19 +33,28 @@ type ecsClusterReaper struct {
 func (r *ecsClusterReaper) Kind() string { return "ecs-cluster" }
 func (r *ecsClusterReaper) Stage() Stage { return StageCompute }
 
-func (r *ecsClusterReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := r.svc.ListClusters(ctx, &ecs.ListClustersInput{}, accountID)
-	if err != nil {
-		return nil, err
-	}
+// ecsListPageLimit bounds the page walk, so a NextToken that never advances
+// cannot spin the drain loop forever.
+const ecsListPageLimit = 100
 
+// List pages through ListClusters, which returns at most 100 ARNs a call.
+func (r *ecsClusterReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
 	var found []Resource
-	for _, arn := range out.ClusterArns {
-		name := ecsClusterName(aws.StringValue(arn))
-		if name == "" {
-			continue
+	var token *string
+	for range ecsListPageLimit {
+		out, err := r.svc.ListClusters(ctx, &ecs.ListClustersInput{NextToken: token}, accountID)
+		if err != nil {
+			return nil, err
 		}
-		found = append(found, Resource{Kind: r.Kind(), ID: name})
+		for _, arn := range out.ClusterArns {
+			if name := ecsClusterName(aws.StringValue(arn)); name != "" {
+				found = append(found, Resource{Kind: r.Kind(), ID: name})
+			}
+		}
+		if aws.StringValue(out.NextToken) == "" {
+			break
+		}
+		token = out.NextToken
 	}
 	return found, nil
 }

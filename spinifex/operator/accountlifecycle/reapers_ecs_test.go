@@ -28,7 +28,8 @@ type fakeECS struct {
 	mu        sync.Mutex
 	calls     []string
 	requests  map[string][]byte
-	replies   map[string]any
+	replies   map[string][]any
+	served    map[string]int
 	errorCode map[string]string
 }
 
@@ -39,7 +40,8 @@ func newFakeECS(t *testing.T) *fakeECS {
 	cluster := &fakeECS{
 		nc:        nc,
 		requests:  map[string][]byte{},
-		replies:   map[string]any{},
+		replies:   map[string][]any{},
+		served:    map[string]int{},
 		errorCode: map[string]string{},
 	}
 
@@ -56,7 +58,12 @@ func (c *fakeECS) serve(msg *nats.Msg) {
 	c.calls = append(c.calls, msg.Subject)
 	c.requests[msg.Subject] = msg.Data
 	code, isError := c.errorCode[msg.Subject]
-	reply, hasReply := c.replies[msg.Subject]
+	replies, hasReply := c.replies[msg.Subject]
+	var reply any
+	if hasReply {
+		reply = replies[min(c.served[msg.Subject], len(replies)-1)]
+		c.served[msg.Subject]++
+	}
 	c.mu.Unlock()
 
 	switch {
@@ -74,10 +81,11 @@ func (c *fakeECS) serve(msg *nats.Msg) {
 	}
 }
 
-func (c *fakeECS) reply(subject string, output any) {
+// reply answers subject with outputs in order, repeating the last one.
+func (c *fakeECS) reply(subject string, outputs ...any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.replies[subject] = output
+	c.replies[subject] = outputs
 }
 
 func (c *fakeECS) fail(subject, code string) {
@@ -117,6 +125,45 @@ func TestECSClusterReaperListsByName(t *testing.T) {
 		{Kind: "ecs-cluster", ID: "web"},
 		{Kind: "ecs-cluster", ID: "batch"},
 	}, found)
+}
+
+// ListClusters caps a page at 100, so a reaper that read only the first page
+// would report the stage drained with clusters still standing.
+func TestECSClusterReaperFollowsPagination(t *testing.T) {
+	cluster := newFakeECS(t)
+	cluster.reply("ecs.ListClusters",
+		ecs.ListClustersOutput{
+			ClusterArns: aws.StringSlice([]string{"arn:aws:ecs:us-west-1:000000000042:cluster/web"}),
+			NextToken:   aws.String("page-2"),
+		},
+		ecs.ListClustersOutput{
+			ClusterArns: aws.StringSlice([]string{"arn:aws:ecs:us-west-1:000000000042:cluster/batch"}),
+		},
+	)
+
+	found, err := newECSReaper(cluster.nc).List(testCtx(t), "000000000042")
+	require.NoError(t, err)
+
+	assert.Equal(t, []Resource{
+		{Kind: "ecs-cluster", ID: "web"},
+		{Kind: "ecs-cluster", ID: "batch"},
+	}, found)
+	var last ecs.ListClustersInput
+	cluster.request(t, "ecs.ListClusters", &last)
+	assert.Equal(t, "page-2", aws.StringValue(last.NextToken))
+}
+
+// A NextToken that never advances must not spin the drain loop forever.
+func TestECSClusterReaperStopsOnARepeatingPageToken(t *testing.T) {
+	cluster := newFakeECS(t)
+	cluster.reply("ecs.ListClusters", ecs.ListClustersOutput{
+		ClusterArns: aws.StringSlice([]string{"arn:aws:ecs:us-west-1:000000000042:cluster/web"}),
+		NextToken:   aws.String("again"),
+	})
+
+	found, err := newECSReaper(cluster.nc).List(testCtx(t), "000000000042")
+	require.NoError(t, err)
+	assert.Len(t, found, ecsListPageLimit)
 }
 
 // An account with no ECS at all must list empty rather than error, or the

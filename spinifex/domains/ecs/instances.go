@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"log/slog"
 	"slices"
 	"time"
@@ -174,6 +175,10 @@ func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListCon
 	if status != "" && !instanceListStatuses[status] {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
+	req, err := parseListPage(input.MaxResults, input.NextToken, listPageMax, listPageMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -191,7 +196,8 @@ func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListCon
 		}
 		arns = append(arns, recs[i].ARN)
 	}
-	return &ecs.ListContainerInstancesOutput{ContainerInstanceArns: aws.StringSlice(arns)}, nil
+	page, next := paging.EC2Page(arns, identity, req)
+	return &ecs.ListContainerInstancesOutput{ContainerInstanceArns: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // upsertInstance reads-or-creates the instance record, applies mutate, and writes

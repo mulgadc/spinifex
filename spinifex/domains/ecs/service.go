@@ -358,8 +358,12 @@ func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue,
 	return counts, nil
 }
 
-// ListClusters returns the ARNs of all clusters in the account.
-func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
+// ListClusters returns one page of the account's cluster ARNs.
+func (s *Service) ListClusters(ctx context.Context, input *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
+	req, err := parseListPage(input.MaxResults, input.NextToken, listPageMax, listPageMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -382,7 +386,8 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 			arns = append(arns, rec.ARN)
 		}
 	}
-	return &ecs.ListClustersOutput{ClusterArns: aws.StringSlice(arns)}, nil
+	page, next := paging.EC2Page(arns, identity, req)
+	return &ecs.ListClustersOutput{ClusterArns: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // toAWS renders the stored cluster with the counts zeroed and every list AWS
@@ -688,6 +693,10 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 // by status. Matching AWS, the status defaults to ACTIVE when unset, so
 // deregistered (INACTIVE) revisions drop off the default listing.
 func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error) {
+	req, err := parseListPage(input.MaxResults, input.NextToken, listPageMax, listPageMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -700,7 +709,8 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.ListTaskDefinitionsOutput{TaskDefinitionArns: aws.StringSlice(arns)}, nil
+	page, next := paging.EC2Page(arns, identity, req)
+	return &ecs.ListTaskDefinitionsOutput{TaskDefinitionArns: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // maxFamiliesPage is the default and the ceiling of ListTaskDefinitionFamilies'

@@ -44,6 +44,7 @@ func storeLayersManifest(t *testing.T, reg *Registry, repo, tag string, layers .
 }
 
 func TestDeleteImage_ReclaimsBlobsKeepsShared(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	shared := pushBlob(t, reg, repo, []byte("shared-layer-bytes"))
@@ -85,6 +86,7 @@ func seedImage(t *testing.T, reg *Registry, repo, tag string) ([]byte, string) {
 }
 
 func TestStoreAndGetManifest_RoundTrip(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	manifest, digest := seedImage(t, reg, "team/app", "v1")
 
@@ -114,6 +116,7 @@ func TestStoreAndGetManifest_RoundTrip(t *testing.T) {
 }
 
 func TestListImages_TaggedAndUntagged(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	seedImage(t, reg, repo, "v1")
@@ -157,6 +160,7 @@ func TestListImages_TaggedAndUntagged(t *testing.T) {
 // canonicalize on meta.Digest to emit a real digest and keep tag association.
 // The memory store returns real digests and would mask this.
 func TestListImages_KVDigestForm(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	reg := NewRegistry(objectstore.NewMemoryObjectStore(), ecr.NewKVMetaStore(js), testAccount)
@@ -176,6 +180,7 @@ func TestListImages_KVDigestForm(t *testing.T) {
 }
 
 func TestDeleteImage_ByTagAndByDigest(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	_, digest := seedImage(t, reg, repo, "v1")
@@ -205,6 +210,7 @@ func TestDeleteImage_ByTagAndByDigest(t *testing.T) {
 }
 
 func TestDeleteImage_ByDigestClearsTags(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	_, digest := seedImage(t, reg, repo, "v1")
@@ -221,6 +227,7 @@ func TestDeleteImage_ByDigestClearsTags(t *testing.T) {
 }
 
 func TestStoreManifest_ImmutableTag(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	manA := fmt.Appendf(nil, `{"schemaVersion":2,"mediaType":"%s","layers":[{"digest":"%s"}]}`,
@@ -254,6 +261,7 @@ func TestStoreManifest_ImmutableTag(t *testing.T) {
 }
 
 func TestStoreManifest_BadDigestReference(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfgDg := pushBlob(t, reg, repo, []byte("cfg"))

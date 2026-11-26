@@ -2,6 +2,7 @@ package ecrregistry
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -140,15 +141,34 @@ type bridgeEnv struct {
 	reached  *int
 }
 
+// bridgeKeys holds one signing key for every bridge test. The key is plain data
+// once loaded, so the JetStream server it came from can stop with its first test.
+var bridgeKeys struct {
+	once   sync.Once
+	key    *ecrauth.SigningKey
+	verify map[string]*ecdsa.PublicKey
+	err    error
+}
+
+func bridgeSigningKey(t *testing.T) (*ecrauth.SigningKey, map[string]*ecdsa.PublicKey) {
+	t.Helper()
+	bridgeKeys.once.Do(func() {
+		_, nc, _ := testutil.StartTestJetStream(t)
+		js := testutil.NewJetStream(t, nc)
+		master := make([]byte, 32)
+		if _, bridgeKeys.err = rand.Read(master); bridgeKeys.err != nil {
+			return
+		}
+		bridgeKeys.key, bridgeKeys.verify, bridgeKeys.err = ecrauth.LoadOrCreateSigningKey(context.Background(), js, master)
+	})
+	require.NoError(t, bridgeKeys.err)
+	require.NotNil(t, bridgeKeys.key, "the first bridge test failed to load the signing key")
+	return bridgeKeys.key, bridgeKeys.verify
+}
+
 func newBridgeEnv(t *testing.T, rules ...rule) *bridgeEnv {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-	master := make([]byte, 32)
-	_, err := rand.Read(master)
-	require.NoError(t, err)
-	key, verify, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, master)
-	require.NoError(t, err)
+	key, verify := bridgeSigningKey(t)
 	const aud = "ecr." + bridgeRegion + ".spinifex.internal"
 	iss := ecrauth.NewIssuer(key, aud)
 
@@ -238,6 +258,7 @@ func allow(actions []string, resources ...string) rule {
 }
 
 func TestNewBridge_RefusesMissingDependencies(t *testing.T) {
+	t.Parallel()
 	full := BridgeConfig{
 		Verifier: &ecrauth.Verifier{}, Issuer: &ecrauth.Issuer{}, Rehydrator: &fakeRehydrator{},
 		Authorizer: &fakeAuthorizer{}, Admission: fakeAdmission{}, Target: noTarget, ClientIP: noIP,
@@ -253,6 +274,7 @@ func TestNewBridge_RefusesMissingDependencies(t *testing.T) {
 		"admission":  func(c *BridgeConfig) { c.Admission = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			cfg := full
 			mutate(&cfg)
 			b, err := NewBridge(cfg)
@@ -263,6 +285,7 @@ func TestNewBridge_RefusesMissingDependencies(t *testing.T) {
 }
 
 func TestBridge_NilRegistryAnswers501(t *testing.T) {
+	t.Parallel()
 	e := newBridgeEnv(t, allow([]string{"ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"}, repoARN("*")))
 	b, err := NewBridge(BridgeConfig{
 		Verifier: e.verifier, Issuer: e.issuer, Rehydrator: e.rehyd, Authorizer: e.authz, Admission: e.adm, Region: bridgeRegion, Target: hostTarget, ClientIP: noIP,
@@ -276,6 +299,7 @@ func TestBridge_NilRegistryAnswers501(t *testing.T) {
 }
 
 func TestExtractToken(t *testing.T) {
+	t.Parallel()
 	good := base64.StdEncoding.EncodeToString([]byte("AWS:abc.def.ghi"))
 	cases := []struct {
 		name  string
@@ -294,6 +318,7 @@ func TestExtractToken(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := extractToken(c.authz)
 			assert.Equal(t, c.ok, ok)
 			assert.Equal(t, c.want, got)
@@ -302,9 +327,11 @@ func TestExtractToken(t *testing.T) {
 }
 
 func TestBridge_Authentication(t *testing.T) {
+	t.Parallel()
 	read := allow([]string{"ecr:BatchGetImage"}, repoARN("*"))
 
 	t.Run("no credential challenges 401", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		w := e.do(http.MethodGet, "/v2/")
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
@@ -312,17 +339,20 @@ func TestBridge_Authentication(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("invalid token challenges 401", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		w := e.do(http.MethodGet, "/v2/", "Bearer not.a.token")
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 		assert.NotEmpty(t, w.Header().Get("WWW-Authenticate"))
 	})
 	t.Run("multiple Authorization headers", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		w := e.do(http.MethodGet, "/v2/", "Bearer a.b.c", "Bearer d.e.f")
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 	t.Run("token for another account than the host", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		tok := e.token(t, "000000000099", "arn:aws:iam::000000000099:user/dev", "user")
 		w := e.do(http.MethodGet, "/v2/", "Bearer "+tok)
@@ -330,6 +360,7 @@ func TestBridge_Authentication(t *testing.T) {
 		assert.Equal(t, "DENIED", errCode(t, w))
 	})
 	t.Run("valid token reaches the registry", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		for _, authz := range []string{"Bearer " + e.userToken(t), basicAuth(e.userToken(t))} {
 			w := e.do(http.MethodGet, "/v2/team/app/manifests/latest", authz)
@@ -340,12 +371,14 @@ func TestBridge_Authentication(t *testing.T) {
 }
 
 func TestBridge_Rehydration(t *testing.T) {
+	t.Parallel()
 	read := allow([]string{"ecr:BatchGetImage"}, repoARN("*"))
 	get := func(e *bridgeEnv, t *testing.T) *httptest.ResponseRecorder {
 		return e.do(http.MethodGet, "/v2/team/app/manifests/latest", "Bearer "+e.userToken(t))
 	}
 
 	t.Run("rejected identity challenges 401", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.rehyd.err = ErrInvalidCredential
 		w := get(e, t)
@@ -354,6 +387,7 @@ func TestBridge_Rehydration(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("dependency outage is 503", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.rehyd.err = ErrUnavailable
 		w := get(e, t)
@@ -362,6 +396,7 @@ func TestBridge_Rehydration(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("inactive account stops at once", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.adm.active = false
 		w := get(e, t)
@@ -369,6 +404,7 @@ func TestBridge_Rehydration(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("unreadable account status is 503", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.adm.err = errors.New("nats: timeout")
 		w := get(e, t)
@@ -376,11 +412,13 @@ func TestBridge_Rehydration(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("principalType claim mismatch", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.rehyd.principal.PrincipalType = "assumed-role"
 		assert.Equal(t, http.StatusUnauthorized, get(e, t).Code)
 	})
 	t.Run("subject does not match canonical ARN", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		e.rehyd.principal.CallerARN = "arn:aws:iam::" + bridgeAccount + ":user/other"
 		assert.Equal(t, http.StatusUnauthorized, get(e, t).Code)
@@ -390,11 +428,13 @@ func TestBridge_Rehydration(t *testing.T) {
 // AWS keeps a registry token valid past the session that minted it and judges the
 // role's current state on every request.
 func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
+	t.Parallel()
 	read := allow([]string{"ecr:BatchGetImage"}, repoARN("*"))
 	const manifest = "/v2/team/app/manifests/latest"
 	expired := func(e *bridgeEnv) { e.rehyd.err = ErrSessionGone }
 
 	t.Run("live role is authorised", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
@@ -402,6 +442,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Equal(t, 1, *e.reached)
 	})
 	t.Run("live role whose policy no longer allows the action is denied by the evaluator", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		expired(e)
 		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
@@ -410,6 +451,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("inactive account is denied as before", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		e.adm.active = false
@@ -418,6 +460,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("no role ID claim still challenges 401", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, ""))
@@ -426,6 +469,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("a failure other than session gone is never retried against the role", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		// The live role would be authorised, so a 401 shows it was never asked.
 		e.rehyd.err = ErrInvalidCredential
@@ -435,6 +479,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("a refreshed token keeps the role ID", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		w := e.do(http.MethodGet, "/v2/token", "Bearer "+e.roleToken(t, bridgeRoleID))
@@ -446,6 +491,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Equal(t, bridgeRoleID, claims.RoleID)
 	})
 	t.Run("role gone is 403 DENIED with the AWS body", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		e.roleLive.err = ErrRoleGone
@@ -456,6 +502,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("role lookup outage is 503", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, read)
 		expired(e)
 		e.roleLive.err = ErrUnavailable
@@ -466,6 +513,7 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 }
 
 func TestBridge_OperationAuthorization(t *testing.T) {
+	t.Parallel()
 	account := "arn:aws:ecr:" + bridgeRegion + ":" + bridgeAccount + ":repository/*"
 	pullOnly := allow([]string{"ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"}, repoARN("team/app"))
 	readOnly := allow([]string{
@@ -480,6 +528,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 	matrix := func(t *testing.T, rules []rule, allowed, denied []op) {
 		for _, o := range allowed {
 			t.Run("allow "+o.method+" "+o.path, func(t *testing.T) {
+				t.Parallel()
 				e := newBridgeEnv(t, rules...)
 				assert.Equal(t, http.StatusOK, run(t, e, o).Code)
 				assert.Equal(t, 1, *e.reached)
@@ -487,6 +536,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 		}
 		for _, o := range denied {
 			t.Run("deny "+o.method+" "+o.path, func(t *testing.T) {
+				t.Parallel()
 				e := newBridgeEnv(t, rules...)
 				w := run(t, e, o)
 				assert.Equal(t, http.StatusForbidden, w.Code)
@@ -497,6 +547,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 	}
 
 	t.Run("pull only", func(t *testing.T) {
+		t.Parallel()
 		matrix(t, []rule{pullOnly},
 			[]op{
 				{http.MethodHead, "/v2/team/app/blobs/sha256:abc"},
@@ -515,6 +566,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 			})
 	})
 	t.Run("read only", func(t *testing.T) {
+		t.Parallel()
 		matrix(t, []rule{readOnly},
 			[]op{
 				{http.MethodGet, "/v2/_catalog"},
@@ -530,32 +582,38 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 			})
 	})
 	t.Run("an allow scoped to one repository does not cross repositories", func(t *testing.T) {
+		t.Parallel()
 		matrix(t, []rule{allow([]string{"ecr:BatchGetImage"}, repoARN("team/a"))},
 			[]op{{http.MethodGet, "/v2/team/a/manifests/latest"}, {http.MethodGet, "/v2/team/a/referrers/sha256:abc"}},
 			[]op{{http.MethodGet, "/v2/team/b/manifests/latest"}, {http.MethodGet, "/v2/team/b/referrers/sha256:abc"}})
 	})
 	t.Run("referrers need BatchGetImage and nothing a push grants", func(t *testing.T) {
+		t.Parallel()
 		pushOnly := allow([]string{"ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:BatchCheckLayerAvailability"}, repoARN("team/app"))
 		matrix(t, []rule{pushOnly}, nil, []op{{http.MethodGet, "/v2/team/app/referrers/sha256:abc"}})
 	})
 	t.Run("explicit deny wins", func(t *testing.T) {
+		t.Parallel()
 		deny := rule{deny: true, actions: []string{"ecr:BatchGetImage"}, resources: []string{repoARN("team/app")}}
 		matrix(t, []rule{allow([]string{"ecr:BatchGetImage"}, account), deny}, nil,
 			[]op{{http.MethodGet, "/v2/team/app/manifests/latest"}, {http.MethodGet, "/v2/team/app/referrers/sha256:abc"}})
 	})
 	t.Run("cross-repository mount needs destination write and source read", func(t *testing.T) {
+		t.Parallel()
 		mount := op{http.MethodPost, "/v2/team/app/blobs/uploads/?mount=sha256:abc&from=team/base"}
 		dest := allow([]string{"ecr:InitiateLayerUpload"}, repoARN("team/app"))
 		matrix(t, []rule{dest}, nil, []op{mount})
 		matrix(t, []rule{dest, allow([]string{"ecr:BatchCheckLayerAvailability"}, repoARN("team/base"))}, []op{mount}, nil)
 	})
 	t.Run("an unclassified operation is refused before dispatch", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, readOnly)
 		w := run(t, e, op{http.MethodPost, "/v2/"})
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.Zero(t, *e.reached)
 	})
 	t.Run("the base path needs no action", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		w := run(t, e, op{http.MethodGet, "/v2/"})
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -563,6 +621,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 		assert.Empty(t, e.authz.seen)
 	})
 	t.Run("an authorization dependency failure is 503 and never dispatches", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t, readOnly)
 		e.authz.err = ErrUnavailable
 		w := run(t, e, op{http.MethodGet, "/v2/team/app/manifests/latest"})
@@ -572,6 +631,7 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 }
 
 func TestBridge_DenyMessageNamesCallerActionAndRepository(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, method, path, action string
 	}{
@@ -581,6 +641,7 @@ func TestBridge_DenyMessageNamesCallerActionAndRepository(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			e := newBridgeEnv(t)
 			e.rehyd.principal = e.roleLive.principal
 			w := e.do(c.method, c.path, "Bearer "+e.roleToken(t, bridgeRoleID))
@@ -594,7 +655,9 @@ func TestBridge_DenyMessageNamesCallerActionAndRepository(t *testing.T) {
 }
 
 func TestBridge_TokenEndpoint(t *testing.T) {
+	t.Parallel()
 	t.Run("exchange mints a fresh token for the same principal", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		old := e.userToken(t)
 		for _, authz := range []string{basicAuth(old), "Bearer " + old} {
@@ -611,21 +674,25 @@ func TestBridge_TokenEndpoint(t *testing.T) {
 		}
 	})
 	t.Run("no credential is a 401 with no challenge", func(t *testing.T) {
+		t.Parallel()
 		w := newBridgeEnv(t).do(http.MethodGet, "/v2/token")
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 		assert.Empty(t, w.Header().Get("WWW-Authenticate"))
 		assert.Equal(t, "UNAUTHORIZED", errCode(t, w))
 	})
 	t.Run("invalid credential is a 401 with no challenge", func(t *testing.T) {
+		t.Parallel()
 		w := newBridgeEnv(t).do(http.MethodGet, "/v2/token", "Bearer not.a.token")
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 		assert.Empty(t, w.Header().Get("WWW-Authenticate"))
 	})
 	t.Run("two authorization headers", func(t *testing.T) {
+		t.Parallel()
 		w := newBridgeEnv(t).do(http.MethodGet, "/v2/token", "Bearer a.b.c", "Bearer d.e.f")
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 	t.Run("token for another account than the host", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		other := e.token(t, "000000000099", "arn:aws:iam::000000000099:user/dev", "user")
 		w := e.do(http.MethodGet, "/v2/token", "Bearer "+other)
@@ -633,6 +700,7 @@ func TestBridge_TokenEndpoint(t *testing.T) {
 		assert.Equal(t, "DENIED", errCode(t, w))
 	})
 	t.Run("a revoked identity is not refreshed", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		e.rehyd.err = ErrInvalidCredential
 		w := e.do(http.MethodGet, "/v2/token", basicAuth(e.userToken(t)))
@@ -640,6 +708,7 @@ func TestBridge_TokenEndpoint(t *testing.T) {
 		assert.Empty(t, w.Header().Get("WWW-Authenticate"))
 	})
 	t.Run("a dependency outage is a 503", func(t *testing.T) {
+		t.Parallel()
 		e := newBridgeEnv(t)
 		e.rehyd.err = ErrUnavailable
 		w := e.do(http.MethodGet, "/v2/token", basicAuth(e.userToken(t)))

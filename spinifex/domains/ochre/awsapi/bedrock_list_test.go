@@ -24,12 +24,14 @@ func TestBedrockRequest_ListGuardrailsPagesByQuery(t *testing.T) {
 	store := ochre.NewGuardrailStore(js, bedrockListRegion)
 	gw := &testGateway{Deps: Deps{Guardrails: store}, region: bedrockListRegion}
 	want := map[string]bool{}
+	var lastID string
 	for _, name := range []string{"one", "two"} {
 		out, err := ochre.CreateGuardrail(t.Context(), bedrockTestAccount, store, &bedrock.CreateGuardrailInput{
 			Name: aws.String(name), BlockedInputMessaging: aws.String("no"), BlockedOutputsMessaging: aws.String("no"),
 		})
 		require.NoError(t, err)
-		want[aws.StringValue(out.GuardrailId)] = true
+		lastID = aws.StringValue(out.GuardrailId)
+		want[lastID] = true
 	}
 
 	got := map[string]bool{}
@@ -48,6 +50,13 @@ func TestBedrockRequest_ListGuardrailsPagesByQuery(t *testing.T) {
 		path = "/guardrails?maxResults=1&nextToken=" + url.QueryEscape(*out.NextToken)
 	}
 	assert.Equal(t, want, got)
+
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.Bedrock_Request(w, bedrockRequestWithAccount(http.MethodGet, "/guardrails?guardrailIdentifier="+lastID, "")))
+	var one bedrock.ListGuardrailsOutput
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &one))
+	require.Len(t, one.Guardrails, 1)
+	assert.Equal(t, lastID, aws.StringValue(one.Guardrails[0].Id))
 
 	for _, path := range []string{"/guardrails?nextToken=bogus", "/guardrails?maxResults=1001", "/guardrails?maxResults=x"} {
 		err := gw.Bedrock_Request(httptest.NewRecorder(), bedrockRequestWithAccount(http.MethodGet, path, ""))

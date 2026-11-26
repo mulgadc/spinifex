@@ -1092,3 +1092,47 @@ func TestService_DescribeClusters_ListsAlwaysPresent(t *testing.T) {
 	assert.NotNil(t, miss.Clusters)
 	assert.Empty(t, miss.Clusters)
 }
+
+// app-b sorts inside the first page but has no ACTIVE revision, so a page cut
+// before the status filter would leave the first page short.
+func TestService_ListTaskDefinitionFamilies_PageWalk(t *testing.T) {
+	t.Parallel()
+	svc, _ := newTestService(t)
+	for _, f := range []string{"db", "app-c", "app-b", "app-a"} {
+		registerTaskDef(t, svc, f, 128, 256)
+	}
+	_, err := svc.DeregisterTaskDefinition(context.Background(), &ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app-b:1")}, testAccountID)
+	require.NoError(t, err)
+
+	var pages [][]string
+	in := &ecs.ListTaskDefinitionFamiliesInput{Status: aws.String("ACTIVE"), MaxResults: aws.Int64(2)}
+	for range 5 {
+		out, err := svc.ListTaskDefinitionFamilies(context.Background(), in, testAccountID)
+		require.NoError(t, err)
+		pages = append(pages, aws.StringValueSlice(out.Families))
+		if out.NextToken == nil {
+			break
+		}
+		in.NextToken = out.NextToken
+	}
+	assert.Equal(t, [][]string{{"app-a", "app-c"}, {"db"}}, pages)
+
+	all, err := svc.ListTaskDefinitionFamilies(context.Background(), &ecs.ListTaskDefinitionFamiliesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app-a", "app-b", "app-c", "db"}, aws.StringValueSlice(all.Families))
+	assert.Nil(t, all.NextToken)
+}
+
+func TestService_ListTaskDefinitionFamilies_RefusesBadPaging(t *testing.T) {
+	t.Parallel()
+	svc, _ := newTestService(t)
+	for name, in := range map[string]*ecs.ListTaskDefinitionFamiliesInput{
+		"maxResults 0":   {MaxResults: aws.Int64(0)},
+		"maxResults 101": {MaxResults: aws.Int64(101)},
+		"foreign token":  {NextToken: aws.String("not-a-token")},
+	} {
+		_, err := svc.ListTaskDefinitionFamilies(context.Background(), in, testAccountID)
+		code, _ := awserrors.ResolveErrorCode(err)
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, code, name)
+	}
+}

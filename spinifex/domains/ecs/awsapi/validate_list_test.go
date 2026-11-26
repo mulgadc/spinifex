@@ -29,6 +29,8 @@ func TestListEnums(t *testing.T) {
 			"Sort should be one of [ASC,DESC]"},
 		{"ListTaskDefinitions", ListTaskDefinitions, "status", []string{"ACTIVE", "INACTIVE", "DELETE_IN_PROGRESS"},
 			"Status should be one of [ACTIVE,INACTIVE,DELETE_IN_PROGRESS]"},
+		{"ListTaskDefinitionFamilies", ListTaskDefinitionFamilies, "status", []string{"ACTIVE", "INACTIVE", "ALL"},
+			"Status should be one of [ACTIVE,INACTIVE,ALL]"},
 		{"ListTasks", ListTasks, "desiredStatus", []string{"RUNNING", "PENDING", "STOPPED"},
 			"Desired Status should be one of [RUNNING,PENDING,STOPPED]"},
 		{"ListTasks", ListTasks, "launchType", []string{"EC2", "FARGATE", "EXTERNAL", "FMI", "MANAGED_INSTANCES"},

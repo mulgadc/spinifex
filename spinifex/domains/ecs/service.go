@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -38,6 +39,7 @@ type ECSService interface {
 	DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error)
 	DescribeTaskDefinition(ctx context.Context, input *ecs.DescribeTaskDefinitionInput, accountID string) (*ecs.DescribeTaskDefinitionOutput, error)
 	ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDefinitionsInput, accountID string) (*ecs.ListTaskDefinitionsOutput, error)
+	ListTaskDefinitionFamilies(ctx context.Context, input *ecs.ListTaskDefinitionFamiliesInput, accountID string) (*ecs.ListTaskDefinitionFamiliesOutput, error)
 
 	RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error)
 	DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error)
@@ -699,6 +701,42 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 		return nil, err
 	}
 	return &ecs.ListTaskDefinitionsOutput{TaskDefinitionArns: aws.StringSlice(arns)}, nil
+}
+
+// maxFamiliesPage is the default and the ceiling of ListTaskDefinitionFamilies'
+// maxResults.
+const maxFamiliesPage = 100
+
+// ListTaskDefinitionFamilies returns one page of family names, sorted. Matching
+// AWS, an unset status lists every family, ACTIVE and INACTIVE alike.
+func (s *Service) ListTaskDefinitionFamilies(ctx context.Context, input *ecs.ListTaskDefinitionFamiliesInput, accountID string) (*ecs.ListTaskDefinitionFamiliesOutput, error) {
+	req := paging.Request{Limit: maxFamiliesPage}
+	if input.MaxResults != nil {
+		n := aws.Int64Value(input.MaxResults)
+		if n < 1 || n > maxFamiliesPage {
+			return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "maxResults must be between 1 and %d.", maxFamiliesPage)
+		}
+		req.Limit = int(n)
+	}
+	from, err := paging.DecodeToken(aws.StringValue(input.NextToken))
+	if err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Invalid nextToken.")
+	}
+	req.From = from
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	families, err := s.taskDefs.Families(ctx, kv, aws.StringValue(input.FamilyPrefix), aws.StringValue(input.Status))
+	if err != nil {
+		return nil, err
+	}
+	page, next := paging.Page(families, func(f string) string { return f }, req)
+	out := &ecs.ListTaskDefinitionFamiliesOutput{Families: aws.StringSlice(page)}
+	if next != "" {
+		out.NextToken = aws.String(next)
+	}
+	return out, nil
 }
 
 // The launch side's view of task definitions: resolve a reference to the

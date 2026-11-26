@@ -64,7 +64,7 @@ var Actions = map[string]Handler{
 	"DeregisterTaskDefinition":   DeregisterTaskDefinition,
 	"DescribeTaskDefinition":     DescribeTaskDefinition,
 	"ListTaskDefinitions":        ListTaskDefinitions,
-	"ListTaskDefinitionFamilies": NotImplemented,
+	"ListTaskDefinitionFamilies": ListTaskDefinitionFamilies,
 
 	// Task.
 	"RunTask":       RunTask,

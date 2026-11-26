@@ -1,10 +1,12 @@
 package elbv2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -33,12 +35,18 @@ var (
 	errFixtureSlotMalformed = errors.New("elbv2: parent slot is malformed")
 )
 
-// fixtureSlot names the owner that depends on a parent. Keys lists every slot
-// of that owner, so a delete that invalidates the owner clears all of them.
+// fixtureSlot names the owner that depends on a parent and its fixed VPC and
+// subnet pair, so a delete that invalidates the owner clears both slots.
 type fixtureSlot struct {
-	ClaimKey string   `json:"claimKey"`
-	OwnerID  string   `json:"ownerId"`
-	Keys     []string `json:"keys"`
+	ClaimKey string `json:"claimKey"`
+	OwnerID  string `json:"ownerId"`
+	VpcID    string `json:"vpcId"`
+	SubnetID string `json:"subnetId"`
+}
+
+// keys returns the owner's two slot keys, VPC first.
+func (s *fixtureSlot) keys(accountID string) []string {
+	return []string{vpcSlotKey(accountID, s.VpcID), subnetSlotKey(accountID, s.SubnetID)}
 }
 
 func vpcSlotKey(accountID, vpcID string) string {
@@ -49,7 +57,9 @@ func subnetSlotKey(accountID, subnetID string) string {
 	return keyPrefixOVNSubnetSlot + accountID + "." + subnetID
 }
 
-func (f *fixtureOwnerStore) readSlot(ctx context.Context, key string) (jetstream.KeyValueEntry, *fixtureSlot, error) {
+// readSlot point-reads the slot at key in accountID's scope. A value with an
+// unknown field, a claim outside the account, or a pair without key is malformed.
+func (f *fixtureOwnerStore) readSlot(ctx context.Context, accountID, key string) (jetstream.KeyValueEntry, *fixtureSlot, error) {
 	entry, err := f.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -58,10 +68,13 @@ func (f *fixtureOwnerStore) readSlot(ctx context.Context, key string) (jetstream
 		return nil, nil, fmt.Errorf("kv get %s: %w", key, err)
 	}
 	var slot fixtureSlot
-	if err := json.Unmarshal(entry.Value(), &slot); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(entry.Value()))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&slot); err != nil {
 		return nil, nil, fmt.Errorf("decode %s: %w: %w", key, errFixtureSlotMalformed, err)
 	}
-	if slot.OwnerID == "" || !strings.HasPrefix(slot.ClaimKey, KeyPrefixLBName) || len(slot.Keys) == 0 {
+	if slot.OwnerID == "" || slot.VpcID == "" || slot.SubnetID == "" ||
+		!strings.HasPrefix(slot.ClaimKey, LBNameKey("", accountID)) || !slices.Contains(slot.keys(accountID), key) {
 		return nil, nil, fmt.Errorf("decode %s: %w", key, errFixtureSlotMalformed)
 	}
 	return entry, &slot, nil
@@ -78,6 +91,9 @@ func (f *fixtureOwnerStore) judgeSlot(ctx context.Context, slot *fixtureSlot) (b
 		}
 		if cur == nil || cur.OwnerID != slot.OwnerID {
 			return false, nil
+		}
+		if cur.Root.VpcId != slot.VpcID || !slices.Equal(cur.Root.Subnets, []string{slot.SubnetID}) {
+			return false, fmt.Errorf("slot of %s: %w", slot.ClaimKey, errFixtureSlotMalformed)
 		}
 		if cur.Sealed || f.now().Sub(cur.ClaimedAt) < f.claimTTL {
 			return true, nil
@@ -100,11 +116,11 @@ func (f *fixtureOwnerStore) judgeSlot(ctx context.Context, slot *fixtureSlot) (b
 
 // clearOwnerSlots deletes each slot that still names ownerID, at the revision
 // it was read. A slot of another owner is left as it is.
-func (f *fixtureOwnerStore) clearOwnerSlots(ctx context.Context, ownerID string, keys []string) error {
+func (f *fixtureOwnerStore) clearOwnerSlots(ctx context.Context, accountID, ownerID string, keys []string) error {
 	for _, key := range keys {
 		cleared := false
 		for range fixtureParentAttempts {
-			entry, slot, err := f.readSlot(ctx, key)
+			entry, slot, err := f.readSlot(ctx, accountID, key)
 			if err != nil {
 				return err
 			}
@@ -113,7 +129,11 @@ func (f *fixtureOwnerStore) clearOwnerSlots(ctx context.Context, ownerID string,
 				break
 			}
 			derr := f.kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision()))
-			if derr != nil && !definiteKVConflict(derr) {
+			if derr == nil {
+				cleared = true
+				break
+			}
+			if !definiteKVConflict(derr) {
 				return fmt.Errorf("kv delete %s: %w", key, derr)
 			}
 		}
@@ -126,9 +146,9 @@ func (f *fixtureOwnerStore) clearOwnerSlots(ctx context.Context, ownerID string,
 
 // slotBlocks is the parent delete's dependency check for one slot. A stale
 // slot is cleared with its owner's other slots; any read error fails closed.
-func (f *fixtureOwnerStore) slotBlocks(ctx context.Context, key string) (bool, error) {
+func (f *fixtureOwnerStore) slotBlocks(ctx context.Context, accountID, key string) (bool, error) {
 	for range fixtureParentAttempts {
-		entry, slot, err := f.readSlot(ctx, key)
+		entry, slot, err := f.readSlot(ctx, accountID, key)
 		if err != nil || slot == nil {
 			return false, err
 		}
@@ -138,7 +158,7 @@ func (f *fixtureOwnerStore) slotBlocks(ctx context.Context, key string) (bool, e
 		}
 		derr := f.kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision()))
 		if derr == nil {
-			return false, f.clearOwnerSlots(ctx, slot.OwnerID, slot.Keys)
+			return false, f.clearOwnerSlots(ctx, accountID, slot.OwnerID, slot.keys(accountID))
 		}
 		if !definiteKVConflict(derr) {
 			return false, fmt.Errorf("kv delete %s: %w", key, derr)
@@ -149,17 +169,17 @@ func (f *fixtureOwnerStore) slotBlocks(ctx context.Context, key string) (bool, e
 
 // vpcBlocksDeletion is the DeleteVpc dependency check.
 func (f *fixtureOwnerStore) vpcBlocksDeletion(ctx context.Context, accountID, vpcID string) (bool, error) {
-	return f.slotBlocks(ctx, vpcSlotKey(accountID, vpcID))
+	return f.slotBlocks(ctx, accountID, vpcSlotKey(accountID, vpcID))
 }
 
 // subnetBlocksDeletion is the DeleteSubnet dependency check.
 func (f *fixtureOwnerStore) subnetBlocksDeletion(ctx context.Context, accountID, subnetID string) (bool, error) {
-	return f.slotBlocks(ctx, subnetSlotKey(accountID, subnetID))
+	return f.slotBlocks(ctx, accountID, subnetSlotKey(accountID, subnetID))
 }
 
 // acquireSlot publishes slot at key. A slot of a live owner is
 // errFixtureParentBusy; a stale one is taken at its read revision.
-func (f *fixtureOwnerStore) acquireSlot(ctx context.Context, key string, slot fixtureSlot) error {
+func (f *fixtureOwnerStore) acquireSlot(ctx context.Context, accountID, key string, slot fixtureSlot) error {
 	value, err := json.Marshal(slot)
 	if err != nil {
 		return fmt.Errorf("marshal slot %s: %w", key, err)
@@ -169,7 +189,7 @@ func (f *fixtureOwnerStore) acquireSlot(ctx context.Context, key string, slot fi
 		if cerr == nil {
 			return nil
 		}
-		entry, cur, err := f.readSlot(ctx, key)
+		entry, cur, err := f.readSlot(ctx, accountID, key)
 		if err != nil {
 			return err
 		}
@@ -214,11 +234,11 @@ func touchParent(ctx context.Context, rev uint64, touch func(uint64) error, rere
 // publishes both slots, then touches the VPC and the subnet at the revisions
 // read, so a delete that checked before the slots existed loses its mark.
 func (f *fixtureOwnerStore) admitParents(ctx context.Context, claim *fixtureClaim) error {
-	root := claim.Owner.Root
-	if root.VpcId == "" || len(root.Subnets) != 1 || root.Subnets[0] == "" {
-		return errors.New("elbv2: fixture root needs one VPC and one subnet")
+	accountID, slot, err := claimSlot(claim)
+	if err != nil {
+		return err
 	}
-	accountID, vpcID, subnetID := root.AccountID, root.VpcId, root.Subnets[0]
+	vpcID, subnetID := slot.VpcID, slot.SubnetID
 
 	readVPC := func() (uint64, error) {
 		rec, rev, err := f.parents.VPC(ctx, accountID, vpcID)
@@ -249,10 +269,8 @@ func (f *fixtureOwnerStore) admitParents(ctx context.Context, claim *fixtureClai
 		return err
 	}
 
-	keys := []string{vpcSlotKey(accountID, vpcID), subnetSlotKey(accountID, subnetID)}
-	slot := fixtureSlot{ClaimKey: claim.Key, OwnerID: claim.Owner.OwnerID, Keys: keys}
-	for _, key := range keys {
-		if err := f.acquireSlot(ctx, key, slot); err != nil {
+	for _, key := range slot.keys(accountID) {
+		if err := f.acquireSlot(ctx, accountID, key, slot); err != nil {
 			return err
 		}
 	}
@@ -286,13 +304,26 @@ func (f *fixtureOwnerStore) admitAndSeal(ctx context.Context, claim *fixtureClai
 // abandon invalidates the caller's pending claim, then clears its own slots.
 // A sealed or unreadable claim keeps its slots.
 func (f *fixtureOwnerStore) abandon(ctx context.Context, claim *fixtureClaim) error {
+	accountID, slot, err := claimSlot(claim)
+	if err != nil {
+		return err
+	}
 	if err := f.Invalidate(ctx, claim); err != nil && !errors.Is(err, errFixtureOwnerLost) {
 		return err
 	}
-	root := claim.Owner.Root
-	keys := []string{vpcSlotKey(root.AccountID, root.VpcId)}
-	for _, subnetID := range root.Subnets {
-		keys = append(keys, subnetSlotKey(root.AccountID, subnetID))
+	return f.clearOwnerSlots(ctx, accountID, slot.OwnerID, slot.keys(accountID))
+}
+
+// claimSlot derives the account and slot from the claim's persisted pending
+// snapshot, the same bytes Seal publishes.
+func claimSlot(claim *fixtureClaim) (string, fixtureSlot, error) {
+	owner, err := claim.snapshot()
+	if err != nil {
+		return "", fixtureSlot{}, err
 	}
-	return f.clearOwnerSlots(ctx, claim.Owner.OwnerID, keys)
+	root := owner.Root
+	if root.VpcId == "" || len(root.Subnets) != 1 || root.Subnets[0] == "" {
+		return "", fixtureSlot{}, errors.New("elbv2: fixture root needs one VPC and one subnet")
+	}
+	return root.AccountID, fixtureSlot{ClaimKey: claim.Key, OwnerID: owner.OwnerID, VpcID: root.VpcId, SubnetID: root.Subnets[0]}, nil
 }

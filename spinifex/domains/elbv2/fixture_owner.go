@@ -55,6 +55,16 @@ type fixtureClaim struct {
 	pending  []byte
 }
 
+// snapshot decodes the persisted pending owner. Store logic reads the owner
+// token, parents and root only from it, never from the mutable Owner copy.
+func (c *fixtureClaim) snapshot() (fixtureOwner, error) {
+	owner, err := decodeFixtureOwner(c.pending)
+	if err != nil {
+		return fixtureOwner{}, fmt.Errorf("pending claim %s: %w", c.Key, err)
+	}
+	return owner, nil
+}
+
 func newFixtureClaim(key string, revision uint64, raw []byte) (*fixtureClaim, error) {
 	owner, err := decodeFixtureOwner(raw)
 	if err != nil {
@@ -171,9 +181,9 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 // A lost response is resolved by re-reading the claim: the caller's own sealed
 // root is success, and a missing or replaced claim is errFixtureOwnerLost.
 func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*LoadBalancerRecord, error) {
-	sealed, err := decodeFixtureOwner(claim.pending)
+	sealed, err := claim.snapshot()
 	if err != nil {
-		return nil, fmt.Errorf("pending claim %s: %w", claim.Key, err)
+		return nil, err
 	}
 	if sealed.Sealed {
 		return nil, fmt.Errorf("pending claim %s: %w", claim.Key, errFixtureClaimMalformed)
@@ -191,10 +201,10 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 	if rerr != nil {
 		return nil, errors.Join(fmt.Errorf("kv update %s: %w", claim.Key, uerr), rerr)
 	}
-	if cur != nil && cur.OwnerID == claim.Owner.OwnerID && cur.OwnerRevision == claim.Owner.OwnerRevision && cur.Sealed {
+	if cur != nil && cur.OwnerID == sealed.OwnerID && cur.OwnerRevision == sealed.OwnerRevision && cur.Sealed {
 		return cur.Root, nil
 	}
-	if cur == nil || cur.OwnerID != claim.Owner.OwnerID || definiteKVConflict(uerr) {
+	if cur == nil || cur.OwnerID != sealed.OwnerID || definiteKVConflict(uerr) {
 		return nil, errFixtureOwnerLost
 	}
 	return nil, fmt.Errorf("kv update %s: %w", claim.Key, uerr)
@@ -204,13 +214,17 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 // removes a replacement owner's claim or a sealed root, even when the caller
 // supplies the sealed revision.
 func (f *fixtureOwnerStore) Invalidate(ctx context.Context, claim *fixtureClaim) error {
+	mine, err := claim.snapshot()
+	if err != nil {
+		return err
+	}
 	entry, cur, err := f.read(ctx, claim.Key)
 	switch {
 	case err != nil:
 		return err
 	case cur == nil:
 		return nil
-	case cur.OwnerID != claim.Owner.OwnerID:
+	case cur.OwnerID != mine.OwnerID:
 		return errFixtureOwnerLost
 	case cur.Sealed:
 		return errFixtureSealed
@@ -228,7 +242,7 @@ func (f *fixtureOwnerStore) Invalidate(ctx context.Context, claim *fixtureClaim)
 	switch {
 	case cur == nil:
 		return nil
-	case cur.OwnerID != claim.Owner.OwnerID:
+	case cur.OwnerID != mine.OwnerID:
 		return errFixtureOwnerLost
 	case cur.Sealed:
 		return errFixtureSealed

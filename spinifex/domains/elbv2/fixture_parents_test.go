@@ -312,8 +312,19 @@ func (f *fenceFixture) deleteVPC() error {
 }
 
 func (f *fenceFixture) deleteSubnet() error {
-	_, err := f.vpcs.DeleteSubnet(f.t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(f.subnetID)}, testAccountID)
+	return f.deleteSubnetID(f.subnetID)
+}
+
+func (f *fenceFixture) deleteSubnetID(id string) error {
+	_, err := f.vpcs.DeleteSubnet(f.t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(id)}, testAccountID)
 	return err
+}
+
+func (f *fenceFixture) addSubnet(cidr string) string {
+	f.t.Helper()
+	out, err := f.vpcs.CreateSubnet(f.t.Context(), &ec2.CreateSubnetInput{VpcId: aws.String(f.vpcID), CidrBlock: aws.String(cidr)}, testAccountID)
+	require.NoError(f.t, err)
+	return aws.StringValue(out.Subnet.SubnetId)
 }
 
 func fenceAsync(call func() error) <-chan error {
@@ -692,4 +703,119 @@ func TestFixtureFence_FailedAdmissionKeepsLiveSlot(t *testing.T) {
 	assert.Equal(t, first.Owner.OwnerID, f.slotOwner(f.vpcSlot()))
 	assert.Equal(t, first.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
 	assert.False(t, f.claimPresent(second.Key), "the refused create invalidated its own claim")
+}
+
+// The fence, the seal and the cleanup all use the persisted pending snapshot.
+// A change to the decoded claim after Begin cannot move the dependency.
+func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
+	t.Parallel()
+
+	t.Run("seal keeps the saved subnet", func(t *testing.T) {
+		t.Parallel()
+		f := newFenceFixture(t)
+		other := f.addSubnet("10.80.2.0/24")
+		claim := f.begin(f.admit, f.root("aaaa000000000001"))
+		claim.Owner.Root.Subnets[0] = other
+
+		root, err := f.admit.admitAndSeal(t.Context(), claim)
+		require.NoError(t, err)
+		assert.Equal(t, []string{f.subnetID}, root.Subnets)
+		assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.subnetSlot()), "the saved subnet holds the dependency")
+		assert.Empty(t, f.slotOwner(subnetSlotKey(testAccountID, other)), "the changed subnet is unowned")
+		requireFenceCode(t, f.deleteSubnet(), awserrors.ErrorDependencyViolation)
+		require.NoError(t, f.deleteSubnetID(other))
+	})
+
+	t.Run("cleanup clears the saved subnet", func(t *testing.T) {
+		t.Parallel()
+		f := newFenceFixture(t)
+		other := f.addSubnet("10.80.2.0/24")
+		claim := f.begin(f.admit, f.root("aaaa000000000001"))
+		require.NoError(t, f.admit.admitParents(t.Context(), claim))
+		claim.Owner.Root.Subnets[0] = other
+		claim.Owner.OwnerID = "bbbb000000000002"
+
+		require.NoError(t, f.admit.abandon(t.Context(), claim))
+		assert.False(t, f.claimPresent(claim.Key))
+		assert.Empty(t, f.slotOwner(f.vpcSlot()))
+		assert.Empty(t, f.slotOwner(f.subnetSlot()), "the saved subnet's slot is cleared")
+		require.NoError(t, f.deleteSubnet())
+	})
+}
+
+// A slot that is not exactly the owner's scoped VPC and subnet pair is a store
+// error. The delete refuses before any invalidation or slot deletion.
+func TestFixtureFence_MalformedSlotFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]func(f *fenceFixture, claim *fixtureClaim) string{
+		"extra key list": func(f *fenceFixture, claim *fixtureClaim) string {
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID +
+				`","subnetId":"` + f.subnetID + `","keys":["` + f.vpcSlot() + `","` + f.subnetSlot() + `","ovnslot.subnet.x.y"]}`
+		},
+		"pair without the read key": func(f *fenceFixture, claim *fixtureClaim) string {
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"subnet-elsewhere"}`
+		},
+		"claim in another account": func(f *fenceFixture, claim *fixtureClaim) string {
+			return `{"claimKey":"` + LBNameKey("ovn-nlb", "210987654321") + `","ownerId":"` + claim.Owner.OwnerID +
+				`","vpcId":"` + f.vpcID + `","subnetId":"` + f.subnetID + `"}`
+		},
+		"pair differs from the claim root": func(f *fenceFixture, claim *fixtureClaim) string {
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"vpc-elsewhere","subnetId":"` + f.subnetID + `"}`
+		},
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFenceFixture(t)
+			ctx := t.Context()
+			root := f.root("aaaa000000000001")
+			if name == "pair without the read key" {
+				// The claim agrees with the slot, so only the read-key check refuses.
+				root.Subnets = []string{"subnet-elsewhere"}
+			}
+			claim := f.begin(f.admit, root)
+			f.clock.advance(lbNameClaimTTL + time.Second)
+			raw := []byte(value(f, claim))
+			rev, err := f.elbKV.Put(ctx, f.subnetSlot(), raw)
+			require.NoError(t, err)
+			before := f.parentEntry(ec2vpc.KVBucketSubnets, f.subnetID)
+
+			requireFenceCode(t, f.deleteSubnet(), awserrors.ErrorServerInternal)
+			after := f.parentEntry(ec2vpc.KVBucketSubnets, f.subnetID)
+			assert.Equal(t, before.Revision(), after.Revision(), "the subnet record is not rewritten")
+			assert.False(t, f.parentMarked(ec2vpc.KVBucketSubnets, f.subnetID))
+			slot, err := f.elbKV.Get(ctx, f.subnetSlot())
+			require.NoError(t, err)
+			assert.Equal(t, rev, slot.Revision(), "the slot is not deleted or rewritten")
+			assert.Equal(t, raw, slot.Value())
+			assert.True(t, f.claimPresent(claim.Key), "the expired claim is not invalidated")
+		})
+	}
+}
+
+// A slot delete that succeeds on the last allowed attempt completes the
+// cleanup; only conflicts are retried.
+func TestFixtureFence_ClearSucceedsOnLastAttempt(t *testing.T) {
+	t.Parallel()
+	f := newFenceFixture(t)
+	ctx := t.Context()
+	claim := f.begin(f.admit, f.root("aaaa000000000001"))
+	require.NoError(t, f.admit.admitParents(ctx, claim))
+	entry, err := f.elbKV.Get(ctx, f.subnetSlot())
+	require.NoError(t, err)
+	value := entry.Value()
+
+	bumps := 0
+	f.delKV.setBefore(func(op, key string) {
+		if op != "Delete" || key != f.subnetSlot() || bumps == fixtureParentAttempts-1 {
+			return
+		}
+		bumps++
+		_, err := f.elbKV.Put(ctx, key, value)
+		require.NoError(t, err)
+	})
+	require.NoError(t, f.del.clearOwnerSlots(ctx, testAccountID, claim.Owner.OwnerID, []string{f.subnetSlot()}))
+	assert.Equal(t, fixtureParentAttempts-1, bumps, "every earlier attempt lost its CAS")
+	assert.Empty(t, f.slotOwner(f.subnetSlot()))
 }

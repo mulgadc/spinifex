@@ -1340,7 +1340,7 @@ jobs:
 
           echo "$DOC" | jq .
 
-          HTTP_CODE=$(curl -sS -o /tmp/es-summary-resp.json -w '%{http_code}' \
+          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/es-summary-resp.json -w '%{http_code}' \
             -X POST "http://${MULGA_ES_SINK}/mulga-ci-runs/_doc" \
             -H 'Content-Type: application/json' \
             -d "${DOC}")

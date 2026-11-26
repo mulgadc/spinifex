@@ -250,6 +250,7 @@ jobs:
 
   es_job_docs:
     name: ES CI Job Docs
+    continue-on-error: true
     needs: [ddil]
     if: always()
     runs-on: [self-hosted]

@@ -136,4 +136,20 @@ check "failed build step is not a test failure" "$(sed -n 2p <<<"$ids")" "other"
 check "failed suite step is a test failure" "$(sed -n 3p <<<"$ids")" "test"
 check "pair field kept only when keyword-mapped" "$(tail -n1 <<<"$ids")" "False True"
 
+# A timed_out job is a timeout even when the annotation lookup finds nothing.
+# The write index must map the pair field as keyword before it is sent.
+more=$(python3 -I - "$doc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cjd", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m.classify({"conclusion": "timed_out", "steps": []}, [])[0])
+ok = {"idx": {"mappings": {"hypervisor_pools": {"mapping": {"hypervisor_pools": {"type": "keyword"}}}}}}
+text = {"idx": {"mappings": {"hypervisor_pools": {"mapping": {"hypervisor_pools": {"type": "text"}}}}}}
+print(m.field_is_keyword(ok, "hypervisor_pools"), m.field_is_keyword(text, "hypervisor_pools"), m.field_is_keyword({}, "hypervisor_pools"))
+PY
+)
+check "timed_out without annotations" "$(sed -n 1p <<<"$more")" "timeout"
+check "index mapping must be keyword" "$(sed -n 2p <<<"$more")" "True False False"
+
 exit "$fail"

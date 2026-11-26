@@ -430,6 +430,7 @@ jobs:
 
   es_job_docs:
     name: ES CI Job Docs
+    continue-on-error: true
     needs: [perf_3node]
     if: always()
     runs-on: [self-hosted]

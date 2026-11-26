@@ -1785,6 +1785,7 @@ jobs:
 
   es_job_docs:
     name: ES CI Job Docs
+    continue-on-error: true
     # run summary is GitHub-hosted and cannot reach the sink, so the per-job
     # docs come from a self-hosted job.
     needs: [select, matrix, baremetal, diskperf, iso-single, iso-multi, performance, stress]

@@ -136,6 +136,9 @@ def classify(job: dict, annotations: list[str]) -> tuple[str, str, str]:
             failed_step = step.get("name", "")
             break
 
+    if conclusion == "timed_out":
+        return "timeout", failed_step, ""
+
     for msg in annotations:
         m = _CANCEL_BY.search(msg)
         if m:
@@ -242,6 +245,30 @@ def template_keywords(sink: str, name: str) -> set[str] | None:
     return None
 
 
+def field_is_keyword(mapping: dict, field: str) -> bool:
+    """True when every index in a GET _mapping/field response maps the field
+    as keyword."""
+    if not mapping:
+        return False
+    for idx in mapping.values():
+        entry = idx.get("mappings", {}).get(field, {}).get("mapping", {})
+        if not any(v.get("type") == "keyword" for v in entry.values()):
+            return False
+    return True
+
+
+def index_keeps_field(sink: str, index: str, field: str) -> bool:
+    """False when the index already exists and does not map the field as
+    keyword. A missing index takes its mapping from the template."""
+    try:
+        with urllib.request.urlopen(f"http://{sink}/{index}/_mapping/field/{field}", timeout=10) as resp:
+            return field_is_keyword(json.loads(resp.read().decode("utf-8")), field)
+    except urllib.error.HTTPError as exc:
+        return exc.code == 404
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 def drop_unmapped(body: str, keywords: set[str]) -> str:
     """Remove the host and pool pair field from each doc until the template
     maps it as keyword, so a dynamic mapping never decides the join."""
@@ -261,6 +288,8 @@ def post_bulk(sink: str, index: str, body: str) -> int:
     keywords = template_keywords(sink, index)
     if keywords is None:
         return 0
+    if not index_keeps_field(sink, index, "hypervisor_pools"):
+        keywords = keywords - {"hypervisor_pools"}
     body = drop_unmapped(body, keywords)
     req = urllib.request.Request(
         f"http://{sink}/{index}/_bulk",

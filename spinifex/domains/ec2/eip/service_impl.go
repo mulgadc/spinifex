@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -711,14 +712,23 @@ func addressMatchesFilters(record *EIPRecord, filters map[string][]string) bool 
 // DescribeAddressesAttribute returns per-EIP attributes. PtrRecord is always nil
 // (no reverse-DNS support). Returns an empty list, not an error, for missing IDs.
 func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, accountID string) (*ec2.DescribeAddressesAttributeOutput, error) {
+	// The gateway checks the MaxResults range; Parse here checks only the token.
+	pageReq, err := paging.EC2{}.Parse(nil, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
+	pageReq.Limit = int(aws.Int64Value(input.MaxResults))
+
 	var addresses []*ec2.AddressAttribute
 
 	if len(input.AllocationIds) > 0 {
-		// Direct lookups by requested IDs.
+		// Direct lookups by requested IDs; a repeated ID would stall the page token.
+		seen := map[string]bool{}
 		for _, id := range input.AllocationIds {
-			if id == nil {
+			if id == nil || seen[*id] {
 				continue
 			}
+			seen[*id] = true
 			key := kvstore.AccountKey(accountID, *id)
 			entry, err := s.eipKV.Get(ctx, key)
 			if err != nil {
@@ -765,10 +775,13 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 		}
 	}
 
+	addresses, nextToken := paging.EC2Page(addresses, func(a *ec2.AddressAttribute) string { return *a.AllocationId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeAddressesAttribute completed", "count", len(addresses), "accountID", accountID)
 
 	return &ec2.DescribeAddressesAttributeOutput{
 		Addresses: addresses,
+		NextToken: nextToken,
 	}, nil
 }
 

@@ -118,6 +118,13 @@ func natGatewaysMaxResultsMessage(n int64) string {
 }
 
 var ec2MaxResultsRanges = map[string]maxResultsRange{
+	"DescribeAddressesAttribute": {1, 1000, awserrors.ErrorInvalidParameterValue, func(n int64) string {
+		bound := "less than or equal to 1000"
+		if n < 1 {
+			bound = "greater than or equal to 1"
+		}
+		return fmt.Sprintf("1 validation error detected: Value '%d' at 'maxResults' failed to satisfy constraint: Member must have value %s", n, bound)
+	}},
 	"DescribeCapacityReservations": {1, 1000, awserrors.ErrorInvalidParameterValue, func(n int64) string {
 		return fmt.Sprintf("%d is an invalid value for MaxResults. MaxResults must be null, or between 1 and 1000.", n)
 	}},
@@ -141,6 +148,9 @@ var ec2MaxResultsRanges = map[string]maxResultsRange{
 		return fmt.Sprintf("Value ( %d ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 1000 ).", n)
 	}},
 	"DescribeLaunchTemplates": {1, 200, awserrors.ErrorInvalidParameterValue, func(int64) string {
+		return "Maximum results allowed are between 1 and 200"
+	}},
+	"DescribeLaunchTemplateVersions": {1, 200, awserrors.ErrorInvalidParameterValue, func(int64) string {
 		return "Maximum results allowed are between 1 and 200"
 	}},
 	"DescribeNatGateways": {5, 1000, awserrors.ErrorInvalidParameter, natGatewaysMaxResultsMessage},

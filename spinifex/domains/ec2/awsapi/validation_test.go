@@ -42,6 +42,10 @@ func TestValidateMaxResults_EveryRangeAtBothBounds(t *testing.T) {
 		accept []int64
 		refuse []refusal
 	}{
+		"DescribeAddressesAttribute": {[]int64{1, 1000}, []refusal{
+			{0, awserrors.ErrorInvalidParameterValue, "1 validation error detected: Value '0' at 'maxResults' failed to satisfy constraint: Member must have value greater than or equal to 1"},
+			{1001, awserrors.ErrorInvalidParameterValue, "1 validation error detected: Value '1001' at 'maxResults' failed to satisfy constraint: Member must have value less than or equal to 1000"},
+		}},
 		"DescribeCapacityReservations": {[]int64{1, 1000}, []refusal{
 			{0, awserrors.ErrorInvalidParameterValue, "0 is an invalid value for MaxResults. MaxResults must be null, or between 1 and 1000."},
 			{1001, awserrors.ErrorInvalidParameterValue, "1001 is an invalid value for MaxResults. MaxResults must be null, or between 1 and 1000."},
@@ -66,6 +70,10 @@ func TestValidateMaxResults_EveryRangeAtBothBounds(t *testing.T) {
 			{1001, awserrors.ErrorInvalidMaxResults, "Value ( 1001 ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 1000 )."},
 		}},
 		"DescribeLaunchTemplates": {[]int64{1, 200}, []refusal{
+			{0, awserrors.ErrorInvalidParameterValue, "Maximum results allowed are between 1 and 200"},
+			{201, awserrors.ErrorInvalidParameterValue, "Maximum results allowed are between 1 and 200"},
+		}},
+		"DescribeLaunchTemplateVersions": {[]int64{1, 200}, []refusal{
 			{0, awserrors.ErrorInvalidParameterValue, "Maximum results allowed are between 1 and 200"},
 			{201, awserrors.ErrorInvalidParameterValue, "Maximum results allowed are between 1 and 200"},
 		}},

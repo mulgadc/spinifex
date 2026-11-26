@@ -1122,8 +1122,14 @@ func TestDescribeInstancesChecked_PageWalkSeesEachInstanceOnce(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var mu sync.Mutex
-	ids := []string{"i-07", "i-02", "i-11", "i-05", "i-01", "i-09", "i-03", "i-10", "i-04", "i-06", "i-08", "i-12"}
+	// i-11 is alone on the last page, so its page holds no r-b instance.
+	ids := []string{"i-07", "i-02", "i-11", "i-05", "i-01", "i-09", "i-03", "i-10", "i-04", "i-06", "i-08"}
 	subscribeInstanceSet(t, nc, &mu, &ids)
+
+	all, err := DescribeInstancesChecked(context.Background(), &ec2.DescribeInstancesInput{}, nc, 1, nil, "123456789012")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, ids, pageInstanceIDs(all))
+	assert.Nil(t, all.NextToken)
 
 	var seen []string
 	var token *string
@@ -1133,6 +1139,9 @@ func TestDescribeInstancesChecked_PageWalkSeesEachInstanceOnce(t *testing.T) {
 		pages++
 		got := pageInstanceIDs(out)
 		assert.LessOrEqual(t, len(got), 5)
+		for _, res := range out.Reservations {
+			assert.NotEmpty(t, res.Instances)
+		}
 		seen = append(seen, got...)
 		token = out.NextToken
 		if token == nil {

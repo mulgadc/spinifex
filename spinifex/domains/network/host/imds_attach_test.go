@@ -126,8 +126,8 @@ func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
 	if !errors.Is(err, vm.ErrIMDSServingDegraded) {
 		t.Errorf("serving-stage failure must be ErrIMDSServingDegraded, got %v", err)
 	}
-	// The endpoint (vpcd's bind target) and the patch's br-int end (OVN binding) were
-	// installed before the failure, so the guest keeps connectivity and vpcd can bind.
+	// The endpoint (vpcd's bind target) and the patch were installed before the
+	// failure, so vpcd never binds a missing device.
 	if !s.called("ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint) {
 		t.Errorf("endpoint must be installed before the serving stage; calls: %v", s.calls)
 	}

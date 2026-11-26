@@ -5,14 +5,10 @@ import (
 	"errors"
 )
 
-// ErrIMDSServingDegraded marks an AttachIMDSDatapath failure after the
-// connectivity-critical datapath (patch + forward flows) was installed — only the
-// IMDS demux/egress/reply stage failed, so the guest keeps VPC connectivity but
-// cannot reach IMDS. Since guest bootstrap (SSH key, user-data, network, hostname)
-// now comes from IMDS, this is launch-fatal: the caller aborts rather than boot a
-// guest that would silently come up unconfigured. Any other error means connectivity
-// was not set up and is equally fatal.
-var ErrIMDSServingDegraded = errors.New("imds: per-tap serving install failed (guest connectivity intact)")
+// ErrIMDSServingDegraded marks an AttachIMDSDatapath failure in the reply routing
+// or the flow bundle, after the endpoint and patch exist. The forward flows are in
+// that bundle, so it makes no claim about forwarding. Launch-fatal like any error.
+var ErrIMDSServingDegraded = errors.New("imds: per-tap serving install failed")
 
 // ErrIMDSTapDetached is RepairIMDSDatapath declining a tap no longer on br-imds:
 // its guest is being torn down, and a repair would re-create ports it just lost.

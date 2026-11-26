@@ -316,10 +316,8 @@ func TestAttachPrimaryIMDSDatapath_NilPlumber_NoOp(t *testing.T) {
 }
 
 func TestAttachPrimaryIMDSDatapath_ServingDegradedIsFatal(t *testing.T) {
-	// Serving-only failure: connectivity (patch + forward flows) is intact, only the
-	// IMDS demux/reply stage failed. Guest bootstrap now comes from IMDS, so an
-	// unreachable IMDS would boot a silently-unconfigured guest — the launch must
-	// fail. No roll back to br-int (a rolled-back tap is equally unreachable for IMDS).
+	// Serving-stage failure (reply routing or flow bundle). Guest bootstrap comes
+	// from IMDS, so the launch must fail. No roll back to br-int.
 	plumber := &fakeNetworkPlumber{
 		imdsAttachErr: fmt.Errorf("%w: install endpoint: ovsdb busy", ErrIMDSServingDegraded),
 	}

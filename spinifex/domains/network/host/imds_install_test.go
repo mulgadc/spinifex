@@ -14,7 +14,7 @@ import (
 
 // imdsHost is a Runner that keeps the host state the drift check reads: the
 // tap's flows stay in place, and the sysctl helper writes endpointSysctlDir.
-// While flowFails is above zero, each ovs-ofctl flow change fails.
+// While flowFails is above zero, each bundle is read and then rejected.
 type imdsHost struct {
 	eniID     string
 	flowFails int
@@ -30,13 +30,14 @@ func (h *imdsHost) Run(_ context.Context, name string, args ...string) ([]byte, 
 		return []byte(vm.TapDeviceName(h.eniID) + "\n"), nil
 	case strings.HasPrefix(joined, "ovs-ofctl --no-stats dump-flows "+IMDSBridge):
 		return []byte(dumpFlowLines(h.eniID, IMDSTapFlowCount)), nil
-	case name == "ovs-ofctl" && h.flowFails > 0:
-		h.flowFails--
-		return nil, errors.New("OFPBFC_MSG_FAILED")
 	case strings.HasPrefix(joined, "ovs-ofctl --bundle add-flows "+IMDSBridge+" "):
 		body, err := os.ReadFile(args[len(args)-1])
 		if err != nil {
 			return nil, err
+		}
+		if h.flowFails > 0 {
+			h.flowFails--
+			return nil, errors.New("OFPBFC_MSG_FAILED")
 		}
 		h.bundles = append(h.bundles, string(body))
 	case name == hostcommand.EndpointSysctlHelper:

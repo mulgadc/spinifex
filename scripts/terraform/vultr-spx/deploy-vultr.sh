@@ -220,7 +220,7 @@ install_spinifex() {
         # rather than in it, and the later steps run the installed copy.
         on 'test -x /usr/local/share/spinifex/setup.sh || install -D -m 0755 /tmp/setup.sh /usr/local/share/spinifex/setup.sh'
     else
-        on "curl -sfL https://install.mulgadc.com | bash -s -- --channel $CHANNEL >/root/setup.log 2>&1" ||
+        on "curl -fsSL -o /root/install.sh https://install.mulgadc.com && bash /root/install.sh --channel $CHANNEL >/root/setup.log 2>&1" ||
             die "install failed; see /root/setup.log on $IP"
     fi
 }
@@ -334,11 +334,17 @@ restart_spinifex() {
 # accounts are seeded with it by the daemon, which now sees the pool.
 public_default_subnets() {
     log "auto-assigning public addresses in the default subnets"
-    on 'export AWS_PROFILE=spinifex
-        for s in $(aws ec2 describe-subnets --filters Name=default-for-az,Values=true \
-                --query "Subnets[?MapPublicIpOnLaunch==\`false\`].SubnetId" --output text); do
-            aws ec2 modify-subnet-attribute --subnet-id "$s" --map-public-ip-on-launch || exit 1
-        done' || die "could not turn on public addresses in the default subnets on $IP"
+    on 'bash -s' <<'REMOTE' || die "could not turn on public addresses in the default subnets on $IP"
+set -euo pipefail
+export AWS_PROFILE=spinifex
+subnets="$(aws ec2 describe-subnets --filters Name=default-for-az,Values=true --query "Subnets[].SubnetId" --output text)"
+[ -n "$subnets" ] || { echo "no default subnets found" >&2; exit 1; }
+for s in $subnets; do
+    aws ec2 modify-subnet-attribute --subnet-id "$s" --map-public-ip-on-launch
+    v="$(aws ec2 describe-subnets --subnet-ids "$s" --query "Subnets[0].MapPublicIpOnLaunch" --output text)"
+    [ "$v" = True ] || { echo "subnet $s MapPublicIpOnLaunch is '$v'" >&2; exit 1; }
+done
+REMOTE
 }
 
 import_image() {

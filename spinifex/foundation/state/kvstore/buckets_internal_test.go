@@ -32,6 +32,7 @@ func streamReplicas(t *testing.T, js jetstream.JetStream, bucket string) int {
 }
 
 func TestGetOrCreateBucket_CreatesAtTheClusterReplicaCount(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 
 	kv, err := GetOrCreateBucket(t.Context(), js, "regression-bucket", 5)
@@ -43,6 +44,7 @@ func TestGetOrCreateBucket_CreatesAtTheClusterReplicaCount(t *testing.T) {
 // TestGetOrCreateBucket_OpensExisting covers the second-boot path: a bucket that
 // already exists is opened with its stored contents rather than reset.
 func TestGetOrCreateBucket_OpensExisting(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 
 	kv, err := GetOrCreateBucket(t.Context(), js, "existing-bucket", 5)
@@ -116,6 +118,7 @@ func TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise(t *test
 }
 
 func TestDeleteBucketIfExists(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 
 	// Missing bucket is a no-op.
@@ -134,6 +137,7 @@ func TestDeleteBucketIfExists(t *testing.T) {
 }
 
 func TestBucketNames_ListsEveryBucket(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 
 	names, err := BucketNames(t.Context(), js)
@@ -155,6 +159,7 @@ func TestBucketNames_ListsEveryBucket(t *testing.T) {
 // success, so a caller that ignores Error() sees a failed listing as an empty
 // one and prunes every resource it was meant to keep.
 func TestBucketNames_SurfacesEnumerationFailure(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 
 	_, err := GetOrCreateBucket(t.Context(), js, "should-not-vanish", 1)
@@ -190,7 +195,7 @@ func (m *hangingKVManager) KeyValueStoreNames(context.Context) jetstream.KeyValu
 // that can end this call.
 func TestBucketNames_GivesUpOnAListingThatNeverCompletes(t *testing.T) {
 	restore := bucketListTimeout
-	bucketListTimeout = 50 * time.Millisecond
+	bucketListTimeout = 5 * time.Millisecond
 	t.Cleanup(func() { bucketListTimeout = restore })
 
 	done := make(chan error, 1)
@@ -209,6 +214,7 @@ func TestBucketNames_GivesUpOnAListingThatNeverCompletes(t *testing.T) {
 }
 
 func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "bounded-keys", 1)
 	require.NoError(t, err)
@@ -229,6 +235,7 @@ func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {
 // TestVersionStateMachine covers unset→0, first write, idempotent same write, upgrade, and no-downgrade.
 // One bucket is reused so each step runs against the prior state — the only way to catch unconditional-overwrite regressions.
 func TestVersionStateMachine(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-fsm", 1)
 	require.NoError(t, err)
@@ -268,6 +275,7 @@ func TestVersionStateMachine(t *testing.T) {
 // TestVersionCorruptValue asserts a mangled stamp is reported rather than
 // silently overwritten, which would hide that the bucket needs inspection.
 func TestVersionCorruptValue(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-corrupt", 1)
 	require.NoError(t, err)

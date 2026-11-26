@@ -3,6 +3,7 @@ package kvstore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,14 +97,24 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 		}, nil},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
-			require.NoError(t, store.Set(t.Context(), "acct-a/seed", &record{Name: "seed"}))
-			loseStream(t, js)
+	// Each write meeting the lost stream waits out nats.go's no-responder
+	// retries, so every op runs at once on its own server before the checks.
+	stores := make([]*kvstore.Store[record], len(tests))
+	errs := make([]error, len(tests))
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	for i, tt := range tests {
+		_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
+		require.NoError(t, store.Set(t.Context(), "acct-a/seed", &record{Name: "seed"}))
+		loseStream(t, js)
+		stores[i] = store
+		wg.Go(func() { errs[i] = tt.op(t.Context(), store) })
+	}
+	wg.Wait()
 
-			err := tt.op(t.Context(), store)
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := stores[i], errs[i]
 			assert.False(t, kvstore.IsStreamUnavailable(err),
 				"the operation must reach the reopened bucket, not surface the loss: %v", err)
 			if tt.wantErr != nil {
@@ -175,7 +186,7 @@ func TestStore_RecoveryFailureSurfacesTheOriginalError(t *testing.T) {
 	// The server is gone, so this Set can only time out. Bound it: a
 	// deadline-free context leaves the jetstream client waiting out its own
 	// five-second default for a result the shutdown above already decided.
-	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	err := store.Set(ctx, "acct-a/one", &record{Name: "one"})

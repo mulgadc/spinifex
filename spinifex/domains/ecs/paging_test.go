@@ -236,6 +236,8 @@ func TestPaging_RefusesBadMaxResultsAndForeignToken(t *testing.T) {
 			t.Parallel()
 			svc, _ := newTestService(t)
 			a.seed(t, svc, 1)
+			_, _, err := a.list(t, svc, aws.Int64(a.max), nil)
+			require.NoError(t, err)
 			for _, req := range []struct {
 				max   *int64
 				token *string

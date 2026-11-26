@@ -199,6 +199,7 @@ export function usePreviewLifecyclePolicy() {
       const first = await getEcrClient().send(
         new GetLifecyclePolicyPreviewCommand({ repositoryName }),
       )
+
       const previewResults = [...(first.previewResults ?? [])]
       let { nextToken } = first
 
@@ -208,8 +209,9 @@ export function usePreviewLifecyclePolicy() {
         const page = await getEcrClient().send(
           new GetLifecyclePolicyPreviewCommand({ repositoryName, nextToken }),
         )
+
         previewResults.push(...(page.previewResults ?? []))
-        nextToken = page.nextToken
+        ;({ nextToken } = page)
       }
 
       return { ...first, previewResults, nextToken: undefined }

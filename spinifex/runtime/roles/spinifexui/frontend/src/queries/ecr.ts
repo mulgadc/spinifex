@@ -17,14 +17,16 @@ export const ecrRepositoriesQueryOptions = queryOptions({
   queryFn: async () => {
     const repositories: Repository[] = []
     let nextToken: string | undefined
+
     do {
       // Each page needs the token the one before it returned.
       // oxlint-disable-next-line no-await-in-loop
       const page = await getEcrClient().send(
         new DescribeRepositoriesCommand({ nextToken }),
       )
+
       repositories.push(...(page.repositories ?? []))
-      nextToken = page.nextToken
+      ;({ nextToken } = page)
     } while (nextToken)
 
     return { repositories }
@@ -37,13 +39,15 @@ export const ecrRepositoryImagesQueryOptions = (repositoryName: string) =>
     queryFn: async () => {
       const imageDetails: ImageDetail[] = []
       let nextToken: string | undefined
+
       do {
         // oxlint-disable-next-line no-await-in-loop
         const page = await getEcrClient().send(
           new DescribeImagesCommand({ repositoryName, nextToken }),
         )
+
         imageDetails.push(...(page.imageDetails ?? []))
-        nextToken = page.nextToken
+        ;({ nextToken } = page)
       } while (nextToken)
 
       return { imageDetails }

@@ -147,6 +147,27 @@ func TestVectorService_ListJobs_ScopedPerAccount(t *testing.T) {
 	assert.Empty(t, empty.Jobs)
 }
 
+func TestVectorService_ListJobs_ScopedToIndexAndDataSource(t *testing.T) {
+	t.Parallel()
+	s := newAPITestSetup(t)
+	ctx := context.Background()
+	for _, id := range []string{"idx-one", "idx-two"} {
+		_, err := s.svc.CreateIndex(ctx, &CreateIndexRequest{IndexID: id, Name: id, Dimension: 8}, apiAccountA)
+		require.NoError(t, err)
+	}
+	want, err := s.svc.Ingest(ctx, &IngestRequest{IndexID: "idx-one", Source: SourceSpec{Bucket: "docs"}, DataSourceID: "ds-1"}, apiAccountA)
+	require.NoError(t, err)
+	_, err = s.svc.Ingest(ctx, &IngestRequest{IndexID: "idx-one", Source: SourceSpec{Bucket: "docs"}, DataSourceID: "ds-2"}, apiAccountA)
+	require.NoError(t, err)
+	_, err = s.svc.Ingest(ctx, &IngestRequest{IndexID: "idx-two", Source: SourceSpec{Bucket: "docs"}, DataSourceID: "ds-1"}, apiAccountA)
+	require.NoError(t, err)
+
+	out, err := s.svc.ListJobs(ctx, &ListJobsRequest{IndexID: "idx-one", DataSourceID: "ds-1"}, apiAccountA)
+	require.NoError(t, err)
+	require.Len(t, out.Jobs, 1)
+	assert.Equal(t, want.Job.ID, out.Jobs[0].ID)
+}
+
 // TestVectorService_Ingest_StampsIndexPinnedModel proves Ingest overwrites
 // whatever EmbeddingModel/Dimension a caller sends with the index's own
 // registered values (D6/D8): the stored source-spec must always match the

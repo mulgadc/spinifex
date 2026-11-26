@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -103,11 +104,14 @@ type QueryResponse struct {
 	Results []QueryResult `json:"results"`
 }
 
-// ListJobsRequest has no fields: accountID comes from the caller context
-// (D10), never the payload, mirroring ListIndexesRequest.
-type ListJobsRequest struct{}
+// ListJobsRequest scopes a listing to one index and data source when they are
+// set. accountID comes from the caller context, never the payload.
+type ListJobsRequest struct {
+	IndexID      string `json:"indexId,omitempty"`
+	DataSourceID string `json:"dataSourceId,omitempty"`
+}
 
-// ListJobsResponse holds every ingestion job recorded for the caller's account.
+// ListJobsResponse holds the caller account's ingestion jobs in the request's scope.
 type ListJobsResponse struct {
 	Jobs []JobRecord `json:"jobs"`
 }
@@ -297,11 +301,18 @@ func (s *vectorService) DescribeJob(ctx context.Context, req *DescribeJobRequest
 	return &DescribeJobResponse{Job: *job}, nil
 }
 
-// ListJobs returns every ingestion job record owned by accountID.
-func (s *vectorService) ListJobs(ctx context.Context, _ *ListJobsRequest, accountID string) (*ListJobsResponse, error) {
+// ListJobs returns accountID's job records, scoped to req's IndexID and
+// DataSourceID when they are set.
+func (s *vectorService) ListJobs(ctx context.Context, req *ListJobsRequest, accountID string) (*ListJobsResponse, error) {
 	jobs, err := s.jobs.List(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: list jobs: %w", err)
+	}
+	if req != nil && (req.IndexID != "" || req.DataSourceID != "") {
+		jobs = slices.DeleteFunc(jobs, func(job JobRecord) bool {
+			return (req.IndexID != "" && job.IndexID != req.IndexID) ||
+				(req.DataSourceID != "" && job.DataSourceID != req.DataSourceID)
+		})
 	}
 	return &ListJobsResponse{Jobs: jobs}, nil
 }

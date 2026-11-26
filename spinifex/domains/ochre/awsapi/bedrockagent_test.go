@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,7 @@ type fakeBedrockAgentVectorService struct {
 	describeJobResp ochrevector.DescribeJobResponse
 	describeJobErr  error
 
+	listJobsReq  *ochrevector.ListJobsRequest
 	listJobsResp ochrevector.ListJobsResponse
 	listJobsErr  error
 
@@ -96,11 +98,12 @@ func (f *fakeBedrockAgentVectorService) DescribeJob(_ context.Context, _ *ochrev
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, _ *ochrevector.ListJobsRequest, _ string) (*ochrevector.ListJobsResponse, error) {
+func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, req *ochrevector.ListJobsRequest, _ string) (*ochrevector.ListJobsResponse, error) {
+	f.listJobsReq = req
 	if f.listJobsErr != nil {
 		return nil, f.listJobsErr
 	}
-	resp := f.listJobsResp
+	resp := ochrevector.ListJobsResponse{Jobs: slices.Clone(f.listJobsResp.Jobs)}
 	return &resp, nil
 }
 

@@ -51,8 +51,15 @@ type NamedInstanceLookup interface {
 // NamedInstanceReader point-reads the live instance record space under the
 // caller's context. It never lists records or reads the terminated space.
 type NamedInstanceReader struct {
-	records *kvstore.Store[vm.InstanceRecord]
+	records leaderRecords
 }
+
+// leaderRecords is the only read the reader makes: one record from the stream leader.
+type leaderRecords interface {
+	LeaderGet(ctx context.Context, key string) (*vm.InstanceRecord, uint64, error)
+}
+
+var _ leaderRecords = (*kvstore.Store[vm.InstanceRecord])(nil)
 
 var _ NamedInstanceLookup = (*NamedInstanceReader)(nil)
 
@@ -62,21 +69,22 @@ func NewNamedInstanceReader(js jetstream.JetStream) *NamedInstanceReader {
 	return &NamedInstanceReader{records: kvstore.New[vm.InstanceRecord](js, kvstore.Config{Name: instanceStateBucket, History: 1, AttachOnly: true})}
 }
 
-// NamedInstance implements NamedInstanceLookup. A malformed ID reads nothing,
-// and any failed read is an error, never an absence.
+// NamedInstance implements NamedInstanceLookup. The stream leader answers, so
+// a lagging replica's older state is never seen. A malformed ID reads nothing,
+// and a failed read or a record under another identity is an error.
 func (r *NamedInstanceReader) NamedInstance(ctx context.Context, accountID, instanceID string) (*NamedInstance, error) {
 	if !ValidInstanceID(instanceID) {
 		return nil, nil
 	}
-	record, _, err := r.records.Get(ctx, instanceRecordPrefix+instanceID)
+	record, _, err := r.records.LeaderGet(ctx, instanceRecordPrefix+instanceID)
 	if errors.Is(err, kvstore.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read instance %s: %w", instanceID, err)
 	}
-	if record.Metadata.Name != "" && record.Metadata.Name != instanceID {
-		return nil, fmt.Errorf("instance record %s names %s", instanceID, record.Metadata.Name)
+	if record.Metadata.Name != instanceID {
+		return nil, fmt.Errorf("instance record %s names %q", instanceID, record.Metadata.Name)
 	}
 	return ProjectNamedInstance(accountID, instanceID, vm.VMFromRecord(record)), nil
 }

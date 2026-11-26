@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -150,14 +151,50 @@ func TestNamedInstanceReader_PointReadsLiveRecord(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, vm.StateStopped, got.State, "a stopped instance keeps its live record")
 
+	for id, drop := range map[string]func(context.Context, string, ...jetstream.KVDeleteOpt) error{
+		"i-0000000000000000d": kv.Delete, "i-0000000000000000e": kv.Purge,
+	} {
+		gone := namedVM()
+		gone.ID = id
+		putNamed(t, kv, instanceRecordPrefix+id, gone)
+		require.NoError(t, drop(t.Context(), instanceRecordPrefix+id))
+	}
+
 	for name, tc := range map[string]struct{ caller, id string }{
 		"absent":        {namedAccount, "i-0000000000000000b"},
+		"deleted":       {namedAccount, "i-0000000000000000d"},
+		"purged":        {namedAccount, "i-0000000000000000e"},
 		"other account": {namedOther, namedID},
 	} {
 		got, err := r.NamedInstance(t.Context(), tc.caller, tc.id)
 		require.NoError(t, err, name)
 		assert.Nil(t, got, name)
 	}
+}
+
+// leaderAhead is a store whose replica still holds the running record after
+// the stream leader has recorded the stop.
+type leaderAhead struct {
+	*kvstore.Store[vm.InstanceRecord]
+	leader *vm.InstanceRecord
+}
+
+func (l leaderAhead) LeaderGet(context.Context, string) (*vm.InstanceRecord, uint64, error) {
+	return l.leader, 2, nil
+}
+
+// The decision reads the leader's state, not a lagging replica's older running state.
+func TestNamedInstanceReader_ReadsTheLeader(t *testing.T) {
+	js, kv := namedBucket(t)
+	putNamed(t, kv, instanceRecordPrefix+namedID, namedVM())
+	stopped := namedVM()
+	stopped.Status = vm.StateStopped
+	store := kvstore.New[vm.InstanceRecord](js, kvstore.Config{Name: instanceStateBucket, History: 1, AttachOnly: true})
+	r := &NamedInstanceReader{records: leaderAhead{Store: store, leader: stopped.Record()}}
+
+	got, err := r.NamedInstance(t.Context(), namedAccount, namedID)
+	require.NoError(t, err)
+	assert.Equal(t, vm.StateStopped, got.State)
 }
 
 func TestNamedInstanceReader_FailuresAreNotAbsence(t *testing.T) {
@@ -175,7 +212,18 @@ func TestNamedInstanceReader_FailuresAreNotAbsence(t *testing.T) {
 		other.ID = "i-0000000000000000c"
 		putNamed(t, kv, instanceRecordPrefix+"i-0000000000000000d", other)
 		_, err := NewNamedInstanceReader(js).NamedInstance(t.Context(), namedAccount, "i-0000000000000000d")
-		require.ErrorContains(t, err, "names i-0000000000000000c")
+		require.ErrorContains(t, err, `names "i-0000000000000000c"`)
+	})
+	t.Run("record with no stored identity", func(t *testing.T) {
+		record := namedVM().Record()
+		record.Metadata.Name = ""
+		raw, err := json.Marshal(record)
+		require.NoError(t, err)
+		_, err = kv.Put(t.Context(), instanceRecordPrefix+namedID, raw)
+		require.NoError(t, err)
+		got, err := NewNamedInstanceReader(js).NamedInstance(t.Context(), namedAccount, namedID)
+		require.ErrorContains(t, err, `names ""`)
+		assert.Nil(t, got)
 	})
 	t.Run("undecodable record", func(t *testing.T) {
 		_, err := kv.Put(t.Context(), instanceRecordPrefix+"i-0000000000000000e", []byte("{"))

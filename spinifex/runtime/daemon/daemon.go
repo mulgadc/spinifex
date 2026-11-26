@@ -1230,6 +1230,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.DeregisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.DeregisterTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.DescribeTaskDefinition", handleNATSRequest(d.node, d.ecsService.DescribeTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.ListTaskDefinitions", handleNATSRequest(d.node, d.ecsService.ListTaskDefinitions), "spinifex-workers"},
+			natsSub{"ecs.ListTaskDefinitionFamilies", handleNATSRequest(d.node, d.ecsService.ListTaskDefinitionFamilies), "spinifex-workers"},
 			natsSub{"ecs.RegisterContainerInstance", handleNATSRequest(d.node, d.ecsService.RegisterContainerInstance), "spinifex-workers"},
 			natsSub{"ecs.DeregisterContainerInstance", handleNATSRequest(d.node, d.ecsService.DeregisterContainerInstance), "spinifex-workers"},
 			natsSub{"ecs.UpdateContainerInstancesState", handleNATSRequest(d.node, d.ecsService.UpdateContainerInstancesState), "spinifex-workers"},

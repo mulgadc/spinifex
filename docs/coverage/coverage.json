@@ -2269,6 +2269,7 @@
           "ListContainerInstances",
           "ListServices",
           "ListTagsForResource",
+          "ListTaskDefinitionFamilies",
           "ListTaskDefinitions",
           "ListTasks",
           "PutClusterCapacityProviders",
@@ -2286,7 +2287,6 @@
         "stubbed": [
           "ListAccountSettings",
           "ListServicesByNamespace",
-          "ListTaskDefinitionFamilies",
           "PutAccountSetting",
           "UpdateCluster"
         ],

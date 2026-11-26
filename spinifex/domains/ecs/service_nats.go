@@ -61,6 +61,10 @@ func (s *NATSECSService) ListTaskDefinitions(ctx context.Context, input *ecs.Lis
 	return natsmsg.NATSRequest[ecs.ListTaskDefinitionsOutput](ctx, s.natsConn, "ecs.ListTaskDefinitions", input, defaultTimeout, accountID)
 }
 
+func (s *NATSECSService) ListTaskDefinitionFamilies(ctx context.Context, input *ecs.ListTaskDefinitionFamiliesInput, accountID string) (*ecs.ListTaskDefinitionFamiliesOutput, error) {
+	return natsmsg.NATSRequest[ecs.ListTaskDefinitionFamiliesOutput](ctx, s.natsConn, "ecs.ListTaskDefinitionFamilies", input, defaultTimeout, accountID)
+}
+
 // --- Container instance ---
 
 func (s *NATSECSService) RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {

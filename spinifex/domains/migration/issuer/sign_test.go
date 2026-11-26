@@ -60,7 +60,7 @@ func fixtureCert(t *testing.T) *ClientCertificate {
 	require.NoError(t, err)
 	key, ok := k.(*ecdsa.PrivateKey)
 	require.True(t, ok)
-	return &ClientCertificate{Certificate: cert, Key: key}
+	return &ClientCertificate{Certificate: cert, key: key}
 }
 
 func TestSign_KnownVector(t *testing.T) {
@@ -91,7 +91,7 @@ func TestSign_KnownVector(t *testing.T) {
 	sig, err := hex.DecodeString(m[1])
 	require.NoError(t, err)
 	digest := sha256.Sum256([]byte(wantSTS))
-	assert.True(t, ecdsa.VerifyASN1(&cert.Key.PublicKey, digest[:], sig), "signature verifies over SHA-256 of the string to sign")
+	assert.True(t, ecdsa.VerifyASN1(&cert.key.PublicKey, digest[:], sig), "signature verifies over SHA-256 of the string to sign")
 }
 
 func TestSign_UsesUTCDateAndRegionInScope(t *testing.T) {

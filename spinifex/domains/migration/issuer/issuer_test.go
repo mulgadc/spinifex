@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -63,7 +64,7 @@ func TestIssue_CertificateShape(t *testing.T) {
 	assert.Equal(t, x509.KeyUsageDigitalSignature, c.KeyUsage)
 	assert.Empty(t, c.ExtKeyUsage)
 	assert.Equal(t, x509.SHA256WithRSA, c.SignatureAlgorithm)
-	assert.Equal(t, elliptic.P256(), cc.Key.Curve)
+	assert.Equal(t, elliptic.P256(), cc.key.Curve)
 	assert.Equal(t, testNow.Add(CertLifetime), c.NotAfter)
 	assert.True(t, c.NotBefore.Before(testNow))
 	assert.Equal(t, 1, c.SerialNumber.Sign())
@@ -153,11 +154,21 @@ func TestClientCertificate_RedactsKey(t *testing.T) {
 	iss, _ := newTestIssuer(t)
 	cc, err := iss.Issue("123456789012", "c")
 	require.NoError(t, err)
-	raw, err := cc.Key.Bytes()
+	raw, err := cc.key.Bytes()
 	require.NoError(t, err)
 	secret := hex.EncodeToString(raw)
 	for _, out := range []string{cc.String(), cc.GoString(), fmt.Sprintf("%+v", cc), fmt.Sprintf("%#v", cc)} {
 		assert.NotContains(t, out, secret)
 	}
 	assert.Equal(t, "<nil>", (*ClientCertificate)(nil).LogValue().String())
+}
+
+func TestClientCertificate_RefusesJSON(t *testing.T) {
+	iss, _ := newTestIssuer(t)
+	cc, err := iss.Issue("123456789012", "c")
+	require.NoError(t, err)
+	_, err = json.Marshal(cc)
+	assert.Error(t, err)
+	_, err = json.Marshal(struct{ C *ClientCertificate }{cc})
+	assert.Error(t, err)
 }

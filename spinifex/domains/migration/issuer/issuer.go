@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -24,7 +25,12 @@ const (
 // ClientCertificate is a migration certificate with its in-memory key.
 type ClientCertificate struct {
 	Certificate *x509.Certificate
-	Key         *ecdsa.PrivateKey
+	key         *ecdsa.PrivateKey
+}
+
+// MarshalJSON refuses, so the key cannot reach a record or a log line.
+func (c *ClientCertificate) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("migration client certificate must not be serialised")
 }
 
 // LogValue keeps the key out of logs.
@@ -129,5 +135,5 @@ func (i *Issuer) Issue(accountID, connectionID string) (*ClientCertificate, erro
 	if err != nil {
 		return nil, fmt.Errorf("migration issuer: parse: %w", err)
 	}
-	return &ClientCertificate{Certificate: cert, Key: key}, nil
+	return &ClientCertificate{Certificate: cert, key: key}, nil
 }

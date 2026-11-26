@@ -40,7 +40,7 @@ func stringToSign(amzDate, scope, canonical string) string {
 // sign sets Content-Type, X-Amz-Date, X-Amz-X509 and Authorization on req,
 // which must be a POST of body to the Roles Anywhere sessions path.
 func sign(req *http.Request, body []byte, cert *ClientCertificate, region string, now time.Time) error {
-	if cert == nil || cert.Certificate == nil || cert.Key == nil {
+	if cert == nil || cert.Certificate == nil || cert.key == nil {
 		return fmt.Errorf("rolesanywhere sign: certificate required")
 	}
 	now = now.UTC()
@@ -54,7 +54,7 @@ func sign(req *http.Request, body []byte, cert *ClientCertificate, region string
 
 	canonical := canonicalRequest(req.URL.Host, amzDate, certB64, req.URL.Path, body)
 	digest := sha256.Sum256([]byte(stringToSign(amzDate, scope, canonical)))
-	sig, err := ecdsa.SignASN1(rand.Reader, cert.Key, digest[:])
+	sig, err := ecdsa.SignASN1(rand.Reader, cert.key, digest[:])
 	if err != nil {
 		return fmt.Errorf("rolesanywhere sign: %w", err)
 	}

@@ -21,10 +21,11 @@ const SessionDurationSeconds = 900
 const maxResponseBytes = 1 << 20
 
 var (
-	// Roles Anywhere ARNs, partition aws only.
-	trustAnchorARNPattern = regexp.MustCompile(`^arn:aws:rolesanywhere:([a-z0-9-]+):[0-9]{12}:trust-anchor/[A-Za-z0-9-]+$`)
-	profileARNPattern     = regexp.MustCompile(`^arn:aws:rolesanywhere:[a-z0-9-]+:[0-9]{12}:profile/[A-Za-z0-9-]+$`)
-	roleARNPattern        = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$`)
+	// Roles Anywhere ARNs. The role path allows any printable ASCII segment
+	// and the name the IAM role name characters.
+	trustAnchorARNPattern = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):rolesanywhere:([a-z0-9-]+):[0-9]{12}:trust-anchor/[A-Za-z0-9-]+$`)
+	profileARNPattern     = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):rolesanywhere:[a-z0-9-]+:[0-9]{12}:profile/[A-Za-z0-9-]+$`)
+	roleARNPattern        = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role(/[\x21-\x7E]+)*/[A-Za-z0-9_+=,.@-]+$`)
 )
 
 // Session holds AWS temporary credentials. It must stay in memory.
@@ -92,6 +93,9 @@ var _ SessionCreator = (*Client)(nil)
 
 // DefaultEndpoint is the public Roles Anywhere endpoint of a Region.
 func DefaultEndpoint(region string) string {
+	if strings.HasPrefix(region, "cn-") {
+		return "https://rolesanywhere." + region + ".amazonaws.com.cn"
+	}
 	return "https://rolesanywhere." + region + ".amazonaws.com"
 }
 
@@ -119,7 +123,7 @@ func (c *Client) CreateSession(ctx context.Context, cert *ClientCertificate, req
 	if m == nil || !profileARNPattern.MatchString(req.ProfileARN) || !roleARNPattern.MatchString(req.RoleARN) {
 		return Session{}, fmt.Errorf("rolesanywhere CreateSession: invalid ARN in request")
 	}
-	region := m[1]
+	region := m[2]
 	endpoint := DefaultEndpoint
 	if c.Endpoint != nil {
 		endpoint = c.Endpoint
@@ -178,16 +182,24 @@ func apiError(resp *http.Response, raw []byte) *APIError {
 	e := &APIError{StatusCode: resp.StatusCode, Code: resp.Header.Get("X-Amzn-Errortype")}
 	var body struct {
 		Message string `json:"message"`
-		Code    string `json:"__type"`
+		Type    string `json:"__type"`
+		Code    string `json:"code"`
 	}
 	if json.Unmarshal(raw, &body) == nil {
 		e.Message = body.Message
 		if e.Code == "" {
+			e.Code = body.Type
+		}
+		if e.Code == "" {
 			e.Code = body.Code
 		}
 	}
-	if i := strings.IndexAny(e.Code, ":#"); i >= 0 {
+	// restJson1: the error name follows any "namespace#" and precedes any ":uri".
+	if i := strings.Index(e.Code, ":"); i >= 0 {
 		e.Code = e.Code[:i]
+	}
+	if i := strings.LastIndex(e.Code, "#"); i >= 0 {
+		e.Code = e.Code[i+1:]
 	}
 	return e
 }

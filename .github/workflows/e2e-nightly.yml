@@ -1816,4 +1816,6 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MULGA_ES_SINK: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
+          # ISO, throughput and fault-injection cells run on the runner, with no tofu env.
+          CI_NO_PLACEMENT_JOBS: '^cell-2[1-4] \('
         run: python3 -I .github/scripts/ci-job-doc.py finalize

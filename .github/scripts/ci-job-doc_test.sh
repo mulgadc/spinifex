@@ -152,4 +152,21 @@ PY
 check "timed_out without annotations" "$(sed -n 1p <<<"$more")" "timeout"
 check "index mapping must be keyword" "$(sed -n 2p <<<"$more")" "True False False"
 
+# A missing template is a skip, not a write; a runner-only job carries env none.
+skip=$(python3 -I - "$doc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cjd", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.template_keywords = lambda sink, name: None
+print(m.post_bulk("x:1", "idx", "{}\n") == m.SKIPPED, m.SKIPPED != m.WRITTEN)
+PY
+)
+check "missing template reports skipped" "$(tail -n1 <<<"$skip")" "True True"
+marked=$(CI_NO_PLACEMENT_JOBS='^cell-2[1-4] \(' python3 -I "$doc" finalize --jobs-json "$data/jobs.json" --annotations-json "$data/annotations.json" --dry-run | python3 -I -c '
+import json, sys
+docs = [json.loads(l)["doc"] for l in sys.stdin if "\"doc\"" in l]
+print(sorted({d.get("env", "-") for d in docs}))')
+check "runner-only job is marked env none" "$marked" "['-', 'none']"
+
 exit "$fail"

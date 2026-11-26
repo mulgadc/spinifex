@@ -284,10 +284,15 @@ def drop_unmapped(body: str, keywords: set[str]) -> str:
     return "\n".join(out) + "\n"
 
 
+WRITTEN, FAILED, SKIPPED = 0, 1, 2
+
+
 def post_bulk(sink: str, index: str, body: str) -> int:
+    """Return WRITTEN once the sink accepts the bulk, SKIPPED when the sink has
+    no template yet and nothing was sent, FAILED otherwise."""
     keywords = template_keywords(sink, index)
     if keywords is None:
-        return 0
+        return SKIPPED
     if not index_keeps_field(sink, index, "hypervisor_pools"):
         keywords = keywords - {"hypervisor_pools"}
     body = drop_unmapped(body, keywords)
@@ -302,14 +307,14 @@ def post_bulk(sink: str, index: str, body: str) -> int:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"::warning::ci-job-doc: bulk POST to {sink}/{index} failed: {exc}")
-        return 1
+        return FAILED
     if payload.get("errors"):
         for item in payload.get("items", []):
             err = next(iter(item.values())).get("error")
             if err:
                 print(f"::warning::ci-job-doc: bulk rejected a doc: {json.dumps(err)}")
-                return 1
-    return 0
+                return FAILED
+    return WRITTEN
 
 
 def _get(url: str, token: str, wait: int = 30) -> object:
@@ -384,6 +389,11 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         with open(args.annotations_json, encoding="utf-8") as fh:
             recorded = json.load(fh)
 
+    # Jobs that run on the runner itself provision no tofu env, so no start
+    # doc exists. They carry env "none" rather than a blank placement.
+    pattern = os.environ.get("CI_NO_PLACEMENT_JOBS", "")
+    no_placement = re.compile(pattern) if pattern else None
+
     docs = []
     # Annotations are enrichment: stop asking once the budget is spent so the
     # outcomes still get posted inside the job's limit.
@@ -397,7 +407,10 @@ def cmd_finalize(args: argparse.Namespace) -> int:
                 notes = recorded.get(str(job["id"]), [])
             elif time.monotonic() < budget_end:
                 notes = fetch_annotations(repo, job["id"], token)
-        docs.append(outcome_doc(job, notes, fallback))
+        doc = outcome_doc(job, notes, fallback)
+        if no_placement and no_placement.search(job.get("name", "")):
+            doc["env"] = "none"
+        docs.append(doc)
 
     if not docs:
         print("ci-job-doc: no self-hosted jobs to record")
@@ -407,8 +420,10 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         sys.stdout.write(body)
         return 0
     rc = post_bulk(sink, index, body)
-    if rc == 0:
+    if rc == WRITTEN:
         print(f"ci-job-doc: upserted {len(docs)} job docs to {sink}/{index}")
+    elif rc == SKIPPED:
+        print(f"::notice::ci-job-doc: skipped {len(docs)} job docs, none written to {sink}/{index}")
     return 0
 
 

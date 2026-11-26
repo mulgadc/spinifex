@@ -57,6 +57,7 @@ func TestAuditBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 // alone, so a cluster that has lost a node does not have its durability cut to
 // match.
 func TestRaiseBucketReplicas_NeverLowers(t *testing.T) {
+	t.Parallel()
 	js := newJetStream(t)
 
 	_, err := kvstore.GetOrCreateBucket(t.Context(), js, "no-downgrade", 1)
@@ -75,6 +76,7 @@ func TestRaiseBucketReplicas_NeverLowers(t *testing.T) {
 // stream rather than the KV bucket: a KeyValueConfig cannot express a stream's
 // full configuration, so applying one would reset whatever it omits.
 func TestRaiseBucketReplicas_PreservesTheRestOfTheConfig(t *testing.T) {
+	t.Parallel()
 	js := newJetStream(t)
 
 	_, err := kvstore.GetOrCreateBucketWithOptions(t.Context(), js, kvstore.BucketOptions{
@@ -96,6 +98,7 @@ func TestRaiseBucketReplicas_PreservesTheRestOfTheConfig(t *testing.T) {
 // TestRaiseBucketReplicas_SurfacesAMissingBucket keeps a raise against a bucket
 // that is not there from reading as success.
 func TestRaiseBucketReplicas_SurfacesAMissingBucket(t *testing.T) {
+	t.Parallel()
 	js := newJetStream(t)
 
 	err := kvstore.RaiseBucketReplicas(t.Context(), js, "never-created", 1)

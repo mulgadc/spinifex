@@ -57,6 +57,7 @@ func TestCheckDurable_RefusesEachViolation(t *testing.T) {
 }
 
 func TestBindDurable_AbsentBucketIsNotCreated(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 
@@ -68,6 +69,7 @@ func TestBindDurable_AbsentBucketIsNotCreated(t *testing.T) {
 }
 
 func TestBindDurable_RefusesTTLBucketAcceptsDurable(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 

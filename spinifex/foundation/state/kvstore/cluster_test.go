@@ -52,7 +52,7 @@ func startJetStreamCluster(t *testing.T, n int) jetstream.JetStream {
 			}
 		}
 		return false
-	}, 30*time.Second, 50*time.Millisecond, "meta leader never had stats for all %d peers", n)
+	}, 30*time.Second, 10*time.Millisecond, "meta leader never had stats for all %d peers", n)
 
 	nc, err := nats.Connect("", nats.InProcessServer(servers[0]))
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestBucket_TTLBucketIsReplicatedAcrossTheCluster(t *testing.T) {
 		defer cancel()
 		_, lastErr = js.AccountInfo(ctx)
 		return lastErr == nil
-	}, 30*time.Second, 50*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 	require.True(t, ready, "JetStream cluster never elected a meta leader: %v", lastErr)
 
 	kv, err := bucket.KV(t.Context())

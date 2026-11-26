@@ -98,36 +98,51 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 		"jetstream disabled": func(t *testing.T, ns *server.Server) { require.NoError(t, ns.DisableJetStream()) },
 		"server shut down":   func(_ *testing.T, ns *server.Server) { ns.Shutdown(); ns.WaitForShutdown() },
 	}
+	// Every op on every stopped server runs at once, since each waits out its
+	// own bound, and each stop's subtest then checks what its ops returned.
+	errs := make(map[string]map[string]error, len(stops))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
 	for name, stop := range stops {
+		ns, _, js := testutil.StartTestJetStream(t)
+		b := kvstore.OpenSyncBucket(js)
+		rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
+		require.NoError(t, err)
+		stop(t, ns)
+
+		ops := map[string]func(context.Context) error{
+			"load": func(ctx context.Context) error { _, _, err := b.Load(ctx, "k"); return err },
+			"swap": func(ctx context.Context) error {
+				_, err := b.CompareAndSwap(ctx, "k", []byte("b"), rev)
+				return err
+			},
+			"delete": func(ctx context.Context) error { return b.CompareAndDelete(ctx, "k", rev) },
+		}
+		got := make(map[string]error, len(ops))
+		errs[name] = got
+		for op, call := range ops {
+			wg.Go(func() {
+				// Bounded because a gone server answers nothing at all.
+				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+				defer cancel()
+				err := call(ctx)
+				mu.Lock()
+				got[op] = err
+				mu.Unlock()
+			})
+		}
+	}
+	wg.Wait()
+
+	for name := range stops {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			ns, _, js := testutil.StartTestJetStream(t)
-			b := kvstore.OpenSyncBucket(js)
-			rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
-			require.NoError(t, err)
-			stop(t, ns)
-
-			ops := map[string]func(context.Context) error{
-				"load": func(ctx context.Context) error { _, _, err := b.Load(ctx, "k"); return err },
-				"swap": func(ctx context.Context) error {
-					_, err := b.CompareAndSwap(ctx, "k", []byte("b"), rev)
-					return err
-				},
-				"delete": func(ctx context.Context) error { return b.CompareAndDelete(ctx, "k", rev) },
+			require.Len(t, errs[name], 3)
+			for op, err := range errs[name] {
+				assert.ErrorIs(t, err, kvsync.ErrUnavailable, op)
+				assert.NotErrorIs(t, err, kvsync.ErrRevisionMismatch, op)
 			}
-			// Concurrent, since each op waits out its own bound.
-			var wg sync.WaitGroup
-			for op, call := range ops {
-				wg.Go(func() {
-					// Bounded because a gone server answers nothing at all.
-					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-					defer cancel()
-					err := call(ctx)
-					assert.ErrorIs(t, err, kvsync.ErrUnavailable, op)
-					assert.NotErrorIs(t, err, kvsync.ErrRevisionMismatch, op)
-				})
-			}
-			wg.Wait()
 		})
 	}
 }
@@ -141,6 +156,19 @@ func TestSyncBucket_LostStreamIsNeverRecreated(t *testing.T) {
 	rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
 	require.NoError(t, err)
 	require.NoError(t, js.DeleteKeyValue(t.Context(), "spinifex-sync"))
+
+	// Both writes meet the stale handle, where nats.go waits out its no-responder
+	// retries for each, so they run together.
+	var wg sync.WaitGroup
+	for _, at := range []uint64{0, rev} {
+		wg.Go(func() {
+			_, err := b.CompareAndSwap(t.Context(), "k", []byte("b"), at)
+			assert.Error(t, err)
+		})
+	}
+	wg.Wait()
+	_, _, err = b.Load(t.Context(), "k")
+	require.Error(t, err)
 
 	for range 3 {
 		_, err = b.CompareAndSwap(t.Context(), "k", []byte("b"), 0)

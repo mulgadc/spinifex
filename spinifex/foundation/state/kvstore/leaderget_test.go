@@ -30,7 +30,7 @@ func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
 	// with no responders nor completes.
 	_, err = nc.Subscribe("silent.API.>", func(*nats.Msg) {})
 	require.NoError(t, err)
-	js, err := jsapi.NewWithAPIPrefix(nc, "silent.API", jsapi.WithDefaultTimeout(200*time.Millisecond))
+	js, err := jsapi.NewWithAPIPrefix(nc, "silent.API", jsapi.WithDefaultTimeout(50*time.Millisecond))
 	require.NoError(t, err)
 
 	done := make(chan error, 1)
@@ -49,6 +49,7 @@ func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
 // TestAPIPrefixMatchesNatsGo compares the prefix the leader read uses with
 // the subject nats.go itself sends, for each way a context is built.
 func TestAPIPrefixMatchesNatsGo(t *testing.T) {
+	t.Parallel()
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	require.NoError(t, err)
 	srv.Start()

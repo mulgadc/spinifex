@@ -34,6 +34,13 @@ const defaultNBDVolumePrefix = "vol-nbd"
 // client while it finishes tearing the previous connection down.
 const reconnectTimeout = 2 * time.Minute
 
+// The reconnect poll starts short, so an export that comes back at once is
+// seen at once, and doubles to a cap, so a slow one is not hammered.
+const (
+	reconnectPollMin = 10 * time.Millisecond
+	reconnectPollMax = 200 * time.Millisecond
+)
+
 // NBDClientConfig adapts the suite to where it runs. An in-process provider
 // needs none of it; a live cluster needs its own node name, and unique
 // volume IDs so a rerun does not collide with a previous run's leftovers.
@@ -154,6 +161,7 @@ func nbdInfoRetry(t *testing.T, uri string) (nbdExport, int, time.Duration) {
 	deadline := start.Add(reconnectTimeout)
 
 	var lastOut []byte
+	poll := reconnectPollMin
 	for attempt := 1; ; attempt++ {
 		out, err := exec.CommandContext(context.Background(), "nbdinfo", "--json", uri).CombinedOutput()
 		if err == nil {
@@ -167,7 +175,8 @@ func nbdInfoRetry(t *testing.T, uri string) (nbdExport, int, time.Duration) {
 			require.FailNowf(t, "export never accepted a reconnection",
 				"after %s and %d attempts: %s", reconnectTimeout, attempt, lastOut)
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(poll)
+		poll = min(2*poll, reconnectPollMax)
 	}
 }
 
@@ -230,8 +239,8 @@ func cleanupVolume(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClient
 }
 
 // RunNBDClientSuite drives a provider's published export with libnbd's
-// client tools. newProvider must return a provider that serves real NBD;
-// the in-memory reference implementation does not qualify.
+// client tools. newProvider must return a provider that serves real NBD, which
+// the in-memory reference does not, and be safe to call concurrently.
 func RunNBDClientSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.EBSProvider) {
 	RunNBDClientSuiteWithConfig(t, newProvider, NBDClientConfig{})
 }
@@ -243,12 +252,14 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	cfg = cfg.withDefaults()
 
 	t.Run("published URI is a standard NBD URI", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-uri", false)
 		assertNBDURI(t, nbdURI)
 	})
 
 	t.Run("export is connectable by a standard NBD client", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-connect", false)
 		export := nbdInfo(t, dialURI(t, nbdURI))
@@ -256,6 +267,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	})
 
 	t.Run("export advertises usable block size constraints", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-blocksize", false)
 		export := nbdInfo(t, dialURI(t, nbdURI))
@@ -270,6 +282,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	// A guest that reboots, or any client that drops, reconnects to the same
 	// export. Publication is what holds the volume, not any one connection.
 	t.Run("export accepts a client reconnecting after the first disconnects", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-reconnect", false)
 		uri := dialURI(t, nbdURI)
@@ -284,6 +297,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	})
 
 	t.Run("data written by an external client reads back byte for byte", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-roundtrip", false)
 
@@ -309,6 +323,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	// What separates the two is the answer: an untouched volume is entirely
 	// holes to a server that really tracks allocation.
 	t.Run("sparse extent reporting matches the advertised capability", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		capabilities := capabilitiesOf(t, provider).Capabilities
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
@@ -322,6 +337,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	})
 
 	t.Run("read-only publish matches the advertised capability", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		capabilities := capabilitiesOf(t, provider).Capabilities
 
@@ -350,6 +366,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	})
 
 	t.Run("unpublish tears the export down", func(t *testing.T) {
+		t.Parallel()
 		provider := newProvider(t)
 		volumeID := cfg.VolumePrefix + "-unpublish"
 		nbdURI := publishForNBD(t, provider, cfg, volumeID, false)

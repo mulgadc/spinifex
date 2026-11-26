@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Run with -race: two launches of one batch write their VM records while the
-// daemon persists every VM, so a field set outside the manager lock is a race.
+// Run with -race: two launches of one batch publish their volumes and build
+// their QEMU configuration while the daemon persists every VM, so a field set
+// outside the manager lock is a race. QEMU start fails at the block device check.
 func TestLaunchRunInstances_ConcurrentLaunchesDoNotRaceWriteState(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 
@@ -30,15 +32,18 @@ func TestLaunchRunInstances_ConcurrentLaunchesDoNotRaceWriteState(t *testing.T) 
 	loader := &sysInstAMILoader{ami: ebsmetadata.AMI{ImageID: "ami-race", State: "available", SnapshotID: "snap-src"}, sourceVol: "vol-src"}
 	d.instanceService.SetRunInstancesDeps(loader, nil, nil, nil)
 	d.instanceService.SetEBSProvider(provider)
-	sysInstLaunchFails(d)
-
-	instances := []*vm.VM{
-		{ID: "i-0000000000000002a", AccountID: testAccountID, Status: vm.StatePending, Instance: &ec2.Instance{}},
-		{ID: "i-0000000000000002b", AccountID: testAccountID, Status: vm.StatePending, Instance: &ec2.Instance{}},
-	}
-	for _, v := range instances {
-		d.vmMgr.Insert(v)
-	}
+	const devicePath, guestPort = "/dev/spinifex-race-absent", 8080
+	d.vmMgr.WaitForBackgroundWork()
+	d.vmMgr.SetDeps(vm.Deps{
+		NodeID: d.node,
+		VolumeMounter: newVolumeMounterAdapter(&stubMounterProvider{export: ebsprovider.VolumeExport{
+			Kind: ebsprovider.ExportKindBlock, Block: &ebsprovider.BlockExport{DevicePath: devicePath, SizeBytes: 1 << 30},
+		}}, d.node),
+		VolumeStateUpdater: acceptingVolumeState{},
+		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
+		NetworkPlumber:     &nopPlumber{},
+		DevNetworking:      true,
+	})
 
 	stop := make(chan struct{})
 	writerDone := make(chan struct{})
@@ -53,16 +58,47 @@ func TestLaunchRunInstances_ConcurrentLaunchesDoNotRaceWriteState(t *testing.T) 
 			}
 		}
 	}()
+	defer func() {
+		close(stop)
+		<-writerDone
+	}()
 
+	// Several batches, because the race detector sees a race only when no lock
+	// orders the two accesses in that run.
 	itype := getTestInstanceType(t)
 	input := &ec2.RunInstancesInput{ImageId: aws.String("ami-race"), InstanceType: aws.String(itype)}
-	d.instanceService.LaunchRunInstances(t.Context(), instances, input, &ec2.InstanceTypeInfo{InstanceType: aws.String(itype)})
-	close(stop)
-	<-writerDone
+	for batch := range 3 {
+		var instances []*vm.VM
+		for i := range 4 {
+			id := fmt.Sprintf("i-%017x", 0x2a+batch*4+i)
+			v := &vm.VM{
+				ID: id, AccountID: testAccountID, Status: vm.StatePending, Instance: &ec2.Instance{}, InstanceType: itype,
+				ENIId: "eni-" + id[2:], ENIMac: "02:00:00:00:00:01", HostfwdPorts: []int{guestPort},
+			}
+			instances = append(instances, v)
+			d.vmMgr.Insert(v)
+		}
+		d.instanceService.LaunchRunInstances(t.Context(), instances, input, &ec2.InstanceTypeInfo{InstanceType: aws.String(itype)})
 
-	for _, v := range instances {
-		d.vmMgr.Inspect(v, func(v *vm.VM) {
-			assert.Len(t, v.Instance.BlockDeviceMappings, 1, "the root volume mapping is recorded on %s", v.ID)
-		})
+		for _, v := range instances {
+			d.vmMgr.Inspect(v, func(v *vm.VM) {
+				assert.Len(t, v.Instance.BlockDeviceMappings, 1, "the root volume mapping is recorded on %s", v.ID)
+				assert.NotZero(t, v.HostfwdPortMap[guestPort], "the QEMU configuration was built for %s", v.ID)
+				v.EBSRequests.Mu.Lock()
+				defer v.EBSRequests.Mu.Unlock()
+				require.NotEmpty(t, v.EBSRequests.Requests)
+				assert.Equal(t, devicePath, v.EBSRequests.Requests[0].BlockDevice, "the export is recorded on %s", v.ID)
+			})
+		}
 	}
 }
+
+type acceptingVolumeState struct{}
+
+func (acceptingVolumeState) UpdateVolumeState(_, _, _, _, _ string) error { return nil }
+
+// nopPlumber is a recordingPlumber that records nothing, so concurrent
+// launches can share it.
+type nopPlumber struct{ recordingPlumber }
+
+func (*nopPlumber) CleanupTap(string) error { return nil }

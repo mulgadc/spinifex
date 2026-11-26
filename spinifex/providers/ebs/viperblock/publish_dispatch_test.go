@@ -306,24 +306,32 @@ func TestProviderDispatch_OtherVolumesProgressWhileOneIsBusy(t *testing.T) {
 	}
 }
 
-// Shutdown waits for the publishes already dispatched, in progress or queued,
-// so no export is registered after its cleanup snapshot.
-func TestProviderDispatch_ShutdownLeavesNoExportBehind(t *testing.T) {
+// An operation still queued when the connection closes does not run, so it
+// cannot race the shutdown cleanup; the export stays for Shutdown.
+func TestProviderDispatch_QueuedOperationDoesNotRunAfterClose(t *testing.T) {
 	cfg, nc, held := tcpDispatchProvider(t)
 
 	publishInOrder(t, nc, cfg, "vol-a")
 	require.Equal(t, "vol-a", held.expectOpen(t))
-	publishInOrder(t, nc, cfg, "vol-b")
+	unpublishAsync(t, nc, cfg, "vol-a")
+	require.Eventually(t, func() bool {
+		cfg.volumeTurns.mu.Lock()
+		defer cfg.volumeTurns.mu.Unlock()
+		last := cfg.volumeTurns.last["vol-a"]
+		return last != nil && last.prev != nil
+	}, 5*time.Second, 10*time.Millisecond, "the unpublish was not queued behind the publish")
 	nc.Close()
 
 	held.releaseAll()
-	cfg.Shutdown()
-
+	require.Eventually(t, func() bool {
+		_, ok := findMountedVolume(cfg, "vol-a")
+		return ok
+	}, 10*time.Second, 10*time.Millisecond, "the publish in progress did not finish")
 	assert.Never(t, func() bool {
-		cfg.mu.Lock()
-		defer cfg.mu.Unlock()
-		return len(cfg.MountedVolumes) > 0
-	}, quietWindow, 10*time.Millisecond, "an export was registered after the shutdown snapshot")
+		_, ok := findMountedVolume(cfg, "vol-a")
+		return !ok
+	}, quietWindow, 10*time.Millisecond, "the queued unpublish ran after the connection closed")
+	cfg.Shutdown()
 }
 
 // Under TCP transport, a free port is only reserved once nbdkit binds it, so

@@ -12,6 +12,7 @@ import (
 // -> resource table exactly. Every row here must match the service's table;
 // changing an entry without a corresponding plan-doc update is a regression.
 func TestClassifyOperation_RouteMatrix(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		method string
@@ -160,6 +161,7 @@ func TestClassifyOperation_RouteMatrix(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			q := c.query
 			if q == nil {
 				q = url.Values{}
@@ -175,6 +177,7 @@ func TestClassifyOperation_RouteMatrix(t *testing.T) {
 // source repo alone is not a mount attempt: it classifies as a plain upload
 // start (Registry itself falls through to a normal upload on a mount miss).
 func TestClassifyOperation_MountRequiresBothParams(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		query url.Values
@@ -184,6 +187,7 @@ func TestClassifyOperation_MountRequiresBothParams(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := ClassifyOperation(http.MethodPost, "/v2/team/app/blobs/uploads/", c.query)
 			assert.True(t, ok)
 			assert.Empty(t, got.Source)
@@ -197,6 +201,7 @@ func TestClassifyOperation_MountRequiresBothParams(t *testing.T) {
 // methods and malformed paths never authorize an operation: ok must be
 // false, so no ActionRequirement can leak through unmapped.
 func TestClassifyOperation_UnsupportedNeverClassifies(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		method string
@@ -220,6 +225,7 @@ func TestClassifyOperation_UnsupportedNeverClassifies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := ClassifyOperation(c.method, c.path, url.Values{})
 			assert.False(t, ok, "expected %s %s to be unclassified", c.method, c.path)
 			assert.Equal(t, ClassifiedOperation{}, got)

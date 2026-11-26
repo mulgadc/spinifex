@@ -18,6 +18,7 @@ func decodeEnvelope(t *testing.T, body []byte) ociErrorEnvelope {
 }
 
 func TestAPIVersion(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	APIVersion(w, httptest.NewRequest(http.MethodGet, "/v2/", nil))
 
@@ -26,6 +27,7 @@ func TestAPIVersion(t *testing.T) {
 }
 
 func TestNotImplemented(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	NotImplemented(w, httptest.NewRequest(http.MethodGet, "/v2/team/app/tags/list", nil))
 
@@ -39,6 +41,7 @@ func TestNotImplemented(t *testing.T) {
 }
 
 func TestWriteError(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	WriteError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest tagged v1 not found")
 

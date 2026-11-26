@@ -38,6 +38,7 @@ func storedMeta(t *testing.T, reg *Registry, body string) (subject, artifactType
 }
 
 func TestPutManifest_SubjectRecordedAndAdvertised(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	cfg := pushBlob(t, reg, referrerRepo, []byte("cfg"))
 
@@ -51,6 +52,7 @@ func TestPutManifest_SubjectRecordedAndAdvertised(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			body := imageWithSubject(cfg, absentSubjectDgt, tt.artifactType)
 			w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/"+digestOf([]byte(body)), []byte(body),
 				map[string]string{"Content-Type": mediaTypeOCIManifest})
@@ -65,6 +67,7 @@ func TestPutManifest_SubjectRecordedAndAdvertised(t *testing.T) {
 }
 
 func TestPutManifest_IndexSubject(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 
@@ -81,6 +84,7 @@ func TestPutManifest_IndexSubject(t *testing.T) {
 }
 
 func TestPutManifest_NoSubjectLeavesFieldsEmpty(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	cfg := pushBlob(t, reg, referrerRepo, []byte("cfg"))
 	body := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"artifactType":%q,"config":{"mediaType":%q,"digest":%q,"size":3},"layers":[]}`,
@@ -97,6 +101,7 @@ func TestPutManifest_NoSubjectLeavesFieldsEmpty(t *testing.T) {
 }
 
 func TestPutManifest_MalformedSubjectDigestRejected(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	cfg := pushBlob(t, reg, referrerRepo, []byte("cfg"))
 	body := imageWithSubject(cfg, "sha256:nothex", "")
@@ -111,6 +116,7 @@ func TestPutManifest_MalformedSubjectDigestRejected(t *testing.T) {
 }
 
 func TestPutManifest_IndexWithContentTypeParameterGetsNoConfigArtifactType(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 
@@ -128,6 +134,7 @@ func TestPutManifest_IndexWithContentTypeParameterGetsNoConfigArtifactType(t *te
 }
 
 func TestDeleteReferrerManifest_RemovesItFromTheSubjectListing(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	cfg := pushBlob(t, reg, referrerRepo, []byte("cfg"))
 	body := imageWithSubject(cfg, absentSubjectDgt, sigArtifactType)
@@ -183,6 +190,7 @@ func getReferrersBody(t *testing.T, reg *Registry, path string) (*httptest.Respo
 }
 
 func TestGetReferrers_ListsReferrersAsAnOCIIndex(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	dgA := pushReferrer(t, reg, referrerRepo, absentSubjectDgt, sigArtifactType, "cfgA")
 	dgB := pushReferrer(t, reg, referrerRepo, absentSubjectDgt, "application/vnd.example.sbom.v1", "cfgB")
@@ -202,6 +210,7 @@ func TestGetReferrers_ListsReferrersAsAnOCIIndex(t *testing.T) {
 }
 
 func TestGetReferrers_NoReferrersIsAnEmptyIndexNotAnError(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 
@@ -212,6 +221,7 @@ func TestGetReferrers_NoReferrersIsAnEmptyIndexNotAnError(t *testing.T) {
 }
 
 func TestGetReferrers_ArtifactTypeFilter(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	dgSig := pushReferrer(t, reg, referrerRepo, absentSubjectDgt, sigArtifactType, "cfgA")
 	pushReferrer(t, reg, referrerRepo, absentSubjectDgt, "application/vnd.example.sbom.v1", "cfgB")
@@ -230,6 +240,7 @@ func TestGetReferrers_ArtifactTypeFilter(t *testing.T) {
 }
 
 func TestGetReferrers_MalformedDigest(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 
@@ -239,6 +250,7 @@ func TestGetReferrers_MalformedDigest(t *testing.T) {
 }
 
 func TestGetReferrers_UnknownRepository(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/team/ghost/referrers/"+absentSubjectDgt, nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -246,6 +258,7 @@ func TestGetReferrers_UnknownRepository(t *testing.T) {
 }
 
 func TestGetReferrers_DoesNotCrossRepositories(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	pushReferrer(t, reg, referrerRepo, absentSubjectDgt, sigArtifactType, "cfgA")
 	seedRepo(t, reg, "team/other")
@@ -256,6 +269,7 @@ func TestGetReferrers_DoesNotCrossRepositories(t *testing.T) {
 }
 
 func TestReferrersRoute_OnlyGET(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPost, http.MethodPatch} {
@@ -272,6 +286,7 @@ func (failingReferrerStore) ListReferrers(context.Context, string, string, strin
 }
 
 func TestGetReferrers_MetadataFailureIsA5xxNotA404(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	seedRepo(t, reg, referrerRepo)
 	reg.Meta = failingReferrerStore{reg.Meta}
@@ -310,6 +325,7 @@ func referrerDigests(t *testing.T, reg *Registry, repo, subject string) []string
 }
 
 func TestDeleteManifest_SubjectDeleteRemovesItsReferrers(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
@@ -326,6 +342,7 @@ func TestDeleteManifest_SubjectDeleteRemovesItsReferrers(t *testing.T) {
 }
 
 func TestDeleteManifest_NestedReferrersAreRemoved(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
@@ -341,6 +358,7 @@ func TestDeleteManifest_NestedReferrersAreRemoved(t *testing.T) {
 }
 
 func TestDeleteManifest_ReferrerDeleteLeavesTheSubject(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
@@ -355,6 +373,7 @@ func TestDeleteManifest_ReferrerDeleteLeavesTheSubject(t *testing.T) {
 }
 
 func TestDeleteManifest_TagDeleteDoesNotCascade(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
@@ -368,6 +387,7 @@ func TestDeleteManifest_TagDeleteDoesNotCascade(t *testing.T) {
 }
 
 func TestDeleteManifest_CascadeStaysInsideTheRepository(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
@@ -394,6 +414,7 @@ func (s failingDeleteStore) DeleteManifestMeta(ctx context.Context, account, rep
 }
 
 func TestDeleteManifest_ReferrerFailureDoesNotFailTheSubjectDelete(t *testing.T) {
+	t.Parallel()
 	reg := newTestRegistry(t)
 	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
 	stuck := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "stuck")

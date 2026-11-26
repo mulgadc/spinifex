@@ -30,6 +30,7 @@ func (c *countingStore) EnsureBucket(ctx context.Context, bucket string) error {
 }
 
 func TestRegistry_EnsureBucketFailureReturns500(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(), ensureErr: errors.New("predastore down")}
 	reg := NewRegistry(store, newTestMetaStore(t), testAccount)
 
@@ -38,6 +39,7 @@ func TestRegistry_EnsureBucketFailureReturns500(t *testing.T) {
 }
 
 func TestRegistry_EnsureBucketCachedAfterSuccess(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
 	reg := NewRegistry(store, newTestMetaStore(t), testAccount)
 

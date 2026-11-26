@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
@@ -51,7 +52,11 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 		}},
 	{Method: "POST", Pattern: "/knowledgebases/", Action: "ListKnowledgeBases",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, _ *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
-			return ListKnowledgeBases(ctx, acct, kb, new(bedrockagent.ListKnowledgeBasesInput))
+			input := new(bedrockagent.ListKnowledgeBasesInput)
+			if err := decodeBedrockAgentBody(b, input); err != nil {
+				return nil, err
+			}
+			return ListKnowledgeBases(ctx, acct, kb, input)
 		}},
 	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}", Action: "GetKnowledgeBase",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, _ *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
@@ -74,7 +79,12 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 		}},
 	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/", Action: "ListDataSources",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
-			return ListDataSources(ctx, acct, kb, ds, &bedrockagent.ListDataSourcesInput{KnowledgeBaseId: aws.String(p[0])})
+			input := new(bedrockagent.ListDataSourcesInput)
+			if err := decodeBedrockAgentBody(b, input); err != nil {
+				return nil, err
+			}
+			input.KnowledgeBaseId = aws.String(p[0])
+			return ListDataSources(ctx, acct, kb, ds, input)
 		}},
 	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}", Action: "GetDataSource",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, _ *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
@@ -90,7 +100,12 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 		}},
 	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/", Action: "ListIngestionJobs",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
-			return ListIngestionJobs(ctx, acct, kb, ds, vector, &bedrockagent.ListIngestionJobsInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1])})
+			input := new(bedrockagent.ListIngestionJobsInput)
+			if err := decodeBedrockAgentBody(b, input); err != nil {
+				return nil, err
+			}
+			input.KnowledgeBaseId, input.DataSourceId = aws.String(p[0]), aws.String(p[1])
+			return ListIngestionJobs(ctx, acct, kb, ds, vector, input)
 		}},
 	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/{ingestionJobId}", Action: "GetIngestionJob",
 		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
@@ -425,20 +440,23 @@ func GetKnowledgeBase(ctx context.Context, accountID, region string, kb *ochreve
 	return &bedrockagent.GetKnowledgeBaseOutput{KnowledgeBase: out}, nil
 }
 
-// ListKnowledgeBases returns the caller account's own knowledge bases,
-// sorted by creation time (id as a deterministic tie-breaker), mirroring
-// ochre.ListGuardrails.
-func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.KBStore, _ *bedrockagent.ListKnowledgeBasesInput) (*bedrockagent.ListKnowledgeBasesOutput, error) {
+// ListKnowledgeBases returns one page of the caller account's own knowledge
+// bases, sorted by creation time with id as a deterministic tie-breaker.
+func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.KBStore, input *bedrockagent.ListKnowledgeBasesInput) (*bedrockagent.ListKnowledgeBasesOutput, error) {
+	if input == nil {
+		input = new(bedrockagent.ListKnowledgeBasesInput)
+	}
+	req, err := parseBedrockAgentPage(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	recs, err := kb.List(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(recs, func(a, b ochrevector.KBRecord) int {
-		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
-			return c
-		}
-		return strings.Compare(a.ID, b.ID)
-	})
+	recs, next := paging.Page(recs, func(r ochrevector.KBRecord) string {
+		return createdKey(r.CreatedAt, r.ID)
+	}, req)
 	summaries := make([]*bedrockagent.KnowledgeBaseSummary, 0, len(recs))
 	for _, rec := range recs {
 		summaries = append(summaries, &bedrockagent.KnowledgeBaseSummary{
@@ -449,7 +467,7 @@ func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.K
 			UpdatedAt:       aws.Time(rec.UpdatedAt),
 		})
 	}
-	return &bedrockagent.ListKnowledgeBasesOutput{KnowledgeBaseSummaries: summaries}, nil
+	return &bedrockagent.ListKnowledgeBasesOutput{KnowledgeBaseSummaries: summaries, NextToken: nonEmptyStringPtr(next)}, nil
 }
 
 // DeleteKnowledgeBase drops id's bound index, cascades to every data source
@@ -621,11 +639,15 @@ func GetDataSource(ctx context.Context, accountID, region string, ds *ochrevecto
 	return &bedrockagent.GetDataSourceOutput{DataSource: dataSourceRecordToOutput(*rec)}, nil
 }
 
-// ListDataSources returns knowledgeBaseId's data sources, sorted by creation
-// time (id as a deterministic tie-breaker), mirroring ListKnowledgeBases.
+// ListDataSources returns one page of knowledgeBaseId's data sources, sorted
+// by creation time with id as a deterministic tie-breaker.
 func ListDataSources(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, input *bedrockagent.ListDataSourcesInput) (*bedrockagent.ListDataSourcesOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	req, err := parseBedrockAgentPage(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
 	}
 	kbID := aws.StringValue(input.KnowledgeBaseId)
 	kbRec, err := kb.Get(ctx, accountID, kbID)
@@ -640,12 +662,9 @@ func ListDataSources(ctx context.Context, accountID string, kb *ochrevector.KBSt
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(recs, func(a, b ochrevector.DataSourceRecord) int {
-		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
-			return c
-		}
-		return strings.Compare(a.ID, b.ID)
-	})
+	recs, next := paging.Page(recs, func(r ochrevector.DataSourceRecord) string {
+		return createdKey(r.CreatedAt, r.ID)
+	}, req)
 	summaries := make([]*bedrockagent.DataSourceSummary, 0, len(recs))
 	for _, rec := range recs {
 		summaries = append(summaries, &bedrockagent.DataSourceSummary{
@@ -657,7 +676,7 @@ func ListDataSources(ctx context.Context, accountID string, kb *ochrevector.KBSt
 			UpdatedAt:       aws.Time(rec.UpdatedAt),
 		})
 	}
-	return &bedrockagent.ListDataSourcesOutput{DataSourceSummaries: summaries}, nil
+	return &bedrockagent.ListDataSourcesOutput{DataSourceSummaries: summaries, NextToken: nonEmptyStringPtr(next)}, nil
 }
 
 // DeleteDataSource removes dataSourceId scoped to knowledgeBaseId. Not
@@ -858,12 +877,24 @@ func StopIngestionJob(ctx context.Context, accountID string, kb *ochrevector.KBS
 	return &StopIngestionJobOutput{IngestionJob: jobRecordToOutput(kbID, dsID, resp.Job)}, nil
 }
 
-// ListIngestionJobs lists knowledgeBaseId's jobs via the new
-// VectorService.ListJobs, filtered to dataSourceId's own bound index and
-// exact DataSourceID, and sorted by start time.
+// ListIngestionJobs returns one page of dataSourceId's jobs. The vector
+// service lists only the jobs of the bound index and data source; the status
+// filter and sortBy apply before the page is cut.
 func ListIngestionJobs(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.ListIngestionJobsInput) (*bedrockagent.ListIngestionJobsOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	req, err := parseBedrockAgentPage(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	statuses, filtered, err := ingestionJobStatusFilter(input.Filters)
+	if err != nil {
+		return nil, err
+	}
+	key, err := ingestionJobSortKey(input.SortBy)
+	if err != nil {
+		return nil, err
 	}
 	kbID := aws.StringValue(input.KnowledgeBaseId)
 	dsID := aws.StringValue(input.DataSourceId)
@@ -884,16 +915,20 @@ func ListIngestionJobs(ctx context.Context, accountID string, kb *ochrevector.KB
 		return nil, errDataSourceNotFound(dsID)
 	}
 
-	resp, err := vector.ListJobs(ctx, &ochrevector.ListJobsRequest{}, accountID)
+	resp, err := vector.ListJobs(ctx, &ochrevector.ListJobsRequest{IndexID: kbRec.IndexID, DataSourceID: dsID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
 
-	summaries := make([]*bedrockagent.IngestionJobSummary, 0)
-	for _, job := range resp.Jobs {
-		if job.IndexID != kbRec.IndexID || job.DataSourceID != dsID {
-			continue
-		}
+	// The scope check stays here too, so a daemon that ignores the scope fields leaks nothing.
+	jobs := slices.DeleteFunc(resp.Jobs, func(job ochrevector.JobRecord) bool {
+		return job.IndexID != kbRec.IndexID || job.DataSourceID != dsID ||
+			(filtered && !slices.Contains(statuses, jobStateToAWS(job.State)))
+	})
+	jobs, next := paging.Page(jobs, key, req)
+
+	summaries := make([]*bedrockagent.IngestionJobSummary, 0, len(jobs))
+	for _, job := range jobs {
 		out := jobRecordToOutput(kbID, dsID, job)
 		summaries = append(summaries, &bedrockagent.IngestionJobSummary{
 			DataSourceId:    out.DataSourceId,
@@ -905,8 +940,5 @@ func ListIngestionJobs(ctx context.Context, accountID string, kb *ochrevector.KB
 			UpdatedAt:       out.UpdatedAt,
 		})
 	}
-	slices.SortFunc(summaries, func(a, b *bedrockagent.IngestionJobSummary) int {
-		return a.StartedAt.Compare(*b.StartedAt)
-	})
-	return &bedrockagent.ListIngestionJobsOutput{IngestionJobSummaries: summaries}, nil
+	return &bedrockagent.ListIngestionJobsOutput{IngestionJobSummaries: summaries, NextToken: nonEmptyStringPtr(next)}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -560,6 +562,16 @@ func (s *SnapshotServiceImpl) DescribeSnapshotsStrict(ctx context.Context, input
 	return s.describeSnapshots(ctx, input, accountID, true)
 }
 
+// describeSnapshotsMaxResults is the largest page AWS returns.
+const describeSnapshotsMaxResults = 1000
+
+// MaxResults has no upper error: a larger value is capped to one full page.
+var describeSnapshotsPaging = paging.EC2{
+	MaxResults: math.MaxInt64,
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter SnapshotIds cannot be used with the parameter MaxResults",
+}
+
 func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput,
 	accountID string, strict bool) (*ec2.DescribeSnapshotsOutput, error) {
 	s.mutex.RLock()
@@ -572,6 +584,13 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		slog.WarnContext(ctx, "DescribeSnapshots: invalid filter", "err", err)
 		return nil, err
 	}
+
+	pageReq, err := describeSnapshotsPaging.Parse(input.MaxResults, input.NextToken, len(input.SnapshotIds))
+	if err != nil {
+		return nil, err
+	}
+	// AWS answers a MaxResults above 1000 with 1000 results rather than an error.
+	pageReq.Limit = min(pageReq.Limit, describeSnapshotsMaxResults)
 
 	if len(input.SnapshotIds) > 0 {
 		return s.describeSnapshotsByIDs(ctx, input, accountID, parsedFilters, strict)
@@ -617,10 +636,13 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		snapshots = append(snapshots, describedSnapshot(cfg))
 	}
 
+	snapshots, nextToken := paging.EC2Page(snapshots, func(snap *ec2.Snapshot) string { return *snap.SnapshotId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
 
 	return &ec2.DescribeSnapshotsOutput{
 		Snapshots: snapshots,
+		NextToken: nextToken,
 	}, nil
 }
 

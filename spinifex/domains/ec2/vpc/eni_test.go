@@ -1008,10 +1008,7 @@ func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T)
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
 
-	eventCh := make(chan *nats.Msg, 1)
-	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
-		eventCh <- msg
-	})
+	sub, err := nc.SubscribeSync("vpc.update-port-sgs")
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -1021,11 +1018,11 @@ func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T)
 	}, testAccountID)
 	require.NoError(t, err)
 
-	select {
-	case <-eventCh:
-		t.Fatal("unexpected vpc.update-port-sgs event for description-only modify")
-	case <-time.After(200 * time.Millisecond):
-	}
+	// The service publishes on nc, so one flush delivers any event it sent.
+	require.NoError(t, nc.Flush())
+	events, _, err := sub.Pending()
+	require.NoError(t, err)
+	assert.Zero(t, events, "unexpected vpc.update-port-sgs event for description-only modify")
 }
 
 func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
@@ -1123,10 +1120,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testin
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
 
-	eventCh := make(chan *nats.Msg, 1)
-	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
-		eventCh <- msg
-	})
+	sub, err := nc.SubscribeSync("vpc.update-port-sgs")
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -1136,11 +1130,11 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testin
 	}, testAccountID)
 	require.NoError(t, err)
 
-	select {
-	case <-eventCh:
-		t.Fatal("unexpected vpc.update-port-sgs event for source-dest-check-only modify")
-	case <-time.After(200 * time.Millisecond):
-	}
+	// The service publishes on nc, so one flush delivers any event it sent.
+	require.NoError(t, nc.Flush())
+	events, _, err := sub.Pending()
+	require.NoError(t, err)
+	assert.Zero(t, events, "unexpected vpc.update-port-sgs event for source-dest-check-only modify")
 }
 
 func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
@@ -1464,11 +1458,8 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentStatus(t *testing.T) {
 // setupEIPTestService creates a VPC service with an EIP KV bucket wired in.
 func setupEIPTestService(t *testing.T) (*VPCServiceImpl, jetstream.KeyValue) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, nc := newPooledTestVPCService(t, nil)
 	js := testutil.NewJetStream(t, nc)
-
-	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
-	require.NoError(t, err)
 
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eip-test"})
 	require.NoError(t, err)

@@ -14,7 +14,7 @@ import (
 
 func setupTestIPAM(t *testing.T) *IPAM {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc := acquireJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
 	ipam, err := NewIPAM(t.Context(), js)
@@ -182,7 +182,7 @@ func TestIPAM_LargerSubnet(t *testing.T) {
 
 func TestIPAM_NewIPAMWithKV(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc := acquireJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{

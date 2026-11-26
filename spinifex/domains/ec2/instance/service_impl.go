@@ -1159,16 +1159,24 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 // LaunchRunInstances runs the heavyweight launch loop for VMs already inserted
 // into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
 func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
+	// A user-mode NIC probes its forwarding ports before QEMU binds them, so
+	// those batches launch one instance at a time.
+	serial := s.config.Daemon.DevNetworking || slices.ContainsFunc(instances, func(v *vm.VM) bool { return v.ENIId == "" })
 	var wg sync.WaitGroup
 	var successCount atomic.Int32
 	for _, instance := range instances {
-		wg.Go(func() {
+		launch := func() {
 			s.launchSlots <- struct{}{}
 			defer func() { <-s.launchSlots }()
 			if s.launchOne(ctx, instance, input, instanceType) {
 				successCount.Add(1)
 			}
-		})
+		}
+		if serial {
+			launch()
+		} else {
+			wg.Go(launch)
+		}
 	}
 	wg.Wait()
 
@@ -1812,7 +1820,7 @@ func (s *InstanceServiceImpl) prepareDataVolumes(ctx context.Context, input *ec2
 			return nil, err
 		}
 		volumeID := aws.StringValue(created.VolumeId)
-		s.vmMgr.Inspect(instance, func(v *vm.VM) { appendDataEBSRequest(v, volumeID, p.deviceName, p.deleteOnTermination) })
+		s.vmMgr.InspectRequests(instance, func(v *vm.VM) { appendDataEBSRequest(v, volumeID, p.deviceName, p.deleteOnTermination) })
 		infos = append(infos, VolumeInfo{
 			VolumeId:            volumeID,
 			DeviceName:          p.deviceName,
@@ -1895,35 +1903,30 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 		return err
 	}
 	// Under the manager lock, because the daemon persists the VM record under it.
-	s.vmMgr.Inspect(instance, func(v *vm.VM) { appendRootEBSRequest(v, imageId, deviceName, deleteOnTermination) })
+	s.vmMgr.InspectRequests(instance, func(v *vm.VM) { appendRootEBSRequest(v, imageId, deviceName, deleteOnTermination) })
 	return nil
 }
 
-// appendRootEBSRequest records the boot volume the launcher must attach. The
-// device name travels with it because the launcher writes it to the volume's
-// metadata, which is what DescribeVolumes reports as Attachments[].Device.
+// appendRootEBSRequest records the boot volume the launcher must attach; the
+// caller holds EBSRequests.Mu. The device name travels with it because the
+// volume's metadata, which DescribeVolumes reports, records it.
 func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
-	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		Boot:                true,
 		DeleteOnTermination: deleteOnTermination,
 	})
-	instance.EBSRequests.Mu.Unlock()
 }
 
 // appendDataEBSRequest records a non-boot volume the launcher must attach at
-// the device name the request named, which is what DescribeVolumes reports as
-// Attachments[].Device.
+// the device name the request named; the caller holds EBSRequests.Mu.
 func appendDataEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
-	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		DeleteOnTermination: deleteOnTermination,
 	})
-	instance.EBSRequests.Mu.Unlock()
 }
 
 // rootVolumeSpec describes the boot volume a launch needs, in provider-neutral

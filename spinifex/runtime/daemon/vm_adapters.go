@@ -443,30 +443,16 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 }
 
 // commitExports copies the exports of published to the instance's requests
-// under the manager lock. An unmount holds EBSRequests.Mu across its seals, so
-// the wait for that lock is outside the manager lock.
+// under the manager lock.
 func (a *volumeMounterAdapter) commitExports(instance *vm.VM, published []vm.EBSRequest) {
-	for {
-		done := false
-		a.vms.Inspect(instance, func(v *vm.VM) {
-			if !v.EBSRequests.Mu.TryLock() {
-				return
+	a.vms.InspectRequests(instance, func(v *vm.VM) {
+		for k, req := range published {
+			if k < len(v.EBSRequests.Requests) && v.EBSRequests.Requests[k].Name == req.Name {
+				cur := &v.EBSRequests.Requests[k]
+				cur.NBDURI, cur.BlockDevice, cur.BlockSizeBytes = req.NBDURI, req.BlockDevice, req.BlockSizeBytes
 			}
-			defer v.EBSRequests.Mu.Unlock()
-			done = true
-			for k, req := range published {
-				if k < len(v.EBSRequests.Requests) && v.EBSRequests.Requests[k].Name == req.Name {
-					cur := &v.EBSRequests.Requests[k]
-					cur.NBDURI, cur.BlockDevice, cur.BlockSizeBytes = req.NBDURI, req.BlockDevice, req.BlockSizeBytes
-				}
-			}
-		})
-		if done {
-			return
 		}
-		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Mu.Unlock() //nolint:staticcheck // an empty section waits for the holder
-	}
+	})
 }
 
 // publishAll publishes a copy of each of the instance's requests while it holds

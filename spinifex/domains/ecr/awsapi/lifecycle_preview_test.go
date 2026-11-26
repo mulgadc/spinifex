@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,108 @@ func TestEvaluateLifecyclePreview_PolicyTextLength(t *testing.T) {
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
 			assert.Equal(t, tc.message, message)
+		})
+	}
+}
+
+// previewCatalog holds five expiring images and one kept newest image under
+// lifecyclePreviewPolicy. sha256:a is the only untagged one.
+func previewCatalog() fakeImageCatalog {
+	now := time.Now()
+	return fakeImageCatalog{records: []ecrregistry.ImageRecord{
+		{Digest: "sha256:a", PushedAt: now.Add(-6 * time.Hour)},
+		{Digest: "sha256:b", Tags: []string{"b"}, PushedAt: now.Add(-5 * time.Hour)},
+		{Digest: "sha256:c", Tags: []string{"c"}, PushedAt: now.Add(-4 * time.Hour)},
+		{Digest: "sha256:d", Tags: []string{"d"}, PushedAt: now.Add(-3 * time.Hour)},
+		{Digest: "sha256:e", Tags: []string{"e"}, PushedAt: now.Add(-2 * time.Hour)},
+		{Digest: "sha256:f", Tags: []string{"f"}, PushedAt: now},
+	}}
+}
+
+func previewBody(extra string) []byte {
+	return []byte(`{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(lifecyclePreviewPolicy) + extra + `}`)
+}
+
+func previewDigests(out *ecr.GetLifecyclePolicyPreviewOutput) []string {
+	digests := make([]string, 0, len(out.PreviewResults))
+	for _, r := range out.PreviewResults {
+		digests = append(digests, *r.ImageDigest)
+	}
+	return digests
+}
+
+func TestGetLifecyclePolicyPreview_PagesAfterFilter(t *testing.T) {
+	var pages [][]string
+	token := ""
+	for {
+		extra := `,"maxResults":2,"filter":{"tagStatus":"TAGGED"}`
+		if token != "" {
+			extra += `,"nextToken":` + strconvQuote(token)
+		}
+		out, err := GetLifecyclePolicyPreview(context.Background(), fakeLifecyclePolicyStore{}, previewCatalog(), "123456789012", previewBody(extra))
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), *out.Summary.ExpiringImageTotalCount, "summary counts every expiring image")
+		pages = append(pages, previewDigests(out))
+		if out.NextToken == nil {
+			break
+		}
+		token = *out.NextToken
+		require.Less(t, len(pages), 5, "page walk does not end")
+	}
+	assert.Equal(t, [][]string{{"sha256:b", "sha256:c"}, {"sha256:d", "sha256:e"}}, pages)
+}
+
+func TestGetLifecyclePolicyPreview_DefaultPageIsOneHundred(t *testing.T) {
+	now := time.Now()
+	records := make([]ecrregistry.ImageRecord, 0, 102)
+	for i := range 102 {
+		records = append(records, ecrregistry.ImageRecord{Digest: fmt.Sprintf("sha256:%03d", i), PushedAt: now.Add(time.Duration(i) * time.Minute)})
+	}
+	out, err := GetLifecyclePolicyPreview(context.Background(), fakeLifecyclePolicyStore{}, fakeImageCatalog{records: records}, "123456789012", previewBody(""))
+	require.NoError(t, err)
+	assert.Len(t, out.PreviewResults, 100)
+	assert.NotNil(t, out.NextToken)
+	assert.Equal(t, int64(101), *out.Summary.ExpiringImageTotalCount)
+}
+
+func TestGetLifecyclePolicyPreview_Filters(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		want  []string
+	}{
+		{"untagged", `,"filter":{"tagStatus":"UNTAGGED"}`, []string{"sha256:a"}},
+		{"any", `,"filter":{"tagStatus":"ANY"}`, []string{"sha256:a", "sha256:b", "sha256:c", "sha256:d", "sha256:e"}},
+		{"image ids", `,"imageIds":[{"imageDigest":"sha256:c"},{"imageTag":"e"},{"imageTag":"f"}]`, []string{"sha256:c", "sha256:e"}},
+		{"image ids and tag status", `,"imageIds":[{"imageDigest":"sha256:a"},{"imageDigest":"sha256:b"}],"filter":{"tagStatus":"TAGGED"}`, []string{"sha256:b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := GetLifecyclePolicyPreview(context.Background(), fakeLifecyclePolicyStore{}, previewCatalog(), "123456789012", previewBody(tc.extra))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, previewDigests(out))
+			assert.Nil(t, out.NextToken)
+			assert.Equal(t, int64(5), *out.Summary.ExpiringImageTotalCount)
+		})
+	}
+}
+
+func TestGetLifecyclePolicyPreview_RefusesBadPagingAndFilter(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+	}{
+		{"zero maxResults", `,"maxResults":0`},
+		{"maxResults above 100", `,"maxResults":101`},
+		{"foreign token", `,"nextToken":"bm90LW91cnM"`},
+		{"undecodable token", `,"nextToken":"!!!"`},
+		{"bad tagStatus", `,"filter":{"tagStatus":"SOME"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := GetLifecyclePolicyPreview(context.Background(), fakeLifecyclePolicyStore{}, previewCatalog(), "123456789012", previewBody(tc.extra))
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }

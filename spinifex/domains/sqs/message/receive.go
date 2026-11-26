@@ -118,7 +118,8 @@ func (r *Receiver) Receive(ctx context.Context, in ReceiveInput) ([]Received, er
 		return nil, err
 	}
 	if r.waitUnit > 0 {
-		wait = wait / time.Second * r.waitUnit
+		secs := int64(wait / time.Second)
+		wait = time.Duration(secs) * r.waitUnit
 	}
 	if wait == 0 {
 		out, _, err := r.poll(ctx, t.Namespace, want, vis, retention)

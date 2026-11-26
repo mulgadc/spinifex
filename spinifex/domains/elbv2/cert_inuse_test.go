@@ -15,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
@@ -336,7 +335,7 @@ func TestReconcileCertInUseIndex_NilACMStore_NoOp(t *testing.T) {
 // After a reconcile the same re-import must fan out again.
 func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
@@ -434,7 +433,7 @@ func genLeafCertPEM(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPE
 // UpdateStoredConfigForCert fan-out.
 func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 
 	// Both services read the same bucket, so they must share one key or the
 	// reader gets ciphertext where it expects PEM.

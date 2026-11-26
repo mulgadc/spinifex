@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +13,7 @@ const testAccountID = "123456789012"
 
 func setupTestStore(t *testing.T) *Store {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 
 	store, err := NewStore(t.Context(), nc)
 	require.NoError(t, err)

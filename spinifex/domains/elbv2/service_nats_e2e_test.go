@@ -9,7 +9,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +20,7 @@ import (
 func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 	t.Helper()
 
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)

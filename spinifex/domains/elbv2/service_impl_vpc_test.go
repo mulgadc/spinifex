@@ -23,7 +23,7 @@ import (
 // with a pre-created VPC and subnet for ENI allocation testing.
 func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	// Create VPC service
@@ -271,7 +271,7 @@ func TestDeleteLoadBalancer_CleansUpENIs(t *testing.T) {
 // that would ever let a retry (or the orphan reaper) find and finish it.
 func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *testing.T) {
 	t.Parallel()
-	_, nc, js := testutil.StartTestJetStream(t)
+	nc, js := startTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)

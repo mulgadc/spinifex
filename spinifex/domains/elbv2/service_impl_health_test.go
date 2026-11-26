@@ -19,7 +19,7 @@ import (
 // and a simulated instance ENI (attached to an instance ID).
 func setupTestServiceWithInstance(t *testing.T, instanceID, instanceIP string) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl, string) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)

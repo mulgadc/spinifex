@@ -102,7 +102,7 @@ func TestSubnetGatewayIP(t *testing.T) {
 // service. The VPC has one subnet (10.0.1.0/24) pre-created.
 func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl, string) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)

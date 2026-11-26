@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -32,7 +31,7 @@ func (s *stubResponder) close() {
 
 func TestNATSSystemInstanceLauncher_LaunchRoundTrip(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	resp := &stubResponder{}
@@ -81,7 +80,7 @@ func TestNATSSystemInstanceLauncher_LaunchRoundTrip(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchPropagatesRemoteError(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
@@ -104,7 +103,7 @@ func TestNATSSystemInstanceLauncher_LaunchPropagatesRemoteError(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchFailsWhenNoResponder(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, 250*time.Millisecond)
@@ -117,7 +116,7 @@ func TestNATSSystemInstanceLauncher_LaunchFailsWhenNoResponder(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_TerminateRoundTrip(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	terminated := make(chan string, 1)
@@ -145,7 +144,7 @@ func TestNATSSystemInstanceLauncher_TerminateRoundTrip(t *testing.T) {
 
 func TestNewNATSSystemInstanceLauncher_DefaultTimeout(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, 0)
@@ -160,7 +159,7 @@ func TestNewNATSSystemInstanceLauncher_DefaultTimeout(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchNilInput(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
@@ -171,7 +170,7 @@ func TestNATSSystemInstanceLauncher_LaunchNilInput(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchMissingInstanceType(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
@@ -182,7 +181,7 @@ func TestNATSSystemInstanceLauncher_LaunchMissingInstanceType(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchDecodeFailure(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
@@ -199,7 +198,7 @@ func TestNATSSystemInstanceLauncher_LaunchDecodeFailure(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_LaunchMissingOutput(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
@@ -216,7 +215,7 @@ func TestNATSSystemInstanceLauncher_LaunchMissingOutput(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_TerminateEmptyID(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
@@ -227,7 +226,7 @@ func TestNATSSystemInstanceLauncher_TerminateEmptyID(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_TerminateNoResponder(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	launcher := NewNATSSystemInstanceLauncher(nc, 250*time.Millisecond)
@@ -237,7 +236,7 @@ func TestNATSSystemInstanceLauncher_TerminateNoResponder(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_TerminateDecodeFailure(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	sub, err := nc.Subscribe("system.TerminateInstance.i-decode", func(msg *nats.Msg) {
@@ -254,7 +253,7 @@ func TestNATSSystemInstanceLauncher_TerminateDecodeFailure(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_TerminatePropagatesRemoteError(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	sub, err := nc.Subscribe("system.TerminateInstance.i-missing", func(msg *nats.Msg) {
@@ -274,7 +273,7 @@ func TestNATSSystemInstanceLauncher_TerminatePropagatesRemoteError(t *testing.T)
 
 func TestNATSSystemInstanceLauncher_RefusesNonLoadBalancerKindBeforeSending(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	// A responder on the legacy subject stands in for an older daemon that
@@ -315,7 +314,7 @@ func TestNATSSystemInstanceLauncher_RefusesNonLoadBalancerKindBeforeSending(t *t
 
 func TestNATSSystemInstanceLauncher_RebootEmptyID(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	err := NewNATSSystemInstanceLauncher(nc, time.Second).RebootSystemInstance("")
@@ -325,7 +324,7 @@ func TestNATSSystemInstanceLauncher_RebootEmptyID(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_RebootRoundTrip(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	var asked atomic.Int32
@@ -342,7 +341,7 @@ func TestNATSSystemInstanceLauncher_RebootRoundTrip(t *testing.T) {
 
 func TestNATSSystemInstanceLauncher_RebootNoResponderKeepsTransportError(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	err := NewNATSSystemInstanceLauncher(nc, 250*time.Millisecond).RebootSystemInstance("i-no-one-listens")
@@ -351,7 +350,7 @@ func TestNATSSystemInstanceLauncher_RebootNoResponderKeepsTransportError(t *test
 
 func TestNATSSystemInstanceLauncher_RebootDecodeFailureAndRemoteError(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	defer nc.Close()
 
 	bad, err := nc.Subscribe("system.RebootInstance.i-decode", func(msg *nats.Msg) {

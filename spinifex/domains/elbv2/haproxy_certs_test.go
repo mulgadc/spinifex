@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -146,7 +145,7 @@ func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
 // same JetStream bucket and must agree on the same key.
 func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/internal/testkit"
 	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,7 +88,7 @@ func TestEvaluateHealth_DrainingUnchanged(t *testing.T) {
 
 func setupTestNATS(t *testing.T) *Store {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc, _ := startTestJetStream(t)
 	store, err := NewStore(t.Context(), nc)
 	require.NoError(t, err)
 	return store

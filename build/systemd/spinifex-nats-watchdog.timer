@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex NATS JetStream liveness watchdog timer
 PartOf=spinifex.target
@@ -7,7 +7,7 @@ PartOf=spinifex.target
 # Delay the first probe so NATS startup + JetStream cluster quorum settle (a
 # forming cluster reports JS not-current transiently, which is not a fault).
 OnBootSec=60s
-OnUnitActiveSec=30s
+OnUnitActiveSec=120s
 AccuracySec=5s
 
 [Install]

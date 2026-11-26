@@ -20,6 +20,7 @@ type fakeDemuxer struct {
 	readErr error
 	setErr  error
 	sets    []string
+	reads   int
 }
 
 var _ EndpointDemuxer = (*fakeDemuxer)(nil)
@@ -27,6 +28,7 @@ var _ EndpointDemuxer = (*fakeDemuxer)(nil)
 func (f *fakeDemuxer) EndpointDemuxStates(_ context.Context, eniIDs []string) (EndpointDemuxStates, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reads++
 	if f.readErr != nil {
 		return EndpointDemuxStates{}, f.readErr
 	}
@@ -260,6 +262,7 @@ func TestEndpointDemuxHeld_WhileAPassRuns(t *testing.T) {
 		<-release
 		return EndpointIntent{}, nil
 	})
+	m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
 	m.endpointDemux.clear.Store(true)
 	done := make(chan error, 1)
 	go func() { done <- m.ReconcileEndpointDemux(context.Background()) }()
@@ -326,5 +329,62 @@ func TestReconcileEndpointDemux_FailedUpdateCountsAsHeld(t *testing.T) {
 				t.Error("a node whose demux update failed reports no flows")
 			}
 		})
+	}
+}
+
+// counted wraps intent and counts its reads.
+func counted(intent func(context.Context) (EndpointIntent, error), n *int) func(context.Context) (EndpointIntent, error) {
+	return func(ctx context.Context) (EndpointIntent, error) {
+		*n++
+		return intent(ctx)
+	}
+}
+
+// An idle node reads nothing once a pass has shown no flow, and a guest that
+// starts after a skipped pass gets its demux from the next pass.
+func TestReconcileEndpointDemux_IdleNodeSkipsReads(t *testing.T) {
+	d := &fakeDemuxer{}
+	intents := 0
+	m := demuxManager(d, counted(routed("subnet-0abc"), &intents))
+
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || d.reads != 1 {
+		t.Fatalf("first pass: %d intent reads, %d dumps, want 1 and 1", intents, d.reads)
+	}
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || d.reads != 1 {
+		t.Errorf("idle pass after a clear pass: %d intent reads, %d dumps, want none", intents-1, d.reads-1)
+	}
+	if m.EndpointDemuxHeld() {
+		t.Error("idle node reports a demux")
+	}
+
+	m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.of("eni-a"); !slices.Equal(got, sortedEntries()) {
+		t.Fatalf("guest after an idle pass: flows = %v, want %v", got, sortedEntries())
+	}
+}
+
+// A pass that could not remove an unowned flow leaves the node held, so the
+// next idle pass reads and retries.
+func TestReconcileEndpointDemux_IdleNodeRetriesUnownedFlow(t *testing.T) {
+	d := &fakeDemuxer{unowned: []uint64{0xa1e500000001}, rmErr: errors.New("ovs down")}
+	intents := 0
+	m := demuxManager(d, counted(routed(), &intents))
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 2 || d.reads != 2 {
+		t.Errorf("pass after a failed removal: %d intent reads, %d dumps, want 1 and 1", intents-1, d.reads-1)
 	}
 }

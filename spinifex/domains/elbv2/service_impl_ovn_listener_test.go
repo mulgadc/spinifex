@@ -187,6 +187,7 @@ func TestOVNFixtureListener_RefusesRawShapesBeforeReads(t *testing.T) {
 		"other account group ARN": {action(func(a *elbv2.Action) {
 			a.TargetGroupArn = aws.String(resourcearn.FormatELBv2TargetGroup(fixtureRegion, otherAccountID, "x", "eeee000000000005"))
 		}), ""},
+		"nil input": {nil, awserrors.ErrorMissingParameter},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h.takeOps()
@@ -202,6 +203,57 @@ func TestOVNFixtureListener_RefusesRawShapesBeforeReads(t *testing.T) {
 		})
 	}
 	assert.Nil(t, h.owner("ovn-nlb").Listener)
+}
+
+func TestOVNFixtureListener_MalformedGroupARNReadsNoGroup(t *testing.T) {
+	h := newOVNCreateHarness(t)
+	lbArn := aws.StringValue(h.sealedOVN("ovn-nlb").LoadBalancerArn)
+	elbBefore := h.state(KVBucketELBv2)
+	sideBefore := h.sideEffects()
+	group := func(resource string) string {
+		return resourcearn.FormatELBv2Resource(fixtureRegion, testAccountID, resourcearn.ELBv2TargetGroup, resource)
+	}
+
+	for name, arn := range map[string]string{
+		"wildcard ID":     group("ovn-tg/tg-*"),
+		"subject ID":      group("ovn-tg/tg->"),
+		"space in ID":     group("ovn-tg/tg 01"),
+		"dotted ID":       group("ovn-tg/tg.01"),
+		"empty ID":        group("ovn-tg/"),
+		"no name":         group("/tg-0123456789abcdef0"),
+		"no ID segment":   group("tg-0123456789abcdef0"),
+		"empty resource":  group(""),
+		"unicode ID":      group("ovn-tg/tg-é"),
+		"ID with newline": group("ovn-tg/tg-01\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h.takeOps()
+			_, err := h.listener(listenerInput(lbArn, arn, 80))
+			requireFenceCode(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
+			h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + LBNameKey("ovn-nlb", testAccountID)}})
+			h.requireNoEffects(elbBefore, sideBefore)
+		})
+	}
+
+}
+
+func TestOVNFixtureListener_PersistedGroupARNFormsStayAccepted(t *testing.T) {
+	h := newOVNCreateHarness(t)
+	lbArn := aws.StringValue(h.sealedOVN("ovn-nlb").LoadBalancerArn)
+	for name, arn := range map[string]string{
+		"service ID":        aws.StringValue(h.tcpGroup("ovn-tg", 8080).TargetGroupArn),
+		"bare hex ID":       h.storedGroup("dddd000000000004", func(*TargetGroupRecord) {}),
+		"unvalidated name":  h.storedGroup("eeee000000000005", func(tg *TargetGroupRecord) { tg.Name = "my.group" }),
+		"name with a slash": resourcearn.FormatELBv2TargetGroup(fixtureRegion, testAccountID, "a/b", "tg-0123456789abcdef0"),
+		"mixed case hex ID": resourcearn.FormatELBv2TargetGroup(fixtureRegion, testAccountID, "ovn-tg", "ABCDEF0123456789"),
+	} {
+		assert.NoError(t, ovnGroupARN(arn, fixtureRegion, testAccountID), name)
+	}
+
+	bare := resourcearn.FormatELBv2TargetGroup(fixtureRegion, testAccountID, "tg-dddd", "dddd000000000004")
+	got, err := h.listener(listenerInput(lbArn, bare, 80))
+	require.NoError(t, err, "a stored bare hex group is admitted")
+	assert.Equal(t, bare, aws.StringValue(got.DefaultActions[0].TargetGroupArn))
 }
 
 func TestOVNFixtureListener_RefusesLoadBalancerAndGroupWithoutWriting(t *testing.T) {

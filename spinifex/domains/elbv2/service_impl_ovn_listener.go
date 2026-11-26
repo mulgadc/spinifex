@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,7 +18,7 @@ import (
 // plain TCP on one port with one flat forward action. It returns the port and
 // the target group ARN, and reads nothing.
 func ovnListenerShape(input *elbv2.CreateListenerInput) (int64, string, error) {
-	if aws.StringValue(input.LoadBalancerArn) == "" {
+	if input == nil || aws.StringValue(input.LoadBalancerArn) == "" {
 		return 0, "", errors.New(awserrors.ErrorMissingParameter)
 	}
 	if len(input.DefaultActions) == 0 {
@@ -53,12 +54,29 @@ func ovnListenerShape(input *elbv2.CreateListenerInput) (int64, string, error) {
 	return *input.Port, *a.TargetGroupArn, nil
 }
 
+// ovnGroupIDPattern matches the target group IDs this stack writes: the
+// prefixed form CreateTargetGroup generates and the bare hex form.
+var ovnGroupIDPattern = regexp.MustCompile(`^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`)
+
+// ovnGroupARN checks a caller's target group ARN is a well-formed group of the
+// account and Region before any read. The ID becomes the group's KV key.
+func ovnGroupARN(arn, region, accountID string) error {
+	parsed, ok := resourcearn.ParseELBv2(arn)
+	if !ok || parsed.Kind != resourcearn.ELBv2TargetGroup || parsed.Region != region || parsed.AccountID != accountID {
+		return errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	}
+	cut := strings.LastIndex(parsed.Resource, "/")
+	if cut < 1 || !ovnGroupIDPattern.MatchString(parsed.Resource[cut+1:]) {
+		return errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	}
+	return nil
+}
+
 // ovnListenerGroup point-reads the exact target group and checks it is an
 // empty TCP instance group in the root's account and VPC.
 func (s *ELBv2ServiceImpl) ovnListenerGroup(ctx context.Context, arn string, root *LoadBalancerRecord) (*TargetGroupRecord, error) {
-	parsed, ok := resourcearn.ParseELBv2(arn)
-	if !ok || parsed.Kind != resourcearn.ELBv2TargetGroup || parsed.Region != s.region || parsed.AccountID != root.AccountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	if err := ovnGroupARN(arn, s.region, root.AccountID); err != nil {
+		return nil, err
 	}
 	tg, err := s.store.GetTargetGroupByArn(ctx, arn)
 	if err != nil {

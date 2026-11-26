@@ -113,11 +113,17 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		return fmt.Errorf("subscribe to %s: %w", snapshotCreateWildcard, err)
 	}
 
+	publishes := maxConcurrentPublishes
+	if cfg.NBDTransport == NBDTransportTCP {
+		publishes = 1
+	}
+	cfg.publishSlots = make(chan struct{}, publishes)
+
 	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
 	if err != nil {
 		return fmt.Errorf("build publish subject: %w", err)
 	}
-	if _, err := nc.Subscribe(publishSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+	if _, err := nc.Subscribe(publishSubject, cfg.volumeOpHandler(true, func(ctx context.Context, msg *nats.Msg) {
 		handlePublishVolume(ctx, cfg, nc, msg)
 	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", publishSubject, err)
@@ -127,7 +133,7 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	if err != nil {
 		return fmt.Errorf("build unpublish subject: %w", err)
 	}
-	if _, err := nc.Subscribe(unpublishSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+	if _, err := nc.Subscribe(unpublishSubject, cfg.volumeOpHandler(false, func(ctx context.Context, msg *nats.Msg) {
 		handleUnpublishVolume(ctx, cfg, msg)
 	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", unpublishSubject, err)

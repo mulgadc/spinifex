@@ -47,6 +47,7 @@ func providerRootVolumeService(t *testing.T, provider ebsprovider.EBSProvider, l
 		metadata:    ebsmetadata.NewStore(store, testRootBucket),
 		amiLoader:   loader,
 		ebsProvider: provider,
+		vmMgr:       vm.NewManager(),
 	}
 }
 

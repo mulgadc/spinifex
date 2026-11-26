@@ -70,7 +70,7 @@ func installFakeNbdkit(t *testing.T) {
 	require.NoError(t, err)
 	dir := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run='^TestFakeNbdkitProcess$' -- \"$@\"\n", exe)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nbdkit"), []byte(script), 0o755)) //nolint:gosec // the fake has to be executable
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nbdkit"), []byte(script), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(fakeNbdkitEnv, "1")
 }
@@ -310,7 +310,7 @@ func TestProviderDispatch_UnpublishDoesNotWaitForOtherVolumes(t *testing.T) {
 	held := holdEngineOpens(t, cfg, failedOpen)
 	nc := startProviderSubjects(t, cfg, natsURL)
 
-	const slots = 8
+	const slots = maxConcurrentPublishes
 	var publishes []<-chan natsReply
 	for i := range slots {
 		publishes = append(publishes, publishAsync(t, nc, cfg, fmt.Sprintf("vol-held%d", i), 10*time.Second))

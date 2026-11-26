@@ -1,6 +1,8 @@
 package projection
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -79,34 +81,70 @@ func TestGoldenRemoveNAT_WireShape(t *testing.T) {
 	}
 }
 
+// retryHook is a slog handler that calls onAttempt with the attempt number of
+// each delete-nat no-responders warning, which removeNAT logs before it waits.
+type retryHook struct{ onAttempt func(int) }
+
+func (h retryHook) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h retryHook) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h retryHook) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h retryHook) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "vpc.delete-nat has no subscriber; retrying" {
+		return nil
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "attempt" {
+			h.onAttempt(int(a.Value.Int64()))
+			return false
+		}
+		return true
+	})
+	return nil
+}
+
 // TestGoldenRemoveNAT_RetriesOnNoResponders pins the delete-nat retry-on-
 // ErrNoResponders characteristic: a teardown published while vpcd is between
 // subscribe calls is not dropped, it is retried until a responder appears or
-// the retry budget (3 attempts, one delay apart) is exhausted. The responder
-// subscribes 1.5 delays late, inside that budget, so RemoveNAT must still
-// succeed, and it must do so well short of the 15s per-attempt timeout.
+// the retry budget (3 attempts) is exhausted. The responder subscribes only
+// after the second attempt finds nobody, so the third attempt must deliver,
+// and RemoveNAT must finish well short of the 15s per-attempt timeout.
 func TestGoldenRemoveNAT_RetriesOnNoResponders(t *testing.T) {
-	shortenDeleteNATRetryDelay(t, 150*time.Millisecond)
+	shortenDeleteNATRetryDelay(t, 10*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 
 	captured := make(chan []byte, 1)
-	lateBy := deleteNATRetryDelay * 3 / 2
-	go func() {
-		time.Sleep(lateBy)
+	var attempts []int
+	prev := slog.Default()
+	slog.SetDefault(slog.New(retryHook{onAttempt: func(n int) {
+		attempts = append(attempts, n)
+		if n != 2 {
+			return
+		}
 		sub, err := nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
 			captured <- msg.Data
 			_ = msg.Respond([]byte(`{"success":true}`))
 		})
-		if err != nil {
-			return
-		}
+		require.NoError(t, err)
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
-	}()
+		require.NoError(t, nc.Flush())
+	}}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	start := time.Now()
 	New(nc).RemoveNAT("vpc-1", "203.0.113.5", "10.0.1.5", "port-eni-1", "02:00:00:00:00:01")
 	elapsed := time.Since(start)
 
+	assert.Equal(t, []int{1, 2}, attempts,
+		"the first two attempts must find no responder and be retried")
 	assert.Less(t, elapsed, 5*time.Second,
 		"retry-on-ErrNoResponders must fail fast and retry, not block on the 15s per-attempt timeout")
 

@@ -85,6 +85,8 @@ type Receiver struct {
 	// Recheck is the longest a long poll waits between polls without an
 	// append to wake it; zero means LongPollRecheck.
 	Recheck time.Duration
+	// waitUnit is the length of one wait second; zero means time.Second.
+	waitUnit time.Duration
 
 	mu sync.Mutex
 	// passes resumes each queue's scan pass across receives, so repeated
@@ -114,6 +116,10 @@ func (r *Receiver) Receive(ctx context.Context, in ReceiveInput) ([]Received, er
 	vis, retention, wait, err := receiveTiming(in.Account, t, visOverride, in.WaitTimeSeconds)
 	if err != nil {
 		return nil, err
+	}
+	if r.waitUnit > 0 {
+		secs := int64(wait / time.Second)
+		wait = time.Duration(secs) * r.waitUnit
 	}
 	if wait == 0 {
 		out, _, err := r.poll(ctx, t.Namespace, want, vis, retention)

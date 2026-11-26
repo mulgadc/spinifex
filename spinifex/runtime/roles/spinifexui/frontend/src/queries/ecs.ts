@@ -4,11 +4,11 @@ import {
   DescribeServicesCommand,
   DescribeTaskDefinitionCommand,
   DescribeTasksCommand,
-  ListClustersCommand,
-  ListContainerInstancesCommand,
-  ListServicesCommand,
-  ListTaskDefinitionsCommand,
-  ListTasksCommand,
+  paginateListClusters,
+  paginateListContainerInstances,
+  paginateListServices,
+  paginateListTaskDefinitions,
+  paginateListTasks,
 } from "@aws-sdk/client-ecs"
 import { queryOptions } from "@tanstack/react-query"
 
@@ -23,8 +23,10 @@ export const ecsClustersQueryOptions = queryOptions({
   queryKey: ["ecs", "clusters"],
   queryFn: async () => {
     const client = getEcsClient()
-    const list = await client.send(new ListClustersCommand({}))
-    const clusterArns = list.clusterArns ?? []
+    const clusterArns: string[] = []
+    for await (const page of paginateListClusters({ client }, {})) {
+      clusterArns.push(...(page.clusterArns ?? []))
+    }
 
     if (clusterArns.length === 0) {
       return []
@@ -61,11 +63,13 @@ export const ecsServicesQueryOptions = (clusterName: string) =>
     queryFn: async () => {
       const client = getEcsClient()
 
-      const list = await client.send(
-        new ListServicesCommand({ cluster: clusterName }),
-      )
-
-      const serviceArns = list.serviceArns ?? []
+      const serviceArns: string[] = []
+      for await (const page of paginateListServices(
+        { client },
+        { cluster: clusterName },
+      )) {
+        serviceArns.push(...(page.serviceArns ?? []))
+      }
 
       if (serviceArns.length === 0) {
         return []
@@ -89,11 +93,13 @@ export const ecsTasksQueryOptions = (clusterName: string) =>
     queryFn: async () => {
       const client = getEcsClient()
 
-      const list = await client.send(
-        new ListTasksCommand({ cluster: clusterName }),
-      )
-
-      const taskArns = list.taskArns ?? []
+      const taskArns: string[] = []
+      for await (const page of paginateListTasks(
+        { client },
+        { cluster: clusterName },
+      )) {
+        taskArns.push(...(page.taskArns ?? []))
+      }
 
       if (taskArns.length === 0) {
         return []
@@ -114,11 +120,13 @@ export const ecsContainerInstancesQueryOptions = (clusterName: string) =>
     queryFn: async () => {
       const client = getEcsClient()
 
-      const list = await client.send(
-        new ListContainerInstancesCommand({ cluster: clusterName }),
-      )
-
-      const containerInstanceArns = list.containerInstanceArns ?? []
+      const containerInstanceArns: string[] = []
+      for await (const page of paginateListContainerInstances(
+        { client },
+        { cluster: clusterName },
+      )) {
+        containerInstanceArns.push(...(page.containerInstanceArns ?? []))
+      }
 
       if (containerInstanceArns.length === 0) {
         return []
@@ -141,9 +149,15 @@ export const ecsContainerInstancesQueryOptions = (clusterName: string) =>
 export const ecsTaskDefinitionsQueryOptions = queryOptions({
   queryKey: ["ecs", "task-definitions"],
   queryFn: async () => {
-    const list = await getEcsClient().send(new ListTaskDefinitionsCommand({}))
+    const arns: string[] = []
+    for await (const page of paginateListTaskDefinitions(
+      { client: getEcsClient() },
+      {},
+    )) {
+      arns.push(...(page.taskDefinitionArns ?? []))
+    }
 
-    return list.taskDefinitionArns ?? []
+    return arns
   },
   staleTime: CLUSTER_STALE_TIME,
 })

@@ -440,12 +440,9 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8",
 		2: "c31eb4fa964060e1681113a3de4f8f3ee4336aee96469380aac5fc77480c964a",
 	},
-	"spinifex-nats-watchdog.timer": {
-		1: "9d43a8d2aa4fd80ab5f944d7620c666fd2a255850de2e6494479b8746922c979",
-		2: "82c3331ec37ac2b6e4a043c8be8145a75bdfdb5bcd9ec49a4d7b36f2bc988dfe",
-	},
-	"spinifex-nats.service":      {1: "f7f9900b95e364dc2575684a9bf16fa1f96a903a3a4aa773a34c04d761106838"},
-	"spinifex-northstar.service": {1: "030c382aed20f4383acdb7df7a830d48dd76dc29be5965b595cc3842ae43a3f1"},
+	"spinifex-nats-watchdog.timer": {1: "9d43a8d2aa4fd80ab5f944d7620c666fd2a255850de2e6494479b8746922c979"},
+	"spinifex-nats.service":        {1: "f7f9900b95e364dc2575684a9bf16fa1f96a903a3a4aa773a34c04d761106838"},
+	"spinifex-northstar.service":   {1: "030c382aed20f4383acdb7df7a830d48dd76dc29be5965b595cc3842ae43a3f1"},
 	"spinifex-predastore.service": {
 		1: "d0f6415b8f0e6ff3c045f2d3ce2794c347bf141066d7e0bd85fcec48797854d8",
 		2: "157e9a7683ac58760ad96679cad9f94121294f34d5cb668d1e586ba0686b4968",

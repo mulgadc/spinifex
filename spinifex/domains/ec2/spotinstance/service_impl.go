@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
@@ -113,11 +114,22 @@ var describeSpotRequestsValidFilters = map[string]bool{
 	"tag-key":                    true,
 }
 
+// AWS documents 5-1000 and accepts MaxResults with SpotInstanceRequestIds.
+var describeSpotRequestsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+}
+
 // DescribeSpotInstanceRequests lists requests from both buckets, merges, and awsfilters.
 func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSpotRequestsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSpotInstanceRequests: invalid filter", "err", err)
+		return nil, err
+	}
+	page, err := describeSpotRequestsPaging.Parse(input.MaxResults, input.NextToken, 0)
+	if err != nil {
 		return nil, err
 	}
 
@@ -157,7 +169,8 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 	}
 
 	slog.InfoContext(ctx, "DescribeSpotInstanceRequests completed", "count", len(requests), "accountID", accountID)
-	return &ec2.DescribeSpotInstanceRequestsOutput{SpotInstanceRequests: requests}, nil
+	requests, next := paging.EC2Page(requests, func(r *ec2.SpotInstanceRequest) string { return aws.StringValue(r.SpotInstanceRequestId) }, page)
+	return &ec2.DescribeSpotInstanceRequestsOutput{SpotInstanceRequests: requests, NextToken: next}, nil
 }
 
 // CancelSpotInstanceRequests moves active requests to the terminal bucket as

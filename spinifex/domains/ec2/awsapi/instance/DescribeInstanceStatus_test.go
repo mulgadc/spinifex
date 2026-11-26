@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 
@@ -443,4 +444,56 @@ func TestDedupStatuses_FirstWins(t *testing.T) {
 	got := dedupStatuses([]*ec2.InstanceStatus{first, second})
 	require.Len(t, got, 1)
 	assert.Equal(t, "running", *got[0].InstanceState.Name)
+}
+
+func TestDescribeInstanceStatus_PagesThroughEveryStatusOnce(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	var statuses []*ec2.InstanceStatus
+	for i := range 7 {
+		statuses = append(statuses, runningStatus(fmt.Sprintf("i-%03d", i), "us-east-1a"))
+	}
+	answerWith(t, nc, "node-a", statuses...)
+
+	got := map[string]bool{}
+	var token *string
+	pages := 0
+	for {
+		out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+			MaxResults: aws.Int64(5), NextToken: token,
+		}, nc, 1, "123456789012", "us-east-1a", StatusSynthesis{})
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(out.InstanceStatuses), 5)
+		for _, s := range out.InstanceStatuses {
+			assert.False(t, got[*s.InstanceId], "%s returned twice", *s.InstanceId)
+			got[*s.InstanceId] = true
+		}
+		pages++
+		if out.NextToken == nil {
+			break
+		}
+		token = out.NextToken
+	}
+	assert.Equal(t, 2, pages)
+	assert.Len(t, got, 7)
+}
+
+func TestDescribeInstanceStatus_RefusesForeignToken(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	_, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		NextToken: aws.String("not-a-token"),
+	}, nc, 1, "123456789012", "us-east-1a", StatusSynthesis{})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
+}
+
+func TestDescribeInstanceStatus_RefusesMaxResultsWithInstanceIds(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	_, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{aws.String("i-001")}, MaxResults: aws.Int64(5),
+	}, nc, 1, "123456789012", "us-east-1a", StatusSynthesis{})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterCombination), err)
 }

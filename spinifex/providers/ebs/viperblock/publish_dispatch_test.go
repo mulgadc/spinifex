@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -63,16 +65,26 @@ func TestFakeNbdkitProcess(t *testing.T) {
 }
 
 // installFakeNbdkit makes a TCP mount start TestFakeNbdkitProcess instead of
-// nbdkit, so a publish can succeed without the plugin.
+// nbdkit, so a publish can succeed without the plugin. Every fake still alive
+// when the test ends is killed.
 func installFakeNbdkit(t *testing.T) {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run='^TestFakeNbdkitProcess$' -- \"$@\"\n", exe)
+	pids := filepath.Join(dir, "pids")
+	script := fmt.Sprintf("#!/bin/sh\necho $$ >> %q\nexec %q -test.run='^TestFakeNbdkitProcess$' -- \"$@\"\n", pids, exe)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "nbdkit"), []byte(script), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(fakeNbdkitEnv, "1")
+	t.Cleanup(func() {
+		data, _ := os.ReadFile(pids)
+		for _, field := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(field); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
 }
 
 // heldOpens holds every engine open in constructVB until release is closed.
@@ -248,27 +260,70 @@ func TestProviderDispatch_RollbackAfterDelayedPublishLeavesNoExport(t *testing.T
 	assertNotExported(t, cfg, "vol-a")
 }
 
-// One volume with work queued on it does not stop a publish of another.
+// publishInOrder sends one publish per volume on nc, in order, so the provider
+// admits them in that order. The replies reach the returned subscription.
+func publishInOrder(t *testing.T, nc *nats.Conn, cfg *Config, volumes ...string) *nats.Subscription {
+	t.Helper()
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require.NoError(t, err)
+	subject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	for _, volume := range volumes {
+		body, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+			Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion}, VolumeID: volume, NodeID: cfg.NodeName,
+		})
+		require.NoError(t, err)
+		require.NoError(t, nc.PublishRequest(subject, inbox, body))
+	}
+	require.NoError(t, nc.Flush())
+	return sub
+}
+
+// Publishes waiting for a busy volume hold no publish slot, so even enough of
+// them to fill every slot do not stop a publish of another volume.
 func TestProviderDispatch_OtherVolumesProgressWhileOneIsBusy(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	held := holdEngineOpens(t, cfg, failedOpen)
 	nc := startProviderSubjects(t, cfg, natsURL)
 
-	queued := []<-chan natsReply{publishAsync(t, nc, cfg, "vol-a", 10*time.Second)}
+	first := publishInOrder(t, nc, cfg, "vol-a")
 	require.Equal(t, "vol-a", held.expectOpen(t))
-	queued = append(queued,
-		unpublishAsync(t, nc, cfg, "vol-a"),
-		publishAsync(t, nc, cfg, "vol-a", 10*time.Second),
-		publishAsync(t, nc, cfg, "vol-a", 10*time.Second))
-
-	queued = append(queued, publishAsync(t, nc, cfg, "vol-b", 10*time.Second))
+	volumes := make([]string, 0, maxConcurrentPublishes+1)
+	for range maxConcurrentPublishes {
+		volumes = append(volumes, "vol-a")
+	}
+	queued := publishInOrder(t, nc, cfg, append(volumes, "vol-b")...)
 	assert.Equal(t, "vol-b", held.expectOpen(t), "a second open of vol-a overlapped the first, or vol-b waited for vol-a")
 
 	held.releaseAll()
-	for _, ch := range queued {
-		awaitReply(t, ch)
+	_, err := first.NextMsg(15 * time.Second)
+	require.NoError(t, err)
+	for range maxConcurrentPublishes + 1 {
+		_, err := queued.NextMsg(15 * time.Second)
+		require.NoError(t, err)
 	}
+}
+
+// Shutdown waits for the publishes already dispatched, in progress or queued,
+// so no export is registered after its cleanup snapshot.
+func TestProviderDispatch_ShutdownLeavesNoExportBehind(t *testing.T) {
+	cfg, nc, held := tcpDispatchProvider(t)
+
+	publishInOrder(t, nc, cfg, "vol-a")
+	require.Equal(t, "vol-a", held.expectOpen(t))
+	publishInOrder(t, nc, cfg, "vol-b")
+	nc.Close()
+
+	held.releaseAll()
+	cfg.Shutdown()
+
+	assert.Never(t, func() bool {
+		cfg.mu.Lock()
+		defer cfg.mu.Unlock()
+		return len(cfg.MountedVolumes) > 0
+	}, quietWindow, 10*time.Millisecond, "an export was registered after the shutdown snapshot")
 }
 
 // Under TCP transport, a free port is only reserved once nbdkit binds it, so

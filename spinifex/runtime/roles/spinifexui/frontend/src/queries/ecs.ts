@@ -24,6 +24,7 @@ export const ecsClustersQueryOptions = queryOptions({
   queryFn: async () => {
     const client = getEcsClient()
     const clusterArns: string[] = []
+
     for await (const page of paginateListClusters({ client }, {})) {
       clusterArns.push(...(page.clusterArns ?? []))
     }
@@ -64,6 +65,7 @@ export const ecsServicesQueryOptions = (clusterName: string) =>
       const client = getEcsClient()
 
       const serviceArns: string[] = []
+
       for await (const page of paginateListServices(
         { client },
         { cluster: clusterName },
@@ -94,6 +96,7 @@ export const ecsTasksQueryOptions = (clusterName: string) =>
       const client = getEcsClient()
 
       const taskArns: string[] = []
+
       for await (const page of paginateListTasks(
         { client },
         { cluster: clusterName },
@@ -121,6 +124,7 @@ export const ecsContainerInstancesQueryOptions = (clusterName: string) =>
       const client = getEcsClient()
 
       const containerInstanceArns: string[] = []
+
       for await (const page of paginateListContainerInstances(
         { client },
         { cluster: clusterName },
@@ -150,6 +154,7 @@ export const ecsTaskDefinitionsQueryOptions = queryOptions({
   queryKey: ["ecs", "task-definitions"],
   queryFn: async () => {
     const arns: string[] = []
+
     for await (const page of paginateListTaskDefinitions(
       { client: getEcsClient() },
       {},

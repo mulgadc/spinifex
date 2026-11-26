@@ -16,6 +16,7 @@ import (
 	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"uuid"
@@ -376,6 +377,7 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 		// a stable target without changing an existing certificate's validation.
 		DelegationToken: uuid.NewV4().String(),
 		Tags:            tagsToMap(input.Tags),
+		CreatedAt:       time.Now(),
 	}
 
 	if mode == ValidationModePrivateCA {
@@ -564,9 +566,6 @@ func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCerti
 // marshaller drops a nil slice whatever the struct tag says, so an account with
 // no certificates would answer {} and hand an SDK caller a nil to range over.
 func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
-	if input == nil {
-		input = &acm.ListCertificatesInput{}
-	}
 	req, err := parseListCertificatesPage(input)
 	if err != nil {
 		return nil, err
@@ -661,7 +660,8 @@ func (f certificateFilter) matches(sum *acm.CertificateSummary) bool {
 	if len(f.statuses) > 0 && !f.statuses[aws.StringValue(sum.Status)] {
 		return false
 	}
-	if !f.keyTypes[summaryKeyType(sum)] {
+	// A key outside the KeyAlgorithm enum cannot be named, so no filter hides it.
+	if kt := summaryKeyType(sum); !f.keyTypes[kt] && slices.Contains(acm.KeyAlgorithm_Values(), kt) {
 		return false
 	}
 	if len(f.keyUsages) > 0 && !anyIn(f.keyUsages, sum.KeyUsages) {

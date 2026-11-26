@@ -82,16 +82,17 @@ func TestListCertificates_DefaultKeyTypesAreRSA1024And2048(t *testing.T) {
 	putListRecord(t, svc, "rsa4096", "RSA-4096", "", time.Time{})
 	putListRecord(t, svc, "ec", "EC-prime256v1", "", time.Time{})
 	putListRecord(t, svc, "pending", "", acm.CertificateStatusPendingValidation, time.Time{})
+	putListRecord(t, svc, "ed25519", "UNKNOWN", "", time.Time{})
 
 	out, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"rsa1024.example.com", "rsa2048.example.com", "pending.example.com"}, listedNames(t, out))
+	assert.ElementsMatch(t, []string{"rsa1024.example.com", "rsa2048.example.com", "pending.example.com", "ed25519.example.com"}, listedNames(t, out))
 
 	out, err = svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{
 		Includes: &acm.Filters{KeyTypes: aws.StringSlice([]string{acm.KeyAlgorithmEcPrime256v1, acm.KeyAlgorithmRsa4096})},
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"ec.example.com", "rsa4096.example.com"}, listedNames(t, out))
+	assert.ElementsMatch(t, []string{"ec.example.com", "rsa4096.example.com", "ed25519.example.com"}, listedNames(t, out))
 }
 
 func TestListCertificates_StatusFilter(t *testing.T) {
@@ -139,18 +140,21 @@ func TestListCertificates_SortByCreatedAt(t *testing.T) {
 	putListRecord(t, svc, "a-newest", "RSA-2048", "", base.Add(2*time.Hour))
 	putListRecord(t, svc, "b-oldest", "RSA-2048", "", base)
 	putListRecord(t, svc, "c-middle", "RSA-2048", "", base.Add(time.Hour))
+	svc.dnsProviderConfigured = true
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{DomainName: aws.String("requested.example.com")}, testAccountID)
+	require.NoError(t, err)
 
 	out, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{
 		SortBy: aws.String(acm.SortByCreatedAt), SortOrder: aws.String(acm.SortOrderAscending),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"b-oldest.example.com", "c-middle.example.com", "a-newest.example.com"}, listedNames(t, out))
+	assert.Equal(t, []string{"b-oldest.example.com", "c-middle.example.com", "a-newest.example.com", "requested.example.com"}, listedNames(t, out))
 
 	out, err = svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{
 		SortBy: aws.String(acm.SortByCreatedAt), SortOrder: aws.String(acm.SortOrderDescending), MaxItems: aws.Int64(2),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"a-newest.example.com", "c-middle.example.com"}, listedNames(t, out))
+	assert.Equal(t, []string{"requested.example.com", "a-newest.example.com"}, listedNames(t, out))
 	require.NotNil(t, out.NextToken)
 }
 

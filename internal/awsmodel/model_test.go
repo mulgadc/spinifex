@@ -8,6 +8,7 @@ import (
 )
 
 func TestServices(t *testing.T) {
+	t.Parallel()
 	want := []Service{ACM, EC2, ECR, ECS, EKS, ElasticLoadBalancingV2, IAM, RDS, Route53, S3, SQS, STS}
 	if got := Services(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
@@ -15,6 +16,7 @@ func TestServices(t *testing.T) {
 }
 
 func TestLoadAllModels(t *testing.T) {
+	t.Parallel()
 	wantSizes := map[Service]struct {
 		apiVersion string
 		operations int
@@ -35,6 +37,7 @@ func TestLoadAllModels(t *testing.T) {
 
 	for service, want := range wantSizes {
 		t.Run(string(service), func(t *testing.T) {
+			t.Parallel()
 			model, err := Load(service)
 			if err != nil {
 				t.Fatalf("Load(%q): %v", service, err)
@@ -56,6 +59,7 @@ func TestLoadAllModels(t *testing.T) {
 }
 
 func TestLoadEC2IndexesOperationsAndShapes(t *testing.T) {
+	t.Parallel()
 	model, err := Load(EC2)
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +83,7 @@ func TestLoadEC2IndexesOperationsAndShapes(t *testing.T) {
 }
 
 func TestLoadPreservesWrappersAndErrorMetadata(t *testing.T) {
+	t.Parallel()
 	model, err := Load(IAM)
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +105,7 @@ func TestLoadPreservesWrappersAndErrorMetadata(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownService(t *testing.T) {
+	t.Parallel()
 	_, err := Load("not-a-service")
 	if err == nil || !strings.Contains(err.Error(), `unsupported service "not-a-service"`) {
 		t.Fatalf("Load(unknown) error = %v", err)
@@ -107,6 +113,7 @@ func TestLoadRejectsUnknownService(t *testing.T) {
 }
 
 func TestLoadCachesModelAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
 	const callers = 16
 	models := make(chan *Model, callers)
 	errors := make(chan error, callers)

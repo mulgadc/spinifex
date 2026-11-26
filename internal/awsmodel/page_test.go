@@ -24,6 +24,7 @@ func testPageSet(t *testing.T) PageSet {
 }
 
 func TestParsePageSetAcceptsTheCheckedInFile(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 
 	if len(pages.Services) == 0 {
@@ -36,6 +37,7 @@ func TestParsePageSetAcceptsTheCheckedInFile(t *testing.T) {
 }
 
 func TestParsePageSetRejectsUnpublishableMetadata(t *testing.T) {
+	t.Parallel()
 	// A well-formed index, so each case below fails only for its own reason.
 	index := `"index":{"name":"All","title":"All","seoTitle":"` + strings.Repeat("x", 39) +
 		` — Spinifex Docs","description":"` + strings.Repeat("x", 155) + `","tags":["aws"]}`
@@ -58,6 +60,7 @@ func TestParsePageSetRejectsUnpublishableMetadata(t *testing.T) {
 			`"seoTitle":"` + strings.Repeat("x", 39) + ` — Spinifex Docs","description":"` + strings.Repeat("x", 155) + `","tags":["aws"]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := ParsePageSet([]byte(contents)); err == nil {
 				t.Fatal("ParsePageSet accepted unpublishable metadata")
 			}
@@ -66,6 +69,7 @@ func TestParsePageSetRejectsUnpublishableMetadata(t *testing.T) {
 }
 
 func TestRenderServicePagePublishesOnlyImplementedOperations(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{
 		Registered:  []string{"AssumeRole", "GetCallerIdentity", "GetSessionToken", "PublishInternal"},
@@ -113,6 +117,7 @@ func TestRenderServicePagePublishesOnlyImplementedOperations(t *testing.T) {
 // not implemented is not a row on it, and no count invites reading the page as
 // a score against AWS.
 func TestRenderServicePagePublishesNeitherGapsNorScores(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
@@ -144,6 +149,7 @@ func TestRenderServicePagePublishesNeitherGapsNorScores(t *testing.T) {
 // A service page says what Spinifex serves, so a service that serves nothing
 // has no page rather than an empty one.
 func TestRenderServicePageRefusesAServiceWithNoImplementation(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{})
 	if err != nil {
@@ -156,6 +162,7 @@ func TestRenderServicePageRefusesAServiceWithNoImplementation(t *testing.T) {
 }
 
 func TestRenderServicePageWithoutIntro(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
@@ -172,6 +179,7 @@ func TestRenderServicePageWithoutIntro(t *testing.T) {
 }
 
 func TestRenderServicePageRejectsIntroOpeningASection(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
@@ -185,6 +193,7 @@ func TestRenderServicePageRejectsIntroOpeningASection(t *testing.T) {
 
 // A "never" claim is only worth publishing if it cannot quietly become false.
 func TestOperationStatusesRejectsStaleNotApplicableClaims(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)
@@ -198,6 +207,7 @@ func TestOperationStatusesRejectsStaleNotApplicableClaims(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := coverage.OperationStatuses(PageMetadata{NotApplicable: declared}); err == nil {
 				t.Fatal("OperationStatuses accepted a claim that cannot hold")
 			}
@@ -206,6 +216,7 @@ func TestOperationStatusesRejectsStaleNotApplicableClaims(t *testing.T) {
 }
 
 func TestOperationStatusesCarriesTheNoteKey(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +244,7 @@ func TestOperationStatusesCarriesTheNoteKey(t *testing.T) {
 // is declared: an undeclared route stays visible, so a real AWS operation newer
 // than the pinned model cannot disappear by being registered.
 func TestOperationStatusesHidesDeclaredInternalRoutes(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{
 		Registered: []string{"AssumeRole", "PublishInternal", "AheadOfThePin"},
 	})
@@ -257,6 +269,7 @@ func TestOperationStatusesHidesDeclaredInternalRoutes(t *testing.T) {
 }
 
 func TestOperationStatusesRejectsAnInternalRouteThatIsModelled(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +284,7 @@ func TestOperationStatusesRejectsAnInternalRouteThatIsModelled(t *testing.T) {
 // that, so neither the row nor the reason behind it reaches the page: both are
 // the internal report's to carry.
 func TestRenderServicePagePublishesNoDeclaredAbsence(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	iam := pages.Services[IAM]
 	if len(iam.NotApplicable) == 0 {
@@ -304,6 +318,7 @@ func TestRenderServicePagePublishesNoDeclaredAbsence(t *testing.T) {
 // handler refusing it today does not establish. Only the page's declaration
 // publishes that claim; an undeclared refusal is a gap like any other.
 func TestRenderServicePageDoesNotPublishAnUndeclaredRefusalAsPermanent(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{
 		Registered:  []string{"AssumeRole", "GetFederationToken"},
@@ -358,6 +373,7 @@ func TestRenderServicePageRejectsBrokenNoteReferences(t *testing.T) {
 // An opaque service has no dispatch table to count, so publishing a page for it
 // would report 0% where the truth is that the surface is served elsewhere.
 func TestRenderServicePageRefusesOpaqueCoverage(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverage, err := CompareOperations(STS, DispatchInventory{
 		Opaque: true,
@@ -375,6 +391,7 @@ func TestRenderServicePageRefusesOpaqueCoverage(t *testing.T) {
 // The total counts the pages it links and nothing else, so a service with no
 // page of its own is not folded into the headline figure.
 func TestRenderIndexPageTotalsOnlyPublishedServices(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	sts, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole", "GetSessionToken"}})
 	if err != nil {
@@ -407,6 +424,7 @@ func TestRenderIndexPageTotalsOnlyPublishedServices(t *testing.T) {
 }
 
 func TestRenderIndexPageLinksEveryPublishedService(t *testing.T) {
+	t.Parallel()
 	pages := testPageSet(t)
 	coverages := make([]OperationCoverage, 0, len(Services()))
 	for _, service := range Services() {

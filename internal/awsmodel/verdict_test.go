@@ -17,6 +17,7 @@ var (
 )
 
 func TestRequestJudgeAcceptance(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		result awsmodel.RequestResult
@@ -31,12 +32,14 @@ func TestRequestJudgeAcceptance(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require.Equal(t, test.want, createRolePlan.NewJudge().Judge(awsmodel.RequestCase{}, test.result))
 		})
 	}
 }
 
 func TestRequestJudgeRejection(t *testing.T) {
+	t.Parallel()
 	rejection := awsmodel.RequestCase{Constraint: awsmodel.ConstraintLength, Path: "$.RoleName"}
 	tests := []struct {
 		name   string
@@ -54,6 +57,7 @@ func TestRequestJudgeRejection(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			judge := test.plan.NewJudge()
 			require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
 			require.Equal(t, test.want, judge.Judge(rejection, test.result))
@@ -62,6 +66,7 @@ func TestRequestJudgeRejection(t *testing.T) {
 }
 
 func TestRequestJudgeDiscountsRefusalsOfRefusedAcceptance(t *testing.T) {
+	t.Parallel()
 	judge := createRolePlan.NewJudge()
 	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
 	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Member: "Tags"}, invalid))
@@ -82,6 +87,7 @@ func TestRequestJudgeDiscountsRefusalsOfRefusedAcceptance(t *testing.T) {
 }
 
 func TestRequestJudgeDiscountsRefusalsOfMembersWithoutAcceptance(t *testing.T) {
+	t.Parallel()
 	judge := createRolePlan.NewJudge()
 	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
 	// A pagination token gets no acceptance case, so its refusal may be of
@@ -92,6 +98,7 @@ func TestRequestJudgeDiscountsRefusalsOfMembersWithoutAcceptance(t *testing.T) {
 }
 
 func TestDecodeRequestResult(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		service awsmodel.Service
@@ -115,6 +122,7 @@ func TestDecodeRequestResult(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			result := awsmodel.DecodeRequestResult(test.service, 400, test.header, []byte(test.body))
 			require.Equal(t, awsmodel.RequestResult{Status: 400, Code: test.code, Message: test.message}, result)
 		})

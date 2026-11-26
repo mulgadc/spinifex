@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidateUnknownField(t *testing.T) {
+	t.Parallel()
 	document := validIAMGetUserDocument()
 	document["Invented"] = true
 
@@ -25,6 +26,7 @@ func TestValidateUnknownField(t *testing.T) {
 }
 
 func TestValidateRequiredMembers(t *testing.T) {
+	t.Parallel()
 	document := validIAMGetUserDocument()
 	delete(document["User"].(map[string]any), "UserName")
 
@@ -43,6 +45,7 @@ func TestValidateRequiredMembers(t *testing.T) {
 }
 
 func TestValidateEnum(t *testing.T) {
+	t.Parallel()
 	document := map[string]any{
 		"tasks": []any{
 			map[string]any{"launchType": "ON_PREMISES"},
@@ -64,6 +67,7 @@ func TestValidateEnum(t *testing.T) {
 }
 
 func TestValidateConformingDocuments(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		service   Service
@@ -89,6 +93,7 @@ func TestValidateConformingDocuments(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			violations, err := Validate(test.service, test.operation, test.document)
 			if err != nil {
 				t.Fatal(err)
@@ -101,6 +106,7 @@ func TestValidateConformingDocuments(t *testing.T) {
 }
 
 func TestValidateUnknownOperation(t *testing.T) {
+	t.Parallel()
 	_, err := Validate(STS, "InventedOperation", map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), `operation "InventedOperation" is not modelled`) {
 		t.Fatalf("Validate unknown operation error = %v", err)
@@ -108,6 +114,7 @@ func TestValidateUnknownOperation(t *testing.T) {
 }
 
 func TestViolationString(t *testing.T) {
+	t.Parallel()
 	violation := Violation{Rule: RuleEnum, Path: "$.status", Message: `value "broken" is invalid`}
 	want := `$.status: value "broken" is invalid (enum)`
 	if got := violation.String(); got != want {

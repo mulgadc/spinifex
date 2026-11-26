@@ -6,6 +6,7 @@ import (
 )
 
 func TestValidateErrorResponseQueryAllowsDeclaredCode(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<ErrorResponse><Error><Code>NoSuchEntity</Code><Message>missing</Message></Error></ErrorResponse>`)
 	violations, modelled, err := ValidateErrorResponse(IAM, "GetUser", body)
 	if err != nil {
@@ -20,6 +21,7 @@ func TestValidateErrorResponseQueryAllowsDeclaredCode(t *testing.T) {
 }
 
 func TestValidateErrorResponseRejectsUndeclaredCode(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<ErrorResponse><Error><Code>InventedFailure</Code></Error></ErrorResponse>`)
 	violations, modelled, err := ValidateErrorResponse(IAM, "GetUser", body)
 	if err != nil {
@@ -39,6 +41,7 @@ func TestValidateErrorResponseRejectsUndeclaredCode(t *testing.T) {
 }
 
 func TestValidateErrorResponseJSONAllowsDeclaredShapeName(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"__type":"com.amazonaws.ecs#ClusterNotFoundException","message":"missing"}`)
 	violations, modelled, err := ValidateErrorResponse(ECS, "DescribeTasks", body)
 	if err != nil {
@@ -50,6 +53,7 @@ func TestValidateErrorResponseJSONAllowsDeclaredShapeName(t *testing.T) {
 }
 
 func TestValidateErrorResponseELBAllowsDeclaredCode(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<ErrorResponse><Error><Code>LoadBalancerNotFound</Code></Error></ErrorResponse>`)
 	violations, modelled, err := ValidateErrorResponse(ElasticLoadBalancingV2, "DescribeLoadBalancers", body)
 	if err != nil {
@@ -61,6 +65,7 @@ func TestValidateErrorResponseELBAllowsDeclaredCode(t *testing.T) {
 }
 
 func TestValidateErrorResponseRejectsMalformedEnvelope(t *testing.T) {
+	t.Parallel()
 	_, _, err := ValidateErrorResponse(ECS, "DescribeTasks", []byte(`{"message":"missing code"}`))
 	if err == nil {
 		t.Fatal("expected missing error code to fail decoding")
@@ -68,6 +73,7 @@ func TestValidateErrorResponseRejectsMalformedEnvelope(t *testing.T) {
 }
 
 func TestValidateErrorResponseOperationWithoutDeclaredErrors(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>`)
 	violations, modelled, err := ValidateErrorResponse(STS, "GetCallerIdentity", body)
 	if err != nil {
@@ -79,6 +85,7 @@ func TestValidateErrorResponseOperationWithoutDeclaredErrors(t *testing.T) {
 }
 
 func TestValidateErrorResponseClassifiesCommonErrorsAsUnmodelled(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		service   Service
@@ -113,6 +120,7 @@ func TestValidateErrorResponseClassifiesCommonErrorsAsUnmodelled(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			violations, modelled, err := ValidateErrorResponse(test.service, test.operation, []byte(test.body))
 			if err != nil {
 				t.Fatal(err)
@@ -125,6 +133,7 @@ func TestValidateErrorResponseClassifiesCommonErrorsAsUnmodelled(t *testing.T) {
 }
 
 func TestDecodeRequestResultReadsRestXMLErrorEnvelope(t *testing.T) {
+	t.Parallel()
 	body := []byte(`<?xml version="1.0"?>
 <ErrorResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><Error><Type>Sender</Type><Code>NoSuchHostedZone</Code><Message>No hosted zone found with ID: Z1</Message></Error><RequestId>r-1</RequestId></ErrorResponse>`)
 	result := DecodeRequestResult(Route53, 404, nil, body)

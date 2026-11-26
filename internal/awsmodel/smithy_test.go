@@ -28,6 +28,7 @@ func mustShape(t *testing.T, model *Model, name string) *Shape {
 }
 
 func TestSmithyProtocols(t *testing.T) {
+	t.Parallel()
 	want := map[Service]string{
 		ACM: "json", EC2: "ec2", ECR: "json", ECS: "json", EKS: "rest-json",
 		ElasticLoadBalancingV2: "query", IAM: "query", RDS: "query", S3: "rest-xml", STS: "query",
@@ -40,6 +41,7 @@ func TestSmithyProtocols(t *testing.T) {
 }
 
 func TestSmithyEnumKeepsDeclaredOrder(t *testing.T) {
+	t.Parallel()
 	shape := mustShape(t, mustLoad(t, IAM), "statusType")
 	if shape.Type != "string" {
 		t.Errorf("enum type = %q, want string", shape.Type)
@@ -50,6 +52,7 @@ func TestSmithyEnumKeepsDeclaredOrder(t *testing.T) {
 }
 
 func TestSmithyConstraints(t *testing.T) {
+	t.Parallel()
 	model := mustLoad(t, IAM)
 	request := mustShape(t, model, "CreateUserRequest")
 	if want := []string{"UserName"}; !reflect.DeepEqual(request.Required, want) {
@@ -69,6 +72,7 @@ func TestSmithyConstraints(t *testing.T) {
 }
 
 func TestSmithyQueryResultWrapper(t *testing.T) {
+	t.Parallel()
 	iam := mustLoad(t, IAM)
 	deleteUser, _ := iam.Operation("DeleteUser")
 	if deleteUser == nil || deleteUser.Output != nil {
@@ -85,6 +89,7 @@ func TestSmithyQueryResultWrapper(t *testing.T) {
 }
 
 func TestSmithyXMLNames(t *testing.T) {
+	t.Parallel()
 	model := mustLoad(t, EC2)
 	result := mustShape(t, model, "DescribeInstancesResult")
 	reservations := result.Members["Reservations"]
@@ -97,6 +102,7 @@ func TestSmithyXMLNames(t *testing.T) {
 }
 
 func TestSmithyErrors(t *testing.T) {
+	t.Parallel()
 	iamError := mustShape(t, mustLoad(t, IAM), "EntityAlreadyExistsException")
 	if !iamError.Exception || iamError.Fault {
 		t.Errorf("exception/fault = %v/%v, want true/false", iamError.Exception, iamError.Fault)
@@ -116,6 +122,7 @@ func TestSmithyErrors(t *testing.T) {
 }
 
 func TestSmithyHTTPBindings(t *testing.T) {
+	t.Parallel()
 	model := mustLoad(t, S3)
 	getObject, _ := model.Operation("GetObject")
 	if getObject.HTTP.Method != http.MethodGet || !strings.HasPrefix(getObject.HTTP.RequestURI, "/{Bucket}/{Key+}") || getObject.HTTP.ResponseCode != 200 {
@@ -148,6 +155,7 @@ func TestSmithyHTTPBindings(t *testing.T) {
 }
 
 func TestSmithyPreludeTargets(t *testing.T) {
+	t.Parallel()
 	model := mustLoad(t, ACM)
 	account := mustShape(t, model, "AcmeAccount")
 	ref := account.Members["AccountUrl"]
@@ -160,6 +168,7 @@ func TestSmithyPreludeTargets(t *testing.T) {
 }
 
 func TestParseSmithyModelRejectsMalformedModels(t *testing.T) {
+	t.Parallel()
 	const service = `"a.b#Svc": {"type": "service", "version": "1", "traits": {"aws.protocols#awsJson1_1": {}}}`
 	const operation = `"a.b#Op": {"type": "operation", "input": {"target": "a.b#In"}}`
 	const input = `"a.b#In": {"type": "structure", "members": {"X": {"target": "a.b#Missing"}}}`
@@ -186,6 +195,7 @@ func TestParseSmithyModelRejectsMalformedModels(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := ParseSmithyModel("test", []byte(test.document))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, test.want)

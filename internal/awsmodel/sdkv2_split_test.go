@@ -9,6 +9,7 @@ import (
 )
 
 func TestCompareOperationsSplitsGapsBySDKV1(t *testing.T) {
+	t.Parallel()
 	model, err := awsmodel.Load(awsmodel.STS)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,7 @@ func TestCompareOperationsSplitsGapsBySDKV1(t *testing.T) {
 }
 
 func TestRequiresSDKV2IsInJSONAndReportButNotPublishedPages(t *testing.T) {
+	t.Parallel()
 	coverage := awsmodel.OperationCoverage{
 		Service:       awsmodel.STS,
 		APIVersion:    "2011-06-15",
@@ -99,6 +101,7 @@ func TestRequiresSDKV2IsInJSONAndReportButNotPublishedPages(t *testing.T) {
 }
 
 func TestReportCountsSDKV2PerService(t *testing.T) {
+	t.Parallel()
 	sts := awsmodel.OperationCoverage{
 		Service: awsmodel.STS, APIVersion: "2011-06-15",
 		Modelled: []string{"A", "B", "C"}, Registered: []string{"A"}, Implemented: []string{"A"},

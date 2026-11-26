@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidateEC2ErrorResponseAllowsCuratedCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status int
@@ -18,6 +19,7 @@ func TestValidateEC2ErrorResponseAllowsCuratedCodes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			violations, err := ValidateEC2ErrorResponse(test.status, ec2ErrorBody(test.code))
 			if err != nil {
 				t.Fatal(err)
@@ -30,6 +32,7 @@ func TestValidateEC2ErrorResponseAllowsCuratedCodes(t *testing.T) {
 }
 
 func TestValidateEC2ErrorResponseRejectsUnverifiedCode(t *testing.T) {
+	t.Parallel()
 	violations, err := ValidateEC2ErrorResponse(403, ec2ErrorBody("ExpiredToken"))
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +48,7 @@ func TestValidateEC2ErrorResponseRejectsUnverifiedCode(t *testing.T) {
 }
 
 func TestValidateEC2ErrorResponseRejectsWrongStatusClass(t *testing.T) {
+	t.Parallel()
 	violations, err := ValidateEC2ErrorResponse(400, ec2ErrorBody("InsufficientInstanceCapacity"))
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,7 @@ func TestValidateEC2ErrorResponseRejectsWrongStatusClass(t *testing.T) {
 }
 
 func TestValidateEC2ErrorResponseRejectsMalformedEnvelope(t *testing.T) {
+	t.Parallel()
 	_, err := ValidateEC2ErrorResponse(400, []byte(`<ErrorResponse><Error><Code>InvalidAction</Code></Error></ErrorResponse>`))
 	if err == nil || !strings.Contains(err.Error(), `root element is "ErrorResponse", want "Response"`) {
 		t.Fatalf("error = %v", err)
@@ -67,6 +72,7 @@ func TestValidateEC2ErrorResponseRejectsMalformedEnvelope(t *testing.T) {
 }
 
 func TestEC2ErrorCatalogMetadataAndClasses(t *testing.T) {
+	t.Parallel()
 	catalog, err := loadEC2ErrorCatalog()
 	if err != nil {
 		t.Fatal(err)

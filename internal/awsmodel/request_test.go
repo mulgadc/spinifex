@@ -115,50 +115,54 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 		t.Skip("generates requests for every modelled operation")
 	}
 	for _, service := range Services() {
-		model, err := Load(service)
-		require.NoError(t, err)
 		t.Run(string(service), func(t *testing.T) {
 			t.Parallel()
+			model, err := Load(service)
+			require.NoError(t, err)
 			for _, operationName := range model.Operations() {
 				operation, _ := model.Operation(operationName)
 				if operation.Input == nil {
 					continue
 				}
-				plan, err := GenerateRequests(service, operationName, testRequestOptions)
-				require.NoError(t, err, operationName)
-				input := model.shapes[operation.Input.Shape]
-				rejecting := false
-				for _, request := range plan.Cases {
-					require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
-					rejecting = !request.Acceptance()
-					// Predastore serves S3, so its requests are never sent.
-					if service != S3 {
-						_, err := EncodeRequest(service, operationName, request.Input)
-						require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
-					}
-					var violations []constraintViolation
-					model.inputViolations(operation.Input.Shape, "$", request.Input, &violations)
-					for member := range request.Input {
-						if !slices.Contains(input.Required, member) && !slices.Contains(conditionallyRequired[service][operationName], member) {
-							require.Equal(t, request.Member, member, "%s %s %s carries an unrelated optional member", operationName, request.Constraint, request.Path)
+				t.Run(operationName, func(t *testing.T) {
+					t.Parallel()
+					plan, err := GenerateRequests(service, operationName, testRequestOptions)
+					require.NoError(t, err, operationName)
+					input := model.shapes[operation.Input.Shape]
+					rejecting := false
+					for _, request := range plan.Cases {
+						require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
+						rejecting = !request.Acceptance()
+						// Predastore serves S3, so its requests are never sent.
+						if service != S3 {
+							_, err := EncodeRequest(service, operationName, request.Input)
+							require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
 						}
+						var violations []constraintViolation
+						model.inputViolations(operation.Input.Shape, "$", request.Input, &violations)
+						for member := range request.Input {
+							if !slices.Contains(input.Required, member) && !slices.Contains(conditionallyRequired[service][operationName], member) {
+								require.Equal(t, request.Member, member, "%s %s %s carries an unrelated optional member", operationName, request.Constraint, request.Path)
+							}
+						}
+						if request.Acceptance() {
+							require.Empty(t, violations, "%s acceptance %s", operationName, request.Path)
+							continue
+						}
+						require.NotEmpty(t, violations, "%s %s %s breaks nothing", operationName, request.Constraint, request.Path)
+						for _, violation := range violations {
+							require.Equal(t, request.Path, violation.path, "%s %s %s also breaks %v", operationName, request.Constraint, request.Path, violation)
+						}
+						require.Contains(t, violations, constraintViolation{path: request.Path, constraint: request.Constraint}, operationName)
 					}
-					if request.Acceptance() {
-						require.Empty(t, violations, "%s acceptance %s", operationName, request.Path)
-						continue
-					}
-					require.NotEmpty(t, violations, "%s %s %s breaks nothing", operationName, request.Constraint, request.Path)
-					for _, violation := range violations {
-						require.Equal(t, request.Path, violation.path, "%s %s %s also breaks %v", operationName, request.Constraint, request.Path, violation)
-					}
-					require.Contains(t, violations, constraintViolation{path: request.Path, constraint: request.Constraint}, operationName)
-				}
+				})
 			}
 		})
 	}
 }
 
 func TestGenerateRequestsIsolatesEachOptionalMember(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
 	require.NoError(t, err)
 
@@ -184,6 +188,7 @@ func TestGenerateRequestsIsolatesEachOptionalMember(t *testing.T) {
 }
 
 func TestGenerateRequestsSeedsConditionallyRequiredMembers(t *testing.T) {
+	t.Parallel()
 	for service, operations := range conditionallyRequired {
 		model, err := Load(service)
 		require.NoError(t, err)
@@ -228,6 +233,7 @@ func TestGenerateRequestsSeedsConditionallyRequiredMembers(t *testing.T) {
 }
 
 func TestGenerateRequestsTargetsFixturesOutsideCreateAndDelete(t *testing.T) {
+	t.Parallel()
 	options := testRequestOptions
 	options.Fixtures = map[string]string{"RoleName": "fixture"}
 	for operation, wantFixture := range map[string]bool{"TagRole": true, "CreateRole": false, "DeleteRole": false} {
@@ -243,6 +249,7 @@ func TestGenerateRequestsTargetsFixturesOutsideCreateAndDelete(t *testing.T) {
 }
 
 func TestGenerateRequestsPrefersOperationScopedFixtures(t *testing.T) {
+	t.Parallel()
 	options := testRequestOptions
 	options.Fixtures = map[string]string{"Id": "Z0FIXTURE", "GetChange.Id": "C0FIXTURE"}
 	for operation, want := range map[string]string{"GetChange": "C0FIXTURE", "GetHostedZone": "Z0FIXTURE"} {
@@ -254,6 +261,7 @@ func TestGenerateRequestsPrefersOperationScopedFixtures(t *testing.T) {
 }
 
 func TestGenerateRequestsAttributesRejections(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
 	require.NoError(t, err)
 
@@ -271,6 +279,7 @@ func TestGenerateRequestsAttributesRejections(t *testing.T) {
 }
 
 func TestGenerateRequestsBreaksEachConstraintKind(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
 	require.NoError(t, err)
 	var rejections []string
@@ -298,6 +307,7 @@ func TestGenerateRequestsBreaksEachConstraintKind(t *testing.T) {
 }
 
 func TestGenerateRequestsBreaksMapKeys(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(EKS, "TagResource", testRequestOptions)
 	require.NoError(t, err)
 	var keyRejections []Constraint
@@ -312,6 +322,7 @@ func TestGenerateRequestsBreaksMapKeys(t *testing.T) {
 }
 
 func TestGenerateRequestsRecordsUnbrokenConstraints(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(EKS, "DescribeCluster", testRequestOptions)
 	require.NoError(t, err)
 	require.Contains(t, plan.Unbroken, Skip{Path: "$.name", Reason: "a required URI label cannot be omitted"})
@@ -323,6 +334,7 @@ func TestGenerateRequestsRecordsUnbrokenConstraints(t *testing.T) {
 }
 
 func TestGenerateRequestsSkipsAcceptanceForUnguessableMembers(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(IAM, "ListRoles", testRequestOptions)
 	require.NoError(t, err)
 	var acceptance, markerRejections []string
@@ -338,6 +350,7 @@ func TestGenerateRequestsSkipsAcceptanceForUnguessableMembers(t *testing.T) {
 }
 
 func TestGenerateRequestsAcceptsAFixtureForAnUnguessableMember(t *testing.T) {
+	t.Parallel()
 	options := testRequestOptions
 	options.Fixtures = map[string]string{"ListRoles.Marker": "fixture-marker"}
 	plan, err := GenerateRequests(IAM, "ListRoles", options)
@@ -352,6 +365,7 @@ func TestGenerateRequestsAcceptsAFixtureForAnUnguessableMember(t *testing.T) {
 }
 
 func TestGenerateRequestsUsesResourceHints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		service   Service
 		operation string
@@ -375,6 +389,7 @@ func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.operation+"."+test.member, func(t *testing.T) {
+			t.Parallel()
 			plan, err := GenerateRequests(test.service, test.operation, testRequestOptions)
 			require.NoError(t, err)
 			for _, request := range plan.Cases {
@@ -397,6 +412,7 @@ func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 }
 
 func TestGenerateRequestsHintsNestedMembers(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(ElasticLoadBalancingV2, "CreateTargetGroup", testRequestOptions)
 	require.NoError(t, err)
 	for _, request := range plan.Cases {
@@ -411,8 +427,10 @@ func TestGenerateRequestsHintsNestedMembers(t *testing.T) {
 // AWS refuses a tag resource type the operation does not create, so a valid
 // request tags the operation's own type rather than the enum's first value.
 func TestGenerateRequestsTagsTheOperationsOwnResourceType(t *testing.T) {
+	t.Parallel()
 	for operation, want := range map[string]string{"CreateVpc": "vpc", "CreateLaunchTemplate": "launch-template"} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			plan, err := GenerateRequests(EC2, operation, testRequestOptions)
 			require.NoError(t, err)
 			for _, request := range plan.Cases {
@@ -428,6 +446,7 @@ func TestGenerateRequestsTagsTheOperationsOwnResourceType(t *testing.T) {
 }
 
 func TestGenerateRequestsImportsAVerifiableCertificate(t *testing.T) {
+	t.Parallel()
 	plan, err := GenerateRequests(ACM, "ImportCertificate", testRequestOptions)
 	require.NoError(t, err)
 	var input map[string]any
@@ -449,6 +468,7 @@ func TestGenerateRequestsImportsAVerifiableCertificate(t *testing.T) {
 }
 
 func TestRE2EquivalentsMatchTheModelledSemantics(t *testing.T) {
+	t.Parallel()
 	modelled := map[string]bool{}
 	for _, service := range Services() {
 		model, err := Load(service)
@@ -471,6 +491,7 @@ func TestRE2EquivalentsMatchTheModelledSemantics(t *testing.T) {
 }
 
 func TestPatternSamplerMatchesWholeValue(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		pattern  string
 		min, max int
@@ -484,6 +505,7 @@ func TestPatternSamplerMatchesWholeValue(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.pattern, func(t *testing.T) {
+			t.Parallel()
 			sampler, err := newPatternSampler(test.pattern)
 			require.NoError(t, err)
 			value, ok := sampler.sample(test.min, test.max)
@@ -497,11 +519,13 @@ func TestPatternSamplerMatchesWholeValue(t *testing.T) {
 }
 
 func TestPatternSamplerRejectsLookahead(t *testing.T) {
+	t.Parallel()
 	_, err := newPatternSampler(`^(?!aws:).*`)
 	require.Error(t, err)
 }
 
 func TestPatternBreakerAvoidsUnanchoredMatches(t *testing.T) {
+	t.Parallel()
 	// Unanchored, the pattern matches any value with one letter in it.
 	re := regexp.MustCompile(`[a-z]`)
 	broken, ok := patternBreaker(re, 3, 10)
@@ -514,6 +538,7 @@ func TestPatternBreakerAvoidsUnanchoredMatches(t *testing.T) {
 }
 
 func TestSaltLettersAreDistinct(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for n := range 2000 {
 		salt := saltLetters(n)

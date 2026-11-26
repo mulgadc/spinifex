@@ -6,6 +6,7 @@ import (
 )
 
 func TestCompareOperations(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{
 		Registered:  []string{"AssumeRole", "ExtraOperation", "GetCallerIdentity", "GetSessionToken"},
 		Stubbed:     []string{"GetSessionToken"},
@@ -26,6 +27,7 @@ func TestCompareOperations(t *testing.T) {
 }
 
 func TestCompareOperationsRejectsInvalidInventory(t *testing.T) {
+	t.Parallel()
 	_, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}, Stubbed: []string{"Missing"}})
 	if err == nil || !strings.Contains(err.Error(), `stubbed operation "Missing" is not registered`) {
 		t.Fatalf("error = %v", err)
@@ -33,6 +35,7 @@ func TestCompareOperationsRejectsInvalidInventory(t *testing.T) {
 }
 
 func TestRenderCoverageSummary(t *testing.T) {
+	t.Parallel()
 	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)

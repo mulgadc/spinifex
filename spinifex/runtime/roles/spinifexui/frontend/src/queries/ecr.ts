@@ -3,7 +3,9 @@ import {
   DescribeRepositoriesCommand,
   GetLifecyclePolicyCommand,
   GetRepositoryPolicyCommand,
+  type ImageDetail,
   LifecyclePolicyNotFoundException,
+  type Repository,
   RepositoryPolicyNotFoundException,
 } from "@aws-sdk/client-ecr"
 import { queryOptions } from "@tanstack/react-query"
@@ -13,9 +15,19 @@ import { getEcrClient } from "@/lib/aws-client"
 export const ecrRepositoriesQueryOptions = queryOptions({
   queryKey: ["ecr", "repositories"],
   queryFn: async () => {
-    const command = new DescribeRepositoriesCommand({})
+    const repositories: Repository[] = []
+    let nextToken: string | undefined
+    do {
+      // Each page needs the token the one before it returned.
+      // oxlint-disable-next-line no-await-in-loop
+      const page = await getEcrClient().send(
+        new DescribeRepositoriesCommand({ nextToken }),
+      )
+      repositories.push(...(page.repositories ?? []))
+      nextToken = page.nextToken
+    } while (nextToken)
 
-    return await getEcrClient().send(command)
+    return { repositories }
   },
 })
 
@@ -23,9 +35,18 @@ export const ecrRepositoryImagesQueryOptions = (repositoryName: string) =>
   queryOptions({
     queryKey: ["ecr", "repositories", repositoryName, "images"],
     queryFn: async () => {
-      const command = new DescribeImagesCommand({ repositoryName })
+      const imageDetails: ImageDetail[] = []
+      let nextToken: string | undefined
+      do {
+        // oxlint-disable-next-line no-await-in-loop
+        const page = await getEcrClient().send(
+          new DescribeImagesCommand({ repositoryName, nextToken }),
+        )
+        imageDetails.push(...(page.imageDetails ?? []))
+        nextToken = page.nextToken
+      } while (nextToken)
 
-      return await getEcrClient().send(command)
+      return { imageDetails }
     },
   })
 

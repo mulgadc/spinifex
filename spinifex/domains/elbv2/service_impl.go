@@ -1913,6 +1913,11 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	if s.ovn != nil {
+		if err := s.refuseOVNFixtureDelete(ctx, *input.LoadBalancerArn, accountID); err != nil {
+			return nil, err
+		}
+	}
 
 	lb, err := s.store.GetLoadBalancerByArn(ctx, *input.LoadBalancerArn)
 	if err != nil {
@@ -2050,6 +2055,9 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
 	if (input.PageSize != nil || aws.StringValue(input.Marker) != "") && (len(input.Names) > 0 || len(input.LoadBalancerArns) > 0) {
 		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Pagination is not supported when specifying load balancers")
+	}
+	if s.ovn != nil {
+		return s.describeOVNFixtureLoadBalancer(ctx, input, accountID)
 	}
 
 	allLBs, err := s.store.ListLoadBalancers(ctx)

@@ -221,3 +221,35 @@ func ovnFixtureToSDK(r *LoadBalancerRecord) *elbv2.LoadBalancer {
 	}
 	return lb
 }
+
+// describeOVNFixtureLoadBalancer resolves exactly one load balancer ARN to its
+// sealed root by point reads. The caller already refuses pagination with ARNs.
+func (s *ELBv2ServiceImpl) describeOVNFixtureLoadBalancer(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
+	if len(input.Names) > 0 || len(input.LoadBalancerArns) != 1 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Specify exactly one load balancer ARN")
+	}
+	arn := aws.StringValue(input.LoadBalancerArns[0])
+	root, err := s.ovn.owners.GetSealedByArn(ctx, arn, s.region, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeLoadBalancers: fixture root read failed", "arn", arn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if root == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "One or more load balancers not found")
+	}
+	return &elbv2.DescribeLoadBalancersOutput{LoadBalancers: []*elbv2.LoadBalancer{ovnFixtureToSDK(root)}}, nil
+}
+
+// refuseOVNFixtureDelete refuses deletion of a sealed root: its data path and
+// parent release are not built yet. Other ARNs take the existing delete path.
+func (s *ELBv2ServiceImpl) refuseOVNFixtureDelete(ctx context.Context, arn, accountID string) error {
+	root, err := s.ovn.owners.GetSealedByArn(ctx, arn, s.region, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DeleteLoadBalancer: fixture root read failed", "arn", arn, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if root != nil {
+		return awserrors.Errorf(awserrors.ErrorOperationNotPermitted, "Load balancer '%s' cannot be deleted yet", arn)
+	}
+	return nil
+}

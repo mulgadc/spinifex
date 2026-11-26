@@ -35,28 +35,32 @@ var (
 )
 
 // opKV records every call the code under test makes on a bucket, as "Op key",
-// and can fail every Get.
+// and can fail Gets.
 type opKV struct {
 	jetstream.KeyValue
 
-	mu      sync.Mutex
-	ops     []string
-	failGet error
+	mu         sync.Mutex
+	ops        []string
+	failGet    error
+	failPrefix string
 }
 
 func (kv *opKV) record(op, key string) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.ops = append(kv.ops, op+" "+key)
-	if op == "Get" {
+	if op == "Get" && strings.HasPrefix(key, kv.failPrefix) {
 		return kv.failGet
 	}
 	return nil
 }
 
-func (kv *opKV) setFailGet(err error) {
+func (kv *opKV) setFailGet(err error) { kv.setFailGetPrefix("", err) }
+
+// setFailGetPrefix fails only the Gets of keys with prefix.
+func (kv *opKV) setFailGetPrefix(prefix string, err error) {
 	kv.mu.Lock()
-	kv.failGet = err
+	kv.failGet, kv.failPrefix = err, prefix
 	kv.mu.Unlock()
 }
 
@@ -309,8 +313,8 @@ func (h *ovnCreateHarness) state(bucket string) map[string]uint64 {
 }
 
 // sideEffectBuckets are the buckets an OVN create must not change: ENIs,
-// security groups (no managed group) and route tables.
-var sideEffectBuckets = []string{ec2vpc.KVBucketENIs, ec2vpc.KVBucketSecurityGroups, fenceRouteTableBucket}
+// security groups (no managed group), route tables and IP allocations.
+var sideEffectBuckets = []string{ec2vpc.KVBucketENIs, ec2vpc.KVBucketSecurityGroups, fenceRouteTableBucket, ec2vpc.KVBucketIPAM}
 
 func (h *ovnCreateHarness) sideEffects() map[string]map[string]uint64 {
 	out := map[string]map[string]uint64{}

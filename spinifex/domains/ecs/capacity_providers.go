@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -86,9 +87,13 @@ func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateC
 	return &ecs.CreateCapacityProviderOutput{CapacityProvider: rec.toAWS()}, nil
 }
 
-// DescribeCapacityProviders returns the named providers, or every provider in
-// the account when none are named. Unknown names surface as failures.
+// DescribeCapacityProviders returns the named providers, or one page of every
+// provider in the account when none are named. Unknown names surface as failures.
 func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.DescribeCapacityProvidersInput, accountID string) (*ecs.DescribeCapacityProvidersOutput, error) {
+	req, err := parseListPage(input.MaxResults, input.NextToken, capacityProvidersMax, capacityProvidersMax)
+	if err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -101,6 +106,7 @@ func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.Desc
 		if kerr != nil {
 			return nil, kerr
 		}
+		recs := make([]*CapacityProviderRecord, 0, len(keys))
 		for _, k := range keys {
 			var rec CapacityProviderRecord
 			ok, gerr := taskdefinition.GetJSON(ctx, kv, k, &rec)
@@ -108,9 +114,14 @@ func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.Desc
 				return nil, gerr
 			}
 			if ok {
-				out.CapacityProviders = append(out.CapacityProviders, rec.toAWS())
+				recs = append(recs, &rec)
 			}
 		}
+		page, next := paging.EC2Page(recs, func(r *CapacityProviderRecord) string { return r.Name }, req)
+		for _, rec := range page {
+			out.CapacityProviders = append(out.CapacityProviders, rec.toAWS())
+		}
+		out.NextToken = next
 		return out, nil
 	}
 

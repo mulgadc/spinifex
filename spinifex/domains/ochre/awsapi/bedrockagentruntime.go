@@ -374,16 +374,29 @@ func queryResultToRetrievalResult(r ochrevector.QueryResult) *bedrockagentruntim
 // omitted numberOfResults returns 5, not the vector store's own K default.
 const defaultRetrieveResults = 5
 
-// Retrieve resolves knowledgeBaseId's bound index and runs a similarity query
-// against it: retrievalQuery.text -> Text, numberOfResults -> K, filter ->
-// translate() onto .9's Filter AST. Phase 5 is single-page (D2's scope is
-// ListIngestionJobs, not Retrieve pagination): NextToken is never set on the
-// response, and an incoming NextToken is accepted and ignored rather than
-// rejected, matching how storageConfiguration/roleArn are accepted-and-
-// stubbed elsewhere in this gateway.
+// retrieveResultCount returns numberOfResults, or 5 when it is omitted, and
+// refuses a value outside AWS's 1-100 range with ValidationException.
+func retrieveResultCount(rc *bedrockagentruntime.KnowledgeBaseRetrievalConfiguration) (int, error) {
+	if rc == nil || rc.VectorSearchConfiguration == nil || rc.VectorSearchConfiguration.NumberOfResults == nil {
+		return defaultRetrieveResults, nil
+	}
+	n := aws.Int64Value(rc.VectorSearchConfiguration.NumberOfResults)
+	if n < 1 || n > 100 {
+		return 0, awserrors.Errorf(awserrors.ErrorValidationException, "numberOfResults must be between 1 and 100")
+	}
+	return int(n), nil
+}
+
+// Retrieve runs a similarity query against knowledgeBaseId's bound index.
+// It returns one page: the response never sets nextToken, and an incoming
+// nextToken is ignored.
 func Retrieve(ctx context.Context, accountID string, kb *ochrevector.KBStore, vector ochrevector.VectorService, body []byte, input *bedrockagentruntime.RetrieveInput) (*bedrockagentruntime.RetrieveOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || input.RetrievalQuery == nil || aws.StringValue(input.RetrievalQuery.Text) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	numResults, err := retrieveResultCount(input.RetrievalConfiguration)
+	if err != nil {
+		return nil, err
 	}
 	kbID := aws.StringValue(input.KnowledgeBaseId)
 	kbRec, err := kb.Get(ctx, accountID, kbID)
@@ -392,14 +405,6 @@ func Retrieve(ctx context.Context, accountID string, kb *ochrevector.KBStore, ve
 	}
 	if kbRec == nil {
 		return nil, errKBNotFound(kbID)
-	}
-
-	numResults := 0
-	if input.RetrievalConfiguration != nil && input.RetrievalConfiguration.VectorSearchConfiguration != nil {
-		numResults = int(aws.Int64Value(input.RetrievalConfiguration.VectorSearchConfiguration.NumberOfResults))
-	}
-	if numResults <= 0 {
-		numResults = defaultRetrieveResults
 	}
 
 	filter, err := decodeRetrieveFilter(body)
@@ -486,6 +491,10 @@ func RetrieveAndGenerate(ctx context.Context, accountID string, kb *ochrevector.
 	if kbID == "" || modelArn == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
+	numResults, err := retrieveResultCount(kbConfig.RetrievalConfiguration)
+	if err != nil {
+		return nil, err
+	}
 
 	kbRec, err := kb.Get(ctx, accountID, kbID)
 	if err != nil {
@@ -493,14 +502,6 @@ func RetrieveAndGenerate(ctx context.Context, accountID string, kb *ochrevector.
 	}
 	if kbRec == nil {
 		return nil, errKBNotFound(kbID)
-	}
-
-	numResults := 0
-	if kbConfig.RetrievalConfiguration != nil && kbConfig.RetrievalConfiguration.VectorSearchConfiguration != nil {
-		numResults = int(aws.Int64Value(kbConfig.RetrievalConfiguration.VectorSearchConfiguration.NumberOfResults))
-	}
-	if numResults <= 0 {
-		numResults = defaultRetrieveResults
 	}
 
 	filter, err := decodeRetrieveAndGenerateFilter(body)

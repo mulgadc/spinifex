@@ -126,6 +126,7 @@ func TestGoldenRequest_AckEnvelope(t *testing.T) {
 	c := New(nc)
 
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		sub, err := nc.Subscribe("golden.ack.success", func(msg *nats.Msg) {
 			_ = msg.Respond([]byte(`{"success":true}`))
 		})
@@ -137,6 +138,7 @@ func TestGoldenRequest_AckEnvelope(t *testing.T) {
 	})
 
 	t.Run("error", func(t *testing.T) {
+		t.Parallel()
 		sub, err := nc.Subscribe("golden.ack.error", func(msg *nats.Msg) {
 			_ = msg.Respond([]byte(`{"success":false,"error":"boom"}`))
 		})

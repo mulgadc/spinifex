@@ -7,6 +7,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
@@ -73,7 +75,11 @@ var bedrockRoutes = []bedrockRoute{
 		}},
 	{Method: "GET", Pattern: "/provisioned-model-throughputs", Action: "ListProvisionedModelThroughputs",
 		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
-			return ochre.ListProvisionedModelThroughputs(ctx, acct, provisioned, new(bedrock.ListProvisionedModelThroughputsInput))
+			input, err := listProvisionedQuery(b)
+			if err != nil {
+				return nil, err
+			}
+			return ochre.ListProvisionedModelThroughputs(ctx, acct, provisioned, input)
 		}},
 	{Method: "PATCH", Pattern: "/provisioned-model-throughput/{provisionedModelId}", Action: "UpdateProvisionedModelThroughput",
 		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
@@ -113,7 +119,15 @@ var bedrockRoutes = []bedrockRoute{
 		}},
 	{Method: "GET", Pattern: "/guardrails", Action: "ListGuardrails",
 		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
-			return ochre.ListGuardrails(ctx, acct, guardrails, new(bedrock.ListGuardrailsInput))
+			q, err := listQuery(b)
+			if err != nil {
+				return nil, err
+			}
+			input := &bedrock.ListGuardrailsInput{GuardrailIdentifier: q.str("guardrailIdentifier"), NextToken: q.str("nextToken")}
+			if input.MaxResults, err = q.int64("maxResults"); err != nil {
+				return nil, err
+			}
+			return ochre.ListGuardrails(ctx, acct, guardrails, input)
 		}},
 	{Method: "PUT", Pattern: "/guardrails/{guardrailIdentifier}", Action: "UpdateGuardrail",
 		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
@@ -215,4 +229,76 @@ func (d Deps) bedrock(w http.ResponseWriter, inv dispatch.Invocation) error {
 
 	envelope.WriteJSONResult(w, output)
 	return nil
+}
+
+// bedrockQuery is a list call's query string, folded into the body by bedrock.
+type bedrockQuery map[string]string
+
+// listQuery decodes the folded query string of a list call.
+func listQuery(b []byte) (bedrockQuery, error) {
+	q := bedrockQuery{}
+	if len(b) > 0 {
+		if err := json.Unmarshal(b, &q); err != nil {
+			return nil, errors.New(awserrors.ErrorValidationException)
+		}
+	}
+	return q, nil
+}
+
+func (q bedrockQuery) str(name string) *string {
+	if v, ok := q[name]; ok {
+		return aws.String(v)
+	}
+	return nil
+}
+
+func (q bedrockQuery) int64(name string) (*int64, error) {
+	v, ok := q[name]
+	if !ok {
+		return nil, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "%s must be an integer", name)
+	}
+	return &n, nil
+}
+
+func (q bedrockQuery) time(name string) (*time.Time, error) {
+	v, ok := q[name]
+	if !ok {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "%s must be an ISO 8601 timestamp", name)
+	}
+	return &t, nil
+}
+
+// listProvisionedQuery builds ListProvisionedModelThroughputs' input from its
+// query string.
+func listProvisionedQuery(b []byte) (*bedrock.ListProvisionedModelThroughputsInput, error) {
+	q, err := listQuery(b)
+	if err != nil {
+		return nil, err
+	}
+	input := &bedrock.ListProvisionedModelThroughputsInput{
+		ModelArnEquals: q.str("modelArnEquals"),
+		NameContains:   q.str("nameContains"),
+		NextToken:      q.str("nextToken"),
+		SortBy:         q.str("sortBy"),
+		SortOrder:      q.str("sortOrder"),
+		StatusEquals:   q.str("statusEquals"),
+	}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
+	if input.CreationTimeAfter, err = q.time("creationTimeAfter"); err != nil {
+		return nil, err
+	}
+	if input.CreationTimeBefore, err = q.time("creationTimeBefore"); err != nil {
+		return nil, err
+	}
+	return input, nil
 }

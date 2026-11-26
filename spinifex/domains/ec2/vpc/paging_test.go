@@ -72,17 +72,47 @@ func TestDescribeSecurityGroups_PagesAfterFiltering(t *testing.T) {
 	assert.Nil(t, second.NextToken)
 }
 
-func TestDescribeVpcs_ValidatesPagingButReturnsEverything(t *testing.T) {
+func TestDescribeVpcs_PagesAfterFilteringAndSeesEachVpcOnce(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
-	for i := range 6 {
-		createTestVPC(t, svc, fmt.Sprintf("10.%d.0.0/16", i))
+	want := map[string]bool{}
+	for i := range 7 {
+		want[createTestVPC(t, svc, fmt.Sprintf("10.%d.0.0/16", i))] = true
 	}
+	createTestVPC(t, svc, "172.16.0.0/16")
+	filter := []*ec2.Filter{{Name: aws.String("cidr"), Values: []*string{aws.String("10.*")}}}
 
-	out, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{MaxResults: aws.Int64(5)}, testAccountID)
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, len(out.Vpcs), 6)
-	assert.Nil(t, out.NextToken)
+	got := map[string]bool{}
+	var token *string
+	pages := 0
+	for {
+		out, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+			Filters: filter, MaxResults: aws.Int64(5), NextToken: token,
+		}, testAccountID)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(out.Vpcs), 5)
+		for _, v := range out.Vpcs {
+			assert.False(t, got[*v.VpcId], "vpc %s returned twice", *v.VpcId)
+			got[*v.VpcId] = true
+		}
+		pages++
+		if out.NextToken == nil {
+			break
+		}
+		token = out.NextToken
+	}
+	assert.Equal(t, want, got)
+	assert.Equal(t, 2, pages)
+}
+
+func TestDescribeVpcs_RejectsATokenItDidNotIssue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	_, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{NextToken: aws.String("garbage")}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value ( garbage ) for parameter NextToken is invalid. The token is invalid.", message)
 }
 
 // TestNetworkDescribes_PagingErrors pins each operation to the code and message

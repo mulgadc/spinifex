@@ -780,8 +780,8 @@ func SupportsDescribeVpcsFilter(name string) bool {
 func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	var vpcs []*ec2.Vpc
 
-	// Validated but not paged: AWS's paging of DescribeVpcs is unobserved.
-	if _, err := describeVpcsPaging.Parse(input.MaxResults, input.NextToken, len(input.VpcIds)); err != nil {
+	pageReq, err := describeVpcsPaging.Parse(input.MaxResults, input.NextToken, len(input.VpcIds))
+	if err != nil {
 		return nil, err
 	}
 
@@ -845,10 +845,13 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 		}
 	}
 
+	vpcs, nextToken := paging.EC2Page(vpcs, func(v *ec2.Vpc) string { return *v.VpcId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeVpcs completed", "count", len(vpcs), "accountID", accountID)
 
 	return &ec2.DescribeVpcsOutput{
-		Vpcs: vpcs,
+		Vpcs:      vpcs,
+		NextToken: nextToken,
 	}, nil
 }
 

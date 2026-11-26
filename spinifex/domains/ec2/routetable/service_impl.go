@@ -617,8 +617,8 @@ var describeRouteTablesValidFilters = map[string]bool{
 
 // DescribeRouteTables lists route tables, optionally filtered.
 func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error) {
-	// Validated but not paged: AWS's paging of DescribeRouteTables is unobserved.
-	if _, err := describeRouteTablesPaging.Parse(input.MaxResults, input.NextToken, len(input.RouteTableIds)); err != nil {
+	pageReq, err := describeRouteTablesPaging.Parse(input.MaxResults, input.NextToken, len(input.RouteTableIds))
+	if err != nil {
 		return nil, err
 	}
 
@@ -693,8 +693,11 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 		}
 	}
 
+	routeTables, nextToken := paging.EC2Page(routeTables, func(r *ec2.RouteTable) string { return *r.RouteTableId }, pageReq)
+
 	return &ec2.DescribeRouteTablesOutput{
 		RouteTables: routeTables,
+		NextToken:   nextToken,
 	}, nil
 }
 

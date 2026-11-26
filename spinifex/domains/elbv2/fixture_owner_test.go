@@ -95,7 +95,7 @@ func newFixtureHarness(t *testing.T) *fixtureHarness {
 // owners returns an owner store over the shared bucket, as a separate daemon
 // would see it, with KV calls passing through hooks.
 func (h *fixtureHarness) owners() (*fixtureOwnerStore, *ownerHookKV) {
-	owners := newFixtureOwnerStore(h.appliance)
+	owners := newFixtureOwnerStore(h.appliance, nil)
 	kv := &ownerHookKV{KeyValue: owners.kv}
 	owners.kv = kv
 	return owners, kv

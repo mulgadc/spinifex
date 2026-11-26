@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -65,12 +67,13 @@ func newFixtureClaim(key string, revision uint64, raw []byte) (*fixtureClaim, er
 // claim, outside the appliance lb. prefix.
 type fixtureOwnerStore struct {
 	kv       jetstream.KeyValue
+	parents  *ec2vpc.Parents
 	now      func() time.Time
 	claimTTL time.Duration
 }
 
-func newFixtureOwnerStore(s *Store) *fixtureOwnerStore {
-	return &fixtureOwnerStore{kv: s.kv, now: s.now, claimTTL: s.claimTTL}
+func newFixtureOwnerStore(s *Store, parents *ec2vpc.Parents) *fixtureOwnerStore {
+	return &fixtureOwnerStore{kv: s.kv, parents: parents, now: s.now, claimTTL: s.claimTTL}
 }
 
 func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
@@ -88,7 +91,8 @@ func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
 // definiteKVConflict is true when the server refused a conditional write, so
 // the write did not happen. Any other error leaves the outcome unknown.
 func definiteKVConflict(err error) bool {
-	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch)
+	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) ||
+		kvstore.IsRevisionConflict(err)
 }
 
 func (f *fixtureOwnerStore) read(ctx context.Context, key string) (jetstream.KeyValueEntry, *fixtureOwner, error) {

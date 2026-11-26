@@ -27,6 +27,9 @@ var (
 	errFixtureOwnerLost = errors.New("elbv2: load balancer name claim is no longer owned")
 	// errFixtureSealed reports an attempt to invalidate a sealed root.
 	errFixtureSealed = errors.New("elbv2: load balancer root is sealed")
+	// errFixtureClaimMalformed reports a claim value that is not a complete
+	// fixture owner. The store never takes over or hides such a value.
+	errFixtureClaimMalformed = errors.New("elbv2: load balancer name claim is malformed")
 )
 
 // fixtureOwner is the value at the account/name claim key. OwnerID and
@@ -41,11 +44,21 @@ type fixtureOwner struct {
 }
 
 // fixtureClaim is a claim held by the caller: its key, the KV revision the
-// caller wrote and the owner value at that revision.
+// caller wrote and the owner value at that revision. Seal uses the persisted
+// bytes, so a caller change to Owner after Begin cannot reach the sealed root.
 type fixtureClaim struct {
 	Key      string
 	Revision uint64
 	Owner    fixtureOwner
+	pending  []byte
+}
+
+func newFixtureClaim(key string, revision uint64, raw []byte) (*fixtureClaim, error) {
+	owner, err := decodeFixtureOwner(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return &fixtureClaim{Key: key, Revision: revision, Owner: owner, pending: raw}, nil
 }
 
 // fixtureOwnerStore keeps each OVN load balancer root in its account/name
@@ -60,12 +73,16 @@ func newFixtureOwnerStore(s *Store) *fixtureOwnerStore {
 	return &fixtureOwnerStore{kv: s.kv, now: s.now, claimTTL: s.claimTTL}
 }
 
-func decodeFixtureOwner(raw []byte) fixtureOwner {
+func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
 	var owner fixtureOwner
-	if err := json.Unmarshal(raw, &owner); err != nil || owner.OwnerID == "" {
-		return fixtureOwner{OwnerID: string(raw)}
+	if err := json.Unmarshal(raw, &owner); err != nil {
+		return fixtureOwner{}, fmt.Errorf("%w: %w", errFixtureClaimMalformed, err)
 	}
-	return owner
+	if owner.OwnerID == "" || owner.ClaimedAt.IsZero() || owner.OwnerRevision != fixtureOwnerRevision ||
+		owner.Root == nil || owner.Root.LoadBalancerID != owner.OwnerID {
+		return fixtureOwner{}, errFixtureClaimMalformed
+	}
+	return owner, nil
 }
 
 // definiteKVConflict is true when the server refused a conditional write, so
@@ -82,7 +99,10 @@ func (f *fixtureOwnerStore) read(ctx context.Context, key string) (jetstream.Key
 		}
 		return nil, nil, fmt.Errorf("kv get %s: %w", key, err)
 	}
-	owner := decodeFixtureOwner(entry.Value())
+	owner, err := decodeFixtureOwner(entry.Value())
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode %s: %w", key, err)
+	}
 	return entry, &owner, nil
 }
 
@@ -102,7 +122,8 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 	for range maxLBNameClaimRetries {
 		rev, cerr := f.kv.Create(ctx, key, value)
 		if cerr == nil {
-			return &fixtureClaim{Key: key, Revision: rev, Owner: owner}, nil, nil
+			c, err := newFixtureClaim(key, rev, value)
+			return c, nil, err
 		}
 		entry, cur, rerr := f.read(ctx, key)
 		if rerr != nil {
@@ -118,7 +139,8 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 			if cur.Sealed {
 				return nil, cur.Root, nil
 			}
-			return &fixtureClaim{Key: key, Revision: entry.Revision(), Owner: *cur}, nil, nil
+			c, err := newFixtureClaim(key, entry.Revision(), entry.Value())
+			return c, nil, err
 		}
 		if cur.Sealed {
 			return nil, cur.Root, nil
@@ -128,7 +150,8 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 		}
 		rev, uerr := f.kv.Update(ctx, key, value, entry.Revision())
 		if uerr == nil {
-			return &fixtureClaim{Key: key, Revision: rev, Owner: owner}, nil, nil
+			c, err := newFixtureClaim(key, rev, value)
+			return c, nil, err
 		}
 		if !definiteKVConflict(uerr) {
 			if _, after, aerr := f.read(ctx, key); aerr == nil && after != nil && after.OwnerID == root.LoadBalancerID && !after.Sealed {
@@ -144,7 +167,13 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 // A lost response is resolved by re-reading the claim: the caller's own sealed
 // root is success, and a missing or replaced claim is errFixtureOwnerLost.
 func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*LoadBalancerRecord, error) {
-	sealed := claim.Owner
+	sealed, err := decodeFixtureOwner(claim.pending)
+	if err != nil {
+		return nil, fmt.Errorf("pending claim %s: %w", claim.Key, err)
+	}
+	if sealed.Sealed {
+		return nil, fmt.Errorf("pending claim %s: %w", claim.Key, errFixtureClaimMalformed)
+	}
 	sealed.Sealed = true
 	value, err := json.Marshal(sealed)
 	if err != nil {
@@ -168,8 +197,22 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 }
 
 // Invalidate deletes the caller's exact unsealed claim by revision. It never
-// removes a replacement owner's claim or a sealed root.
+// removes a replacement owner's claim or a sealed root, even when the caller
+// supplies the sealed revision.
 func (f *fixtureOwnerStore) Invalidate(ctx context.Context, claim *fixtureClaim) error {
+	entry, cur, err := f.read(ctx, claim.Key)
+	switch {
+	case err != nil:
+		return err
+	case cur == nil:
+		return nil
+	case cur.OwnerID != claim.Owner.OwnerID:
+		return errFixtureOwnerLost
+	case cur.Sealed:
+		return errFixtureSealed
+	case entry.Revision() != claim.Revision:
+		return errFixtureOwnerLost
+	}
 	derr := f.kv.Delete(ctx, claim.Key, jetstream.LastRevision(claim.Revision))
 	if derr == nil {
 		return nil
@@ -193,7 +236,7 @@ func (f *fixtureOwnerStore) Invalidate(ctx context.Context, claim *fixtureClaim)
 // pending claim reads as nil.
 func (f *fixtureOwnerStore) GetSealed(ctx context.Context, name, accountID string) (*LoadBalancerRecord, error) {
 	_, cur, err := f.read(ctx, LBNameKey(name, accountID))
-	if err != nil || cur == nil || !cur.Sealed || cur.OwnerRevision != fixtureOwnerRevision || cur.Root == nil || cur.Root.LoadBalancerID != cur.OwnerID {
+	if err != nil || cur == nil || !cur.Sealed {
 		return nil, err
 	}
 	return cur.Root, nil

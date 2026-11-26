@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,7 @@ type ownerHookKV struct {
 
 	beforeUpdate func(key string)
 	afterUpdate  func(key string, err error) error
+	beforeDelete func(key string)
 	afterDelete  func(key string, err error) error
 	beforeGet    func(key string) error
 }
@@ -58,6 +60,9 @@ func (kv *ownerHookKV) Update(ctx context.Context, key string, value []byte, las
 }
 
 func (kv *ownerHookKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	if kv.beforeDelete != nil {
+		kv.beforeDelete(key)
+	}
 	err := kv.KeyValue.Delete(ctx, key, opts...)
 	if kv.afterDelete != nil {
 		err = kv.afterDelete(key, err)
@@ -117,7 +122,9 @@ func rawOwner(t *testing.T, s *Store, name string) fixtureOwner {
 	t.Helper()
 	entry, err := s.kv.Get(t.Context(), LBNameKey(name, testAccountID))
 	require.NoError(t, err)
-	return decodeFixtureOwner(entry.Value())
+	owner, err := decodeFixtureOwner(entry.Value())
+	require.NoError(t, err)
+	return owner
 }
 
 // A pending root is invisible to the fixture readers and to every appliance
@@ -385,4 +392,106 @@ func TestFixtureOwner_ApplianceStoreUnchanged(t *testing.T) {
 
 	require.NoError(t, appliance.ReleaseLBName(ctx, lb.Name, testAccountID))
 	require.NoError(t, appliance.ReleaseLBName(ctx, lb.Name, testAccountID), "release stays idempotent")
+}
+
+// Invalidation refuses a sealed root even at its current revision, and a seal
+// that lands between the pending check and the delete wins.
+func TestFixtureOwner_InvalidateRefusesSealedRevision(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	ctx := t.Context()
+	owners, kv := h.owners()
+	sealer, _ := h.owners()
+
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	claim, _, err := owners.Begin(ctx, root)
+	require.NoError(t, err)
+	_, err = owners.Seal(ctx, claim)
+	require.NoError(t, err)
+	entry, err := h.appliance.kv.Get(ctx, claim.Key)
+	require.NoError(t, err)
+	current := *claim
+	current.Revision = entry.Revision()
+	require.ErrorIs(t, owners.Invalidate(ctx, &current), errFixtureSealed)
+	got, err := owners.GetSealedByArn(ctx, root.LoadBalancerArn, fixtureRegion, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, got, "the sealed root survives an invalidation at its own revision")
+
+	raced := newFixtureRoot("bbbb000000000002", "ovn-nlb-raced")
+	racedClaim, _, err := owners.Begin(ctx, raced)
+	require.NoError(t, err)
+	kv.beforeDelete = func(string) {
+		kv.beforeDelete = nil
+		_, err := sealer.Seal(ctx, racedClaim)
+		require.NoError(t, err)
+	}
+	require.ErrorIs(t, owners.Invalidate(ctx, racedClaim), errFixtureSealed)
+	got, err = owners.GetSealedByArn(ctx, raced.LoadBalancerArn, fixtureRegion, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, got, "a seal that wins the race survives the invalidation")
+}
+
+// Seal writes the pending root that Begin persisted, not a root the caller
+// changed after Begin.
+func TestFixtureOwner_SealUsesPersistedPendingRoot(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+
+	claim, _, err := owners.Begin(ctx, root)
+	require.NoError(t, err)
+	root.Subnets[0] = "subnet-changed"
+	root.SecurityGroups = append(root.SecurityGroups, "sg-added")
+	root.VpcId = "vpc-changed"
+	claim.Owner.Root.Subnets[0] = "subnet-changed"
+	claim.Owner.Root.VpcId = "vpc-changed"
+
+	out, err := owners.Seal(ctx, claim)
+	require.NoError(t, err)
+	stored := rawOwner(t, h.appliance, "ovn-nlb")
+	for name, got := range map[string]*LoadBalancerRecord{"returned": out, "stored": stored.Root} {
+		assert.Equal(t, []string{"subnet-fixture"}, got.Subnets, name)
+		assert.Equal(t, []string{"sg-fixture"}, got.SecurityGroups, name)
+		assert.Equal(t, "vpc-fixture", got.VpcId, name)
+	}
+}
+
+// A malformed or incomplete claim is a store error. It is never taken over or
+// read as absent, and it stays untouched.
+func TestFixtureOwner_MalformedClaimSurvives(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+
+	cases := map[string][]byte{
+		"not json":     []byte("aaaa000000000001"),
+		"no root":      []byte(`{"ownerId":"aaaa000000000001","claimedAt":"2026-11-26T04:00:00Z"}`),
+		"other ID":     []byte(`{"ownerId":"aaaa000000000001","claimedAt":"2026-11-26T04:00:00Z","ownerRevision":1,"root":{"load_balancer_id":"bbbb000000000002"}}`),
+		"no claimedAt": []byte(`{"ownerId":"aaaa000000000001","ownerRevision":1,"sealed":true,"root":{"load_balancer_id":"aaaa000000000001"}}`),
+	}
+	i := 0
+	for name, raw := range cases {
+		i++
+		lbName := "bad-" + strconv.Itoa(i)
+		key := LBNameKey(lbName, testAccountID)
+		rev, err := h.appliance.kv.Put(ctx, key, raw)
+		require.NoError(t, err, name)
+		h.clock.advance(h.appliance.claimTTL + time.Second)
+
+		_, _, err = owners.Begin(ctx, newFixtureRoot("cccc000000000003", lbName))
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+		_, err = owners.GetSealed(ctx, lbName, testAccountID)
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+		arn := resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, lbName, "aaaa000000000001", LoadBalancerTypeNetwork)
+		_, err = owners.GetSealedByArn(ctx, arn, fixtureRegion, testAccountID)
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+
+		entry, err := h.appliance.kv.Get(ctx, key)
+		require.NoError(t, err, name)
+		assert.Equal(t, rev, entry.Revision(), name)
+		assert.Equal(t, raw, entry.Value(), name)
+	}
 }

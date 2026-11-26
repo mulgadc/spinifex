@@ -227,7 +227,11 @@ func TestDeleteLoadBalancerReclaimsATimedOutAppliance(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	launcher.waitTerminate()
+	select {
+	case <-launcher.terminateDone:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the delete must terminate the retained VM")
+	}
 	assert.Equal(t, []string{"i-stuck"}, terminateCallsOf(launcher))
 	_, err = vpcSvc.GetENIRecord(testAccountID, eniID)
 	code, _ := awserrors.ResolveErrorCode(err)

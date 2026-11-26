@@ -1150,6 +1150,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 
 	// Both writes touch only the fields this heartbeat owns, under CAS, so a
 	// concurrent config re-render of the same LB is never rolled back.
+	activationLost := false
 	switch {
 	case lb.State == StateProvisioning:
 		// First heartbeat: transition provisioning → active.
@@ -1169,8 +1170,10 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		lb = committed
-		// A concurrent timeout can win the CAS; then report it and build no config.
+		// A concurrent timeout can win the CAS; then report it and apply neither
+		// config nor target health from this heartbeat.
 		if lb.State != StateActive {
+			activationLost = true
 			break
 		}
 		if activated {
@@ -1196,7 +1199,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	s.recordDataPathEvidence(ctx, lb, input)
 
 	// Process health report directly — no JSON round-trip needed.
-	if len(input.Servers) > 0 {
+	if len(input.Servers) > 0 && !activationLost {
 		s.hc.handleHealthReportDirect(ctx, input.toHealthReport())
 	}
 

@@ -49,13 +49,12 @@ func (s *EKSServiceImpl) DescribeAddonVersions(_ context.Context, input *eks.Des
 		input = &eks.DescribeAddonVersionsInput{}
 	}
 	// Every catalogue version supports only the K3s line the node image ships.
-	if v := aws.StringValue(input.KubernetesVersion); v != "" && v != defaultK8sVersion {
-		return &eks.DescribeAddonVersionsOutput{Addons: []*eks.AddonInfo{}}, nil
-	}
+	v := aws.StringValue(input.KubernetesVersion)
+	versionOK := v == "" || v == defaultK8sVersion
 	filter := aws.StringValue(input.AddonName)
 	var matched []addon.Spec
 	for _, spec := range addon.Specs() {
-		if filter != "" && spec.Name != filter {
+		if !versionOK || (filter != "" && spec.Name != filter) {
 			continue
 		}
 		// Hidden fixtures stay out of the unfiltered listing but remain
@@ -69,7 +68,7 @@ func (s *EKSServiceImpl) DescribeAddonVersions(_ context.Context, input *eks.Des
 		}
 		matched = append(matched, spec)
 	}
-	page, next, err := pageAddons(matched, input.MaxResults, input.NextToken)
+	page, next, err := pageEKSList(matched, func(sp addon.Spec) string { return sp.Name }, input.MaxResults, input.NextToken)
 	if err != nil {
 		return nil, err
 	}
@@ -85,28 +84,8 @@ func matchesAny(filter []*string, value string) bool {
 	return len(filter) == 0 || slices.Contains(aws.StringValueSlice(filter), value)
 }
 
-// maxAddonPage bounds maxResults, the model's range being 1 to 100.
-const maxAddonPage = 100
-
-// pageAddons returns the add-ons from the token on, at most maxResults of them.
-func pageAddons(specs []addon.Spec, maxResults *int64, token *string) ([]addon.Spec, *string, error) {
-	from, err := decodeEKSToken(token)
-	if err != nil {
-		return nil, nil, err
-	}
-	req := paging.Request{From: from}
-	if maxResults != nil {
-		req.Limit = min(max(int(*maxResults), 1), maxAddonPage)
-	}
-	page, next := paging.Page(specs, func(sp addon.Spec) string { return sp.Name }, req)
-	if next == "" {
-		return page, nil, nil
-	}
-	return page, &next, nil
-}
-
-// maxListPage is the default and ceiling of a list call's maxResults; an
-// out-of-range value is clamped to it rather than refused.
+// maxListPage is the default and ceiling of a list call's maxResults; a value
+// outside 1 to maxListPage is refused.
 const maxListPage = 100
 
 // pageEKSList returns the page of items a list call's maxResults and nextToken
@@ -116,9 +95,13 @@ func pageEKSList[T any](items []T, key func(T) string, maxResults *int64, token 
 	if err != nil {
 		return nil, nil, err
 	}
-	limit := int(aws.Int64Value(maxResults))
-	if limit <= 0 || limit > maxListPage {
-		limit = maxListPage
+	limit := maxListPage
+	if maxResults != nil {
+		if *maxResults < 1 || *maxResults > maxListPage {
+			return nil, nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+				"maxResults must be between 1 and %d", maxListPage)
+		}
+		limit = int(*maxResults)
 	}
 	page, next := paging.Page(items, key, paging.Request{Limit: limit, From: from})
 	if next == "" {

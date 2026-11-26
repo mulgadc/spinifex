@@ -91,11 +91,11 @@ func TestIssueCommand_StampsEachCopyWithTheBudgetLeft(t *testing.T) {
 
 	// A republish can only fire late, never early, so consecutive stamps differ
 	// by at least the interval however loaded the runner is. The budget leaves
-	// the second copy most of a second of slack.
-	const republishEvery = 100 * time.Millisecond
+	// the second copy almost half a second of slack.
+	const republishEvery = 50 * time.Millisecond
 	h.svc.deps.CommandRepublishEvery = republishEvery
 
-	const budget = time.Second
+	const budget = 500 * time.Millisecond
 	_, err := h.svc.issueCommand(t.Context(), testAccountID, testDBID, CommandQuiesce, budget, nil)
 	require.ErrorIs(t, err, ErrCommandUnreachable)
 

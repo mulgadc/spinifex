@@ -147,6 +147,7 @@ func TestDescribeDBParameters_ListsTheGroupsOwnEngineCatalog(t *testing.T) {
 // here (alongside TestCreateDBParameterGroup_RejectsAnUnofferedFamily) because
 // this assertion additionally pins the exact, sorted family list.
 func TestCreateDBParameterGroup_RejectionNamesEverySupportedFamily(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	input := parameterGroupInput(testParameterGroup)

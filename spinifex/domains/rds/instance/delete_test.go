@@ -103,6 +103,7 @@ func TestDeleteDBInstance_TearsDownEverythingItOwns(t *testing.T) {
 // AWS requires the caller to choose explicitly, because the request that omits
 // both would silently destroy the only copy of the data.
 func TestDeleteDBInstance_RequiresAnExplicitSnapshotChoice(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		input *rds.DeleteDBInstanceInput
@@ -117,6 +118,7 @@ func TestDeleteDBInstance_RequiresAnExplicitSnapshotChoice(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newLifecycleHarness(t, false)
 			seedInstance(t, h.svc, availableRecord())
 
@@ -325,6 +327,7 @@ func TestDeleteDBInstance_RejectsAFinalSnapshotIdentifierAlreadyTaken(t *testing
 // Keeping the in-flight choice silently would answer a caller who asked for a
 // final snapshot with no snapshot at all.
 func TestDeleteDBInstance_RejectsARetryThatChangesTheSnapshotChoice(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		inFlight string
@@ -339,6 +342,7 @@ func TestDeleteDBInstance_RejectsARetryThatChangesTheSnapshotChoice(t *testing.T
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newLifecycleHarness(t, false)
 			rec := availableRecord()
 			rec.Status = StatusDeleting

@@ -795,6 +795,7 @@ func TestDescribeDBInstanceAutomatedBackups_FiltersByInstanceAndStatus(t *testin
 // A scope this phase cannot honour is rejected, because a silently unfiltered
 // list reads as a complete answer; so are names and statuses AWS refuses.
 func TestDescribeDBInstanceAutomatedBackups_RejectsUnimplementedFilters(t *testing.T) {
+	t.Parallel()
 	cases := map[string]*rds.DescribeDBInstanceAutomatedBackupsInput{
 		"dbi-resource-id filter":        {Filters: filter("dbi-resource-id", "db-ABCDEF")},
 		"unknown filter":                {Filters: filter("engine", "postgres")},
@@ -806,6 +807,7 @@ func TestDescribeDBInstanceAutomatedBackups_RejectsUnimplementedFilters(t *testi
 	h := newSnapshotHarness(t, false)
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := h.svc.DescribeDBInstanceAutomatedBackups(t.Context(), input, testAccountID)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)

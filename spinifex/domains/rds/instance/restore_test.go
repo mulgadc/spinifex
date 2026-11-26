@@ -313,6 +313,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsASnapshotStillBeingTaken(t *test
 // A parameter that would create a false safety, security or availability
 // guarantee is rejected rather than silently dropped.
 func TestRestoreDBInstanceFromDBSnapshot_RejectsUnimplementedParameters(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 
@@ -333,6 +334,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RejectsUnimplementedParameters(t *testi
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			input := restoreInput()
 			mutate(input)
 			_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), input, testAccountID)

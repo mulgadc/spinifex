@@ -36,9 +36,9 @@ const (
 
 // Minted once per package, at the serving certs' 1024 bits, because every
 // fixture needs a CA and RSA keygen dominated the package's runtime. The CA is
-// immutable, so sharing it is safe.
+// immutable, so sharing it is safe. Its key comes from the same pool.
 var sharedTestCA = sync.OnceValues(func() (*x509.Certificate, *rsa.PrivateKey) {
-	key, err := rsa.GenerateKey(rand.Reader, testServingCertKeyBits)
+	key, err := generateServingKey(rand.Reader, testServingCertKeyBits)
 	if err != nil {
 		panic(err)
 	}

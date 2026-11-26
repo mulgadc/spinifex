@@ -430,6 +430,7 @@ func (f *fakeAttacher) AttachVolume(_ context.Context, accountID, instanceID, vo
 }
 
 func TestNATSVolumeAttacher_MapsNoResponderByInstanceState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		stopped     bool
@@ -440,6 +441,7 @@ func TestNATSVolumeAttacher_MapsNoResponderByInstanceState(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc := testutil.StartTestNATS(t)
 			out := ec2.DescribeInstancesOutput{}
 			if tt.stopped {

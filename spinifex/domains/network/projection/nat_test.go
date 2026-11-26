@@ -23,6 +23,7 @@ func startTestNATSServer(t *testing.T) *server.Server {
 // add-nat request with {"success":true}. The wire payload must match the
 // networkv1.NATEvent shape vpcd unmarshals on the other end.
 func TestAddNAT_Success(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -47,6 +48,7 @@ func TestAddNAT_Success(t *testing.T) {
 // TestAddNAT_NACK is the regression for the silent-corruption bug: a vpcd failure must return a non-nil error
 // so callers can roll back IPAM and ENI public IP state (previously the helper only logged a warning).
 func TestAddNAT_NACK(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -65,6 +67,7 @@ func TestAddNAT_NACK(t *testing.T) {
 // TestAddNAT_NoResponders ensures a vpcd outage (no subscriber on the topic)
 // surfaces as an error rather than a swallowed warning.
 func TestAddNAT_NoResponders(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -78,7 +81,7 @@ func TestAddNAT_NoResponders(t *testing.T) {
 // replacement has not yet subscribed must be retried, not dropped: the address
 // is released while its host route still delivers to the guest that held it.
 func TestRemoveNAT_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
-	shortenDeleteNATRetryDelay(t)
+	shortenDeleteNATRetryDelay(t, 50*time.Millisecond)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -110,7 +113,7 @@ func TestRemoveNAT_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 // The retry is bounded: with nothing ever subscribing it gives up rather than
 // blocking the API call that issued the disassociate.
 func TestRemoveNAT_DeleteGivesUpWithNoSubscriber(t *testing.T) {
-	shortenDeleteNATRetryDelay(t)
+	shortenDeleteNATRetryDelay(t, 50*time.Millisecond)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -127,11 +130,11 @@ func TestRemoveNAT_DeleteGivesUpWithNoSubscriber(t *testing.T) {
 		"no-responders must fail fast rather than burn the reply timeout")
 }
 
-// shortenDeleteNATRetryDelay keeps the gap test's delay/2 subscribe well clear
-// of the first retry while not paying the production delay.
-func shortenDeleteNATRetryDelay(t *testing.T) {
+// shortenDeleteNATRetryDelay sets the gap between delete-nat attempts to d, so
+// a test keeps its late subscribe clear of each retry without the production delay.
+func shortenDeleteNATRetryDelay(t *testing.T, d time.Duration) {
 	t.Helper()
 	prev := deleteNATRetryDelay
-	deleteNATRetryDelay = 50 * time.Millisecond
+	deleteNATRetryDelay = d
 	t.Cleanup(func() { deleteNATRetryDelay = prev })
 }

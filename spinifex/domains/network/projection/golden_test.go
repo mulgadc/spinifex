@@ -33,6 +33,7 @@ func captureOnce(t *testing.T, nc *nats.Conn, subject string, reply []byte) <-ch
 }
 
 func TestGoldenAddNAT_WireShape(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	captured := captureOnce(t, nc, "vpc.add-nat", []byte(`{"success":true}`))
 
@@ -49,6 +50,7 @@ func TestGoldenAddNAT_WireShape(t *testing.T) {
 }
 
 func TestGoldenAddNAT_ErrorSurfacesToCaller(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	sub, err := nc.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{"success":false,"error":"ovn commit failed"}`))
@@ -62,6 +64,7 @@ func TestGoldenAddNAT_ErrorSurfacesToCaller(t *testing.T) {
 }
 
 func TestGoldenRemoveNAT_WireShape(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	captured := captureOnce(t, nc, "vpc.delete-nat", []byte(`{"success":true}`))
 
@@ -79,15 +82,17 @@ func TestGoldenRemoveNAT_WireShape(t *testing.T) {
 // TestGoldenRemoveNAT_RetriesOnNoResponders pins the delete-nat retry-on-
 // ErrNoResponders characteristic: a teardown published while vpcd is between
 // subscribe calls is not dropped, it is retried until a responder appears or
-// the retry budget (3 attempts, 500ms apart) is exhausted. The responder
-// subscribes 700ms late, inside that budget, so RemoveNAT must still
+// the retry budget (3 attempts, one delay apart) is exhausted. The responder
+// subscribes 1.5 delays late, inside that budget, so RemoveNAT must still
 // succeed, and it must do so well short of the 15s per-attempt timeout.
 func TestGoldenRemoveNAT_RetriesOnNoResponders(t *testing.T) {
+	shortenDeleteNATRetryDelay(t, 150*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 
 	captured := make(chan []byte, 1)
+	lateBy := deleteNATRetryDelay * 3 / 2
 	go func() {
-		time.Sleep(700 * time.Millisecond)
+		time.Sleep(lateBy)
 		sub, err := nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
 			captured <- msg.Data
 			_ = msg.Respond([]byte(`{"success":true}`))
@@ -116,6 +121,7 @@ func TestGoldenRemoveNAT_RetriesOnNoResponders(t *testing.T) {
 }
 
 func TestGoldenRequest_AckEnvelope(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	c := New(nc)
 
@@ -147,6 +153,7 @@ func TestGoldenRequest_AckEnvelope(t *testing.T) {
 // value on the wire verbatim, with no envelope wrapping on the request side
 // (only the reply is enveloped).
 func TestGoldenRequest_MarshalsExactPayload(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	captured := captureOnce(t, nc, "golden.payload", []byte(`{"success":true}`))
 

@@ -290,6 +290,28 @@ func (m *Manager) Inspect(v *VM, fn func(*VM)) {
 	fn(v)
 }
 
+// InspectRequests runs fn(v) under the manager lock and v.EBSRequests.Mu. An
+// unmount holds EBSRequests.Mu across its seals, so the wait for that lock is
+// outside the manager lock.
+func (m *Manager) InspectRequests(v *VM, fn func(*VM)) {
+	for {
+		done := false
+		m.Inspect(v, func(v *VM) {
+			if !v.EBSRequests.Mu.TryLock() {
+				return
+			}
+			defer v.EBSRequests.Mu.Unlock()
+			done = true
+			fn(v)
+		})
+		if done {
+			return
+		}
+		v.EBSRequests.Mu.Lock()
+		v.EBSRequests.Mu.Unlock() //nolint:staticcheck // an empty section waits for the holder
+	}
+}
+
 // View runs fn with the live id→VM map under the manager lock. fn must not
 // mutate the map or retain references after returning.
 func (m *Manager) View(fn func(map[string]*VM)) {

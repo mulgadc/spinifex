@@ -155,7 +155,7 @@ func TestDescribeVolumes_Provider_SeesInstanceRootVolume(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	instanceSvc := ec2instance.NewInstanceServiceImpl(cfg, nil, nil, store, nil, nil, nil)
+	instanceSvc := ec2instance.NewInstanceServiceImpl(cfg, nil, nil, store, vm.NewManager(), nil, nil)
 	instanceSvc.SetEBSProvider(provider)
 	instanceSvc.SetRunInstancesDeps(&fixedAMILoader{
 		meta:           ebsmetadata.AMI{ImageID: "ami-1", SnapshotID: "snap-src", VolumeSizeGiB: 4},

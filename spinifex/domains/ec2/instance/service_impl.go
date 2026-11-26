@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -272,7 +274,15 @@ type InstanceServiceImpl struct {
 	ipAllocator       PublicIPAllocator
 	dnsBaseDomain     string
 	dnsInternalDomain string
+
+	// launchSlots bounds the launches running at once on this node.
+	launchSlots chan struct{}
+	// gpuClaimMu keeps GPU claims serial, so two multi-GPU claims cannot interleave.
+	gpuClaimMu sync.Mutex
 }
+
+// maxConcurrentLaunches is the most instance launches one node runs at once.
+const maxConcurrentLaunches = 4
 
 // SetEBSProvider injects the provider boundary used for instance-created
 // volumes. Once set, root volumes are allocated through it instead of a
@@ -328,6 +338,7 @@ func NewInstanceServiceImpl(
 		metadata:          ebsmetadata.NewStore(store, bucket),
 		dnsBaseDomain:     dns.ResolveBaseDomain(cfg),
 		dnsInternalDomain: dns.ResolveInternalDomain(cfg),
+		launchSlots:       make(chan struct{}, maxConcurrentLaunches),
 	}
 }
 
@@ -1148,96 +1159,129 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 // LaunchRunInstances runs the heavyweight launch loop for VMs already inserted
 // into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
 func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
-	var successCount int
+	// A user-mode NIC probes its forwarding ports before QEMU binds them, so
+	// those batches launch one instance at a time.
+	serial := s.config.Daemon.DevNetworking || slices.ContainsFunc(instances, func(v *vm.VM) bool { return v.ENIId == "" })
+	var wg sync.WaitGroup
+	var successCount atomic.Int32
 	for _, instance := range instances {
-		// Skip if a concurrent terminate raced with prepare.
-		status := s.vmMgr.Status(instance)
-		if status != vm.StatePending && status != vm.StateProvisioning {
-			slog.InfoContext(ctx, "LaunchRunInstances: instance state changed during provisioning, skipping launch",
-				"instanceId", instance.ID, "status", string(status))
-			continue
-		}
-
-		// Pre-compute dev MAC for per-interface cloud-init netplan (route suppression).
-		if s.config.Daemon.DevNetworking && instance.ENIId != "" {
-			instance.DevMAC = vm.GenerateDevMAC(instance.ID)
-		}
-
-		volumeInfos, err := s.GenerateVolumes(ctx, input, instance)
-		if err != nil {
-			slog.ErrorContext(ctx, "LaunchRunInstances: GenerateVolumes failed", "instanceId", instance.ID, "err", err)
-			s.vmMgr.MarkFailed(ctx, instance, "volume_preparation_failed")
-			continue
-		}
-
-		instance.Instance.BlockDeviceMappings = make([]*ec2.InstanceBlockDeviceMapping, 0, len(volumeInfos))
-		for _, vi := range volumeInfos {
-			mapping := &ec2.InstanceBlockDeviceMapping{}
-			mapping.SetDeviceName(vi.DeviceName)
-			mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
-			mapping.Ebs.SetVolumeId(vi.VolumeId)
-			mapping.Ebs.SetAttachTime(vi.AttachTime)
-			mapping.Ebs.SetDeleteOnTermination(vi.DeleteOnTermination)
-			mapping.Ebs.SetStatus("attached")
-			instance.Instance.BlockDeviceMappings = append(instance.Instance.BlockDeviceMappings, mapping)
-		}
-
-		if instancetypes.IsGPUType(instanceType) {
-			// Admission gates on the daemon's GPU manager, which is a different
-			// field wired at a different moment. Booting a GPU type without a
-			// claimer would hand the customer a running, GPU-less instance.
-			if s.gpuClaimer == nil {
-				slog.ErrorContext(ctx, "LaunchRunInstances: GPU type admitted with no GPU claimer wired",
-					"instanceId", instance.ID, "instanceType", aws.StringValue(instanceType.InstanceType))
-				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
-				continue
+		launch := func() {
+			s.launchSlots <- struct{}{}
+			defer func() { <-s.launchSlots }()
+			if s.launchOne(ctx, instance, input, instanceType) {
+				successCount.Add(1)
 			}
-			profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
-			gpuCount := instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
-			attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
-			if gpuErr != nil {
-				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
-				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
-				continue
-			}
-			if len(attachments) != gpuCount {
-				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim returned the wrong count",
-					"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
-				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
-					slog.ErrorContext(ctx, "LaunchRunInstances: GPU release after short claim failed",
-						"instanceId", instance.ID, "err", releaseErr)
-				}
-				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
-				continue
-			}
-			instance.GPUAttachments = attachments
-			slog.InfoContext(ctx, "LaunchRunInstances: GPUs claimed for instance", "instanceId", instance.ID,
-				"count", len(attachments), "attachments", attachments)
 		}
-
-		if err := s.vmMgr.Run(ctx, instance); err != nil {
-			slog.ErrorContext(ctx, "LaunchRunInstances: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
-			if len(instance.GPUAttachments) > 0 && s.gpuClaimer != nil {
-				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
-					slog.ErrorContext(ctx, "LaunchRunInstances: GPU release failed after launch failure",
-						"instanceId", instance.ID, "err", releaseErr)
-				}
-			}
-			s.vmMgr.MarkFailed(ctx, instance, "launch_failed")
-			continue
+		if serial {
+			launch()
+		} else {
+			wg.Go(launch)
 		}
+	}
+	wg.Wait()
 
-		if s.vmMgr.Status(instance) != vm.StateRunning {
-			slog.InfoContext(ctx, "LaunchRunInstances: launch did not reach running state", "instanceId", instance.ID)
-			continue
-		}
-		s.vmMgr.LogGuestDeviceMap(instance)
+	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount.Load())
+}
 
-		successCount++
-		slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
+// launchOne launches one instance of a batch and reports whether it reached
+// running. Fields of the VM record are set under the manager lock, because
+// another launch can persist every VM at the same time.
+func (s *InstanceServiceImpl) launchOne(ctx context.Context, instance *vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) bool {
+	// Skip if a concurrent terminate raced with prepare.
+	status := s.vmMgr.Status(instance)
+	if status != vm.StatePending && status != vm.StateProvisioning {
+		slog.InfoContext(ctx, "LaunchRunInstances: instance state changed during provisioning, skipping launch",
+			"instanceId", instance.ID, "status", string(status))
+		return false
 	}
 
-	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
+	// Pre-compute dev MAC for per-interface cloud-init netplan (route suppression).
+	if s.config.Daemon.DevNetworking && instance.ENIId != "" {
+		devMAC := vm.GenerateDevMAC(instance.ID)
+		s.vmMgr.Inspect(instance, func(v *vm.VM) { v.DevMAC = devMAC })
+	}
+
+	volumeInfos, err := s.GenerateVolumes(ctx, input, instance)
+	if err != nil {
+		slog.ErrorContext(ctx, "LaunchRunInstances: GenerateVolumes failed", "instanceId", instance.ID, "err", err)
+		s.vmMgr.MarkFailed(ctx, instance, "volume_preparation_failed")
+		return false
+	}
+
+	mappings := make([]*ec2.InstanceBlockDeviceMapping, 0, len(volumeInfos))
+	for _, vi := range volumeInfos {
+		mapping := &ec2.InstanceBlockDeviceMapping{}
+		mapping.SetDeviceName(vi.DeviceName)
+		mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
+		mapping.Ebs.SetVolumeId(vi.VolumeId)
+		mapping.Ebs.SetAttachTime(vi.AttachTime)
+		mapping.Ebs.SetDeleteOnTermination(vi.DeleteOnTermination)
+		mapping.Ebs.SetStatus("attached")
+		mappings = append(mappings, mapping)
+	}
+	s.vmMgr.Inspect(instance, func(v *vm.VM) { v.Instance.BlockDeviceMappings = mappings })
+
+	if instancetypes.IsGPUType(instanceType) && !s.claimGPUs(ctx, instance, instanceType) {
+		s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+		return false
+	}
+
+	if err := s.vmMgr.Run(ctx, instance); err != nil {
+		slog.ErrorContext(ctx, "LaunchRunInstances: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
+		if len(instance.GPUAttachments) > 0 && s.gpuClaimer != nil {
+			if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU release failed after launch failure",
+					"instanceId", instance.ID, "err", releaseErr)
+			}
+		}
+		s.vmMgr.MarkFailed(ctx, instance, "launch_failed")
+		return false
+	}
+
+	if s.vmMgr.Status(instance) != vm.StateRunning {
+		slog.InfoContext(ctx, "LaunchRunInstances: launch did not reach running state", "instanceId", instance.ID)
+		return false
+	}
+	s.vmMgr.LogGuestDeviceMap(instance)
+
+	slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
+	return true
+}
+
+// claimGPUs claims the GPUs instanceType needs for instance and reports
+// whether it got all of them. The caller marks the instance failed if not.
+func (s *InstanceServiceImpl) claimGPUs(ctx context.Context, instance *vm.VM, instanceType *ec2.InstanceTypeInfo) bool {
+	s.gpuClaimMu.Lock()
+	defer s.gpuClaimMu.Unlock()
+
+	// Admission gates on the daemon's GPU manager, which is a different
+	// field wired at a different moment. Booting a GPU type without a
+	// claimer would hand the customer a running, GPU-less instance.
+	if s.gpuClaimer == nil {
+		slog.ErrorContext(ctx, "LaunchRunInstances: GPU type admitted with no GPU claimer wired",
+			"instanceId", instance.ID, "instanceType", aws.StringValue(instanceType.InstanceType))
+		return false
+	}
+	profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
+	gpuCount := instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
+	attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
+	if gpuErr != nil {
+		slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
+		return false
+	}
+	if len(attachments) != gpuCount {
+		slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim returned the wrong count",
+			"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
+		if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
+			slog.ErrorContext(ctx, "LaunchRunInstances: GPU release after short claim failed",
+				"instanceId", instance.ID, "err", releaseErr)
+		}
+		return false
+	}
+	s.vmMgr.Inspect(instance, func(v *vm.VM) { v.GPUAttachments = attachments })
+	slog.InfoContext(ctx, "LaunchRunInstances: GPUs claimed for instance", "instanceId", instance.ID,
+		"count", len(attachments), "attachments", attachments)
+	return true
 }
 
 // RunInstances is for non-daemon callers (tests). The daemon calls
@@ -1776,7 +1820,7 @@ func (s *InstanceServiceImpl) prepareDataVolumes(ctx context.Context, input *ec2
 			return nil, err
 		}
 		volumeID := aws.StringValue(created.VolumeId)
-		appendDataEBSRequest(instance, volumeID, p.deviceName, p.deleteOnTermination)
+		s.vmMgr.InspectRequests(instance, func(v *vm.VM) { appendDataEBSRequest(v, volumeID, p.deviceName, p.deleteOnTermination) })
 		infos = append(infos, VolumeInfo{
 			VolumeId:            volumeID,
 			DeviceName:          p.deviceName,
@@ -1858,35 +1902,31 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 	}); err != nil {
 		return err
 	}
-	appendRootEBSRequest(instance, imageId, deviceName, deleteOnTermination)
+	// Under the manager lock, because the daemon persists the VM record under it.
+	s.vmMgr.InspectRequests(instance, func(v *vm.VM) { appendRootEBSRequest(v, imageId, deviceName, deleteOnTermination) })
 	return nil
 }
 
-// appendRootEBSRequest records the boot volume the launcher must attach. The
-// device name travels with it because the launcher writes it to the volume's
-// metadata, which is what DescribeVolumes reports as Attachments[].Device.
+// appendRootEBSRequest records the boot volume the launcher must attach; the
+// caller holds EBSRequests.Mu. The device name travels with it because the
+// volume's metadata, which DescribeVolumes reports, records it.
 func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
-	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		Boot:                true,
 		DeleteOnTermination: deleteOnTermination,
 	})
-	instance.EBSRequests.Mu.Unlock()
 }
 
 // appendDataEBSRequest records a non-boot volume the launcher must attach at
-// the device name the request named, which is what DescribeVolumes reports as
-// Attachments[].Device.
+// the device name the request named; the caller holds EBSRequests.Mu.
 func appendDataEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
-	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		DeleteOnTermination: deleteOnTermination,
 	})
-	instance.EBSRequests.Mu.Unlock()
 }
 
 // rootVolumeSpec describes the boot volume a launch needs, in provider-neutral

@@ -60,3 +60,5 @@ func ParseDataVolumeParams(input *ec2.RunInstancesInput) []DataVolumeParams {
 	}
 	return out
 }
+
+func (s *InstanceServiceImpl) VMManager() *vm.Manager { return s.vmMgr }

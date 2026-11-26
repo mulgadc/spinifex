@@ -203,7 +203,7 @@ func (p *holdTestProvider) calls() []ebsprovider.UnpublishVolumeRequest {
 func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing.T) {
 	t.Parallel()
 	provider := &holdTestProvider{}
-	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 	before := time.Now().Add(-time.Second)
 
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-hold"}))
@@ -224,7 +224,7 @@ func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing
 func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
 	t.Parallel()
 	provider := &holdTestProvider{publishGate: make(chan struct{}), publishing: make(chan struct{})}
-	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 	done := make(chan error, 1)
 	go func() {
 		done <- adapter.MountOne(context.Background(), testAccountID, &vm.EBSRequest{Name: "vol-busy"})
@@ -251,7 +251,7 @@ func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
 func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 	t.Parallel()
 	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
-	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 	hold, ok := adapter.HoldVolume("vol-sealing")
 	require.True(t, ok)
 	sealed := make(chan error, 1)
@@ -286,7 +286,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
 	t.Parallel()
 	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
-	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 	sealed := make(chan error, 1)
 	go func() {
 		sealed <- adapter.UnmountOne(context.Background(), testAccountID, vm.EBSRequest{Name: "vol-stopping"})
@@ -366,7 +366,7 @@ func TestS8_AWaitingPublishGoesBeforeASealQueuedBehindIt(t *testing.T) {
 func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {
 	t.Parallel()
 	provider := &holdTestProvider{}
-	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 
 	hold, ok := adapter.HoldVolume("vol-settle")
 	require.True(t, ok)
@@ -390,7 +390,7 @@ func TestVolumeMounterHold_NotFoundCountsAsDone(t *testing.T) {
 	t.Parallel()
 	for _, noSeal := range []bool{false, true} {
 		provider := &holdTestProvider{unpublishErr: ebsprovider.ErrNotFound}
-		adapter := newVolumeMounterAdapter(provider, "node-hold")
+		adapter := newVolumeMounterAdapter(provider, "node-hold", vm.NewManager())
 		hold, ok := adapter.HoldVolume("vol-gone")
 		require.True(t, ok)
 		assert.NoError(t, hold.Unpublish(t.Context(), testAccountID, "", noSeal))

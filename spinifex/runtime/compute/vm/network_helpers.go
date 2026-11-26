@@ -166,8 +166,10 @@ func (m *Manager) setupExtraENINICs(instance *VM) error {
 		}
 		extraTapName := spec.Name
 		netID := fmt.Sprintf("net%d", idx+1)
-		instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev(netID, extraTapName, queues))
-		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, netID, extra.ENIMac, queues, m.deps.GuestMTU))
+		m.Inspect(instance, func(v *VM) {
+			v.Config.NetDevs = append(v.Config.NetDevs, TapNetDev(netID, extraTapName, queues))
+			v.Config.Devices = append(v.Config.Devices, NetDevice(v.Config.MachineType, netID, extra.ENIMac, queues, m.deps.GuestMTU))
+		})
 		slog.Info("Extra VPC NIC configured",
 			"tap", extraTapName, "eni", extra.ENIID, "mac", extra.ENIMac, "subnet", extra.SubnetID)
 	}

@@ -35,7 +35,7 @@ func newMounterTestNode() string {
 
 // newNATSMounter returns a mounter driving node's provider over nc.
 func newNATSMounter(nc *nats.Conn, node string) *volumeMounterAdapter {
-	return newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, ebsProviderRequestTimeout), node)
+	return newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, ebsProviderRequestTimeout), node, vm.NewManager())
 }
 
 func connectMounterTest(t *testing.T) *nats.Conn {
@@ -412,7 +412,7 @@ func TestVolumeMounterAdapter_DelayedAttachOutlastingRequestFloorMounts(t *testi
 	require.NoError(t, err)
 	t.Cleanup(stop)
 
-	adapter := newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, requestFloor), node)
+	adapter := newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, requestFloor), node, vm.NewManager())
 	req := &vm.EBSRequest{Name: "vol-slow-attach"}
 	started := time.Now()
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))
@@ -458,7 +458,7 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 	adapter := newVolumeMounterAdapter(&stubMounterProvider{export: ebsprovider.VolumeExport{
 		Kind:  ebsprovider.ExportKindBlock,
 		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
-	}}, "node-stub")
+	}}, "node-stub", vm.NewManager())
 
 	req := &vm.EBSRequest{Name: "vol-block", NBDURI: "nbd://stale"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))

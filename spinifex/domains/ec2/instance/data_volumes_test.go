@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -171,4 +172,55 @@ func TestParseDataVolumeParams_SkipsRootAndEphemeral(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", params[0].DeviceName)
 	assert.Equal(t, int64(4), params[0].SizeGiB)
 	assert.True(t, params[0].DeleteOnTermination)
+}
+
+// signallingVolumeCreator reports each create it completes.
+type signallingVolumeCreator struct {
+	*fakeVolumeCreator
+
+	created chan struct{}
+}
+
+func (c *signallingVolumeCreator) CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
+	defer func() { c.created <- struct{}{} }()
+	return c.fakeVolumeCreator.CreateVolume(ctx, input, accountID)
+}
+
+// A launch that records a data volume while a seal holds the VM's requests
+// lock leaves the manager lock free for other launches and state saves.
+func TestPrepareDataVolumes_AppendWaitsOutsideTheManagerLock(t *testing.T) {
+	creator := &signallingVolumeCreator{fakeVolumeCreator: &fakeVolumeCreator{}, created: make(chan struct{}, 1)}
+	svc := ec2instance.NewProviderRootVolumeTestService(t)
+	creator.metadata = svc.MetadataStore()
+	svc.SetVolumeCreator(creator)
+	mgr := svc.VMManager()
+	instance := &vm.VM{ID: "i-0000000000000002a", AccountID: ec2instance.TestRootAccount}
+	other := &vm.VM{ID: "i-0000000000000002b"}
+	mgr.Insert(instance)
+	mgr.Insert(other)
+
+	instance.EBSRequests.Mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.PrepareDataVolumes(t.Context(), dataMappingInput("/dev/sdf"), instance)
+		done <- err
+	}()
+	<-creator.created
+	assert.Never(t, func() bool { return len(done) > 0 }, 200*time.Millisecond, 20*time.Millisecond,
+		"the append must wait while the requests lock is held")
+
+	inspected := make(chan struct{})
+	go func() {
+		mgr.Inspect(other, func(*vm.VM) {})
+		close(inspected)
+	}()
+	select {
+	case <-inspected:
+	case <-time.After(2 * time.Second):
+		t.Error("the manager lock stayed held while the append waited for the requests lock")
+	}
+	instance.EBSRequests.Mu.Unlock()
+	require.NoError(t, <-done)
+	require.Len(t, instance.EBSRequests.Requests, 1)
+	assert.Equal(t, "/dev/sdf", instance.EBSRequests.Requests[0].DeviceName)
 }

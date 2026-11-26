@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -377,6 +378,28 @@ var describeVolumesValidFilters = map[string]bool{
 	"tag-value":              true,
 }
 
+// The ranges are the botocore model's: 5 to 500 for DescribeVolumes and
+// DescribeVolumesModifications, 5 to 1000 for DescribeVolumeStatus.
+var describeVolumesPaging = paging.EC2{
+	MaxResults: 500,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value less than or equal to 500.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter volumeIdSet cannot be used with the parameter maxResults",
+}
+
+var describeVolumeStatusPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value less than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter volumeIdSet cannot be used with the parameter maxResults",
+}
+
+var describeVolumesModificationsPaging = paging.EC2{
+	MaxResults: 500,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value less than or equal to 500.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+}
+
 // DescribeVolumes lists EBS volumes from their volume metadata documents.
 func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error) {
 	if input == nil {
@@ -388,6 +411,10 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVolumesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumes: invalid filter", "err", err)
+		return nil, err
+	}
+	pageReq, err := describeVolumesPaging.Parse(input.MaxResults, input.NextToken, len(input.VolumeIds))
+	if err != nil {
 		return nil, err
 	}
 
@@ -407,8 +434,7 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 				volumes = append(volumes, r.volume)
 			}
 		}
-		slog.InfoContext(ctx, "DescribeVolumes completed", "count", len(volumes))
-		return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
+		return pageVolumes(ctx, volumes, pageReq), nil
 	}
 
 	// Slow path: no specific IDs requested, list the caller's prefix. No other
@@ -424,8 +450,13 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 			volumes = append(volumes, volume)
 		}
 	}
-	slog.InfoContext(ctx, "DescribeVolumes completed", "count", len(volumes))
-	return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
+	return pageVolumes(ctx, volumes, pageReq), nil
+}
+
+func pageVolumes(ctx context.Context, volumes []*ec2.Volume, req paging.Request) *ec2.DescribeVolumesOutput {
+	page, next := paging.EC2Page(volumes, func(v *ec2.Volume) string { return *v.VolumeId }, req)
+	slog.InfoContext(ctx, "DescribeVolumes completed", "count", len(page))
+	return &ec2.DescribeVolumesOutput{Volumes: page, NextToken: next}
 }
 
 // volumeMatchesFilters checks whether an ec2.Volume satisfies all parsed awsfilters.
@@ -534,8 +565,18 @@ func (s *VolumeServiceImpl) DescribeVolumeStatus(ctx context.Context, input *ec2
 		slog.WarnContext(ctx, "DescribeVolumeStatus: invalid filter", "err", err)
 		return nil, err
 	}
+	pageReq, err := describeVolumeStatusPaging.Parse(input.MaxResults, input.NextToken, len(input.VolumeIds))
+	if err != nil {
+		return nil, err
+	}
 
-	return s.describeVolumeStatus(ctx, input, accountID, parsedFilters)
+	statusItems, err := s.describeVolumeStatus(ctx, input, accountID, parsedFilters)
+	if err != nil {
+		return nil, err
+	}
+	page, next := paging.EC2Page(statusItems, func(i *ec2.VolumeStatusItem) string { return *i.VolumeId }, pageReq)
+	slog.InfoContext(ctx, "DescribeVolumeStatus completed", "count", len(page))
+	return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: page, NextToken: next}, nil
 }
 
 // volumeStatusMatchesFilters checks whether a VolumeStatusItem satisfies all parsed awsfilters.
@@ -574,7 +615,7 @@ func volumeStatusMatchesFilters(item *ec2.VolumeStatusItem, filters map[string][
 // describeVolumeStatus answers from the ebsmetadata index. Volume health is
 // static: the control plane has no per-volume health signal to report, so
 // every known volume reports ok.
-func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeVolumeStatusOutput, error) {
+func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, accountID string, parsedFilters map[string][]string) ([]*ec2.VolumeStatusItem, error) {
 	var statusItems []*ec2.VolumeStatusItem
 
 	// Fast path: specific volume IDs requested. Fetch each document directly
@@ -593,8 +634,7 @@ func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2
 			}
 			statusItems = append(statusItems, item)
 		}
-		slog.InfoContext(ctx, "DescribeVolumeStatus completed", "count", len(statusItems))
-		return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
+		return statusItems, nil
 	}
 
 	metas, err := s.metadata.ListVolumes(ctx, accountID)
@@ -608,9 +648,7 @@ func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2
 		}
 		statusItems = append(statusItems, item)
 	}
-
-	slog.InfoContext(ctx, "DescribeVolumeStatus completed", "count", len(statusItems))
-	return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
+	return statusItems, nil
 }
 
 // metadataVolumeStatusItem builds a static-health VolumeStatusItem from an
@@ -752,6 +790,11 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 		slog.WarnContext(ctx, "DescribeVolumesModifications: invalid filter", "err", err)
 		return nil, err
 	}
+	// AWS documents no rule against MaxResults with VolumeIds here, so the IDs are paged too.
+	pageReq, err := describeVolumesModificationsPaging.Parse(input.MaxResults, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
 
 	var modifications []*ec2.VolumeModification
 
@@ -775,8 +818,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 			}
 			modifications = append(modifications, r.modification)
 		}
-		slog.InfoContext(ctx, "DescribeVolumesModifications completed", "count", len(modifications))
-		return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
+		return pageVolumeModifications(ctx, modifications, pageReq), nil
 	}
 
 	metas, err := s.metadata.ListVolumes(ctx, accountID)
@@ -802,9 +844,13 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 		}
 		modifications = append(modifications, mod)
 	}
+	return pageVolumeModifications(ctx, modifications, pageReq), nil
+}
 
-	slog.InfoContext(ctx, "DescribeVolumesModifications completed", "count", len(modifications))
-	return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
+func pageVolumeModifications(ctx context.Context, mods []*ec2.VolumeModification, req paging.Request) *ec2.DescribeVolumesModificationsOutput {
+	page, next := paging.EC2Page(mods, func(m *ec2.VolumeModification) string { return *m.VolumeId }, req)
+	slog.InfoContext(ctx, "DescribeVolumesModifications completed", "count", len(page))
+	return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: page, NextToken: next}
 }
 
 // volumeModificationResult bundles a per-ID lookup result so the fast path

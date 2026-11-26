@@ -103,7 +103,7 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 	errs := make(map[string]map[string]error, len(stops))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	t.Cleanup(wg.Wait)
 	for name, stop := range stops {
 		ns, _, js := testutil.StartTestJetStream(t)
 		b := kvstore.OpenSyncBucket(js)

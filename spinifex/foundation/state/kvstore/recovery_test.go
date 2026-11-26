@@ -102,7 +102,7 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 	stores := make([]*kvstore.Store[record], len(tests))
 	errs := make([]error, len(tests))
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	t.Cleanup(wg.Wait)
 	for i, tt := range tests {
 		_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
 		require.NoError(t, store.Set(t.Context(), "acct-a/seed", &record{Name: "seed"}))

@@ -149,18 +149,20 @@ func TestHandleIsBoundToItsQueue(t *testing.T) {
 
 // A long poll returns waiting messages at once and an empty poll waits.
 func TestLongPoll(t *testing.T) {
+	const unit = 100 * time.Millisecond
 	o := newOwners(t)
+	message.SetWaitUnit(o.recv, unit)
 	o.create(t, "events")
 
 	start := time.Now()
 	assert.Empty(t, o.receive(t, "events", 10, 1))
-	assert.GreaterOrEqual(t, time.Since(start), time.Second)
+	assert.GreaterOrEqual(t, time.Since(start), unit)
 
 	o.put(t, "events", "ready")
 	start = time.Now()
 	got := o.receive(t, "events", 10, 20)
 	require.Len(t, got, 1)
-	assert.Less(t, time.Since(start), 10*time.Second, "a waiting message ends the poll early")
+	assert.Less(t, time.Since(start), 10*unit, "a waiting message ends the poll early")
 
 	_, err := o.recv.Receive(context.Background(), message.ReceiveInput{Account: lcAccount, Region: lcRegion, Queue: "missing"})
 	assert.ErrorIs(t, err, message.ErrQueueDoesNotExist)

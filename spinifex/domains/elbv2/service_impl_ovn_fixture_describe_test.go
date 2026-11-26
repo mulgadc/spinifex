@@ -100,6 +100,65 @@ func TestOVNFixtureDescribe_ScopeAndAbsence(t *testing.T) {
 	}
 }
 
+// invalidNameARNs are network ARNs in the caller's account and region whose
+// name segment is outside the load balancer name syntax.
+func invalidNameARNs(t *testing.T, id string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for name, seg := range map[string]string{
+		"dot":             "ovn.nlb",
+		"wildcard":        "ovn*",
+		"full wildcard":   ">",
+		"underscore":      "ovn_nlb",
+		"leading hyphen":  "-ovn",
+		"trailing hyphen": "ovn-",
+		"internal prefix": "internal-ovn",
+		"too long":        "a234567890123456789012345678901bc",
+		"empty":           "",
+	} {
+		arn := "arn:aws:elasticloadbalancing:" + fixtureRegion + ":" + testAccountID + ":loadbalancer/net/" + seg + "/" + id
+		parsed, ok := resourcearn.ParseELBv2(arn)
+		require.True(t, ok, "%s parses as an ELBv2 ARN", arn)
+		require.Equal(t, fixtureRegion, parsed.Region)
+		require.Equal(t, testAccountID, parsed.AccountID)
+		require.Equal(t, resourcearn.ELBv2LoadBalancer, parsed.Kind)
+		out[name] = arn
+	}
+	return out
+}
+
+func TestOVNFixtureARN_InvalidNameSegmentReadsNothing(t *testing.T) {
+	h := newOVNCreateHarness(t)
+	created := h.sealedOVN("ovn-nlb")
+	parsed, ok := resourcearn.ParseELBv2(aws.StringValue(created.LoadBalancerArn))
+	require.True(t, ok)
+	id := parsed.Resource[len("net/ovn-nlb/"):]
+	elbBefore := h.state(KVBucketELBv2)
+
+	for name, arn := range invalidNameARNs(t, id) {
+		t.Run(name, func(t *testing.T) {
+			_, err := h.describe(testAccountID, byARN(arn))
+			requireFenceCode(t, err, awserrors.ErrorELBv2LoadBalancerNotFound)
+			h.requireCalls(nil)
+
+			_, err = h.svc.DeleteLoadBalancer(t.Context(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(arn)}, testAccountID)
+			require.NoError(t, err, "an absent ARN keeps the idempotent delete result")
+			for bucket, calls := range h.takeOps() {
+				assert.Empty(t, opsOf(calls, opKVWrites), "write on %s", bucket)
+				for _, call := range calls {
+					assert.NotContains(t, call, KeyPrefixLBName, "fixture claim read on %s", bucket)
+					assert.NotContains(t, call, "ovnslot.", "fixture slot read on %s", bucket)
+				}
+			}
+			assert.Equal(t, elbBefore, h.state(KVBucketELBv2))
+		})
+	}
+
+	got, err := h.describe(testAccountID, byARN(aws.StringValue(created.LoadBalancerArn)))
+	require.NoError(t, err, "the exact ARN still resolves")
+	assert.Equal(t, created, got)
+}
+
 func TestOVNFixtureDescribe_RejectsUnsupportedShapes(t *testing.T) {
 	h := newOVNCreateHarness(t)
 	arn := aws.StringValue(h.sealedOVN("ovn-nlb").LoadBalancerArn)

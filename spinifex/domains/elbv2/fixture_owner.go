@@ -280,14 +280,16 @@ func (f *fixtureOwnerStore) GetSealed(ctx context.Context, name, accountID strin
 }
 
 // GetSealedByArn resolves a network load balancer ARN in the caller's region
-// and account to its sealed root. The stored ARN must match exactly.
+// and account to its sealed root. The stored ARN must match exactly, and a
+// name segment outside the load balancer name syntax is absent with no read.
 func (f *fixtureOwnerStore) GetSealedByArn(ctx context.Context, arn, region, accountID string) (*LoadBalancerRecord, error) {
 	parsed, ok := resourcearn.ParseELBv2(arn)
 	if !ok || parsed.Kind != resourcearn.ELBv2LoadBalancer || parsed.Region != region || parsed.AccountID != accountID {
 		return nil, nil
 	}
 	parts := strings.Split(parsed.Resource, "/")
-	if len(parts) != 3 || parts[0] != resourcearn.ELBv2LBPathSegment(LoadBalancerTypeNetwork) || parts[1] == "" || parts[2] == "" {
+	if len(parts) != 3 || parts[0] != resourcearn.ELBv2LBPathSegment(LoadBalancerTypeNetwork) || parts[2] == "" ||
+		validateLBName(parts[1]) != nil {
 		return nil, nil
 	}
 	root, err := f.GetSealed(ctx, parts[1], accountID)

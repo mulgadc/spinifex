@@ -177,6 +177,7 @@ func TestParseDataVolumeParams_SkipsRootAndEphemeral(t *testing.T) {
 // signallingVolumeCreator reports each create it completes.
 type signallingVolumeCreator struct {
 	*fakeVolumeCreator
+
 	created chan struct{}
 }
 

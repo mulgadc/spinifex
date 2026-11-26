@@ -4,6 +4,9 @@ description: >-
   so per-test pass rates outlive the 90-day artifact retention. Call it once
   per job right after the JUnit XML is produced (with `if: always()`), next to
   the junit-report action that renders the same files into the job summary.
+  When the otel-job-id action ran earlier in the job, each doc also carries
+  ci.job_id, ci.runner_name, ci.env, ci.hypervisors and ci.pools, once the sink
+  maps all of them as keyword.
 
 inputs:
   junit-glob:

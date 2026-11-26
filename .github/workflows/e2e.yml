@@ -206,6 +206,7 @@ jobs:
       - name: Resolve CI job id
         uses: $/.github/actions/otel-job-id
         with:
+          es-sink: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
           job-name: ${{ matrix.leg == 'base' && 'Single-Node E2E' || format('Single-Node E2E ({0})', matrix.leg) }}
 
       - name: Build Install Artifacts
@@ -621,6 +622,7 @@ jobs:
         continue-on-error: true
         uses: $/.github/actions/junit-to-es
         with:
+          es-sink: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: ${{ env.E2E_CELL }}
 
@@ -784,6 +786,7 @@ jobs:
       - name: Resolve CI job id
         uses: $/.github/actions/otel-job-id
         with:
+          es-sink: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
           job-name: Multi-Node E2E
 
       - name: Build Install Artifacts
@@ -1085,6 +1088,7 @@ jobs:
         continue-on-error: true
         uses: $/.github/actions/junit-to-es
         with:
+          es-sink: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: multi
 
@@ -1218,7 +1222,9 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 5
     permissions:
+      contents: read
       actions: read
+      checks: read
     env:
       # Repo var overrides; defaults to the LAN Elastic sink reachable from
       # ci-single/ci-multi runners. Anonymous ES requests are superuser on
@@ -1345,3 +1351,25 @@ jobs:
             exit 1
           fi
           echo "CI run summary doc posted to ${MULGA_ES_SINK}/mulga-ci-runs (HTTP ${HTTP_CODE})"
+
+      # One doc per self-hosted job: runner, env, hypervisors and how it ended.
+      - id: ci-job-doc-src
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github/scripts/ci-job-doc.py
+          sparse-checkout-cone-mode: false
+
+      # Tolerated on failure: the sink being unreachable must not turn a
+      # finished run red.
+      - name: Post per-job docs to Elasticsearch
+        if: always() && steps.ci-job-doc-src.outcome == 'success'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          MULGA_ES_SINK: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
+        run: python3 -I .github/scripts/ci-job-doc.py finalize

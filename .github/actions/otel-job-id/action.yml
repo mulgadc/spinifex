@@ -1,7 +1,9 @@
 name: Resolve OTEL job id
 description: >-
   Append ci.job_id to SPINIFEX_OTEL_ATTRS so telemetry emitted by this job can
-  be pivoted straight back to its GitHub job log. Must run before the step that
+  be pivoted straight back to its GitHub job log. Also exports CI_JOB_ID, CI_ENV,
+  CI_HYPERVISORS, CI_POOLS and CI_HYPERVISOR_POOLS and records the job's placement in the
+  mulga-ci-jobs index. Must run before the step that
   bakes SPINIFEX_OTEL_ATTRS into a VM's telemetry.env, and requires
   `actions: read` on the calling job.
 
@@ -12,6 +14,10 @@ inputs:
       github.job is only the YAML key and no context exposes the numeric id, so
       the id has to be looked up by name.
     required: true
+  es-sink:
+    description: host:port of the Elasticsearch sink.
+    required: false
+    default: "192.168.1.13:9200"
   token:
     description: Token used for the Actions jobs API lookup.
     required: false
@@ -27,26 +33,53 @@ runs:
         JOB_NAME: ${{ inputs.job-name }}
         REPO: ${{ github.repository }}
         RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        WORKFLOW: ${{ github.workflow }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        SHA: ${{ github.sha }}
+        MULGA_ES_SINK: ${{ inputs.es-sink }}
+        ACTION_PATH: ${{ github.action_path }}
+        CHECK_RUN_ID: ${{ job.check_run_id }}
       run: |
         # Never fail the caller: on any lookup error or name mismatch ci.job_id
         # is simply omitted and the run proceeds with the labels it already has.
         set +e
 
-        if [ -z "${SPINIFEX_OTEL_ATTRS:-}" ]; then
-          echo "SPINIFEX_OTEL_ATTRS is unset or empty — telemetry is disabled, nothing to label"
-          exit 0
-        fi
-
         # env.JOB_NAME rather than shell interpolation into the jq filter: job
         # names carry quotes, slashes and non-ASCII separators that would
         # otherwise break the expression.
-        JOB_ID=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" --paginate \
-          --jq '.jobs[] | select(.name == env.JOB_NAME) | .id' 2>/dev/null | head -n1)
+        # The job context's check run id is the API job id; the name lookup
+        # only covers a runner that does not set it.
+        JOB_ID="${CHECK_RUN_ID:-}"
+        if [ -z "$JOB_ID" ]; then
+          JOB_ID=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs" --paginate \
+            --jq '.jobs[] | select(.name == env.JOB_NAME) | .id' 2>/dev/null | head -n1)
+        fi
 
-        if [ -n "$JOB_ID" ]; then
+        if [ -z "$JOB_ID" ]; then
+          echo "::warning::could not resolve numeric job id for '${JOB_NAME}' — continuing without ci.job_id"
+          exit 0
+        fi
+        echo "CI_JOB_ID=${JOB_ID}" >> "$GITHUB_ENV"
+        export CI_JOB_ID="$JOB_ID"
+
+        if [ -n "${SPINIFEX_OTEL_ATTRS:-}" ]; then
           echo "SPINIFEX_OTEL_ATTRS=${SPINIFEX_OTEL_ATTRS},ci.job_id=${JOB_ID}" >> "$GITHUB_ENV"
           echo "resolved ci.job_id=${JOB_ID} for job '${JOB_NAME}'"
         else
-          echo "::warning::could not resolve numeric job id for '${JOB_NAME}' — continuing without ci.job_id"
+          echo "SPINIFEX_OTEL_ATTRS is unset or empty — telemetry is disabled, nothing to label"
         fi
+
+        # Placement: which env, hypervisors and disk pools this job holds.
+        DOC="${ACTION_PATH}/../../scripts/ci-job-doc.py"
+        export CI_ENV="${SPINIFEX_CI_ENV:-}"
+        if [ -n "$CI_ENV" ]; then
+          TFVARS="${GITHUB_WORKSPACE}/mulga/scripts/tofu-cluster/envs/${CI_ENV}.tfvars"
+          PLACEMENT=$(python3 -I "$DOC" placement "$TFVARS" 2>/dev/null)
+          { echo "CI_ENV=${CI_ENV}"; echo "$PLACEMENT"; } >> "$GITHUB_ENV"
+          CI_HYPERVISORS=$(sed -n 's/^CI_HYPERVISORS=//p' <<<"$PLACEMENT"); export CI_HYPERVISORS
+          CI_POOLS=$(sed -n 's/^CI_POOLS=//p' <<<"$PLACEMENT"); export CI_POOLS
+          CI_HYPERVISOR_POOLS=$(sed -n 's/^CI_HYPERVISOR_POOLS=//p' <<<"$PLACEMENT"); export CI_HYPERVISOR_POOLS
+        fi
+        python3 -I "$DOC" record
         exit 0

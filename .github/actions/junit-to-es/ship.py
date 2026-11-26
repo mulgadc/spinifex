@@ -13,6 +13,8 @@ Inputs (env):
                     there, so no credentials are involved.
     ES_INDEX        Target index; defaults to mulga-ci-test-results.
     RUN_ID, RUN_ATTEMPT, WORKFLOW, BRANCH, SHA, ARTIFACT_URL
+    CI_JOB_ID, CI_ENV, CI_HYPERVISORS, CI_POOLS (set by the otel-job-id action)
+    and RUNNER_NAME add the job's placement to every doc.
 """
 
 from __future__ import annotations
@@ -131,6 +133,16 @@ def _doc(cell: str, suite: str, case: dict, ts: str, ci: dict) -> dict:
             "run_attempt": ci["run_attempt"],
         },
     }
+    # Placement joins a failure to the host it ran on. A job with no tofu env
+    # (bare metal, GPU) leaves these out.
+    for key in ("job_id", "runner_name", "env"):
+        if ci.get(key):
+            doc["ci"][key] = ci[key]
+    for key in ("hypervisors", "pools"):
+        if ci.get(key):
+            doc["ci"][key] = ci[key]
+    if ci.get("job_id"):
+        doc["labels"]["ci_job_id"] = ci["job_id"]
     if case["fail_type"]:
         doc["failure"] = {
             "type": case["fail_type"],
@@ -143,6 +155,39 @@ def _doc_id(ci: dict, cell: str, suite: str, full_name: str) -> str:
     # Deterministic so a replayed post overwrites instead of double-counting.
     # run_attempt is part of it because a re-run is a distinct result.
     return f"{ci['run_id']}-{ci['run_attempt']}-{cell}-{suite}-{full_name}"
+
+
+_PLACEMENT_FIELDS = (
+    "ci.job_id",
+    "ci.runner_name",
+    "ci.env",
+    "ci.hypervisors",
+    "ci.pools",
+    "labels.ci_job_id",
+)
+
+
+def _placement_mapped(sink: str, index: str) -> bool:
+    """True when every placement field is a keyword on the index. Until the
+    sink holds the mappings, placement is left out rather than indexed with
+    dynamic types."""
+    names = ",".join(_PLACEMENT_FIELDS)
+    try:
+        with urllib.request.urlopen(
+            f"http://{sink}/{index}/_mapping/field/{names}", timeout=10
+        ) as resp:
+            indices = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    if not indices:
+        return False
+    for body in indices.values():
+        fields = body.get("mappings", {})
+        for name in _PLACEMENT_FIELDS:
+            leaf = name.rsplit(".", 1)[-1]
+            if fields.get(name, {}).get("mapping", {}).get(leaf, {}).get("type") != "keyword":
+                return False
+    return True
 
 
 def _bulk(sink: str, index: str, body: str) -> int:
@@ -190,7 +235,19 @@ def main() -> int:
         "branch": os.environ.get("BRANCH", ""),
         "sha": os.environ.get("SHA", ""),
         "artifact_url": os.environ.get("ARTIFACT_URL", ""),
+        "job_id": os.environ.get("CI_JOB_ID", ""),
+        "runner_name": os.environ.get("RUNNER_NAME", ""),
+        "env": os.environ.get("CI_ENV", ""),
+        "hypervisors": [h for h in os.environ.get("CI_HYPERVISORS", "").split(",") if h],
+        "pools": [p for p in os.environ.get("CI_POOLS", "").split(",") if p],
     }
+    # Only a job that ran the otel-job-id action carries placement; bare-metal
+    # and GPU callers keep their docs as they were.
+    if not ci["job_id"] or not _placement_mapped(sink, index):
+        if ci["job_id"]:
+            print("::notice::junit-to-es: placement fields are not keyword-mapped on the sink, left out")
+        for key in ("job_id", "runner_name", "env", "hypervisors", "pools"):
+            ci[key] = "" if key not in ("hypervisors", "pools") else []
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     lines: list[str] = []

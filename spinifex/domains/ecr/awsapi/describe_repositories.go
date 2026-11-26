@@ -25,7 +25,7 @@ type describeRepositoriesRequest struct {
 
 // DescribeRepositories lists repositories visible in the caller's account.
 // A registryId for a different account is denied until registry-policy v2
-// implements the Q8 cross-account policy model. An unnamed request is paged by
+// implements the cross-account policy model. An unnamed request is paged by
 // repository name.
 //
 // The caller supplies the advertised endpoint profile because it is deployment

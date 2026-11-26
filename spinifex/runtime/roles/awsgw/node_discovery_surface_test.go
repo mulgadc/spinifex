@@ -13,6 +13,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
@@ -21,9 +22,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Verifies: Q-367. A DescribeInstanceStatus call must answer from the last
-// known node count; a discovery gather on the request path adds its whole
-// timeout to the call.
+// Verifies: Q-367.1. DescribeInstanceStatus must answer from the last known
+// node count, cold and after the count ages past its TTL; a discovery gather
+// on the request path adds its whole timeout to the call.
 func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
 	awsgw.SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
@@ -48,6 +49,7 @@ func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
 	t.Cleanup(func() { _ = daemonSub.Unsubscribe() })
 	require.NoError(t, nc.Flush())
 
+	nodes := &awsgw.NodeDiscovery{NATS: nc, Expected: 1}
 	gw := withEC2(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region},
 		gwfix.Deps{NATS: nc, Nodes: 1, IAM: &gwfix.PolicyIAM{
 			IAM: gwfix.IAM{
@@ -63,23 +65,30 @@ func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
 				},
 			},
 			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allowAllTaggingDocs(), nil },
-		}})))
+		}})), func(d *ec2awsapi.Deps) { d.ActiveNodes = nodes.ActiveNodes })
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)
 
-	body := []byte("Action=DescribeInstanceStatus&Version=2016-11-15")
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	req.Host = "localhost:9999"
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "ec2", time.Now().UTC())
+	describe := func(phase string) {
+		t.Helper()
+		before := discoveries.Load()
+		body := []byte("Action=DescribeInstanceStatus&Version=2016-11-15")
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		req.Host = "localhost:9999"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "ec2", time.Now().UTC())
 
-	resp := doRequest(r, req)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, readBody(t, resp))
-	require.NoError(t, nc.Flush())
-
-	if n := discoveries.Load(); n != 0 {
-		t.Errorf("Q-367: DescribeInstanceStatus published %d node discovery request(s) on the request path, want 0 (node_discovery.go ActiveNodes gathers inline)", n)
+		resp := doRequest(r, req)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode, readBody(t, resp))
+		require.NoError(t, nc.Flush())
+		if n := discoveries.Load() - before; n != 0 {
+			t.Errorf("Q-367.1: %s DescribeInstanceStatus published %d node discovery request(s) on the request path, want 0 (node_discovery.go ActiveNodes gathers inline)", phase, n)
+		}
 	}
+
+	describe("cold")
+	awsgw.AgeActiveNodesForTest(nodes)
+	describe("expired")
 }

@@ -388,3 +388,25 @@ func TestReconcileEndpointDemux_IdleNodeRetriesUnownedFlow(t *testing.T) {
 		t.Errorf("pass after a failed removal: %d intent reads, %d dumps, want 1 and 1", intents-1, d.reads-1)
 	}
 }
+
+// A pass reads the guests after the intent, so a guest that starts during the
+// intent read gets its demux from that pass.
+func TestReconcileEndpointDemux_GuestStartingDuringIntentRead(t *testing.T) {
+	d := &fakeDemuxer{}
+	var m *Manager
+	intent := routed("subnet-0abc")
+	m = demuxManager(d, func(ctx context.Context) (EndpointIntent, error) {
+		m.UpdateState("i-b", func(v *VM) { v.Status = StateRunning })
+		return intent(ctx)
+	})
+	m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
+	m.Insert(imdsTestVM("i-b", "eni-b", StatePending))
+	m.endpointDemux.clear.Store(true)
+
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.of("eni-b"); !slices.Equal(got, sortedEntries()) {
+		t.Fatalf("guest started during the intent read: flows = %v, want %v", got, sortedEntries())
+	}
+}

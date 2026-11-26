@@ -43,6 +43,7 @@ type opKV struct {
 	ops        []string
 	failGet    error
 	failPrefix string
+	onUpdate   func(key string, value []byte, update func() (uint64, error)) (uint64, error)
 }
 
 func (kv *opKV) record(op, key string) error {
@@ -110,9 +111,31 @@ func (kv *opKV) Create(ctx context.Context, key string, value []byte, opts ...je
 	return kv.KeyValue.Create(ctx, key, value, opts...)
 }
 
+// interceptUpdate runs hook around the next Update of a key with prefix.
+func (kv *opKV) interceptUpdate(prefix string, hook func(key string, value []byte, update func() (uint64, error)) (uint64, error)) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	kv.onUpdate = func(key string, value []byte, update func() (uint64, error)) (uint64, error) {
+		if !strings.HasPrefix(key, prefix) {
+			return update()
+		}
+		kv.mu.Lock()
+		kv.onUpdate = nil
+		kv.mu.Unlock()
+		return hook(key, value, update)
+	}
+}
+
 func (kv *opKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
 	_ = kv.record("Update", key)
-	return kv.KeyValue.Update(ctx, key, value, last)
+	update := func() (uint64, error) { return kv.KeyValue.Update(ctx, key, value, last) }
+	kv.mu.Lock()
+	hook := kv.onUpdate
+	kv.mu.Unlock()
+	if hook != nil {
+		return hook(key, value, update)
+	}
+	return update()
 }
 
 func (kv *opKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {

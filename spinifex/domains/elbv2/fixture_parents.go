@@ -289,9 +289,9 @@ func (f *fixtureOwnerStore) admitParents(ctx context.Context, claim *fixtureClai
 	}, readSubnet)
 }
 
-// admitAndSeal fences the parents and seals the root. A definite refusal
-// invalidates the claim and then clears the claim's own slots. An unreadable
-// seal result keeps the claim and slots for a retry.
+// admitAndSeal fences the parents and seals the root. A definite refusal or a
+// known seal rejection invalidates the claim, then clears its own slots. An
+// unknown or unreadable seal result keeps the claim and slots for a retry.
 func (f *fixtureOwnerStore) admitAndSeal(ctx context.Context, claim *fixtureClaim) (*LoadBalancerRecord, error) {
 	err := f.admitParents(ctx, claim)
 	if err == nil {
@@ -299,7 +299,7 @@ func (f *fixtureOwnerStore) admitAndSeal(ctx context.Context, claim *fixtureClai
 		if root, err = f.Seal(ctx, claim); err == nil {
 			return root, nil
 		}
-		if !errors.Is(err, errFixtureOwnerLost) {
+		if !errors.Is(err, errFixtureOwnerLost) && !errors.Is(err, errFixtureSealRejected) {
 			return nil, err
 		}
 	}

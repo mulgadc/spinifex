@@ -11,6 +11,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -32,6 +33,9 @@ var (
 	// errFixtureClaimMalformed reports a claim value that is not a complete
 	// fixture owner. The store never takes over or hides such a value.
 	errFixtureClaimMalformed = errors.New("elbv2: load balancer name claim is malformed")
+	// errFixtureSealRejected reports a seal write known not to be stored, with
+	// the claim re-read still pending at the caller's revision.
+	errFixtureSealRejected = errors.New("elbv2: load balancer seal was rejected")
 )
 
 // fixtureOwner is the value at the account/name claim key. OwnerID and
@@ -103,6 +107,17 @@ func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
 func definiteKVConflict(err error) bool {
 	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) ||
 		kvstore.IsRevisionConflict(err)
+}
+
+// sealWriteRejected is true only for errors that prove the write was not
+// stored: the client's payload check before publish, and the stream's
+// message-size refusal. Every other error leaves the outcome unknown.
+func sealWriteRejected(err error) bool {
+	if errors.Is(err, nats.ErrMaxPayload) {
+		return true
+	}
+	apiErr, ok := errors.AsType[*jetstream.APIError](err)
+	return ok && apiErr.ErrorCode == jetstream.JSErrCodeStreamMessageExceedsMaximum
 }
 
 func (f *fixtureOwnerStore) read(ctx context.Context, key string) (jetstream.KeyValueEntry, *fixtureOwner, error) {
@@ -178,8 +193,9 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 }
 
 // Seal makes the pending root readable by a CAS of the exact claim revision.
-// A lost response is resolved by re-reading the claim: the caller's own sealed
-// root is success, and a missing or replaced claim is errFixtureOwnerLost.
+// A failed write is resolved by re-reading the claim: the caller's own sealed
+// root is success, a missing or replaced claim is errFixtureOwnerLost, and a
+// known rejection with the claim still at its revision is errFixtureSealRejected.
 func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*LoadBalancerRecord, error) {
 	sealed, err := claim.snapshot()
 	if err != nil {
@@ -197,7 +213,7 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 	if uerr == nil {
 		return sealed.Root, nil
 	}
-	_, cur, rerr := f.read(ctx, claim.Key)
+	entry, cur, rerr := f.read(ctx, claim.Key)
 	if rerr != nil {
 		return nil, errors.Join(fmt.Errorf("kv update %s: %w", claim.Key, uerr), rerr)
 	}
@@ -206,6 +222,9 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 	}
 	if cur == nil || cur.OwnerID != sealed.OwnerID || definiteKVConflict(uerr) {
 		return nil, errFixtureOwnerLost
+	}
+	if sealWriteRejected(uerr) && entry.Revision() == claim.Revision {
+		return nil, fmt.Errorf("kv update %s: %w: %w", claim.Key, errFixtureSealRejected, uerr)
 	}
 	return nil, fmt.Errorf("kv update %s: %w", claim.Key, uerr)
 }

@@ -2393,3 +2393,24 @@ func (s *VPCServiceImpl) findDefaultSGForVPC(ctx context.Context, accountID, vpc
 	}
 	return "", nil
 }
+
+// GroupLookup is the narrow capability another domain needs to check a
+// supplied security group: one account-scoped point read of the group.
+type GroupLookup struct {
+	kv jetstream.KeyValue
+}
+
+// NewGroupLookup wraps an already-open security group bucket.
+func NewGroupLookup(kv jetstream.KeyValue) *GroupLookup {
+	return &GroupLookup{kv: kv}
+}
+
+// GroupVPC returns the VPC of accountID's security group groupID. found is
+// false only when the group is absent; a failed read or decode is an error.
+func (g *GroupLookup) GroupVPC(ctx context.Context, accountID, groupID string) (vpcID string, found bool, err error) {
+	rec, _, err := readParent[SecurityGroupRecord](ctx, g.kv, kvstore.AccountKey(accountID, groupID))
+	if err != nil || rec == nil {
+		return "", false, err
+	}
+	return rec.VpcId, true, nil
+}

@@ -143,6 +143,9 @@ type ELBv2ServiceImpl struct {
 	// at shutdown to avoid blocking Close on a multi-minute boot. Exposed via
 	// WaitLaunches so tests can join the background launch deterministically.
 	launchWG sync.WaitGroup
+
+	// ovn selects the OVN create path; nil keeps the appliance path.
+	ovn *ovnFixture
 }
 
 // WaitLaunches blocks until every in-flight asynchronous LB-VM launch started by
@@ -1348,6 +1351,9 @@ func isCompatibleProtocol(listenerProto, tgProto string) bool {
 // need the LB's front-end address before proceeding — e.g. EKS, which bakes the
 // IP into the control-plane apiserver cert SAN — must use CreateLoadBalancerSync.
 func (s *ELBv2ServiceImpl) CreateLoadBalancer(ctx context.Context, input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	if s.ovn != nil {
+		return s.createOVNFixtureLoadBalancer(ctx, input, accountID)
+	}
 	return s.createLoadBalancer(ctx, input, accountID, false, nil)
 }
 

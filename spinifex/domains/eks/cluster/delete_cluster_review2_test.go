@@ -153,10 +153,9 @@ func (b *blockingDeleteKV) Delete(ctx context.Context, key string, opts ...jetst
 // TestS8_EKSDeadlineDuringRecordRemovalIsRecorded: a pass that runs out of time
 // while removing the record is recorded like any other failed pass.
 func TestS8_EKSDeadlineDuringRecordRemovalIsRecorded(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
-	orig := teardownPassTimeout
-	teardownPassTimeout = 150 * time.Millisecond
-	t.Cleanup(func() { teardownPassTimeout = orig })
+	f.svc.passTimeoutOverride = 150 * time.Millisecond
 	_, err := f.kv.Put(t.Context(), "clusters/alpha/addons/vpc-cni", []byte(`{}`))
 	require.NoError(t, err)
 	f.svc.teardownKV = func(context.Context, string) (jetstream.KeyValue, error) {

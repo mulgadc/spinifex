@@ -154,6 +154,8 @@ type ClusterReconciler struct {
 	healthTimeout time.Duration
 	createTimeout time.Duration
 	httpClient    HTTPDoer
+	// debounce, when a test sets it, replaces the loop's default debounce.
+	debounce time.Duration
 
 	// When stateSub is non-nil, health is gated on the CP's NATS self-report
 	// rather than the HTTP /healthz probe (apiserver is VPC-only, host-unreachable).
@@ -465,6 +467,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		Reconcile: r.reconcilePass,
 		Trigger:   r.wake,
 		Resync:    reconcileResync,
+		Debounce:  r.debounce,
 	})
 
 	if err := r.terminalErr(); err != nil {

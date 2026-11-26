@@ -42,8 +42,17 @@ func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, cl
 }
 
 // teardownPassTimeout bounds one converger run, so a step that hangs cannot
-// hold the gate and the lease for ever; the reaper retries it. Var for tests.
-var teardownPassTimeout = 15 * time.Minute
+// hold the gate and the lease for ever; the reaper retries it.
+const teardownPassTimeout = 15 * time.Minute
+
+// passTimeout is the bound on one converger run: passTimeoutOverride when a
+// test sets it, otherwise teardownPassTimeout.
+func (s *EKSServiceImpl) passTimeout() time.Duration {
+	if s.passTimeoutOverride > 0 {
+		return s.passTimeoutOverride
+	}
+	return teardownPassTimeout
+}
 
 // holdTeardown claims the right to tear a cluster down on this node: the
 // in-process gate, which also bounds this node's teardowns, then the cross-node
@@ -97,7 +106,7 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 	s.teardownWG.Go(func() {
 		deleted := false
 		defer func() { release(deleted) }()
-		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
+		ctx, cancel := context.WithTimeout(s.bgCtx, s.passTimeout())
 		defer cancel()
 		started := time.Now()
 		if err := s.convergeClusterDeletion(ctx, accountID, name, lost); err != nil {

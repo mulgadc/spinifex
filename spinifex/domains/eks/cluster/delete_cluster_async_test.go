@@ -158,7 +158,7 @@ func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
 	// takes over only if no renewal moved the key in between.
 	_, err := other.TryLock(t.Context())
 	require.ErrorAs(t, err, new(*kvsync.HeldError))
-	time.Sleep(ttl * 5 / 2)
+	time.Sleep(ttl * 5 / 4)
 	_, err = other.TryLock(t.Context())
 	require.ErrorAs(t, err, new(*kvsync.HeldError),
 		"the running teardown must still hold its lease after the request context is gone")

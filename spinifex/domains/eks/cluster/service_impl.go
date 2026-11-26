@@ -294,6 +294,8 @@ type EKSServiceImpl struct {
 	// ended workers to be proven gone; zero means the defaults.
 	workersEndWait time.Duration
 	workersEndPoll time.Duration
+	// passTimeoutOverride, when set by a test, replaces teardownPassTimeout.
+	passTimeoutOverride time.Duration
 	// teardownKV, when set by a test, replaces the converger's account bucket.
 	teardownKV func(ctx context.Context, accountID string) (jetstream.KeyValue, error)
 

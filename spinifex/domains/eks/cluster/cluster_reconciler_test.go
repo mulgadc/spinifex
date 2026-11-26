@@ -498,7 +498,7 @@ func requireStillRunning(t *testing.T, finished <-chan struct{}) {
 // asking until it has sat a TTL; one attempt would leave the cluster unreconciled.
 func TestRunClusterReconciler_TakesOverADeadHoldersKey(t *testing.T) {
 	t.Parallel()
-	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz",
+	r, js, acctKV := newReconcilerHarnessTTL(t, 150*time.Millisecond, "https://nlb.example/healthz",
 		WithHTTPClient(&stubHTTPDoer{status: http.StatusOK}), WithReconcileInterval(10*time.Second))
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
@@ -517,7 +517,7 @@ func TestRunClusterReconciler_TakesOverADeadHoldersKey(t *testing.T) {
 // resumes once it holds the lease once more.
 func TestRunClusterReconciler_ResumesAfterALostLease(t *testing.T) {
 	t.Parallel()
-	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz")
+	r, js, acctKV := newReconcilerHarnessTTL(t, 150*time.Millisecond, "https://nlb.example/healthz")
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
 	release, finished, err := RunClusterReconciler(t.Context(), r.lease, acctKV, testAccountID, "alpha", "https://nlb.example/healthz",

@@ -1144,34 +1144,40 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
-	// First heartbeat: transition provisioning → active
-	stateChanged := false
-	if lb.State == StateProvisioning {
-		lb.State = StateActive
-		lb.StateReason = ""
-		stateChanged = true
-		slog.InfoContext(ctx, "LB transitioned to active via heartbeat", "lbId", lbID)
-	}
-
 	now := time.Now().UTC()
 	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
 	lb.LastHeartbeat = now
 
 	// Both writes touch only the fields this heartbeat owns, under CAS, so a
 	// concurrent config re-render of the same LB is never rolled back.
+	activationLost := false
 	switch {
-	case stateChanged:
-		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
-			if rec.State == StateProvisioning {
+	case lb.State == StateProvisioning:
+		// First heartbeat: transition provisioning → active.
+		activated := false
+		committed, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			activated = rec.State == StateProvisioning
+			if activated {
 				rec.State = StateActive
 				rec.StateReason = ""
 				rec.ActiveSince = now
 			}
 			rec.LastHeartbeat = now
 			return true, nil
-		}); err != nil {
+		})
+		if err != nil {
 			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist activation", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		lb = committed
+		// A concurrent timeout can win the CAS; then report it and apply neither
+		// config nor target health from this heartbeat.
+		if lb.State != StateActive {
+			activationLost = true
+			break
+		}
+		if activated {
+			slog.InfoContext(ctx, "LB transitioned to active via heartbeat", "lbId", lbID)
 		}
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
@@ -1193,7 +1199,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	s.recordDataPathEvidence(ctx, lb, input)
 
 	// Process health report directly — no JSON round-trip needed.
-	if len(input.Servers) > 0 {
+	if len(input.Servers) > 0 && !activationLost {
 		s.hc.handleHealthReportDirect(ctx, input.toHealthReport())
 	}
 
@@ -1830,57 +1836,48 @@ func (s *ELBv2ServiceImpl) markLBFailed(ctx context.Context, lbArn, reason strin
 	}
 }
 
-// reapStuckProvisioningLBs marks failed any LB that has sat in provisioning past
-// lbProvisioningTimeout without a single lb-agent heartbeat. Such an LB launched
-// its VM but the agent never reached the daemon, so it would otherwise wedge in
-// provisioning forever. Synchronous; caller supplies now for testability.
+// reapStuckProvisioningLBs marks failed each appliance LB that has sat in
+// provisioning past lbProvisioningTimeout without an lb-agent heartbeat. It
+// keeps the VM and ENIs for an explicit delete. Caller supplies now for tests.
 func (s *ELBv2ServiceImpl) reapStuckProvisioningLBs(ctx context.Context, now time.Time) {
 	lbs, err := s.store.ListLoadBalancers(ctx)
 	if err != nil {
 		slog.Error("ELBv2 lifecycle reaper: failed to list load balancers", "err", err)
 		return
 	}
+	reason := fmt.Sprintf("lb-agent did not heartbeat within %s of provisioning", lbProvisioningTimeout)
 	for _, lb := range lbs {
-		if lb == nil || lb.State != StateProvisioning {
+		if lb == nil || !provisioningTimedOut(lb, now) {
 			continue
 		}
-		if !lb.LastHeartbeat.IsZero() || lb.CreatedAt.IsZero() {
+		failed := false
+		_, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+			failed = provisioningTimedOut(rec, now)
+			if failed {
+				rec.State = StateFailed
+				rec.StateReason = reason
+			}
+			return failed, nil
+		})
+		switch {
+		case errors.Is(err, ErrLoadBalancerNotFound):
 			continue
-		}
-		if now.Sub(lb.CreatedAt) < lbProvisioningTimeout {
+		case err != nil:
+			slog.Error("ELBv2 lifecycle reaper: failed to mark LB failed", "lbId", lb.LoadBalancerID, "err", err)
 			continue
+		case failed:
+			slog.Warn("ELBv2 lifecycle reaper: LB stuck in provisioning, marked failed",
+				"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
+				"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
 		}
-		reason := fmt.Sprintf("lb-agent did not heartbeat within %s of provisioning", lbProvisioningTimeout)
-		slog.Warn("ELBv2 lifecycle reaper: LB stuck in provisioning, marking failed",
-			"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
-			"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
-		s.markLBFailed(ctx, lb.LoadBalancerArn, reason)
-		s.releaseFailedLBVM(ctx, lb)
 	}
 }
 
-// releaseFailedLBVM stops the failed LB's own managed VM and detaches its ENIs,
-// so a failed LB holds no running capacity. The ENIs stay on the record for
-// DeleteLoadBalancer to remove. A VM that cannot be stopped keeps its ENIs
-// attached, since detaching under a running guest would only hide the leak.
-func (s *ELBv2ServiceImpl) releaseFailedLBVM(ctx context.Context, lb *LoadBalancerRecord) {
-	if lb.InstanceID == "" || s.InstanceLauncher == nil {
-		return
-	}
-	if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
-		slog.Error("ELBv2 lifecycle reaper: failed to terminate failed LB VM",
-			"lbId", lb.LoadBalancerID, "instanceId", lb.InstanceID, "err", err)
-		return
-	}
-	if s.VPCService == nil {
-		return
-	}
-	for _, eniID := range lb.ENIs {
-		if err := s.VPCService.DetachENI(ctx, lb.AccountID, eniID); err != nil && !awserrors.IsNotFound(err) {
-			slog.Warn("ELBv2 lifecycle reaper: failed to detach failed LB ENI",
-				"lbId", lb.LoadBalancerID, "eniId", eniID, "err", err)
-		}
-	}
+// provisioningTimedOut reports whether an appliance LB has gone past
+// lbProvisioningTimeout in provisioning with no heartbeat.
+func provisioningTimedOut(lb *LoadBalancerRecord, now time.Time) bool {
+	return lb.Realization == "" && lb.State == StateProvisioning && lb.LastHeartbeat.IsZero() &&
+		!lb.CreatedAt.IsZero() && now.Sub(lb.CreatedAt) >= lbProvisioningTimeout
 }
 
 // StartLifecycleReaper runs reapStuckProvisioningLBs on a ticker until the

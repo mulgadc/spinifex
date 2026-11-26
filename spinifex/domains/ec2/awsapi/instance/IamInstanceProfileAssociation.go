@@ -15,6 +15,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 )
 
@@ -153,6 +154,15 @@ func CountInstanceProfileAssociations(ctx context.Context, natsConn *nats.Conn, 
 // DescribeIamInstanceProfileAssociations aggregates associations across all daemons.
 // Filter names are validated at the gateway to fail fast before any NATS round-trip.
 func DescribeIamInstanceProfileAssociations(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+	// AWS answers a MaxResults outside 5-1000 without an error, so clamp it.
+	var maxResults *int64
+	if input.MaxResults != nil {
+		maxResults = aws.Int64(min(max(*input.MaxResults, 5), 1000))
+	}
+	page, err := describeAssociationsPaging.Parse(maxResults, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
 	for _, f := range input.Filters {
 		if f == nil || f.Name == nil {
 			continue
@@ -168,8 +178,12 @@ func DescribeIamInstanceProfileAssociations(ctx context.Context, input *ec2.Desc
 	if err != nil {
 		return nil, err
 	}
-	return &ec2.DescribeIamInstanceProfileAssociationsOutput{IamInstanceProfileAssociations: associations}, nil
+	associations, next := paging.EC2Page(associations, func(a *ec2.IamInstanceProfileAssociation) string { return aws.StringValue(a.AssociationId) }, page)
+	return &ec2.DescribeIamInstanceProfileAssociationsOutput{IamInstanceProfileAssociations: associations, NextToken: next}, nil
 }
+
+// Parse only sees a clamped MaxResults, and AWS accepts MaxResults with AssociationIds.
+var describeAssociationsPaging = paging.EC2{MaxResults: 1000}
 
 // enrichProfileID fills IamInstanceProfile.Id from the resolved profile.
 // Daemons have no IAM access. Safe to call with a nil association.

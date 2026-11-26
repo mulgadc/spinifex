@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +56,37 @@ func TestDescribeInstanceCreditSpecifications_SkipsNilAndEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceCreditSpecifications, 2)
-	assert.Equal(t, "i-valid", *out.InstanceCreditSpecifications[0].InstanceId)
-	assert.Equal(t, "i-also", *out.InstanceCreditSpecifications[1].InstanceId)
+	assert.Equal(t, "i-also", *out.InstanceCreditSpecifications[0].InstanceId)
+	assert.Equal(t, "i-valid", *out.InstanceCreditSpecifications[1].InstanceId)
+}
+
+func TestDescribeInstanceCreditSpecifications_NextTokenResumesListing(t *testing.T) {
+	t.Parallel()
+	out, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
+		InstanceIds: []*string{aws.String("i-aaa"), aws.String("i-bbb"), aws.String("i-ccc")},
+		NextToken:   aws.String(paging.EncodeToken("i-bbb")),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.InstanceCreditSpecifications, 2)
+	assert.Equal(t, "i-bbb", *out.InstanceCreditSpecifications[0].InstanceId)
+	assert.Equal(t, "i-ccc", *out.InstanceCreditSpecifications[1].InstanceId)
+	assert.Nil(t, out.NextToken)
+}
+
+func TestDescribeInstanceCreditSpecifications_RefusesForeignToken(t *testing.T) {
+	t.Parallel()
+	_, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
+		NextToken: aws.String("not-a-token"),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
+}
+
+func TestDescribeInstanceCreditSpecifications_RefusesMaxResultsWithInstanceIds(t *testing.T) {
+	t.Parallel()
+	_, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
+		InstanceIds: []*string{aws.String("i-aaa")}, MaxResults: aws.Int64(5),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterCombination), err)
 }

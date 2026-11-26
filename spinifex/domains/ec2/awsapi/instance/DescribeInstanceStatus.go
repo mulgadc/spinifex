@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"math"
 	"slices"
 	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,6 +21,13 @@ const (
 	reachabilityDetailName = "reachability"
 )
 
+// AWS words these as it does for DescribeInstances, which accepts any value from 5 up.
+var describeInstanceStatusPaging = paging.EC2{
+	MaxResults: math.MaxInt64,
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter instancesSet cannot be used with the parameter maxResults",
+}
+
 // DescribeInstanceStatus fans out to every node and, with IncludeAllInstances,
 // also augments from the stopped-instance KV bucket. The aggregator propagates
 // the first deterministic 4xx only when no data was collected, matching
@@ -26,6 +35,10 @@ const (
 func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string, synthesis StatusSynthesis, opts ...DescribeOption) (*ec2.DescribeInstanceStatusOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceStatusInput{}
+	}
+	page, err := describeInstanceStatusPaging.Parse(input.MaxResults, input.NextToken, len(input.InstanceIds))
+	if err != nil {
+		return nil, err
 	}
 	cfg := describeConfig{fanoutTimeout: defaultDescribeFanoutTimeout}
 	for _, opt := range opts {
@@ -74,7 +87,8 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	}
 
 	slog.InfoContext(ctx, "DescribeInstanceStatus: Aggregated response", "total_statuses", len(finalStatuses))
-	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
+	statuses, next := paging.EC2Page(finalStatuses, func(s *ec2.InstanceStatus) string { return *s.InstanceId }, page)
+	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses, NextToken: next}, nil
 }
 
 // queryStoppedInstancesForStatus projects input to DescribeInstancesInput for the stopped-KV handler.

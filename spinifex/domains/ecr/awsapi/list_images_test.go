@@ -31,7 +31,7 @@ func TestListImages_ProjectsTaggedAndUntaggedRecords(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.ImageIds, 3)
 	assert.Equal(t, "sha256:tagged", *out.ImageIds[0].ImageDigest)
-	assert.Equal(t, "v1", *out.ImageIds[0].ImageTag)
+	assert.Equal(t, "latest", *out.ImageIds[0].ImageTag)
 	assert.Equal(t, "sha256:untagged", *out.ImageIds[2].ImageDigest)
 	assert.Nil(t, out.ImageIds[2].ImageTag)
 

@@ -7,12 +7,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 type listImagesRequest struct {
 	RepositoryName string           `json:"repositoryName"`
 	RegistryID     string           `json:"registryId"`
 	MaxResults     *int64           `json:"maxResults"`
+	NextToken      *string          `json:"nextToken"`
 	Filter         *tagStatusFilter `json:"filter"`
 }
 
@@ -35,7 +37,7 @@ func (f *tagStatusFilter) validate() error {
 	return nil
 }
 
-// ListImages returns every image identifier in the caller's repository,
+// ListImages returns a page of the image identifiers in the caller's repository,
 // optionally filtering tagged or untagged manifests. Each tag is an AWS image
 // identifier; an untagged manifest is represented by its digest only.
 func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, body []byte) (*ecr.ListImagesOutput, error) {
@@ -46,7 +48,8 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
-	if err := validateMaxResults(req.MaxResults); err != nil {
+	page, err := parsePage(req.MaxResults, req.NextToken, "", 0)
+	if err != nil {
 		return nil, err
 	}
 	if err := req.Filter.validate(); err != nil {
@@ -82,5 +85,10 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 		}
 	}
 
-	return &ecr.ListImagesOutput{ImageIds: identifiers}, nil
+	// A digest holds no "/", so digest/tag names one identifier uniquely.
+	key := func(id *ecr.ImageIdentifier) string {
+		return aws.StringValue(id.ImageDigest) + "/" + aws.StringValue(id.ImageTag)
+	}
+	identifiers, next := paging.EC2Page(identifiers, key, page)
+	return &ecr.ListImagesOutput{ImageIds: identifiers, NextToken: next}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 // imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair. ImageTag
@@ -26,6 +27,7 @@ type describeImagesRequest struct {
 	RegistryID     string            `json:"registryId"`
 	ImageIDs       []imageIdentifier `json:"imageIds"`
 	MaxResults     *int64            `json:"maxResults"`
+	NextToken      *string           `json:"nextToken"`
 	// Filter's tagStatus is enum-checked but not yet applied; its semantics
 	// are a separate ECR compatibility decision.
 	Filter *tagStatusFilter `json:"filter"`
@@ -45,7 +47,8 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 	if err := validateImageIDs(req.ImageIDs, false); err != nil {
 		return nil, err
 	}
-	if err := validateMaxResults(req.MaxResults); err != nil {
+	page, err := parsePage(req.MaxResults, req.NextToken, "imageIds", len(req.ImageIDs))
+	if err != nil {
 		return nil, err
 	}
 	if err := req.Filter.validate(); err != nil {
@@ -97,5 +100,6 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 		return nil, ImageNotFoundError(accountID, req.RepositoryName, first.ImageDigest, first.tag())
 	}
 
-	return &ecr.DescribeImagesOutput{ImageDetails: details}, nil
+	details, next := paging.EC2Page(details, func(d *ecr.ImageDetail) string { return aws.StringValue(d.ImageDigest) }, page)
+	return &ecr.DescribeImagesOutput{ImageDetails: details, NextToken: next}, nil
 }

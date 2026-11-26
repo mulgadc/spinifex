@@ -268,7 +268,7 @@ func TestOVNFixtureARN_OtherOperationsWriteNothing(t *testing.T) {
 				DefaultActions: []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}},
 			}, testAccountID)
 			return err
-		}, awserrors.ErrorELBv2LoadBalancerNotFound},
+		}, awserrors.ErrorELBv2TargetGroupNotFound},
 		"DescribeListeners": {func() error {
 			_, err := h.svc.DescribeListeners(ctx, &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
 			return err

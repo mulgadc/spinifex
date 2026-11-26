@@ -2316,6 +2316,9 @@ func (s *ELBv2ServiceImpl) createdTGToSDK(r *TargetGroupRecord) *elbv2.TargetGro
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+	if s.ovn != nil {
+		return nil, refuseOVNFixtureGroupChange("ModifyTargetGroup")
+	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2384,6 +2387,9 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 }
 
 func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
+	if s.ovn != nil {
+		return nil, refuseOVNFixtureGroupChange("DeleteTargetGroup")
+	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2601,6 +2607,9 @@ func (s *ELBv2ServiceImpl) updateTargetGroupCAS(ctx context.Context, arn, accoun
 }
 
 func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
+	if s.ovn != nil {
+		return nil, refuseOVNFixtureGroupChange("RegisterTargets")
+	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2690,6 +2699,9 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 }
 
 func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error) {
+	if s.ovn != nil {
+		return nil, refuseOVNFixtureGroupChange("DeregisterTargets")
+	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2997,6 +3009,9 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 }
 
 func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
+	if s.ovn != nil {
+		return s.createOVNFixtureListener(ctx, input, accountID)
+	}
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -3203,6 +3218,11 @@ func (s *ELBv2ServiceImpl) deleteListenerCascade(ctx context.Context, listener *
 func (s *ELBv2ServiceImpl) DeleteListener(ctx context.Context, input *elbv2.DeleteListenerInput, accountID string) (*elbv2.DeleteListenerOutput, error) {
 	if input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.ovn != nil {
+		if err := s.refuseOVNFixtureListenerDelete(ctx, *input.ListenerArn, accountID); err != nil {
+			return nil, err
+		}
 	}
 
 	listener, err := s.store.GetListenerByArn(ctx, *input.ListenerArn)

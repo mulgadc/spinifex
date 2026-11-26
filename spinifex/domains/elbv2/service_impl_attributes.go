@@ -327,6 +327,9 @@ func mkLBAttr(key, value string) *elbv2.LoadBalancerAttribute {
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, accountID string) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
+	if s.ovn != nil {
+		return nil, refuseOVNFixtureGroupChange("ModifyTargetGroupAttributes")
+	}
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}

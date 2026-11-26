@@ -50,17 +50,16 @@ type fixtureOwner struct {
 }
 
 // fixtureClaim is a claim held by the caller: its key, the KV revision the
-// caller wrote and the owner value at that revision. Seal uses the persisted
-// bytes, so a caller change to Owner after Begin cannot reach the sealed root.
+// caller wrote and the owner bytes at that revision. Seal uses those bytes, so
+// a caller change to its root after Begin cannot reach the sealed root.
 type fixtureClaim struct {
 	Key      string
 	Revision uint64
-	Owner    fixtureOwner
 	pending  []byte
 }
 
 // snapshot decodes the persisted pending owner. Store logic reads the owner
-// token, parents and root only from it, never from the mutable Owner copy.
+// token, parents and root only from it.
 func (c *fixtureClaim) snapshot() (fixtureOwner, error) {
 	owner, err := decodeFixtureOwner(c.pending)
 	if err != nil {
@@ -70,11 +69,10 @@ func (c *fixtureClaim) snapshot() (fixtureOwner, error) {
 }
 
 func newFixtureClaim(key string, revision uint64, raw []byte) (*fixtureClaim, error) {
-	owner, err := decodeFixtureOwner(raw)
-	if err != nil {
+	if _, err := decodeFixtureOwner(raw); err != nil {
 		return nil, fmt.Errorf("%s: %w", key, err)
 	}
-	return &fixtureClaim{Key: key, Revision: revision, Owner: owner, pending: raw}, nil
+	return &fixtureClaim{Key: key, Revision: revision, pending: raw}, nil
 }
 
 // fixtureOwnerStore keeps each OVN load balancer root in its account/name

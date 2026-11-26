@@ -460,8 +460,8 @@ func TestFixtureFence_Subnet(t *testing.T) {
 		blocked, err := f.del.vpcBlocksDeletion(t.Context(), testAccountID, f.vpcID)
 		require.NoError(t, err)
 		assert.True(t, blocked, "a sealed owner keeps its VPC dependency past the TTL")
-		assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.vpcSlot()))
-		assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
+		assert.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.vpcSlot()))
+		assert.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.subnetSlot()))
 	})
 
 	t.Run("admission touches between the check and the marked write", func(t *testing.T) {
@@ -477,7 +477,7 @@ func TestFixtureFence_Subnet(t *testing.T) {
 		requireFenceCode(t, f.result(deletion), awserrors.ErrorDependencyViolation)
 		assert.Equal(t, 2, f.subCheck.runs(), "the lost mark re-runs the check")
 		assert.False(t, f.parentMarked(ec2vpc.KVBucketSubnets, f.subnetID))
-		got, err := f.admit.GetSealedByArn(t.Context(), claim.Owner.Root.LoadBalancerArn, fixtureRegion, testAccountID)
+		got, err := f.admit.GetSealedByArn(t.Context(), claimOwner(f.t, claim).Root.LoadBalancerArn, fixtureRegion, testAccountID)
 		require.NoError(t, err)
 		require.NotNil(t, got)
 	})
@@ -631,7 +631,7 @@ func TestFixtureFence_VpcDependencyReadFails(t *testing.T) {
 			touched := f.admitVPCKV.arm("Update", true, f.isVPC)
 			slot.free()
 			touched.wait(t)
-			require.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.vpcSlot()), "the VPC slot is live when DeleteVpc runs")
+			require.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.vpcSlot()), "the VPC slot is live when DeleteVpc runs")
 			before := f.parentEntry(ec2vpc.KVBucketVPCs, f.vpcID)
 
 			key := failKey(f, claim)
@@ -704,9 +704,9 @@ func TestFixtureFence_ConcurrentSealBlocksInvalidation(t *testing.T) {
 	requireFenceCode(t, f.deleteSubnet(), awserrors.ErrorDependencyViolation)
 	require.True(t, sealed, "the delete reached its invalidation")
 	assert.False(t, f.parentMarked(ec2vpc.KVBucketSubnets, f.subnetID))
-	assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.vpcSlot()))
-	assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
-	got, err := f.admit.GetSealedByArn(ctx, claim.Owner.Root.LoadBalancerArn, fixtureRegion, testAccountID)
+	assert.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.vpcSlot()))
+	assert.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.subnetSlot()))
+	got, err := f.admit.GetSealedByArn(ctx, claimOwner(f.t, claim).Root.LoadBalancerArn, fixtureRegion, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 }
@@ -721,20 +721,20 @@ func TestFixtureFence_LateWriterKeepsReplacementSlots(t *testing.T) {
 	touch := f.admitVPCKV.arm("Update", false, f.isVPC)
 	late := f.createAsync(f.admit, oldClaim)
 	touch.wait(t)
-	assert.Equal(t, oldClaim.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
+	assert.Equal(t, claimOwner(f.t, oldClaim).OwnerID, f.slotOwner(f.subnetSlot()))
 
 	f.clock.advance(lbNameClaimTTL + time.Second)
 	newClaim := f.begin(f.del, f.root("bbbb000000000002"))
 	_, err := f.del.admitAndSeal(ctx, newClaim)
 	require.NoError(t, err)
-	assert.Equal(t, newClaim.Owner.OwnerID, f.slotOwner(f.vpcSlot()), "the replacement took the stale slot")
+	assert.Equal(t, claimOwner(f.t, newClaim).OwnerID, f.slotOwner(f.vpcSlot()), "the replacement took the stale slot")
 
 	touch.free()
 	require.ErrorIs(t, f.result(late), errFixtureOwnerLost)
-	assert.Equal(t, newClaim.Owner.OwnerID, f.slotOwner(f.vpcSlot()))
-	assert.Equal(t, newClaim.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
+	assert.Equal(t, claimOwner(f.t, newClaim).OwnerID, f.slotOwner(f.vpcSlot()))
+	assert.Equal(t, claimOwner(f.t, newClaim).OwnerID, f.slotOwner(f.subnetSlot()))
 	require.NoError(t, f.admit.abandon(ctx, oldClaim))
-	assert.Equal(t, newClaim.Owner.OwnerID, f.slotOwner(f.subnetSlot()), "a second late cleanup changes nothing")
+	assert.Equal(t, claimOwner(f.t, newClaim).OwnerID, f.slotOwner(f.subnetSlot()), "a second late cleanup changes nothing")
 	requireFenceCode(t, f.deleteSubnet(), awserrors.ErrorDependencyViolation)
 }
 
@@ -753,13 +753,13 @@ func TestFixtureFence_FailedAdmissionKeepsLiveSlot(t *testing.T) {
 	second := f.begin(f.del, other)
 	_, err = f.del.admitAndSeal(ctx, second)
 	require.ErrorIs(t, err, errFixtureParentBusy)
-	assert.Equal(t, first.Owner.OwnerID, f.slotOwner(f.vpcSlot()))
-	assert.Equal(t, first.Owner.OwnerID, f.slotOwner(f.subnetSlot()))
+	assert.Equal(t, claimOwner(f.t, first).OwnerID, f.slotOwner(f.vpcSlot()))
+	assert.Equal(t, claimOwner(f.t, first).OwnerID, f.slotOwner(f.subnetSlot()))
 	assert.False(t, f.claimPresent(second.Key), "the refused create invalidated its own claim")
 }
 
 // The fence, the seal and the cleanup all use the persisted pending snapshot.
-// A change to the decoded claim after Begin cannot move the dependency.
+// A change to the caller's root after Begin cannot move the dependency.
 func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -767,13 +767,14 @@ func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
 		t.Parallel()
 		f := newFenceFixture(t)
 		other := f.addSubnet("10.80.2.0/24")
-		claim := f.begin(f.admit, f.root("aaaa000000000001"))
-		claim.Owner.Root.Subnets[0] = other
+		root := f.root("aaaa000000000001")
+		claim := f.begin(f.admit, root)
+		root.Subnets[0] = other
 
 		root, err := f.admit.admitAndSeal(t.Context(), claim)
 		require.NoError(t, err)
 		assert.Equal(t, []string{f.subnetID}, root.Subnets)
-		assert.Equal(t, claim.Owner.OwnerID, f.slotOwner(f.subnetSlot()), "the saved subnet holds the dependency")
+		assert.Equal(t, claimOwner(f.t, claim).OwnerID, f.slotOwner(f.subnetSlot()), "the saved subnet holds the dependency")
 		assert.Empty(t, f.slotOwner(subnetSlotKey(testAccountID, other)), "the changed subnet is unowned")
 		requireFenceCode(t, f.deleteSubnet(), awserrors.ErrorDependencyViolation)
 		require.NoError(t, f.deleteSubnetID(other))
@@ -783,10 +784,11 @@ func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
 		t.Parallel()
 		f := newFenceFixture(t)
 		other := f.addSubnet("10.80.2.0/24")
-		claim := f.begin(f.admit, f.root("aaaa000000000001"))
+		root := f.root("aaaa000000000001")
+		claim := f.begin(f.admit, root)
 		require.NoError(t, f.admit.admitParents(t.Context(), claim))
-		claim.Owner.Root.Subnets[0] = other
-		claim.Owner.OwnerID = "bbbb000000000002"
+		root.Subnets[0] = other
+		root.LoadBalancerID = "bbbb000000000002"
 
 		require.NoError(t, f.admit.abandon(t.Context(), claim))
 		assert.False(t, f.claimPresent(claim.Key))
@@ -800,7 +802,7 @@ func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
 // error. The delete refuses before any invalidation or slot deletion.
 // validSlotJSON is the slot admission would write for claim.
 func validSlotJSON(f *fenceFixture, claim *fixtureClaim) string {
-	return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"` + f.subnetID + `"}`
+	return `{"claimKey":"` + claim.Key + `","ownerId":"` + claimOwner(f.t, claim).OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"` + f.subnetID + `"}`
 }
 
 func TestFixtureFence_MalformedSlotFailsClosed(t *testing.T) {
@@ -808,18 +810,18 @@ func TestFixtureFence_MalformedSlotFailsClosed(t *testing.T) {
 
 	cases := map[string]func(f *fenceFixture, claim *fixtureClaim) string{
 		"extra key list": func(f *fenceFixture, claim *fixtureClaim) string {
-			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID +
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claimOwner(f.t, claim).OwnerID + `","vpcId":"` + f.vpcID +
 				`","subnetId":"` + f.subnetID + `","keys":["` + f.vpcSlot() + `","` + f.subnetSlot() + `","ovnslot.subnet.x.y"]}`
 		},
 		"pair without the read key": func(f *fenceFixture, claim *fixtureClaim) string {
-			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"subnet-elsewhere"}`
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claimOwner(f.t, claim).OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"subnet-elsewhere"}`
 		},
 		"claim in another account": func(f *fenceFixture, claim *fixtureClaim) string {
-			return `{"claimKey":"` + LBNameKey("ovn-nlb", "210987654321") + `","ownerId":"` + claim.Owner.OwnerID +
+			return `{"claimKey":"` + LBNameKey("ovn-nlb", "210987654321") + `","ownerId":"` + claimOwner(f.t, claim).OwnerID +
 				`","vpcId":"` + f.vpcID + `","subnetId":"` + f.subnetID + `"}`
 		},
 		"pair differs from the claim root": func(f *fenceFixture, claim *fixtureClaim) string {
-			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"vpc-elsewhere","subnetId":"` + f.subnetID + `"}`
+			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claimOwner(f.t, claim).OwnerID + `","vpcId":"vpc-elsewhere","subnetId":"` + f.subnetID + `"}`
 		},
 		"valid slot then trailing data": func(f *fenceFixture, claim *fixtureClaim) string {
 			return validSlotJSON(f, claim) + `junk`
@@ -879,7 +881,7 @@ func TestFixtureFence_ClearSucceedsOnLastAttempt(t *testing.T) {
 		_, err := f.elbKV.Put(ctx, key, value)
 		require.NoError(t, err)
 	})
-	require.NoError(t, f.del.clearOwnerSlots(ctx, testAccountID, claim.Owner.OwnerID, []string{f.subnetSlot()}))
+	require.NoError(t, f.del.clearOwnerSlots(ctx, testAccountID, claimOwner(f.t, claim).OwnerID, []string{f.subnetSlot()}))
 	assert.Equal(t, fixtureParentAttempts-1, bumps, "every earlier attempt lost its CAS")
 	assert.Empty(t, f.slotOwner(f.subnetSlot()))
 }

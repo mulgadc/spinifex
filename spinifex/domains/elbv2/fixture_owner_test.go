@@ -445,8 +445,6 @@ func TestFixtureOwner_SealUsesPersistedPendingRoot(t *testing.T) {
 	root.Subnets[0] = "subnet-changed"
 	root.SecurityGroups = append(root.SecurityGroups, "sg-added")
 	root.VpcId = "vpc-changed"
-	claim.Owner.Root.Subnets[0] = "subnet-changed"
-	claim.Owner.Root.VpcId = "vpc-changed"
 
 	out, err := owners.Seal(ctx, claim)
 	require.NoError(t, err)
@@ -456,6 +454,14 @@ func TestFixtureOwner_SealUsesPersistedPendingRoot(t *testing.T) {
 		assert.Equal(t, []string{"sg-fixture"}, got.SecurityGroups, name)
 		assert.Equal(t, "vpc-fixture", got.VpcId, name)
 	}
+}
+
+// claimOwner decodes the claim's persisted pending snapshot.
+func claimOwner(t *testing.T, claim *fixtureClaim) fixtureOwner {
+	t.Helper()
+	owner, err := claim.snapshot()
+	require.NoError(t, err)
+	return owner
 }
 
 // A malformed or incomplete claim is a store error. It is never taken over or

@@ -74,7 +74,7 @@ func (cfg *Config) volumeOpHandler(publish bool, handler providerMsgHandler) nat
 			return
 		}
 		ticket := cfg.volumeTurns.take(req.VolumeID)
-		go func() {
+		cfg.volumeOps.Go(func() {
 			defer ticket.done()
 			ticket.wait()
 			if publish {
@@ -82,6 +82,6 @@ func (cfg *Config) volumeOpHandler(publish bool, handler providerMsgHandler) nat
 				defer func() { <-cfg.publishSlots }()
 			}
 			traced(msg)
-		}()
+		})
 	}
 }

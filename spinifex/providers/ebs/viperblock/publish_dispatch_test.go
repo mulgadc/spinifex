@@ -79,7 +79,7 @@ func installFakeNbdkit(t *testing.T) {
 	t.Setenv(fakeNbdkitEnv, "1")
 	t.Cleanup(func() {
 		data, _ := os.ReadFile(pids)
-		for _, field := range strings.Fields(string(data)) {
+		for field := range strings.FieldsSeq(string(data)) {
 			if pid, err := strconv.Atoi(field); err == nil {
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}

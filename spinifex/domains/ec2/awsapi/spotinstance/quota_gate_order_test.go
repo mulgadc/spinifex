@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -115,7 +114,7 @@ func TestRequestSpotInstances_QuotaGateRunsBeforeDispatchAndLaunch(t *testing.T)
 	require.NoError(t, err)
 	defer putSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond) // let subscriptions propagate
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RequestSpotInstancesInput{
 		LaunchSpecification: &ec2.RequestSpotLaunchSpecification{

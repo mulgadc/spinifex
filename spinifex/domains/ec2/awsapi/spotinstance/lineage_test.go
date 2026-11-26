@@ -58,20 +58,25 @@ func TestSendSpotLineageCommand_RetriesPastNoResponders(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
 	var received atomic.Int32
-	go func() {
-		time.Sleep(250 * time.Millisecond)
+	var waits []time.Duration
+	subscribeOwner := func(d time.Duration) {
+		waits = append(waits, d)
+		if len(waits) > 1 {
+			return
+		}
 		sub, err := nc.Subscribe("ec2.cmd.i-late", func(m *nats.Msg) {
 			received.Add(1)
 			_ = m.Respond([]byte(`{}`))
 		})
-		if err == nil {
-			t.Cleanup(func() { _ = sub.Unsubscribe() })
-		}
-	}()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+		require.NoError(t, nc.Flush())
+	}
 
-	err := sendSpotLineageCommand(context.Background(), nc, "i-late", "sir-late-1", lineageTestAccount)
+	err := sendSpotLineageCommandWithWait(context.Background(), nc, "i-late", "sir-late-1", lineageTestAccount, subscribeOwner)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), received.Load())
+	assert.Equal(t, []time.Duration{spotLineageRetryDelay}, waits, "exactly one no-responders retry before the owner answers")
 }
 
 // With no owner ever subscribing, the write-back exhausts its retries and
@@ -79,8 +84,11 @@ func TestSendSpotLineageCommand_RetriesPastNoResponders(t *testing.T) {
 func TestSendSpotLineageCommand_ReturnsErrorWhenNoOwner(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	err := sendSpotLineageCommand(context.Background(), nc, "i-absent", "sir-absent-1", lineageTestAccount)
-	require.Error(t, err)
+	var waits int
+	err := sendSpotLineageCommandWithWait(context.Background(), nc, "i-absent", "sir-absent-1", lineageTestAccount,
+		func(time.Duration) { waits++ })
+	require.ErrorIs(t, err, nats.ErrNoResponders)
+	assert.Equal(t, spotLineageRetries-1, waits)
 }
 
 // Requests with no mapped instance (no VM launched) are skipped — no command is sent.

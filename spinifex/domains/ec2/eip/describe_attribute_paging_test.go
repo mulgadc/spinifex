@@ -29,7 +29,7 @@ func TestEIP_DescribeAddressesAttribute_PageWalkFollowsSelection(t *testing.T) {
 	var token *string
 	for range 10 {
 		out, err := svc.DescribeAddressesAttribute(t.Context(), &ec2.DescribeAddressesAttributeInput{
-			AllocationIds: aws.StringSlice(want), MaxResults: aws.Int64(2), NextToken: token,
+			AllocationIds: aws.StringSlice(append(want, want[0])), MaxResults: aws.Int64(2), NextToken: token,
 		}, testAccountID)
 		require.NoError(t, err)
 		for _, a := range out.Addresses {
@@ -41,6 +41,7 @@ func TestEIP_DescribeAddressesAttribute_PageWalkFollowsSelection(t *testing.T) {
 		require.Len(t, out.Addresses, 2, "a page before the last is full")
 		token = out.NextToken
 	}
+	require.NotNil(t, token, "the walk took more than one page")
 	assert.Equal(t, want, seen)
 
 	_, err := svc.DescribeAddressesAttribute(t.Context(), &ec2.DescribeAddressesAttributeInput{NextToken: aws.String("garbage")}, testAccountID)

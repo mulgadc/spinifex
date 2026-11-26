@@ -351,6 +351,7 @@ func TestDescribeCapacityReservations_PageWalkFollowsFilters(t *testing.T) {
 		require.Len(t, out.CapacityReservations, 4, "a page before the last is full")
 		token = out.NextToken
 	}
+	require.NotNil(t, token, "the walk took more than one page")
 	assert.Equal(t, want, seen)
 
 	_, err = DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{NextToken: aws.String("garbage")}, nc, 2, testAccountID)

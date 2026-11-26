@@ -722,11 +722,13 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 	var addresses []*ec2.AddressAttribute
 
 	if len(input.AllocationIds) > 0 {
-		// Direct lookups by requested IDs.
+		// Direct lookups by requested IDs; a repeated ID would stall the page token.
+		seen := map[string]bool{}
 		for _, id := range input.AllocationIds {
-			if id == nil {
+			if id == nil || seen[*id] {
 				continue
 			}
+			seen[*id] = true
 			key := kvstore.AccountKey(accountID, *id)
 			entry, err := s.eipKV.Get(ctx, key)
 			if err != nil {

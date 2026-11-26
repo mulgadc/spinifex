@@ -183,3 +183,17 @@ func addonNames(o *eks.DescribeAddonVersionsOutput) []string {
 	}
 	return out
 }
+
+// A foreign token is rejected even when the Kubernetes version matches no
+// add-on and the result is empty.
+func TestDescribeAddonVersions_RejectsTokenForUnmatchedVersion(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	token := base64.RawURLEncoding.EncodeToString([]byte(csiAddon))
+	_, err := svc.DescribeAddonVersions(context.Background(), &eks.DescribeAddonVersionsInput{
+		KubernetesVersion: aws.String("0.0"), NextToken: aws.String(token),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+}

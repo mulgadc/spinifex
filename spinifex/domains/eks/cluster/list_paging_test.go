@@ -186,3 +186,62 @@ func TestListAccessPolicies_RejectsForeignToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 }
+
+// Every EKS list action refuses a maxResults outside the model's 1 to 100
+// range instead of clamping it to a page.
+func TestListActions_RefuseOutOfRangeMaxResults(t *testing.T) {
+	t.Parallel()
+	svc, _ := pagingService(t)
+	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	ctx := context.Background()
+	cluster, principal := aws.String("c1"), aws.String(testPrincipalARN)
+	calls := map[string]func(mr *int64) error{
+		"ListClusters": func(mr *int64) error {
+			_, err := svc.ListClusters(ctx, &eks.ListClustersInput{MaxResults: mr}, testAccountID)
+			return err
+		},
+		"ListClustersNoAccountBucket": func(mr *int64) error {
+			_, err := svc.ListClusters(ctx, &eks.ListClustersInput{MaxResults: mr}, "999999999999")
+			return err
+		},
+		"ListNodegroups": func(mr *int64) error {
+			_, err := svc.ListNodegroups(ctx, &eks.ListNodegroupsInput{ClusterName: cluster, MaxResults: mr}, testAccountID)
+			return err
+		},
+		"ListAddons": func(mr *int64) error {
+			_, err := svc.ListAddons(ctx, &eks.ListAddonsInput{ClusterName: cluster, MaxResults: mr}, testAccountID)
+			return err
+		},
+		"ListAccessEntries": func(mr *int64) error {
+			_, err := svc.ListAccessEntries(ctx, &eks.ListAccessEntriesInput{ClusterName: cluster, MaxResults: mr}, testAccountID)
+			return err
+		},
+		"ListAccessPolicies": func(mr *int64) error {
+			_, err := svc.ListAccessPolicies(ctx, &eks.ListAccessPoliciesInput{MaxResults: mr}, testAccountID)
+			return err
+		},
+		"ListAssociatedAccessPolicies": func(mr *int64) error {
+			_, err := svc.ListAssociatedAccessPolicies(ctx, &eks.ListAssociatedAccessPoliciesInput{
+				ClusterName: cluster, PrincipalArn: principal, MaxResults: mr,
+			}, testAccountID)
+			return err
+		},
+		"DescribeAddonVersions": func(mr *int64) error {
+			_, err := svc.DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{MaxResults: mr}, testAccountID)
+			return err
+		},
+	}
+	for name, call := range calls {
+		for _, mr := range []int64{0, -1, 101} {
+			err := call(aws.Int64(mr))
+			require.Error(t, err, "%s maxResults=%d", name, mr)
+			assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err), "%s maxResults=%d", name, mr)
+		}
+		for _, mr := range []int64{1, 100} {
+			require.NoError(t, call(aws.Int64(mr)), "%s maxResults=%d", name, mr)
+		}
+	}
+}

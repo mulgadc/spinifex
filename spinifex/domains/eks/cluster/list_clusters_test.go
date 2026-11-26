@@ -52,25 +52,6 @@ func TestEKSServiceImpl_ListClustersRejectsForeignToken(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 }
 
-// TestEKSServiceImpl_ListClustersMaxResultsClamped confirms an out-of-range
-// MaxResults (zero, negative, or above the 100 ceiling) clamps to a single full
-// page rather than truncating or erroring.
-func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
-	t.Parallel()
-	f := newEKSServiceFixture(t)
-	want := []string{"c01", "c02", "c03"}
-	for _, n := range want {
-		require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta(n)))
-	}
-
-	for _, mr := range []int64{0, -5, 250} {
-		out, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(mr)}, testAccountID)
-		require.NoError(t, err)
-		assert.Equal(t, want, aws.StringValueSlice(out.Clusters), "MaxResults=%d must clamp to one full page", mr)
-		assert.Nil(t, out.NextToken, "MaxResults=%d single page must not advertise a NextToken", mr)
-	}
-}
-
 // TestEKSReadUnavailableClassification pins the post-restart behaviour: a
 // transient JetStream error (no leader yet) surfaces as a retryable
 // ServiceUnavailable, while a genuine fault stays wrapped (the daemon maps it

@@ -101,6 +101,8 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 type volumeMounterAdapter struct {
 	node     string
 	provider mounterProvider
+	// vms is the manager whose lock guards the VM records Mount writes.
+	vms *vm.Manager
 	// abandonTimeout bounds each no-seal unpublish Abandon sends.
 	abandonTimeout time.Duration
 	// volumes serialises every publish and unpublish of a volume on this
@@ -226,10 +228,11 @@ var _ mounterProvider = (*ebsprovider.NATSProvider)(nil)
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
-func newVolumeMounterAdapter(provider mounterProvider, node string) *volumeMounterAdapter {
+func newVolumeMounterAdapter(provider mounterProvider, node string, vms *vm.Manager) *volumeMounterAdapter {
 	return &volumeMounterAdapter{
 		node:           node,
 		provider:       provider,
+		vms:            vms,
 		abandonTimeout: abandonTimeout,
 	}
 }
@@ -431,14 +434,37 @@ func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject 
 }
 
 func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error {
+	requests, err := a.publishAll(ctx, instance)
+	if err != nil {
+		return err
+	}
+	// The manager lock comes before EBSRequests.Mu, and the daemon persists the
+	// record under it. An entry that changed since the publish is left as it is.
+	a.vms.Inspect(instance, func(v *vm.VM) {
+		v.EBSRequests.Mu.Lock()
+		defer v.EBSRequests.Mu.Unlock()
+		for k, req := range requests {
+			if k < len(v.EBSRequests.Requests) && v.EBSRequests.Requests[k].Name == req.Name {
+				cur := &v.EBSRequests.Requests[k]
+				cur.NBDURI, cur.BlockDevice, cur.BlockSizeBytes = req.NBDURI, req.BlockDevice, req.BlockSizeBytes
+			}
+		}
+	})
+	return nil
+}
+
+// publishAll publishes a copy of each of the instance's requests while it holds
+// EBSRequests.Mu, and returns the copies with their exports.
+func (a *volumeMounterAdapter) publishAll(ctx context.Context, instance *vm.VM) ([]vm.EBSRequest, error) {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
+	requests := slices.Clone(instance.EBSRequests.Requests)
 
-	mounted := make([]int, 0, len(instance.EBSRequests.Requests))
+	mounted := make([]int, 0, len(requests))
 	rollback := func(origErr error) error {
 		var rbErrs []error
 		for _, idx := range mounted {
-			req := instance.EBSRequests.Requests[idx]
+			req := requests[idx]
 			if err := a.unpublish(ctx, instance.AccountID, req); err != nil {
 				slog.Error("Mount rollback: unmount failed",
 					"volume", req.Name, "err", err)
@@ -451,19 +477,18 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 		return origErr
 	}
 
-	for k, v := range instance.EBSRequests.Requests {
-		if err := a.publish(ctx, instance.AccountID, &instance.EBSRequests.Requests[k]); err != nil {
-			slog.Error("Failed to publish volume", "volume", v.Name, "err", err)
+	for k := range requests {
+		if err := a.publish(ctx, instance.AccountID, &requests[k]); err != nil {
+			slog.Error("Failed to publish volume", "volume", requests[k].Name, "err", err)
 			// The provider may have started this export, so it is torn down too.
 			if errors.Is(err, vm.ErrMountAmbiguous) {
 				mounted = append(mounted, k)
 			}
-			return rollback(err)
+			return nil, rollback(err)
 		}
 		mounted = append(mounted, k)
 	}
-
-	return nil
+	return requests, nil
 }
 
 func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) error {

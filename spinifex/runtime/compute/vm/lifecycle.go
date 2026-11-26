@@ -358,15 +358,20 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 	consoleLogPath := filepath.Join(runtimeDir, fmt.Sprintf("console-%s.log", instance.ID))
 	serialSocket := filepath.Join(runtimeDir, fmt.Sprintf("serial-%s.sock", instance.ID))
 
+	// Writes to the VM record below are under the manager lock, because the
+	// daemon persists the record under it.
 	if instance.DirectBoot {
 		// Direct-boot (microvm) path: vm.Config was pre-built by the launcher.
 		// Only fill in the runtime-generated paths that are not known until now.
 		// SerialSocket is intentionally omitted: microvm uses a file chardev
 		// so kernel output is captured without a socket client.
-		instance.Config.PIDFile = pidFile
-		instance.Config.ConsoleLogPath = consoleLogPath
+		m.Inspect(instance, func(v *VM) {
+			v.Config.PIDFile = pidFile
+			v.Config.ConsoleLogPath = consoleLogPath
+		})
 	} else {
-		instance.Config = buildBaseVMConfig(instance.ID, instance.InstanceType, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
+		base := buildBaseVMConfig(instance.ID, instance.InstanceType, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
+		m.Inspect(instance, func(v *VM) { v.Config = base })
 		m.initENIRequests(instance)
 
 		instance.EBSRequests.Mu.Lock()
@@ -375,17 +380,19 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 		if err != nil {
 			return err
 		}
-		instance.Config.Drives = append(instance.Config.Drives, driveCfg.Drives...)
-		instance.Config.IOThreads = append(instance.Config.IOThreads, driveCfg.IOThreads...)
-		instance.Config.Devices = append(instance.Config.Devices, driveCfg.Devices...)
-		instance.Config.Blockdevs = append(instance.Config.Blockdevs, driveCfg.Blockdevs...)
+		m.Inspect(instance, func(v *VM) {
+			v.Config.Drives = append(v.Config.Drives, driveCfg.Drives...)
+			v.Config.IOThreads = append(v.Config.IOThreads, driveCfg.IOThreads...)
+			v.Config.Devices = append(v.Config.Devices, driveCfg.Devices...)
+			v.Config.Blockdevs = append(v.Config.Blockdevs, driveCfg.Blockdevs...)
+		})
 
 		varsDrive, err := m.uefiVarsDrive(instance)
 		if err != nil {
 			return err
 		}
 		if varsDrive != nil {
-			instance.Config.Drives = append(instance.Config.Drives, *varsDrive)
+			m.Inspect(instance, func(v *VM) { v.Config.Drives = append(v.Config.Drives, *varsDrive) })
 		}
 	}
 
@@ -445,8 +452,10 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			}
 			tapName := spec.Name
 
-			instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev("net0", tapName, queues))
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac, queues, m.deps.GuestMTU))
+			m.Inspect(instance, func(v *VM) {
+				v.Config.NetDevs = append(v.Config.NetDevs, TapNetDev("net0", tapName, queues))
+				v.Config.Devices = append(v.Config.Devices, NetDevice(v.Config.MachineType, "net0", v.ENIMac, queues, m.deps.GuestMTU))
+			})
 			slog.Info("VPC networking configured", "tap", tapName, "bridge", spec.Bridge, "eni", instance.ENIId, "mac", instance.ENIMac, "queues", queues)
 			if err := m.attachPrimaryIMDSDatapath(instance); err != nil {
 				return err
@@ -475,10 +484,12 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			if bindIP == "" || bindIP == "0.0.0.0" {
 				bindIP = "127.0.0.1"
 			}
-			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-				Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
+			m.Inspect(instance, func(v *VM) {
+				v.Config.NetDevs = append(v.Config.NetDevs, NetDev{
+					Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
+				})
+				v.Config.Devices = append(v.Config.Devices, NetDevice(v.Config.MachineType, "net0", "", 0, m.deps.GuestMTU))
 			})
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", "", 0, m.deps.GuestMTU))
 		}
 
 		if instance.MgmtMAC != "" {
@@ -496,15 +507,17 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			}
 			// Single-queue: the mgmt NIC carries control-plane traffic only, so
 			// it takes vhost but not the per-queue kernel threads.
-			instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev("mgmt0", mgmtTap, 1))
-			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC, 1, 0))
+			m.Inspect(instance, func(v *VM) {
+				v.Config.NetDevs = append(v.Config.NetDevs, TapNetDev("mgmt0", mgmtTap, 1))
+				v.Config.Devices = append(v.Config.Devices, NetDevice(v.Config.MachineType, "mgmt0", v.MgmtMAC, 1, 0))
+			})
 			if err := m.appendSystemNetcfgFwCfg(instance); err != nil {
 				return fmt.Errorf("attach system netcfg: %w", err)
 			}
 			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 
-		instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
+		m.Inspect(instance, func(v *VM) { v.Config.Devices = append(v.Config.Devices, RngDevice(v.Config.MachineType)) })
 	}
 
 	for i, att := range instance.GPUAttachments {
@@ -521,7 +534,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			slog.Info("GPU passthrough device configured",
 				"pci", att.PCIAddress, "index", i, "instanceId", instance.ID, "xvga", xvga)
 		}
-		instance.Config.Devices = append(instance.Config.Devices, Device{Value: devSpec})
+		m.Inspect(instance, func(v *VM) { v.Config.Devices = append(v.Config.Devices, Device{Value: devSpec}) })
 	}
 
 	qmpSocket, err := nbd.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))
@@ -529,7 +542,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 		slog.Error("Failed to generate QMP socket", "err", err)
 		return err
 	}
-	instance.Config.QMPSocket = qmpSocket
+	m.Inspect(instance, func(v *VM) { v.Config.QMPSocket = qmpSocket })
 
 	// A predecessor QEMU killed with SIGKILL (crash/etcd-reset restart) leaves its
 	// qmp-<id>.sock inode behind. QEMU rebinds the socket, but the stale inode
@@ -547,7 +560,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 		slog.Warn("Failed to generate telemetry QMP socket", "instanceId", instance.ID, "err", terr)
 	} else {
 		_ = os.Remove(telemetrySocket)
-		instance.Config.TelemetryQMPSocket = telemetrySocket
+		m.Inspect(instance, func(v *VM) { v.Config.TelemetryQMPSocket = telemetrySocket })
 		refreshTelemetryMeta(instance)
 	}
 
@@ -758,7 +771,7 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 	// The map is what this launch observed, so it is rebuilt rather than
 	// updated: a port that bound on a previous launch but not on this one must
 	// not still be advertised.
-	instance.HostfwdPortMap = nil
+	var portMap map[int]int
 	for _, guestPort := range instance.HostfwdPorts {
 		fwdAddr, fwdErr := findFreePort()
 		if fwdErr != nil {
@@ -776,16 +789,19 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 			continue
 		}
 		fmt.Fprintf(&nb, ",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
-		if instance.HostfwdPortMap == nil {
-			instance.HostfwdPortMap = make(map[int]int, len(instance.HostfwdPorts))
+		if portMap == nil {
+			portMap = make(map[int]int, len(instance.HostfwdPorts))
 		}
-		instance.HostfwdPortMap[guestPort] = hostPortInt
+		portMap[guestPort] = hostPortInt
 		slog.Info("DEV_NETWORKING: extra hostfwd", "guestPort", guestPort, "hostPort", hostPort, "instanceId", instance.ID)
 	}
 
-	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: nb.String()})
 	devMac := GenerateDevMAC(instance.ID)
-	instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "dev0", devMac, 0, 0))
+	m.Inspect(instance, func(v *VM) {
+		v.HostfwdPortMap = portMap
+		v.Config.NetDevs = append(v.Config.NetDevs, NetDev{Value: nb.String()})
+		v.Config.Devices = append(v.Config.Devices, NetDevice(v.Config.MachineType, "dev0", devMac, 0, 0))
+	})
 	slog.Info("DEV_NETWORKING: added dev NIC with SSH hostfwd",
 		"bindIP", bindIP, "port", sshDebugPort, "mac", devMac, "instanceId", instance.ID)
 }
@@ -1353,7 +1369,9 @@ func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("write system netcfg blob: %w", err)
 	}
-	instance.Config.FwCfg = append(instance.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
+	m.Inspect(instance, func(v *VM) {
+		v.Config.FwCfg = append(v.Config.FwCfg, FwCfgEntry{Name: "opt/spinifex/netcfg", File: path})
+	})
 	return nil
 }
 
@@ -1412,15 +1430,18 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 // preserved across restart; on a cold boot it starts empty.
 func (m *Manager) initENIRequests(instance *VM) {
 	eniSlots := instancetypes.HotPlugENISlotsForType(instance.InstanceType)
-	instance.ENIRequests.Mu.Lock()
-	defer instance.ENIRequests.Mu.Unlock()
-	instance.ENIRequests.AvailableSlots = make([]int, 0, eniSlots)
+	slots := make([]int, 0, eniSlots)
 	for i := 1; i <= eniSlots; i++ {
-		instance.ENIRequests.AvailableSlots = append(instance.ENIRequests.AvailableSlots, i)
+		slots = append(slots, i)
 	}
-	if instance.ENIRequests.AttachedByENIID == nil {
-		instance.ENIRequests.AttachedByENIID = make(map[string]int)
-	}
+	m.Inspect(instance, func(v *VM) {
+		v.ENIRequests.Mu.Lock()
+		defer v.ENIRequests.Mu.Unlock()
+		v.ENIRequests.AvailableSlots = slots
+		if v.ENIRequests.AttachedByENIID == nil {
+			v.ENIRequests.AttachedByENIID = make(map[string]int)
+		}
+	})
 }
 
 // driveConfig is buildDrives' output: the QEMU drive/iothread/device/blockdev

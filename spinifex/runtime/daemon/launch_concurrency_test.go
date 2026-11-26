@@ -38,7 +38,7 @@ func TestLaunchRunInstances_ConcurrentLaunchesDoNotRaceWriteState(t *testing.T) 
 		NodeID: d.node,
 		VolumeMounter: newVolumeMounterAdapter(&stubMounterProvider{export: ebsprovider.VolumeExport{
 			Kind: ebsprovider.ExportKindBlock, Block: &ebsprovider.BlockExport{DevicePath: devicePath, SizeBytes: 1 << 30},
-		}}, d.node),
+		}}, d.node, d.vmMgr),
 		VolumeStateUpdater: acceptingVolumeState{},
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		NetworkPlumber:     &nopPlumber{},

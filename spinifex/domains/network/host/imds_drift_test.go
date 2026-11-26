@@ -117,18 +117,18 @@ func TestCountFlowsByCookie_MalformedCookie(t *testing.T) {
 // what an install actually adds. A new flow without a bumped count would make
 // every healthy guest read as drifted and get re-installed every pass.
 func TestIMDSTapFlowCount_MatchesInstall(t *testing.T) {
-	s := newStubRunner()
-	s.expect("ovs-vsctl", nil, nil)
-	s.expect("ip", nil, nil)
-	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
-	s.expect("ovs-ofctl", nil, nil)
+	const eniID = "eni-0abc1234"
+	withEndpointSysctls(t, nil)
+	h := &imdsHost{eniID: eniID}
 
-	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
-	if err := installIMDSDatapath(context.Background(), s, d); err != nil {
+	d := imdsDatapathSpec(eniID, "02:00:00:00:01:05", "subnet-0fedcba9")
+	if err := installIMDSDatapath(context.Background(), h, d); err != nil {
 		t.Fatalf("installIMDSDatapath: %v", err)
 	}
-	cookie := imdsFlowCookie(d.Endpoint)
-	if n := countCalls(s.calls, "ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+","); n != IMDSTapFlowCount {
+	if len(h.bundles) != 1 {
+		t.Fatalf("want 1 bundle, got %d", len(h.bundles))
+	}
+	if n := strings.Count(h.bundles[0], "\nadd cookie="+imdsFlowCookie(d.Endpoint)+","); n != IMDSTapFlowCount {
 		t.Errorf("install added %d flows under the tap's cookie, IMDSTapFlowCount is %d", n, IMDSTapFlowCount)
 	}
 }
@@ -136,13 +136,11 @@ func TestIMDSTapFlowCount_MatchesInstall(t *testing.T) {
 func TestRepairIMDSDatapath(t *testing.T) {
 	const eniID = "eni-0abc1234"
 	d := imdsDatapathSpec(eniID, "02:00:00:00:01:05", "subnet-0fedcba9")
-	cookie := imdsFlowCookie(d.Endpoint)
 
 	t.Run("tap on br-imds is re-installed", func(t *testing.T) {
 		s := newStubRunner()
 		s.expect("ovs-vsctl list-ports "+IMDSBridge, []byte(d.Endpoint+"\n"+d.PatchIMDS+"\n"+d.Tap+"\n"), nil)
 		s.expect("ovs-vsctl --may-exist", nil, nil)
-		s.expect("ovs-vsctl set", nil, nil)
 		s.expect("ip", nil, nil)
 		s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
 		s.expect("ovs-ofctl", nil, nil)
@@ -150,8 +148,8 @@ func TestRepairIMDSDatapath(t *testing.T) {
 		if err := repairIMDSDatapath(context.Background(), s, d); err != nil {
 			t.Fatalf("repairIMDSDatapath: %v", err)
 		}
-		if n := countCalls(s.calls, "ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+","); n != IMDSTapFlowCount {
-			t.Errorf("repair added %d flows, want %d", n, IMDSTapFlowCount)
+		if !s.called("ovs-ofctl --bundle add-flows " + IMDSBridge + " ") {
+			t.Errorf("repair must re-install the flows; calls: %v", s.calls)
 		}
 		if !s.called("ip rule add oif " + d.Endpoint) {
 			t.Errorf("repair must restore the reply rule a kmod reload drops; calls: %v", s.calls)
@@ -179,7 +177,6 @@ func TestRepairIMDSDatapath(t *testing.T) {
 		s := newStubRunner()
 		s.expect("ovs-vsctl list-ports "+IMDSBridge, []byte(d.Tap+"\n"), nil)
 		s.expect("ovs-vsctl --may-exist add-br", nil, nil)
-		s.expect("ovs-vsctl set", nil, nil)
 		s.expect("ip link set "+IMDSBridge, nil, nil)
 		s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, errors.New("ovsdb busy"))
 		s.expect("ovs-ofctl", nil, nil)
@@ -187,7 +184,7 @@ func TestRepairIMDSDatapath(t *testing.T) {
 		if err := repairIMDSDatapath(context.Background(), s, d); err == nil {
 			t.Fatal("want the endpoint failure to surface")
 		}
-		if s.called("ovs-ofctl del-flows") {
+		if s.called("ovs-ofctl") {
 			t.Errorf("flows cleared before the endpoint was ready; calls: %v", s.calls)
 		}
 	})

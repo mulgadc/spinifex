@@ -180,7 +180,17 @@ func InstallTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	if err := ensureIMDSEndpoint(ctx, r, d); err != nil {
 		return err
 	}
-	if err := installIMDSTapFlows(ctx, r, d); err != nil {
+	specs, err := imdsTapFlows(d)
+	if err != nil {
+		return err
+	}
+	cookie := imdsFlowCookie(d.Endpoint)
+	for _, spec := range specs {
+		if err := installIMDSFlow(ctx, r, cookie, spec); err != nil {
+			return err
+		}
+	}
+	if err := setEndpointSysctls(ctx, r, d.Endpoint); err != nil {
 		return err
 	}
 	slog.Info("IMDS tap datapath installed", "tap", d.Tap, "endpoint", d.Endpoint)
@@ -225,18 +235,14 @@ func RemoveTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 }
 
 // ensureIMDSEndpoint creates the per-tap internal port, sets its MAC, brings it
-// up, owns the captured addresses, and sets the per-device sysctls the
-// asymmetric host path needs (guest src IP arrives with no forward route).
+// up and owns the captured addresses. The sysctls come last, from the caller.
 func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if _, err := r.Run(ctx, "ovs-vsctl", "--may-exist", "add-port", IMDSBridge, d.Endpoint,
 		"--", "set", "Interface", d.Endpoint, "type=internal"); err != nil {
 		return fmt.Errorf("create IMDS endpoint %s: %w", d.Endpoint, err)
 	}
-	if _, err := r.Run(ctx, "ip", "link", "set", d.Endpoint, "address", d.EndpointMAC); err != nil {
-		return fmt.Errorf("set IMDS endpoint %s MAC: %w", d.Endpoint, err)
-	}
-	if _, err := r.Run(ctx, "ip", "link", "set", d.Endpoint, "up"); err != nil {
-		return fmt.Errorf("bring up IMDS endpoint %s: %w", d.Endpoint, err)
+	if _, err := r.Run(ctx, "ip", "link", "set", "dev", d.Endpoint, "address", d.EndpointMAC, "up"); err != nil {
+		return fmt.Errorf("set IMDS endpoint %s MAC and bring it up: %w", d.Endpoint, err)
 	}
 	// `replace` is idempotent — adds the /32 if absent, no-op if the endpoint
 	// already owns it (a recovery/stop re-attach reuses a surviving endpoint).
@@ -246,10 +252,17 @@ func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 			return fmt.Errorf("add %s to IMDS endpoint %s: %w", addr, d.Endpoint, err)
 		}
 	}
-	if err := setEndpointSysctl(ctx, r, d.Endpoint, "rp_filter", "0"); err != nil {
+	return nil
+}
+
+// setEndpointSysctls sets what the asymmetric host path needs (the guest src IP
+// arrives with no forward route). accept_local goes last: the drift check reads
+// it as "this endpoint is fully installed".
+func setEndpointSysctls(ctx context.Context, r Runner, endpoint string) error {
+	if err := setEndpointSysctl(ctx, r, endpoint, "rp_filter", "0"); err != nil {
 		return err
 	}
-	return setEndpointSysctl(ctx, r, d.Endpoint, "accept_local", "1")
+	return setEndpointSysctl(ctx, r, endpoint, "accept_local", "1")
 }
 
 // setEndpointSysctl goes through the helper rather than sysctl itself: the
@@ -263,11 +276,10 @@ func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val stri
 	return nil
 }
 
-// installIMDSTapFlows installs the per-tap ingress demux and egress flows under the
-// tap's cookie. The caller clears stale flows before any installer runs; clearing
-// here would wipe the forward flows the patch installer added under the same cookie.
-func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error {
-	cookie := imdsFlowCookie(d.Endpoint)
+// imdsTapFlows returns the per-tap ARP responder, ingress demux and egress
+// flows. The caller installs them under the tap's cookie with the patch flows.
+func imdsTapFlows(d IMDSTapDatapath) ([]string, error) {
+	var specs []string
 	// ARP: a guest that treats 169.254.0.0/16 as on-link (RFC 3927, which is what
 	// Windows does) resolves the captured addresses itself instead of routing via
 	// the gateway. Nothing on br-int or in OVN owns them, so answer here or that
@@ -275,28 +287,23 @@ func installIMDSTapFlows(ctx context.Context, r Runner, d IMDSTapDatapath) error
 	for _, addr := range imdsCaptureAddrs {
 		spec, err := imdsARPResponderFlow(d, addr)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if err := installIMDSFlow(ctx, r, cookie, spec); err != nil {
-			return err
-		}
+		specs = append(specs, spec)
 	}
 	// Ingress: guest -> endpoint. A guest that routed the frame addressed it to
 	// its gateway MAC, and one that resolved it on-link used the MAC the ARP
 	// responder gave out; either way rewrite the dst MAC to the endpoint or the
 	// kernel drops it as OTHERHOST.
 	for _, addr := range imdsCaptureAddrs {
-		spec := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,nw_dst=%s,actions=mod_dl_dst:%s,output:%s",
-			imdsDemuxPriority, d.Tap, addr, d.EndpointMAC, d.Endpoint)
-		if err := installIMDSFlow(ctx, r, cookie, spec); err != nil {
-			return err
-		}
+		specs = append(specs, fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,nw_dst=%s,actions=mod_dl_dst:%s,output:%s",
+			imdsDemuxPriority, d.Tap, addr, d.EndpointMAC, d.Endpoint))
 	}
 	// Egress: endpoint -> guest, rewriting L2 so the reply looks like it came
 	// from the gateway. Steered by flow, not the host routing table.
-	egress := fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,actions=mod_dl_src:%s,mod_dl_dst:%s,output:%s",
-		imdsDemuxPriority, d.Endpoint, d.GatewayMAC, d.GuestMAC, d.Tap)
-	return installIMDSFlow(ctx, r, cookie, egress)
+	specs = append(specs, fmt.Sprintf("table=0,priority=%d,in_port=%s,ip,actions=mod_dl_src:%s,mod_dl_dst:%s,output:%s",
+		imdsDemuxPriority, d.Endpoint, d.GatewayMAC, d.GuestMAC, d.Tap))
+	return specs, nil
 }
 
 // imdsARPResponderFlow builds the flow that turns a guest's ARP request for addr

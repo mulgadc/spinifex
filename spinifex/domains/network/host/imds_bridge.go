@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 )
 
 // IMDSBridge is the dedicated OVS bridge carrying the per-tap IMDS / VPC-DNS flows.
@@ -20,11 +22,9 @@ const imdsCookiePrefix = "0xa1d5"
 // fail-mode=secure (only installed flows forward; no NORMAL L2 flooding) and no
 // OVN external_ids, so ovn-controller leaves it alone (see IMDSBridge).
 func EnsureIMDSBridge(ctx context.Context, r Runner) error {
-	if _, err := r.Run(ctx, "ovs-vsctl", "--may-exist", "add-br", IMDSBridge); err != nil {
-		return fmt.Errorf("create %s: %w", IMDSBridge, err)
-	}
-	if _, err := r.Run(ctx, "ovs-vsctl", "set", "Bridge", IMDSBridge, "fail-mode=secure"); err != nil {
-		return fmt.Errorf("set %s fail-mode: %w", IMDSBridge, err)
+	if _, err := r.Run(ctx, "ovs-vsctl", "--may-exist", "add-br", IMDSBridge,
+		"--", "set", "Bridge", IMDSBridge, "fail-mode=secure"); err != nil {
+		return fmt.Errorf("create %s with fail-mode=secure: %w", IMDSBridge, err)
 	}
 	if _, err := r.Run(ctx, "ip", "link", "set", IMDSBridge, "up"); err != nil {
 		return fmt.Errorf("bring up %s: %w", IMDSBridge, err)
@@ -116,6 +116,33 @@ func EnsureIMDSRemapRules(ctx context.Context, r Runner) error {
 func installIMDSFlow(ctx context.Context, r Runner, cookie, spec string) error {
 	if _, err := r.Run(ctx, "ovs-ofctl", "add-flow", IMDSBridge, "cookie="+cookie+","+spec); err != nil {
 		return fmt.Errorf("install IMDS flow %q: %w", spec, err)
+	}
+	return nil
+}
+
+// installIMDSFlowBundle replaces every flow under cookie with specs in one
+// OpenFlow 1.4 bundle. The bridge never holds a partial set: a rejected bundle
+// changes no flow, so a failed repair keeps the old flows and other cookies.
+func installIMDSFlowBundle(ctx context.Context, r Runner, cookie string, specs []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "delete cookie=%s/-1\n", cookie)
+	for _, spec := range specs {
+		fmt.Fprintf(&b, "add cookie=%s,%s\n", cookie, spec)
+	}
+	f, err := os.CreateTemp("", "imds-flows-*")
+	if err != nil {
+		return fmt.Errorf("create IMDS flow bundle: %w", err)
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	_, err = f.WriteString(b.String())
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("write IMDS flow bundle: %w", err)
+	}
+	if _, err := r.Run(ctx, "ovs-ofctl", "--bundle", "add-flows", IMDSBridge, f.Name()); err != nil {
+		return fmt.Errorf("install IMDS flow bundle (cookie %s): %w", cookie, err)
 	}
 	return nil
 }

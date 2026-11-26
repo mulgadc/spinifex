@@ -36,8 +36,12 @@ var (
 // reconcile starts, so the window must outlast that. Package vars so tests shorten.
 var (
 	guestPortDatapathTimeout  = 45 * time.Second
-	guestPortDatapathInterval = 5 * time.Second
+	guestPortDatapathInterval = 500 * time.Millisecond
 )
+
+// Minimum gap between two recompute nudges for one guest port. The probe runs
+// more often than this, so a port that comes up is seen soon after it binds.
+var guestPortNudgeInterval = 5 * time.Second
 
 // How many guest ports may wait for convergence at once. Bounded because each
 // miss nudges a recompute, and an unbounded fan-out would nudge once per port.
@@ -1092,9 +1096,9 @@ func subnetIDForIP(subnets map[string]topology.SubnetSpec, vpcID, ip string) str
 // ensureGuestPortDatapath verifies the guest ENI behind an EIP is reachable on the
 // ingress path. AddEIP installs the DNAT and primes the host neigh, but until the
 // guest port's SB Port_Binding is up the gatewayLRP->guest flow is missing and the
-// DNAT-translated packet blackholes. Probe the binding; on a miss force an
-// ovn-controller recompute and re-probe until a deadline. Recompute on every miss,
-// not once: post-reboot the guest tap is replumbed seconds after this runs, so a
+// DNAT-translated packet blackholes. Probe the binding until a deadline; on a miss
+// force an ovn-controller recompute at most once per guestPortNudgeInterval. Not
+// once only: post-reboot the guest tap is replumbed seconds after this runs, so a
 // single early nudge fires before the port exists and never binds it. No-op when no
 // verifier is wired or the EIP carries no guest port.
 func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EIPSpec) {
@@ -1120,6 +1124,7 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 	}
 	deadline := time.Now().Add(guestPortDatapathTimeout)
 	nudged := false
+	var lastNudge time.Time
 	misses := 0
 	resetEscalated := false
 	for {
@@ -1138,15 +1143,18 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 			}
 			return
 		}
-		slog.Warn("reconcile/apply: guest port SB binding not up; nudging ovn-controller recompute",
-			"vpc_id", vpcID, "lsp", lspName)
-		if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
-			slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
-		}
-		nudged = true
-		misses++
-		if !resetEscalated && misses >= sbResetEscalateAfter {
-			resetEscalated = r.escalateSBReset(ctx, "vpc_id", vpcID, "lsp", lspName)
+		if !nudged || time.Since(lastNudge) >= guestPortNudgeInterval {
+			slog.Warn("reconcile/apply: guest port SB binding not up; nudging ovn-controller recompute",
+				"vpc_id", vpcID, "lsp", lspName)
+			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
+				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
+			}
+			nudged = true
+			lastNudge = time.Now()
+			misses++
+			if !resetEscalated && misses >= sbResetEscalateAfter {
+				resetEscalated = r.escalateSBReset(ctx, "vpc_id", vpcID, "lsp", lspName)
+			}
 		}
 		if time.Now().After(deadline) {
 			failures, backoff := r.recordPortFailure(lspName)

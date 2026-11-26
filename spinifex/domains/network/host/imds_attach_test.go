@@ -68,95 +68,60 @@ func TestInstallIMDSDatapath(t *testing.T) {
 		t.Fatalf("installIMDSDatapath: %v", err)
 	}
 
-	for _, w := range []string{
-		"ovs-vsctl --may-exist add-br " + IMDSBridge,                       // EnsureIMDSBridge
-		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.PatchIMDS, // installTapPatch (br-imds end)
-		"ovs-vsctl --may-exist add-port br-int " + d.PatchInt,              // installTapPatch (br-int end)
-		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint,  // ensureIMDSEndpoint
-		"ovs-ofctl add-flow " + IMDSBridge,                                 // demux/egress/forward flow
-		"ip route replace default via " + imdsReplyNexthop,                 // InstallTapReplyRouting route
-		"ip rule add oif " + d.Endpoint,                                    // InstallTapReplyRouting rule
-	} {
-		if !s.called(w) {
-			t.Errorf("missing command:\n  %q\ncalls: %v", w, s.calls)
-		}
-	}
-
-	// Ordering: the bridge must exist before its ports (patch, endpoint), and the
-	// endpoint before the reply rule that selects out it.
-	bridge := cmdIndex(s.calls, "ovs-vsctl --may-exist add-br "+IMDSBridge)
-	patch := cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS)
 	endpoint := cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint)
+	patch := cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS)
+	route := cmdIndex(s.calls, "ip route replace default via "+imdsReplyNexthop)
 	rule := cmdIndex(s.calls, "ip rule add oif "+d.Endpoint)
-	if bridge >= patch || bridge >= endpoint || endpoint >= rule {
-		t.Errorf("install order wrong: bridge=%d patch=%d endpoint=%d rule=%d (want bridge<patch, bridge<endpoint<rule)", bridge, patch, endpoint, rule)
-	}
-
-	// Regression: the forward, demux, and egress flows all share the tap's cookie,
-	// so the single up-front clear must precede every add-flow. A clear inside any
-	// installer would wipe an earlier installer's flows under the same cookie —
-	// notably the patch's forward flows, leaving the guest with no non-IMDS path.
-	cookie := imdsFlowCookie(d.Endpoint)
-	clearIdx := cmdIndex(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1")
-	firstAdd := cmdIndex(s.calls, "ovs-ofctl add-flow")
-	if clearIdx < 0 {
-		t.Errorf("missing up-front cookie clear; calls: %v", s.calls)
-	}
-	if firstAdd < 0 || clearIdx >= firstAdd {
-		t.Errorf("cookie clear must precede all add-flows: clear=%d firstAdd=%d (calls: %v)", clearIdx, firstAdd, s.calls)
-	}
-	// And exactly one clear: a second would mean an installer re-cleared the cookie.
-	if n := countCalls(s.calls, "ovs-ofctl del-flows "+IMDSBridge+" cookie="+cookie+"/-1"); n != 1 {
-		t.Errorf("cookie cleared %d times, want exactly 1 (calls: %v)", n, s.calls)
-	}
-
-	// Both forward (priority=100, from installTapPatch) and demux (priority=200,
-	// from installIMDSTapFlows) flows must survive the shared-cookie clear.
-	forward := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=100,in_port=" + d.Tap + ",actions=output:" + d.PatchIMDS
-	demux := "ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=200,in_port=" + d.Tap + ",ip,nw_dst=" + imdsMetaAddr + ",actions=mod_dl_dst:" + d.EndpointMAC + ",output:" + d.Endpoint
-	for _, w := range []string{forward, demux} {
-		if !s.called(w) {
-			t.Errorf("missing flow after shared-cookie clear:\n  %q\ncalls: %v", w, s.calls)
+	bundle := cmdIndex(s.calls, "ovs-ofctl --bundle add-flows "+IMDSBridge+" ")
+	marker := cmdIndex(s.calls, hostcommand.EndpointSysctlHelper+" "+d.Endpoint+" accept_local 1")
+	for name, i := range map[string]int{"endpoint": endpoint, "patch": patch, "route": route, "rule": rule, "bundle": bundle, "marker": marker} {
+		if i < 0 {
+			t.Errorf("missing %s step; calls: %v", name, s.calls)
 		}
+	}
+	// The endpoint exists before the patch that advertises the tap and before the
+	// reply rule that selects out of it; the marker follows everything it stands for.
+	if endpoint >= patch || patch >= route || rule >= bundle || bundle >= marker {
+		t.Errorf("install order wrong: endpoint=%d patch=%d route=%d rule=%d bundle=%d marker=%d",
+			endpoint, patch, route, rule, bundle, marker)
+	}
+	if s.called("ovs-ofctl add-flow") || s.called("ovs-ofctl del-flows") {
+		t.Errorf("flows must go in the one bundle only; calls: %v", s.calls)
 	}
 }
 
-// A connectivity-critical failure (here the bridge create) must surface bare, so
-// the caller rolls the tap back to br-int rather than treating it as best-effort.
+// A connectivity-critical failure (here the patch) must surface bare, so the
+// caller does not treat it as a serving-only failure.
 func TestInstallIMDSDatapath_ConnectivityFailureNotWrapped(t *testing.T) {
-	s := newStubRunner()
-	s.expect("ovs-vsctl --may-exist add-br", nil, errors.New("ovsdb lock held"))
-
 	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
+	s := newStubRunner()
+	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, nil)
+	s.expect("ip", nil, nil)
+	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS, nil, errors.New("ovsdb lock held"))
+
 	err := installIMDSDatapath(context.Background(), s, d)
 	if err == nil {
-		t.Fatal("expected the bridge failure to surface")
+		t.Fatal("expected the patch failure to surface")
 	}
 	if errors.Is(err, vm.ErrIMDSServingDegraded) {
 		t.Errorf("connectivity-critical failure must not be ErrIMDSServingDegraded: %v", err)
 	}
 }
 
-// A serving-stage failure (after the endpoint, patch, and forward flows are in
-// place) must be wrapped as ErrIMDSServingDegraded — the guest is connected and the
-// endpoint is bound, only IMDS demux is down, so the caller logs and continues.
+// A serving-stage failure (after the endpoint and patch are in place) must be
+// wrapped as ErrIMDSServingDegraded, and it leaves the drift marker unset.
 func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
 	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
-	cookie := imdsFlowCookie(d.Endpoint)
 
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
 	s.expect("ip", nil, nil)
 	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
-	s.expect("ovs-ofctl del-flows", nil, nil)
-	// Forward flows (priority=100) are connectivity and must succeed; the demux/egress
-	// flows (priority=200) are serving — fail those to land in the serving stage.
-	s.expect("ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+",table=0,priority=100", nil, nil)
-	s.expect("ovs-ofctl add-flow "+IMDSBridge+" cookie="+cookie+",table=0,priority=200", nil, errors.New("flow install failed"))
+	s.expect("ovs-ofctl --bundle", nil, errors.New("OFPBFC_MSG_FAILED"))
 
 	err := installIMDSDatapath(context.Background(), s, d)
 	if err == nil {
-		t.Fatal("expected the demux flow failure to surface")
+		t.Fatal("expected the bundle failure to surface")
 	}
 	if !errors.Is(err, vm.ErrIMDSServingDegraded) {
 		t.Errorf("serving-stage failure must be ErrIMDSServingDegraded, got %v", err)
@@ -166,8 +131,11 @@ func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
 	if !s.called("ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint) {
 		t.Errorf("endpoint must be installed before the serving stage; calls: %v", s.calls)
 	}
-	if !s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
-		t.Errorf("patch br-int end must be installed before the serving stage; calls: %v", s.calls)
+	if cmdIndex(s.calls, "ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.PatchIMDS) < 0 {
+		t.Errorf("patch must be installed before the serving stage; calls: %v", s.calls)
+	}
+	if s.called(hostcommand.EndpointSysctlHelper) {
+		t.Errorf("sysctls set after a failed bundle; calls: %v", s.calls)
 	}
 }
 
@@ -180,10 +148,6 @@ func TestInstallIMDSDatapath_EndpointFailureIsConnectivityCritical(t *testing.T)
 	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
 
 	s := newStubRunner()
-	s.expect("ovs-vsctl --may-exist add-br", nil, nil)
-	s.expect("ovs-vsctl set Bridge", nil, nil)
-	s.expect("ip", nil, nil)
-	s.expect("ovs-ofctl del-flows", nil, nil)
 	s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, errors.New("ovsdb busy"))
 
 	err := installIMDSDatapath(context.Background(), s, d)
@@ -193,20 +157,9 @@ func TestInstallIMDSDatapath_EndpointFailureIsConnectivityCritical(t *testing.T)
 	if errors.Is(err, vm.ErrIMDSServingDegraded) {
 		t.Errorf("endpoint failure must be connectivity-critical (bare), got %v", err)
 	}
-	if s.called("ovs-vsctl --may-exist add-port br-int " + d.PatchInt) {
-		t.Errorf("patch must not be installed when the endpoint failed; calls: %v", s.calls)
+	if len(s.calls) != 1 {
+		t.Errorf("nothing may follow a failed endpoint; calls: %v", s.calls)
 	}
-}
-
-// countCalls returns how many recorded calls start with prefix.
-func countCalls(calls []string, prefix string) int {
-	n := 0
-	for _, c := range calls {
-		if len(c) >= len(prefix) && c[:len(prefix)] == prefix {
-			n++
-		}
-	}
-	return n
 }
 
 func TestIMDSDetachSpec(t *testing.T) {

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestInstallTapPatchValidate(t *testing.T) {
 	s := newStubRunner()
 	d := testDatapath()
 	d.IfaceID = ""
-	if err := installTapPatch(context.Background(), s, d); err == nil ||
+	if _, err := installTapPatch(context.Background(), s, d); err == nil ||
 		!strings.Contains(err.Error(), "IfaceID") {
 		t.Fatalf("expected IfaceID validation error, got %v", err)
 	}
@@ -23,27 +24,27 @@ func TestInstallTapPatchValidate(t *testing.T) {
 func TestInstallTapPatch(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
-	s.expect("ovs-ofctl", nil, nil)
 
 	d := testDatapath()
-	if err := installTapPatch(context.Background(), s, d); err != nil {
+	flows, err := installTapPatch(context.Background(), s, d)
+	if err != nil {
 		t.Fatalf("installTapPatch: %v", err)
 	}
-	cookie := imdsFlowCookie(d.Endpoint)
 
-	want := []string{
-		// IMDSBridge end of the patch, peered to the br-int end.
-		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.PatchIMDS + " -- set Interface " + d.PatchIMDS + " type=patch options:peer=" + d.PatchInt,
-		// br-int end: carries the OVN iface-id + attached-mac binding.
-		"ovs-vsctl --may-exist add-port br-int " + d.PatchInt + " -- set Interface " + d.PatchInt + " type=patch options:peer=" + d.PatchIMDS + " external_ids:iface-id=" + d.IfaceID + " external_ids:attached-mac=" + d.GuestMAC,
-		// Forward flows tap<->patch, below the demux priority.
-		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + fmt.Sprintf(",table=0,priority=%d,in_port=%s,actions=output:%s", imdsForwardPriority, d.Tap, d.PatchIMDS),
-		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + fmt.Sprintf(",table=0,priority=%d,in_port=%s,actions=output:%s", imdsForwardPriority, d.PatchIMDS, d.Tap),
+	// Both ends in one transaction: the IMDSBridge end peered to br-int, and the
+	// br-int end carrying the OVN iface-id + attached-mac binding.
+	want := "ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.PatchIMDS + " -- set Interface " + d.PatchIMDS + " type=patch options:peer=" + d.PatchInt +
+		" -- --may-exist add-port br-int " + d.PatchInt + " -- set Interface " + d.PatchInt + " type=patch options:peer=" + d.PatchIMDS + " external_ids:iface-id=" + d.IfaceID + " external_ids:attached-mac=" + d.GuestMAC
+	if len(s.calls) != 1 || s.calls[0] != want {
+		t.Errorf("want one ovs-vsctl transaction:\n  %q\ncalls: %v", want, s.calls)
 	}
-	for _, w := range want {
-		if !s.called(w) {
-			t.Errorf("missing command:\n  %q\ncalls: %v", w, s.calls)
-		}
+	// Forward flows tap<->patch, below the demux priority; the caller installs them.
+	wantFlows := []string{
+		fmt.Sprintf("table=0,priority=%d,in_port=%s,actions=output:%s", imdsForwardPriority, d.Tap, d.PatchIMDS),
+		fmt.Sprintf("table=0,priority=%d,in_port=%s,actions=output:%s", imdsForwardPriority, d.PatchIMDS, d.Tap),
+	}
+	if !slices.Equal(flows, wantFlows) {
+		t.Errorf("forward flows = %v, want %v", flows, wantFlows)
 	}
 }
 
@@ -62,15 +63,14 @@ func TestForwardBelowDemux(t *testing.T) {
 func TestInstallTapPatchTouchesBrInt(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
-	s.expect("ovs-ofctl", nil, nil)
 
 	d := testDatapath()
-	if err := installTapPatch(context.Background(), s, d); err != nil {
+	if _, err := installTapPatch(context.Background(), s, d); err != nil {
 		t.Fatalf("installTapPatch: %v", err)
 	}
 	var sawBrIntPatch bool
 	for _, c := range s.calls {
-		if strings.HasPrefix(c, "ovs-vsctl --may-exist add-port br-int "+d.PatchInt) &&
+		if strings.Contains(c, "--may-exist add-port br-int "+d.PatchInt) &&
 			strings.Contains(c, "external_ids:iface-id="+d.IfaceID) {
 			sawBrIntPatch = true
 		}

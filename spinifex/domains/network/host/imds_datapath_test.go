@@ -128,14 +128,13 @@ func TestInstallTapDatapath(t *testing.T) {
 	want := []string{
 		// Endpoint: internal port, MAC, up, captured addresses, sysctls.
 		"ovs-vsctl --may-exist add-port " + IMDSBridge + " " + d.Endpoint + " -- set Interface " + d.Endpoint + " type=internal",
-		"ip link set " + d.Endpoint + " address " + d.EndpointMAC,
-		"ip link set " + d.Endpoint + " up",
+		"ip link set dev " + d.Endpoint + " address " + d.EndpointMAC + " up",
 		"ip addr replace " + imdsMetaAddr + "/32 dev " + d.Endpoint,
 		"ip addr replace " + imdsDNSAddr + "/32 dev " + d.Endpoint,
 		hostcommand.EndpointSysctlHelper + " " + d.Endpoint + " rp_filter 0",
 		hostcommand.EndpointSysctlHelper + " " + d.Endpoint + " accept_local 1",
-		// Flows are not cleared here: installIMDSDatapath clears the shared cookie
-		// once up front so this install does not wipe the patch's forward flows.
+		// Flows are not cleared here: that would wipe the patch's forward flows
+		// under the shared cookie.
 		// ARP responder, one per captured addr, for guests that resolve the
 		// link-local addresses on-link instead of routing via the gateway.
 		"ovs-ofctl add-flow " + IMDSBridge + " cookie=" + cookie + ",table=0,priority=250,in_port=" + d.Tap + ",arp,arp_tpa=" + imdsMetaAddr + ",arp_op=1,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:" + d.GatewayMAC + ",load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],load:0x02aaaaaaaaaa->NXM_NX_ARP_SHA[],load:0xa9fea9fe->NXM_OF_ARP_SPA[],IN_PORT",
@@ -152,8 +151,8 @@ func TestInstallTapDatapath(t *testing.T) {
 		}
 	}
 
-	// InstallTapDatapath must not clear flows: installIMDSDatapath owns the single
-	// up-front clear, so a clear here would wipe the patch's forward flows.
+	// InstallTapDatapath must not clear flows: a clear here would wipe the
+	// patch's forward flows under the shared cookie.
 	if s.called("ovs-ofctl del-flows") {
 		t.Errorf("InstallTapDatapath must not clear flows; calls: %v", s.calls)
 	}

@@ -42,8 +42,7 @@ func TestEnsureIMDSBridge(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"ovs-vsctl --may-exist add-br " + IMDSBridge,
-		"ovs-vsctl set Bridge " + IMDSBridge + " fail-mode=secure",
+		"ovs-vsctl --may-exist add-br " + IMDSBridge + " -- set Bridge " + IMDSBridge + " fail-mode=secure",
 		"ip link set " + IMDSBridge + " up",
 	} {
 		if !s.called(want) {

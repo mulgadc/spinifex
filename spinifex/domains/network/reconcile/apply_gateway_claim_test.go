@@ -19,6 +19,7 @@ type fakeClaimVerifier struct {
 	claimedAfter   int // nudges required before the port reports claimed; <0 never
 	reachableAfter int // nudges required before the datapath reports reachable; <0 never
 	guestUpAfter   int // nudges required before the guest port reports up; <0 never
+	guestUpProbe   int // when >0, the probe that first reports up, whatever the nudges
 	checkErr       error
 	nudgeErr       error
 	reachErr       error
@@ -40,6 +41,7 @@ type fakeClaimVerifier struct {
 	lastGwIP       string // most recent IP passed to GatewayReachable
 	lastEIP        string // most recent IP passed to EIPReachable
 	lastLSP        string // most recent lsp passed to GuestPortUp
+	nudgeTimes     []time.Time
 }
 
 func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (bool, error) {
@@ -67,6 +69,7 @@ func (f *fakeClaimVerifier) GatewayPortLocal(_ context.Context, port string) (bo
 
 func (f *fakeClaimVerifier) NudgeRecompute(_ context.Context) error {
 	f.nudges++
+	f.nudgeTimes = append(f.nudgeTimes, time.Now())
 	return f.nudgeErr
 }
 
@@ -114,6 +117,9 @@ func (f *fakeClaimVerifier) GuestPortUp(_ context.Context, lspName string) (bool
 	if f.guestErr != nil {
 		return false, f.guestErr
 	}
+	if f.guestUpProbe > 0 {
+		return f.guestChecks >= f.guestUpProbe, nil
+	}
 	if f.guestUpAfter < 0 {
 		return false, nil
 	}
@@ -139,10 +145,66 @@ func (f *fakeClaimVerifier) ResetSBClusterState(_ context.Context) error {
 
 func withFastGuestPortBounds(t *testing.T) {
 	t.Helper()
-	to, iv := guestPortDatapathTimeout, guestPortDatapathInterval
+	to, iv, ni := guestPortDatapathTimeout, guestPortDatapathInterval, guestPortNudgeInterval
 	guestPortDatapathTimeout = 30 * time.Millisecond
 	guestPortDatapathInterval = 1 * time.Millisecond
-	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
+	guestPortNudgeInterval = 1 * time.Millisecond
+	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval, guestPortNudgeInterval = to, iv, ni })
+}
+
+// withSlowGuestPortNudge probes every millisecond but nudges at most every 40 ms,
+// so the probe and nudge rates differ by a clear margin.
+func withSlowGuestPortNudge(t *testing.T) {
+	t.Helper()
+	withFastGuestPortBounds(t)
+	guestPortDatapathTimeout = 2 * time.Second
+	guestPortNudgeInterval = 40 * time.Millisecond
+}
+
+// A port that binds between nudges is seen at the next probe, with no extra nudge.
+func TestEnsureGuestPortDatapath_UpOnThirdProbeNudgesOnce(t *testing.T) {
+	withSlowGuestPortNudge(t)
+	f := &fakeClaimVerifier{guestUpProbe: 3}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
+
+	runToDeadline(t, func() {
+		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
+	})
+
+	if f.guestChecks != 3 {
+		t.Errorf("guestChecks = %d, want 3 (stop at the probe that sees the port up)", f.guestChecks)
+	}
+	if f.nudges != 1 {
+		t.Errorf("nudges = %d, want 1 (the first miss nudges; later misses wait for the nudge interval)", f.nudges)
+	}
+}
+
+// A port that needs a second nudge gets it only after the nudge interval, and
+// the SB-reset escalation counts nudges, not probes.
+func TestEnsureGuestPortDatapath_SecondNudgeWaitsForInterval(t *testing.T) {
+	withSlowGuestPortNudge(t)
+	prev := sbResetEscalateAfter
+	sbResetEscalateAfter = 3
+	t.Cleanup(func() { sbResetEscalateAfter = prev })
+	f := &fakeClaimVerifier{guestUpAfter: 2, sbNotConnected: true}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
+
+	runToDeadline(t, func() {
+		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
+	})
+
+	if f.nudges != 2 {
+		t.Fatalf("nudges = %d, want 2", f.nudges)
+	}
+	if gap := f.nudgeTimes[1].Sub(f.nudgeTimes[0]); gap < guestPortNudgeInterval {
+		t.Errorf("second nudge %s after the first, want >= %s", gap, guestPortNudgeInterval)
+	}
+	if f.guestChecks <= sbResetEscalateAfter {
+		t.Errorf("guestChecks = %d, want more probes than the escalation threshold %d", f.guestChecks, sbResetEscalateAfter)
+	}
+	if f.sbResets != 0 {
+		t.Errorf("sbResets = %d, want 0 (2 nudges are under the threshold of %d)", f.sbResets, sbResetEscalateAfter)
+	}
 }
 
 // ovnWithGuestLSP returns a mock OVN client carrying lspName, the precondition

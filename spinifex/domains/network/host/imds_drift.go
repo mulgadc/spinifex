@@ -94,5 +94,9 @@ func repairIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	if !slices.Contains(strings.Fields(string(out)), d.Tap) {
 		return vm.ErrIMDSTapDetached
 	}
+	// An ovs-vswitchd restart can lose the bridge; a launch ensures it earlier.
+	if err := EnsureIMDSBridge(ctx, r); err != nil {
+		return err
+	}
 	return installIMDSDatapath(ctx, r, d)
 }

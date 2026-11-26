@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/stretchr/testify/assert"
@@ -631,6 +632,48 @@ func TestRestartCrashedInstance_RunFailureRollback(t *testing.T) {
 	assert.Equal(t, StateError, targets[1])
 	assert.Equal(t, StateError, m.Status(instance),
 		"instance must end in StateError after Run-failure rollback")
+}
+
+// A crash relaunch whose IMDS flow install fails settles in StateError like any
+// other failed relaunch. It deletes no volume and detaches no ENI.
+func TestRestartCrashedInstance_IMDSServingFailureKeepsResources(t *testing.T) {
+	m, rc, rt, _ := crashTestManager(t)
+	mounter := &fakeVolumeMounter{}
+	plumber := &fakeNetworkPlumber{
+		imdsAttachErr: fmt.Errorf("%w: install IMDS flow bundle: OFPBFC_MSG_FAILED", ErrIMDSServingDegraded),
+	}
+	cleaner := &recordingInstanceCleaner{}
+	m.SetDeps(Deps{
+		NodeID:             "test-node",
+		Resources:          rc,
+		VolumeMounter:      mounter,
+		VolumeStateUpdater: &fakeVolumeStateUpdater{},
+		NetworkPlumber:     plumber,
+		InstanceCleaner:    cleaner,
+		InstanceTypes:      fakeInstanceTypeResolver{"t3.micro": {VCPUs: 1, MemoryMiB: 1024, Architecture: "x86_64"}},
+		TransitionState:    rt.apply,
+	})
+
+	instance := &VM{
+		ID:           "i-imds-fail",
+		Status:       StateError,
+		InstanceType: "t3.micro",
+		ENIId:        "eni-imds-fail",
+		ENIMac:       "02:00:00:aa:bb:cc",
+		Instance:     &ec2.Instance{SubnetId: aws.String("subnet-xyz")},
+	}
+	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: "nbd:unix:/tmp/root.sock", Boot: true}}
+	m.Insert(instance)
+
+	m.RestartCrashedInstance(instance)
+
+	require.Len(t, plumber.imdsAttachCalls, 1, "the relaunch must reach the IMDS install")
+	assert.Equal(t, []InstanceState{StatePending, StateError}, rt.targets("i-imds-fail"))
+	assert.Equal(t, StateError, m.Status(instance))
+	assert.Zero(t, cleaner.deleteVolumesCount(), "a failed relaunch must not delete volumes")
+	assert.Empty(t, cleaner.detachAndDeleteENI, "a failed relaunch must not detach the ENI")
+	assert.Empty(t, plumber.imdsDetachCalls, "a failed relaunch must not remove the IMDS datapath")
+	assert.Equal(t, "eni-imds-fail", instance.ENIId, "the instance keeps its ENI")
 }
 
 // TestRestartCrashedInstance_RunFailureReleasesGPU is the regression test for

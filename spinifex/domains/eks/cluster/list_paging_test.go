@@ -203,6 +203,10 @@ func TestListActions_RefuseOutOfRangeMaxResults(t *testing.T) {
 			_, err := svc.ListClusters(ctx, &eks.ListClustersInput{MaxResults: mr}, testAccountID)
 			return err
 		},
+		"ListClustersNoAccountBucket": func(mr *int64) error {
+			_, err := svc.ListClusters(ctx, &eks.ListClustersInput{MaxResults: mr}, "999999999999")
+			return err
+		},
 		"ListNodegroups": func(mr *int64) error {
 			_, err := svc.ListNodegroups(ctx, &eks.ListNodegroupsInput{ClusterName: cluster, MaxResults: mr}, testAccountID)
 			return err

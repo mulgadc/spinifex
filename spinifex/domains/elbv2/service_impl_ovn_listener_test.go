@@ -453,7 +453,6 @@ func TestOVNFixtureListener_GroupChangesRefusedWithoutReads(t *testing.T) {
 	lbArn := aws.StringValue(h.sealedOVN("ovn-nlb").LoadBalancerArn)
 	tgArn := aws.String(aws.StringValue(h.tcpGroup("ovn-tg", 8080).TargetGroupArn))
 	ctx := t.Context()
-	targets := []*elbv2.TargetDescription{{Id: aws.String("i-0123456789abcdef0")}}
 	calls := map[string]func() error{
 		"ModifyTargetGroup": func() error {
 			_, err := h.svc.ModifyTargetGroup(ctx, &elbv2.ModifyTargetGroupInput{TargetGroupArn: tgArn, HealthCheckPort: aws.String("9000")}, testAccountID)
@@ -467,14 +466,6 @@ func TestOVNFixtureListener_GroupChangesRefusedWithoutReads(t *testing.T) {
 			_, err := h.svc.ModifyTargetGroupAttributes(ctx, &elbv2.ModifyTargetGroupAttributesInput{
 				TargetGroupArn: tgArn, Attributes: []*elbv2.TargetGroupAttribute{{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("10")}},
 			}, testAccountID)
-			return err
-		},
-		"RegisterTargets": func() error {
-			_, err := h.svc.RegisterTargets(ctx, &elbv2.RegisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
-			return err
-		},
-		"DeregisterTargets": func() error {
-			_, err := h.svc.DeregisterTargets(ctx, &elbv2.DeregisterTargetsInput{TargetGroupArn: tgArn, Targets: targets}, testAccountID)
 			return err
 		},
 	}

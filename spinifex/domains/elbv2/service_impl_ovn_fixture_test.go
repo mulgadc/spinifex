@@ -193,6 +193,7 @@ type ovnCreateHarness struct {
 	vpcs     *ec2vpc.VPCServiceImpl
 	launcher *mockSystemInstanceLauncher
 	svc      *ELBv2ServiceImpl
+	instance *fakeInstances
 
 	elbKV, vpcKV, subnetKV, sgKV *opKV
 
@@ -280,7 +281,10 @@ func (h *ovnCreateHarness) restart() {
 	svc.store.kv = h.elbKV
 	parents := ec2vpc.NewParents(h.vpcKV, h.subnetKV)
 	owners := &fixtureOwnerStore{kv: h.elbKV, parents: parents, now: h.clock.now, claimTTL: lbNameClaimTTL}
-	svc.ovn = &ovnFixture{owners: owners, parents: parents, groups: ec2vpc.NewGroupLookup(h.sgKV)}
+	if h.instance == nil {
+		h.instance = newFakeInstances()
+	}
+	svc.ovn = &ovnFixture{owners: owners, parents: parents, groups: ec2vpc.NewGroupLookup(h.sgKV), instances: h.instance}
 	h.vpcs.SetDependencyCheck(ovnDependencyKind, owners.vpcBlocksDeletion)
 	h.vpcs.SetSubnetDependencyCheck(ovnDependencyKind, owners.subnetBlocksDeletion)
 	h.svc = svc

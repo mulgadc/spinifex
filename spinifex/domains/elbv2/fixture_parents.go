@@ -172,6 +172,27 @@ func (f *fixtureOwnerStore) slotBlocks(ctx context.Context, accountID, key strin
 	return false, fmt.Errorf("elbv2: dependency check of %s exhausted retries", key)
 }
 
+// groupOwner follows the account/VPC slot to its sealed owner and returns the
+// owner key and snapshot when that owner's listener forwards to groupArn. Any
+// other owner state is nil, nil.
+func (f *fixtureOwnerStore) groupOwner(ctx context.Context, accountID, vpcID, groupArn string) (string, *fixtureOwner, error) {
+	_, slot, err := f.readSlot(ctx, accountID, vpcSlotKey(accountID, vpcID))
+	if err != nil || slot == nil {
+		return "", nil, err
+	}
+	_, cur, err := f.read(ctx, slot.ClaimKey)
+	if err != nil || cur == nil || cur.OwnerID != slot.OwnerID || !cur.Sealed {
+		return "", nil, err
+	}
+	if cur.Root.VpcId != slot.VpcID || !slices.Equal(cur.Root.Subnets, []string{slot.SubnetID}) {
+		return "", nil, fmt.Errorf("slot of %s: %w", slot.ClaimKey, errFixtureSlotMalformed)
+	}
+	if cur.Listener == nil || cur.Listener.TargetGroupArn != groupArn {
+		return "", nil, nil
+	}
+	return slot.ClaimKey, cur, nil
+}
+
 // vpcBlocksDeletion is the DeleteVpc dependency check.
 func (f *fixtureOwnerStore) vpcBlocksDeletion(ctx context.Context, accountID, vpcID string) (bool, error) {
 	return f.slotBlocks(ctx, accountID, vpcSlotKey(accountID, vpcID))

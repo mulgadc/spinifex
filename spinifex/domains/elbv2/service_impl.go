@@ -2608,7 +2608,7 @@ func (s *ELBv2ServiceImpl) updateTargetGroupCAS(ctx context.Context, arn, accoun
 
 func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
 	if s.ovn != nil {
-		return nil, refuseOVNFixtureGroupChange("RegisterTargets")
+		return s.registerOVNFixtureTargets(ctx, input, accountID)
 	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2700,7 +2700,7 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 
 func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error) {
 	if s.ovn != nil {
-		return nil, refuseOVNFixtureGroupChange("DeregisterTargets")
+		return s.deregisterOVNFixtureTargets(ctx, input, accountID)
 	}
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

@@ -809,10 +809,13 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 			}
 		}
+		seen := make(map[string]bool, len(results))
 		for _, r := range results {
-			if r.modification == nil {
+			// A repeated ID would stop the page token from moving forward.
+			if r.modification == nil || seen[*r.modification.VolumeId] {
 				continue
 			}
+			seen[*r.modification.VolumeId] = true
 			if len(parsedFilters) > 0 && !volumeModificationMatchesFilters(r.modification, parsedFilters) {
 				continue
 			}

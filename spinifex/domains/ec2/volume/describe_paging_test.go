@@ -149,8 +149,8 @@ func TestDescribeVolumesModifications_Paging(t *testing.T) {
 		})
 	}
 	assert.Equal(t, ids, walk(nil))
-	// MaxResults with explicit IDs pages them rather than refusing the call.
-	assert.Equal(t, ids, walk(aws.StringSlice(ids)))
+	// MaxResults with explicit IDs pages them, and a repeated ID is listed once.
+	assert.Equal(t, ids, walk(aws.StringSlice(append(ids, ids...))))
 
 	all, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{}, testVolAccountID)
 	require.NoError(t, err)

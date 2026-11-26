@@ -114,7 +114,7 @@ func requireNoInlineDiscovery(t *testing.T, nc *nats.Conn, r http.Handler, disco
 // count, cold and after the count is older than one refresh interval; a
 // discovery gather on the request path adds its whole timeout to the call.
 func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
-	awsgw.SetActiveNodesTTLForTest(t, 50*time.Millisecond)
+	awsgw.SetActiveNodesTTLForTest(t, time.Hour)
 	awsgw.SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 	discoveries := countDiscoveries(t, nc, true)
@@ -127,11 +127,13 @@ func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
 
 	requireNoInlineDiscovery(t, nc, r, discoveries, "cold")
 
-	// Two refreshes span one interval; stopping the loop leaves the count to age.
+	// One refresh stores the count; shrinking the interval after the loop stops
+	// makes that count older than one interval without a wait.
 	stop := runDiscovery(t, nodes)
 	requireActiveNodes(t, nodes, 2)
-	require.Eventually(t, func() bool { return discoveries.Load() >= 2 }, 2*time.Second, 5*time.Millisecond)
 	stop()
+	require.Equal(t, int64(1), discoveries.Load(), "want exactly one refresh before the expired request")
+	awsgw.SetActiveNodesTTLForTest(t, time.Nanosecond)
 	body := requireNoInlineDiscovery(t, nc, r, discoveries, "expired")
 	require.Contains(t, body, "i-0000000000000001")
 	require.Contains(t, body, "i-0000000000000002", "the request did not use the stored count of 2")

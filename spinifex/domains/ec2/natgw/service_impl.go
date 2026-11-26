@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -450,6 +451,13 @@ var describeNatGatewaysValidFilters = map[string]bool{
 
 // DescribeNatGateways lists NAT Gateways, optionally filtered.
 func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
+	// The gateway refuses an out-of-range MaxResults with this action's own text.
+	pageReq, err := paging.EC2{}.Parse(nil, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
+	pageReq.Limit = int(aws.Int64Value(input.MaxResults))
+
 	parsedFilters, err := awsfilters.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
@@ -521,8 +529,11 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 		natGateways = append(natGateways, recordToEC2(&record))
 	}
 
+	natGateways, nextToken := paging.EC2Page(natGateways, func(g *ec2.NatGateway) string { return *g.NatGatewayId }, pageReq)
+
 	return &ec2.DescribeNatGatewaysOutput{
 		NatGateways: natGateways,
+		NextToken:   nextToken,
 	}, nil
 }
 

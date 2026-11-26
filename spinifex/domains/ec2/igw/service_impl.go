@@ -214,8 +214,8 @@ var describeIGWValidFilters = map[string]bool{
 func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	var igws []*ec2.InternetGateway
 
-	// Validated but not paged: AWS's paging of DescribeInternetGateways is unobserved.
-	if _, err := describeIGWPaging.Parse(input.MaxResults, input.NextToken, len(input.InternetGatewayIds)); err != nil {
+	pageReq, err := describeIGWPaging.Parse(input.MaxResults, input.NextToken, len(input.InternetGatewayIds))
+	if err != nil {
 		return nil, err
 	}
 
@@ -274,10 +274,13 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 		}
 	}
 
+	igws, nextToken := paging.EC2Page(igws, func(g *ec2.InternetGateway) string { return *g.InternetGatewayId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeInternetGateways completed", "count", len(igws), "accountID", accountID)
 
 	return &ec2.DescribeInternetGatewaysOutput{
 		InternetGateways: igws,
+		NextToken:        nextToken,
 	}, nil
 }
 

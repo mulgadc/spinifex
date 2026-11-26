@@ -10,14 +10,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// MaxResults bounds from the EC2 model. A raw query request bypasses the
-// client-side validation an SDK caller gets, so the range is enforced here
-// rather than silently clamped into a page size the caller did not ask for.
-const (
-	minSGForVpcResults = 5
-	maxSGForVpcResults = 1000
-)
-
 // GetSecurityGroupsForVpc returns MissingParameter for an absent VpcId (required by the model)
 // before the request crosses NATS. Whether it names a VPC is the handler's call: only the store
 // knows.
@@ -29,8 +21,9 @@ func GetSecurityGroupsForVpc(ctx context.Context, input *ec2.GetSecurityGroupsFo
 	if input.VpcId == nil || *input.VpcId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.MaxResults != nil && (*input.MaxResults < minSGForVpcResults || *input.MaxResults > maxSGForVpcResults) {
-		return output, errors.New(awserrors.ErrorInvalidParameterValue)
+	// A raw query request skips the SDK's range check, so refuse it here.
+	if _, err := ec2vpc.GetSecurityGroupsForVpcPaging.Parse(input.MaxResults, input.NextToken, 0); err != nil {
+		return output, err
 	}
 	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.GetSecurityGroupsForVpc(ctx, input, accountID)

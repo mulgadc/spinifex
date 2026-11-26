@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
@@ -244,35 +245,21 @@ func TestDescribeInstanceTypeOfferings_FullTraversal(t *testing.T) {
 	}
 }
 
-func TestDescribeInstanceTypeOfferings_MalformedNextToken(t *testing.T) {
+// TestDescribeInstanceTypeOfferings_ForeignNextTokenRefused refuses a token the
+// service did not issue, including the bare offset it once issued.
+func TestDescribeInstanceTypeOfferings_ForeignNextTokenRefused(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro")
 
-	_, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
-		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
-		NextToken:    aws.String("not-a-token"),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
-
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
-}
-
-// TestDescribeInstanceTypeOfferings_TokenPastEnd guards the offset token against
-// a caller replaying a stale page after the catalogue shrank.
-func TestDescribeInstanceTypeOfferings_TokenPastEnd(t *testing.T) {
-	t.Parallel()
-	_, nc := startTestNATSServer(t)
-	serveInstanceTypes(t, nc, "t3.micro")
-
-	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
-		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
-		NextToken:    aws.String("99"),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
-
-	require.NoError(t, err)
-	assert.Empty(t, output.InstanceTypeOfferings)
-	assert.Nil(t, output.NextToken)
+	for _, token := range []string{"not-a-token", "99", "0", "bm90LW91cnM"} {
+		_, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
+			LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
+			NextToken:    aws.String(token),
+		}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
+		testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+			"Value ( "+token+" ) for parameter NextToken is invalid. The token is invalid.")
+	}
 }
 
 func TestDescribeInstanceTypeOfferings_EmptyCatalogue(t *testing.T) {

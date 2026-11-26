@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 // idFormatResource is one resource type AWS reports in the ID-format calls,
@@ -148,7 +149,12 @@ func DescribeAggregateIdFormat(_ *ec2.DescribeAggregateIdFormatInput) (*ec2.Desc
 
 // DescribePrincipalIdFormat implements the EC2 DescribePrincipalIdFormat
 // action. The account root is the only principal, so one page holds it all.
+// The gateway checks MaxResults; any valid token resumes at the one principal.
 func DescribePrincipalIdFormat(input *ec2.DescribePrincipalIdFormatInput, accountID string) (*ec2.DescribePrincipalIdFormatOutput, error) {
+	if _, err := paging.DecodeToken(aws.StringValue(input.NextToken)); err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value ( %s ) for parameter NextToken is invalid. The token is invalid.", aws.StringValue(input.NextToken))
+	}
 	statuses, err := idFormatStatuses(aws.StringValueSlice(input.Resources), 0)
 	if err != nil {
 		return nil, err

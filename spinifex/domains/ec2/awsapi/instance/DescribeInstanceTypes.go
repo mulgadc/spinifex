@@ -136,7 +136,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 	// Unpaged unless asked. The listing is one entry per instance type, which is
 	// inside the page cap AWS declares, so a caller that wants pages asks.
 	if input.MaxResults != nil || aws.StringValue(input.NextToken) != "" {
-		page, nextToken, err := pageByOffset(finalInstanceTypes, input.NextToken, input.MaxResults)
+		page, nextToken, err := pageByKey(finalInstanceTypes, func(it *ec2.InstanceTypeInfo) string { return aws.StringValue(it.InstanceType) }, input.NextToken, input.MaxResults)
 		if err != nil {
 			return nil, err
 		}

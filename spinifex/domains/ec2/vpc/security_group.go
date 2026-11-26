@@ -753,7 +753,9 @@ var getSecurityGroupsForVpcValidFilters = map[string]bool{
 	"primary-vpc-id": true,
 }
 
-var getSecurityGroupsForVpcPaging = paging.EC2{
+// GetSecurityGroupsForVpcPaging carries AWS's GetSecurityGroupsForVpc paging
+// answers, so the gateway can refuse a bad request before it crosses NATS.
+var GetSecurityGroupsForVpcPaging = paging.EC2{
 	MaxResults: 1000,
 	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value smaller than 1000.",
 	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
@@ -770,7 +772,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 	}
 	vpcID := *input.VpcId
 
-	pageReq, err := getSecurityGroupsForVpcPaging.Parse(input.MaxResults, input.NextToken, 0)
+	pageReq, err := GetSecurityGroupsForVpcPaging.Parse(input.MaxResults, input.NextToken, 0)
 	if err != nil {
 		return nil, err
 	}

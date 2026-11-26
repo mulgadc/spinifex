@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sort"
-	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/nats-io/nats.go"
 )
 
@@ -75,15 +74,11 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 		}
 	}
 
-	// Total order so a paged traversal sees every offering exactly once.
-	sort.Slice(offerings, func(i, j int) bool {
-		if *offerings[i].InstanceType != *offerings[j].InstanceType {
-			return *offerings[i].InstanceType < *offerings[j].InstanceType
-		}
-		return *offerings[i].Location < *offerings[j].Location
-	})
-
-	page, nextToken, err := pageByOffset(offerings, input.NextToken, input.MaxResults)
+	// A space sorts below every character of a type name, so the key orders by
+	// type, then location.
+	page, nextToken, err := pageByKey(offerings, func(o *ec2.InstanceTypeOffering) string {
+		return *o.InstanceType + " " + *o.Location
+	}, input.NextToken, input.MaxResults)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstanceTypeOfferings: invalid NextToken", "next_token", aws.StringValue(input.NextToken))
 		return nil, err
@@ -121,29 +116,18 @@ func offeringLocations(ctx context.Context, locationType, region, az string, ids
 	return locations, nil
 }
 
-// pageByOffset slices one page out of a sorted set, using an opaque integer
-// offset as the token. The last page carries a nil token.
-func pageByOffset[T any](items []T, token *string, maxResults *int64) ([]T, *string, error) {
-	start := 0
-	if aws.StringValue(token) != "" {
-		n, err := strconv.Atoi(*token)
-		if err != nil || n < 0 {
-			return nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
-		start = n
+// pageByKey pages items by key with an opaque resume token. A token this
+// service did not issue is refused. The last page carries a nil token.
+func pageByKey[T any](items []T, key func(T) string, token *string, maxResults *int64) ([]T, *string, error) {
+	from, err := paging.DecodeToken(aws.StringValue(token))
+	if err != nil {
+		return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value ( %s ) for parameter NextToken is invalid. The token is invalid.", aws.StringValue(token))
 	}
-	if start > len(items) {
-		start = len(items)
-	}
-
 	size := defaultPageSize
 	if maxResults != nil && *maxResults > 0 {
 		size = int(*maxResults)
 	}
-
-	end := start + size
-	if end >= len(items) {
-		return items[start:], nil, nil
-	}
-	return items[start:end], aws.String(strconv.Itoa(end)), nil
+	page, next := paging.EC2Page(items, key, paging.Request{Limit: size, From: from})
+	return page, next, nil
 }

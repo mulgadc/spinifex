@@ -144,6 +144,9 @@ var ec2MaxResultsRanges = map[string]maxResultsRange{
 		return "Maximum results allowed are between 1 and 200"
 	}},
 	"DescribeNatGateways": {5, 1000, awserrors.ErrorInvalidParameter, natGatewaysMaxResultsMessage},
+	"DescribePrincipalIdFormat": {1, 1000, awserrors.ErrorInvalidParameterValue, func(n int64) string {
+		return fmt.Sprintf("Value ( %d ) for parameter maxResults is invalid. Expecting a value between 1 and 1000.", n)
+	}},
 }
 
 // validateMaxResults refuses a MaxResults outside the action's range. It does

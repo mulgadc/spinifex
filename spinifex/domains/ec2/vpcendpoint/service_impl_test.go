@@ -600,3 +600,26 @@ func TestPolicy_RefusesWhatTheGateWouldNotEnforce(t *testing.T) {
 		awserrors.ErrorInvalidPolicyDocument, "")
 	assert.Equal(t, DefaultPolicy, aws.StringValue(f.describe(t, id).PolicyDocument))
 }
+
+func TestDescribe_InactiveStillValidatesPaging(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.svc.SetActivation(nil, nil)
+	_, err := f.svc.DescribeVpcEndpoints(t.Context(), &ec2.DescribeVpcEndpointsInput{MaxResults: aws.Int64(4)}, testAccount)
+	requireCode(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value ( 4 ) for parameter maxResults is invalid. Expecting a value greater than or equal to 5.")
+	_, err = f.svc.DescribeVpcEndpoints(t.Context(), &ec2.DescribeVpcEndpointsInput{NextToken: aws.String("5")}, testAccount)
+	requireCode(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value ( 5 ) for parameter NextToken is invalid. The token is invalid.")
+}
+
+func TestDescribeServices_RefusesForeignToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	_, err := f.svc.DescribeVpcEndpointServices(t.Context(), &ec2.DescribeVpcEndpointServicesInput{NextToken: aws.String("5")}, testAccount)
+	requireCode(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value ( 5 ) for parameter NextToken is invalid. The token is invalid.")
+	out, err := f.svc.DescribeVpcEndpointServices(t.Context(), &ec2.DescribeVpcEndpointServicesInput{MaxResults: aws.Int64(2000)}, testAccount)
+	require.NoError(t, err, "the model sets no MaxResults range")
+	assert.Len(t, out.ServiceDetails, 1)
+}

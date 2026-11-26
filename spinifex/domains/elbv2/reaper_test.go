@@ -211,19 +211,31 @@ func TestReapStuckProvisioningLBsLeavesOtherRealizations(t *testing.T) {
 	assert.Empty(t, launcher.terminateCalls)
 }
 
-// writeHookKV runs hook once, just before the first Put or Update of trigger.
+// writeHookKV runs hook once, just before the first Put or Update of trigger,
+// and counts the reads before it and the rejected Updates of trigger.
 type writeHookKV struct {
 	jetstream.KeyValue
 
-	fired   atomic.Bool
-	trigger string
-	hook    func()
+	fired       atomic.Bool
+	trigger     string
+	hook        func()
+	reads       atomic.Int32
+	readsAtFire atomic.Int32
+	rejected    atomic.Int32
 }
 
 func (k *writeHookKV) before(key string) {
 	if key == k.trigger && k.fired.CompareAndSwap(false, true) {
+		k.readsAtFire.Store(k.reads.Load())
 		k.hook()
 	}
+}
+
+func (k *writeHookKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	if key == k.trigger {
+		k.reads.Add(1)
+	}
+	return k.KeyValue.Get(ctx, key)
 }
 
 func (k *writeHookKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
@@ -233,7 +245,11 @@ func (k *writeHookKV) Put(ctx context.Context, key string, value []byte) (uint64
 
 func (k *writeHookKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
 	k.before(key)
-	return k.KeyValue.Update(ctx, key, value, last)
+	rev, err := k.KeyValue.Update(ctx, key, value, last)
+	if err != nil && key == k.trigger {
+		k.rejected.Add(1)
+	}
+	return rev, err
 }
 
 // A heartbeat that commits between the reaper's read and its write wins.
@@ -276,4 +292,86 @@ func TestReapStuckProvisioningLBsKeepsAWinningHeartbeat(t *testing.T) {
 	launcher.mu.Lock()
 	defer launcher.mu.Unlock()
 	assert.Empty(t, launcher.terminateCalls)
+}
+
+// A delete that commits between the reaper's read and its write stays final.
+func TestReapStuckProvisioningLBsKeepsAConcurrentDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	launcher := &mockSystemInstanceLauncher{}
+	svc.InstanceLauncher = launcher
+	now := time.Now().UTC()
+
+	lb := testLBRecord("racedel00000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	lb.InstanceID = "i-racedel"
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	inner := svc.store.kv
+	var deleteErr error
+	var afterDelete *LoadBalancerRecord
+	gate := &writeHookKV{KeyValue: inner, trigger: KeyPrefixLB + lb.LoadBalancerID}
+	gate.hook = func() {
+		deleteErr = svc.store.DeleteLoadBalancer(t.Context(), lb.LoadBalancerID)
+		afterDelete, _ = svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	}
+	svc.store.kv = gate
+
+	svc.reapStuckProvisioningLBs(t.Context(), now)
+	svc.store.kv = inner
+
+	require.True(t, gate.fired.Load(), "the reaper must reach its write")
+	require.Positive(t, gate.readsAtFire.Load(), "the reaper reads the LB before the delete")
+	require.NoError(t, deleteErr)
+	require.Nil(t, afterDelete, "the delete commits before the reaper writes")
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Nil(t, got, "the timeout must not re-create a deleted LB")
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	assert.Empty(t, launcher.terminateCalls)
+}
+
+// A timeout that commits before the heartbeat's activation write keeps the LB
+// failed, and the heartbeat neither reports activation nor renders its config.
+func TestLBAgentHeartbeatLosingToTimeoutDoesNotActivate(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	launcher := &mockSystemInstanceLauncher{}
+	svc.InstanceLauncher = launcher
+	now := time.Now().UTC()
+
+	lb := testLBRecord("racetmo00000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	lb.InstanceID = "i-racetmo"
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	inner := svc.store.kv
+	var afterTimeout *LoadBalancerRecord
+	gate := &writeHookKV{KeyValue: inner, trigger: KeyPrefixLB + lb.LoadBalancerID}
+	gate.hook = func() {
+		svc.reapStuckProvisioningLBs(t.Context(), now)
+		afterTimeout, _ = svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	}
+	svc.store.kv = gate
+
+	out, err := svc.LBAgentHeartbeat(t.Context(), &LBAgentHeartbeatInput{
+		LBID: aws.String(lb.LoadBalancerID), InstanceID: aws.String(lb.InstanceID),
+	}, testAccountID)
+	svc.store.kv = inner
+
+	require.True(t, gate.fired.Load(), "the heartbeat must reach its activation write")
+	require.Positive(t, gate.readsAtFire.Load(), "the heartbeat reads provisioning before the timeout")
+	require.NotNil(t, afterTimeout)
+	require.Equal(t, StateFailed, afterTimeout.State, "the timeout commits before the heartbeat writes")
+	require.Positive(t, gate.rejected.Load(), "the heartbeat CAS retries after the timeout")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, StateFailed, aws.StringValue(out.Status), "the heartbeat reports the committed state")
+	assert.Empty(t, aws.StringValue(out.ConfigHash), "a rejected activation returns no new config")
+
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Equal(t, StateFailed, got.State)
+	assert.Equal(t, provisioningTimeoutReason(), got.StateReason)
+	assert.Empty(t, got.ConfigHash, "a rejected activation renders no config")
+	assert.Empty(t, got.ConfigText, "a rejected activation renders no config")
 }

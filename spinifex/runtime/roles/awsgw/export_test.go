@@ -22,11 +22,3 @@ func SetActiveNodesTTLForTest(tb testing.TB, d time.Duration) {
 	activeNodesTTL = d
 	tb.Cleanup(func() { activeNodesTTL = prev })
 }
-
-// AgeActiveNodesForTest makes the stored node count look older than one
-// refresh interval, so a test can send a request after expiry without waiting.
-func AgeActiveNodesForTest(d *NodeDiscovery) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.at = d.at.Add(-activeNodesTTL - time.Second)
-}

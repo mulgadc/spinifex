@@ -21,7 +21,6 @@ type NodeDiscovery struct {
 
 	mu    sync.RWMutex
 	count int
-	at    time.Time
 }
 
 // activeNodesTTL is the interval between background refreshes. A var only so
@@ -59,12 +58,11 @@ func (d *NodeDiscovery) Run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		count, ok := d.discover(ctx)
-		d.mu.Lock()
-		if ok {
-			d.count, d.at = count, time.Now()
-		} else {
-			d.count = 0
+		if !ok {
+			count = 0
 		}
+		d.mu.Lock()
+		d.count = count
 		d.mu.Unlock()
 
 		select {

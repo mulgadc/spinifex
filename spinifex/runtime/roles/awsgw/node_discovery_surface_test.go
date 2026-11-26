@@ -99,31 +99,42 @@ func countDiscoveries(t *testing.T, nc *nats.Conn, answer bool) *atomic.Int64 {
 	return &n
 }
 
-func requireNoInlineDiscovery(t *testing.T, nc *nats.Conn, r http.Handler, discoveries *atomic.Int64, phase string) {
+func requireNoInlineDiscovery(t *testing.T, nc *nats.Conn, r http.Handler, discoveries *atomic.Int64, phase string) string {
 	t.Helper()
 	before := discoveries.Load()
-	describeInstanceStatus(t, r)
+	body := describeInstanceStatus(t, r)
 	require.NoError(t, nc.Flush())
 	if n := discoveries.Load() - before; n != 0 {
 		t.Errorf("Q-367.1: %s DescribeInstanceStatus published %d node discovery request(s) on the request path, want 0 (node_discovery.go ActiveNodes gathers inline)", phase, n)
 	}
+	return body
 }
 
-// Verifies: Q-367.1. DescribeInstanceStatus must answer from the last known
-// node count, cold and after the count ages past its TTL; a discovery gather
-// on the request path adds its whole timeout to the call.
+// Verifies: Q-367.1. DescribeInstanceStatus must answer from the stored node
+// count, cold and after the count is older than one refresh interval; a
+// discovery gather on the request path adds its whole timeout to the call.
 func TestQ367_DescribeInstanceStatusDoesNotRunDiscoveryInline(t *testing.T) {
+	awsgw.SetActiveNodesTTLForTest(t, 50*time.Millisecond)
 	awsgw.SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 	discoveries := countDiscoveries(t, nc, true)
-	answerDescribeInstanceStatus(t, nc, "node-1", `{"InstanceStatuses":[]}`)
+	answerAs(t, nc, "node-2", nil)
+	answerDescribeInstanceStatus(t, nc, "node-1", `{"InstanceStatuses":[{"InstanceId":"i-0000000000000001"}]}`)
+	answerDescribeInstanceStatus(t, nc, "node-2", `{"InstanceStatuses":[{"InstanceId":"i-0000000000000002"}]}`)
 
 	nodes := &awsgw.NodeDiscovery{NATS: nc, Expected: 1}
 	r := discoveryGateway(t, nc, nodes)
 
 	requireNoInlineDiscovery(t, nc, r, discoveries, "cold")
-	awsgw.AgeActiveNodesForTest(nodes)
-	requireNoInlineDiscovery(t, nc, r, discoveries, "expired")
+
+	// Two refreshes span one interval; stopping the loop leaves the count to age.
+	stop := runDiscovery(t, nodes)
+	requireActiveNodes(t, nodes, 2)
+	require.Eventually(t, func() bool { return discoveries.Load() >= 2 }, 2*time.Second, 5*time.Millisecond)
+	stop()
+	body := requireNoInlineDiscovery(t, nc, r, discoveries, "expired")
+	require.Contains(t, body, "i-0000000000000001")
+	require.Contains(t, body, "i-0000000000000002", "the request did not use the stored count of 2")
 }
 
 // Verifies: Q-367.1. A request must not gather while the first background
@@ -171,7 +182,7 @@ func TestQ367_DescribeInstanceStatusAfterNodeLoss(t *testing.T) {
 	answerDescribeInstanceStatus(t, nc, "node-1", `{"InstanceStatuses":[{"InstanceId":"i-0000000000000001"}]}`)
 	node2Status := answerDescribeInstanceStatus(t, nc, "node-2", `{"InstanceStatuses":[]}`)
 
-	nodes := &awsgw.NodeDiscovery{NATS: nc, Expected: 1}
+	nodes := &awsgw.NodeDiscovery{NATS: nc, Expected: 3}
 	r := discoveryGateway(t, nc, nodes)
 	stop := runDiscovery(t, nodes)
 	requireActiveNodes(t, nodes, 2)
@@ -192,8 +203,9 @@ func TestQ367_DescribeInstanceStatusAfterNodeLoss(t *testing.T) {
 	requireActiveNodes(t, nodes, 1)
 
 	start = time.Now()
-	describeInstanceStatus(t, r)
+	body = describeInstanceStatus(t, r)
 	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
 		t.Errorf("after the refresh, DescribeInstanceStatus took %v, want under 500ms", elapsed)
 	}
+	require.Contains(t, body, "i-0000000000000001")
 }

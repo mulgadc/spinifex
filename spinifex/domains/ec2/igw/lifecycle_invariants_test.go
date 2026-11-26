@@ -17,6 +17,7 @@ import (
 // Idempotent convergence belongs to destroy orchestration, which tolerates
 // NotFound via awserrors.IsNotFound; the public API stays AWS compatible.
 func TestRLC1_IGWDeleteNotFoundOnAbsent(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 
 	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{

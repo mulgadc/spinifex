@@ -71,6 +71,28 @@ func confirmAttach(t *testing.T, svc *IGWServiceImpl, igwID, vpcID string) {
 	require.NoError(t, MarkAttached(context.Background(), svc.igwKV, kvstore.AccountKey(testAccountID, igwID), vpcID))
 }
 
+// requireNoVPCEvent runs call, then publishes a sentinel on the same connection.
+// NATS keeps per-connection order, so any vpc.* event from call arrives first.
+func requireNoVPCEvent(t *testing.T, nc *nats.Conn, call func()) {
+	t.Helper()
+	const sentinel = "vpc.test-sentinel"
+	eventCh := make(chan *nats.Msg, 16)
+	sub, err := nc.Subscribe("vpc.>", func(msg *nats.Msg) { eventCh <- msg })
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	require.NoError(t, nc.Flush())
+
+	call()
+
+	require.NoError(t, nc.Publish(sentinel, nil))
+	select {
+	case msg := <-eventCh:
+		require.Equal(t, sentinel, msg.Subject, "unexpected event on topic %s", msg.Subject)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for the sentinel message")
+	}
+}
+
 func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
 	t.Helper()
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
@@ -79,6 +101,7 @@ func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
 }
 
 func TestCreateInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
 	require.NoError(t, err)
@@ -90,6 +113,7 @@ func TestCreateInternetGateway(t *testing.T) {
 }
 
 func TestCreateInternetGateway_WithTags(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
@@ -115,6 +139,7 @@ func TestCreateInternetGateway_WithTags(t *testing.T) {
 }
 
 func TestCreateInternetGateway_TagsWrongResourceType(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
@@ -131,6 +156,7 @@ func TestCreateInternetGateway_TagsWrongResourceType(t *testing.T) {
 }
 
 func TestDeleteInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -146,12 +172,14 @@ func TestDeleteInternetGateway(t *testing.T) {
 }
 
 func TestDeleteInternetGateway_MissingID(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestDeleteInternetGateway_EmptyID(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(""),
@@ -160,6 +188,7 @@ func TestDeleteInternetGateway_EmptyID(t *testing.T) {
 }
 
 func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -185,6 +214,7 @@ func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
 }
 
 func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	createTestIGW(t, svc)
 
@@ -200,6 +230,7 @@ func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_All(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	createTestIGW(t, svc)
 	createTestIGW(t, svc)
@@ -210,6 +241,7 @@ func TestDescribeInternetGateways_All(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_ByID(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // second one should be filtered out
@@ -224,6 +256,7 @@ func TestDescribeInternetGateways_ByID(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_Empty(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
 	require.NoError(t, err)
@@ -231,6 +264,7 @@ func TestDescribeInternetGateways_Empty(t *testing.T) {
 }
 
 func TestAttachInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -265,6 +299,7 @@ func TestAttachInternetGateway(t *testing.T) {
 // uses, because they must see a requested attachment. Reading the AWS-facing
 // describe instead makes them create duplicate gateways and skip teardowns.
 func TestAttachmentIntent_SeesPendingAndConfirmedAlike(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	ctx := context.Background()
@@ -306,6 +341,7 @@ func TestAttachmentIntent_SeesPendingAndConfirmedAlike(t *testing.T) {
 // Scoped per account and per VPC: a gateway in another account or on another
 // VPC must not answer, or teardown detaches something it does not own.
 func TestAttachmentIntent_ScopedByAccountAndVPC(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	ctx := context.Background()
@@ -328,6 +364,7 @@ func TestAttachmentIntent_ScopedByAccountAndVPC(t *testing.T) {
 // A record written before attach tracking existed has no AttachState. It must
 // still report its attachment rather than vanishing until the next drift pass.
 func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -355,6 +392,7 @@ func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {
 // A pending attach must not be reachable through the attachment filters either,
 // or a caller filtering on attachment.vpc-id sees a gateway that is not up.
 func TestDescribeInternetGateways_PendingAttachDoesNotMatchFilters(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -389,6 +427,7 @@ func TestDescribeInternetGateways_PendingAttachDoesNotMatchFilters(t *testing.T)
 // MarkAttached is called on every pass, so it must not rewrite a record that is
 // already attached: the drift loop watches this bucket and would re-trigger.
 func TestMarkAttached_NoRewriteWhenAlreadyAttached(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -414,6 +453,7 @@ func TestMarkAttached_NoRewriteWhenAlreadyAttached(t *testing.T) {
 // VPC must not confirm the new one: that reports an attachment to a VPC with no
 // gateway, and the confirmation is one-way.
 func TestMarkAttached_IgnoresAConfirmationForAnotherVPC(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	ctx := context.Background()
@@ -449,6 +489,7 @@ func TestMarkAttached_IgnoresAConfirmationForAnotherVPC(t *testing.T) {
 // A detach clears the observed state, so a later re-attach starts pending again
 // rather than inheriting the previous attachment's confirmation.
 func TestDetachThenAttachStartsPending(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -480,6 +521,7 @@ func TestDetachThenAttachStartsPending(t *testing.T) {
 }
 
 func TestCreateAttachedInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	ctx := context.Background()
 
@@ -509,6 +551,7 @@ func TestCreateAttachedInternetGateway(t *testing.T) {
 }
 
 func TestCreateAttachedInternetGateway_AttachesDetachedGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	ctx := context.Background()
 	igwID := createTestIGW(t, svc)
@@ -524,6 +567,7 @@ func TestCreateAttachedInternetGateway_AttachesDetachedGateway(t *testing.T) {
 }
 
 func TestAttachInternetGateway_NotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-nonexistent"),
@@ -533,6 +577,7 @@ func TestAttachInternetGateway_NotFound(t *testing.T) {
 }
 
 func TestAttachInternetGateway_AlreadyAttached(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -551,6 +596,7 @@ func TestAttachInternetGateway_AlreadyAttached(t *testing.T) {
 }
 
 func TestAttachInternetGateway_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		VpcId: aws.String("vpc-test123"),
@@ -564,6 +610,7 @@ func TestAttachInternetGateway_MissingParams(t *testing.T) {
 }
 
 func TestDetachInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -593,6 +640,7 @@ func TestDetachInternetGateway(t *testing.T) {
 // AWS refuses the detach while an elastic IP is associated into the VPC and
 // leaves the attachment in place; it succeeds once the address is unmapped.
 func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
@@ -644,6 +692,7 @@ func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
 }
 
 func TestDetachInternetGateway_NotAttached(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -655,6 +704,7 @@ func TestDetachInternetGateway_NotAttached(t *testing.T) {
 }
 
 func TestDetachInternetGateway_WrongVPC(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -673,6 +723,7 @@ func TestDetachInternetGateway_WrongVPC(t *testing.T) {
 }
 
 func TestDetachInternetGateway_NotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-nonexistent"),
@@ -682,6 +733,7 @@ func TestDetachInternetGateway_NotFound(t *testing.T) {
 }
 
 func TestDetachInternetGateway_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 		VpcId: aws.String("vpc-test123"),
@@ -695,6 +747,7 @@ func TestDetachInternetGateway_MissingParams(t *testing.T) {
 }
 
 func TestIGWLifecycle_CreateAttachDetachDelete(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 
 	// Create
@@ -733,6 +786,7 @@ func TestIGWLifecycle_CreateAttachDetachDelete(t *testing.T) {
 }
 
 func TestAttachInternetGateway_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -761,6 +815,7 @@ func TestAttachInternetGateway_PublishesEvent(t *testing.T) {
 }
 
 func TestDetachInternetGateway_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -796,30 +851,18 @@ func TestDetachInternetGateway_PublishesEvent(t *testing.T) {
 }
 
 func TestCreateInternetGateway_PublishesNoEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestIGWService(t)
 
-	// Subscribe to all vpc.* topics
-	eventCh := make(chan *nats.Msg, 1)
-	sub, err := nc.Subscribe("vpc.>", func(msg *nats.Msg) {
-		eventCh <- msg
+	requireNoVPCEvent(t, nc, func() {
+		_, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
+		require.NoError(t, err)
 	})
-	require.NoError(t, err)
-	defer func() { _ = sub.Unsubscribe() }()
-
-	_, err = svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
-	require.NoError(t, err)
-
-	// Verify no event was published
-	select {
-	case msg := <-eventCh:
-		t.Fatalf("unexpected event on topic %s", msg.Subject)
-	case <-time.After(200 * time.Millisecond):
-		// Expected — no event
-	}
 }
 
 // TestAttachInternetGateway_CrossAccountVPCRejected tests that attaching an IGW to another account's VPC is rejected.
 func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestIGWService(t)
 
 	// Add a VPC owned by testAccountID to the existing VPC bucket.
@@ -858,6 +901,7 @@ func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterByIGWId(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc)
@@ -873,6 +917,7 @@ func TestDescribeInternetGateways_FilterByIGWId(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterByAttachmentVpcId(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // detached
@@ -896,6 +941,7 @@ func TestDescribeInternetGateways_FilterByAttachmentVpcId(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterByAttachmentState(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // detached, won't match
@@ -919,6 +965,7 @@ func TestDescribeInternetGateways_FilterByAttachmentState(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterMultipleValues_OR(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID1 := createTestIGW(t, svc)
 	igwID2 := createTestIGW(t, svc)
@@ -934,6 +981,7 @@ func TestDescribeInternetGateways_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 	createTestIGW(t, svc) // detached
@@ -967,6 +1015,7 @@ func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterUnknownName_Error(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 
 	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
@@ -978,6 +1027,7 @@ func TestDescribeInternetGateways_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterWildcard(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -992,6 +1042,7 @@ func TestDescribeInternetGateways_FilterWildcard(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterNoResults(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	createTestIGW(t, svc)
 
@@ -1005,6 +1056,7 @@ func TestDescribeInternetGateways_FilterNoResults(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
@@ -1028,6 +1080,7 @@ func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
 		TagSpecifications: []*ec2.TagSpecification{
@@ -1057,34 +1110,22 @@ func TestDescribeInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
 }
 
 func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	// Subscribe to all vpc.* topics
-	eventCh := make(chan *nats.Msg, 1)
-	sub, err := nc.Subscribe("vpc.>", func(msg *nats.Msg) {
-		eventCh <- msg
+	requireNoVPCEvent(t, nc, func() {
+		_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID),
+		}, testAccountID)
+		require.NoError(t, err)
 	})
-	require.NoError(t, err)
-	defer func() { _ = sub.Unsubscribe() }()
-
-	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
-		InternetGatewayId: aws.String(igwID),
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Verify no event was published
-	select {
-	case msg := <-eventCh:
-		t.Fatalf("unexpected event on topic %s", msg.Subject)
-	case <-time.After(200 * time.Millisecond):
-		// Expected — no event
-	}
 }
 
 // TestAttachInternetGateway_NoGateFanOut verifies that IGW attach skips gate
 // fan-out to avoid racing the bootstrap CreateRoute path.
 func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	pub := &fakeGatePublisher{}
 	svc.SetGatePublisher(pub)
@@ -1100,6 +1141,7 @@ func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
 }
 
 func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -1127,6 +1169,7 @@ func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
 }
 
 func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -1139,6 +1182,7 @@ func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
 }
 
 func TestDescribeInternetGateways_PagingValidation(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 
 	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{

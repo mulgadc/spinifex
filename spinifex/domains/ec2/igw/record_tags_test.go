@@ -20,6 +20,7 @@ func igwTagVal(tags []*ec2.Tag, key string) string {
 }
 
 func TestIGWRecordTagsMirror(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
@@ -57,6 +58,7 @@ func TestIGWRecordTagsMirror(t *testing.T) {
 }
 
 func TestIGWRecordTagsMirror_UnownedNoError(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestIGWService(t)
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{aws.String("igw-missing"), aws.String("eigw-other")},

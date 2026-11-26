@@ -2,6 +2,7 @@ package instance
 
 import (
 	"errors"
+	"math"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -11,9 +12,7 @@ import (
 
 // The gateway refuses an out-of-range MaxResults first, with AWS's InvalidRequest.
 var describeCreditSpecificationsPaging = paging.EC2{
-	MaxResults: 1000,
-	TooLarge:   "The value %d for the maxResults parameter must be between 5 and 1000. Change the value and try again.",
-	TooSmall:   "The value %d for the maxResults parameter must be between 5 and 1000. Change the value and try again.",
+	MaxResults: math.MaxInt64,
 	WithIDs:    "The parameter instanceId cannot be used with the parameter maxResults",
 }
 

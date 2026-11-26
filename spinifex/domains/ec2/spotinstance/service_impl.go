@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -114,10 +115,9 @@ var describeSpotRequestsValidFilters = map[string]bool{
 	"tag-key":                    true,
 }
 
-// AWS documents 5-1000 and accepts MaxResults with SpotInstanceRequestIds.
+// The AWS model gives no upper bound, and AWS accepts MaxResults with SpotInstanceRequestIds.
 var describeSpotRequestsPaging = paging.EC2{
-	MaxResults: 1000,
-	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	MaxResults: math.MaxInt64,
 	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
 }
 

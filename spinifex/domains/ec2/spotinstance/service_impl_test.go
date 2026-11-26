@@ -386,13 +386,11 @@ func TestDescribe_RefusesForeignToken(t *testing.T) {
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
 }
 
-func TestDescribe_RefusesMaxResultsOutOfRange(t *testing.T) {
+func TestDescribe_RefusesMaxResultsBelowFive(t *testing.T) {
 	svc := setupTestService(t)
-	for _, n := range []int64{4, 1001} {
-		_, err := svc.DescribeSpotInstanceRequests(t.Context(), &ec2.DescribeSpotInstanceRequestsInput{
-			MaxResults: aws.Int64(n),
-		}, testAccountID)
-		require.Error(t, err, n)
-		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
-	}
+	_, err := svc.DescribeSpotInstanceRequests(t.Context(), &ec2.DescribeSpotInstanceRequestsInput{
+		MaxResults: aws.Int64(4),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err)
 }

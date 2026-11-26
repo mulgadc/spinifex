@@ -129,7 +129,7 @@ func TestListCertificates_ScopedToAccount(t *testing.T) {
 	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c2, PrivateKey: k2}, "000000000002")
 	require.NoError(t, err)
 
-	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	list, err := svc.ListCertificates(context.Background(), allKeyTypes(), testAccountID)
 	require.NoError(t, err)
 	require.Len(t, list.CertificateSummaryList, 1)
 	assert.Equal(t, "one.example.com", aws.StringValue(list.CertificateSummaryList[0].DomainName))
@@ -783,7 +783,7 @@ func TestListCertificates_PopulatedAccountReturnsSummaries(t *testing.T) {
 	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c2, PrivateKey: k2}, testAccountID)
 	require.NoError(t, err)
 
-	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	list, err := svc.ListCertificates(context.Background(), allKeyTypes(), testAccountID)
 	require.NoError(t, err)
 	require.Len(t, list.CertificateSummaryList, 2)
 	domains := []string{

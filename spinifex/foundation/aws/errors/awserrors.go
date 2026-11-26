@@ -433,6 +433,9 @@ var (
 	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
 	// client polling for the body can tell "not ready" apart from "not mine".
 	ErrorACMRequestInProgress = "RequestInProgressException"
+	// ErrorACMInvalidArgs is ACM's answer to a request parameter it cannot use,
+	// such as a NextToken it did not issue.
+	ErrorACMInvalidArgs = "InvalidArgsException"
 	// Route 53 REST-XML error codes, from the 2013-04-01 API reference.
 	ErrorNoSuchHostedZone          = "NoSuchHostedZone"
 	ErrorHostedZoneAlreadyExists   = "HostedZoneAlreadyExists"
@@ -1101,6 +1104,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidNetworkAclEntryNotFound:                        {HTTPCode: 404, Message: "The specified network ACL entry does not exist."},
 	ErrorACMInvalidArn:                                         {HTTPCode: 400, Message: "The requested Amazon Resource Name (ARN) does not refer to an existing resource."},
 	ErrorACMRequestInProgress:                                  {HTTPCode: 400, Message: "The certificate request is in process and the certificate in your account is not yet available."},
+	ErrorACMInvalidArgs:                                        {HTTPCode: 400, Message: "One or more of request parameters specified is not valid."},
 	ErrorInvalidNetworkAclIDNotFound:                           {HTTPCode: 400, Message: "The specified network ACL does not exist. Ensure that you specify the AWS Region in which the network ACL is located, if it's not in the default Region."},
 	ErrorInvalidNetworkAclIdMalformed:                          {HTTPCode: 400, Message: "The specified network ACL ID is malformed. Ensure that you provide the ID in the form acl-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidNetworkInterfaceInUse:                          {HTTPCode: 409, Message: "The specified interface is currently in use and cannot be deleted or attached to another instance. Ensure that you have detached the network interface first. If a network interface is in use, you may also receive the InvalidParameterValue error."},

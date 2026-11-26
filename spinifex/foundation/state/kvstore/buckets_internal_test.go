@@ -235,7 +235,6 @@ func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {
 // TestVersionStateMachine covers unset→0, first write, idempotent same write, upgrade, and no-downgrade.
 // One bucket is reused so each step runs against the prior state — the only way to catch unconditional-overwrite regressions.
 func TestVersionStateMachine(t *testing.T) {
-	t.Parallel()
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-fsm", 1)
 	require.NoError(t, err)

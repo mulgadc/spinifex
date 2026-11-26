@@ -114,6 +114,7 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			store, err := stores[i], errs[i]
 			assert.False(t, kvstore.IsStreamUnavailable(err),
 				"the operation must reach the reopened bucket, not surface the loss: %v", err)

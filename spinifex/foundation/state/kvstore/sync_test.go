@@ -36,7 +36,6 @@ func TestSyncBucket_OpensWithOneRevisionNoTTLAndASchemaVersion(t *testing.T) {
 }
 
 func TestSyncBucket_ErrorsCarryBothPackagesSentinels(t *testing.T) {
-	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	b := kvstore.OpenSyncBucket(js)
 
@@ -138,6 +137,7 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 
 	for name := range stops {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			require.Len(t, errs[name], 3)
 			for op, err := range errs[name] {
 				assert.ErrorIs(t, err, kvsync.ErrUnavailable, op)

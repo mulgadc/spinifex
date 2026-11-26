@@ -1,6 +1,7 @@
 package elbv2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 const realizationOVN = "ovn"
 
 // fixtureOwnerRevision is the owner revision a new root is created and sealed at.
+// Each accepted listener or target edit advances it by one.
 const fixtureOwnerRevision = 1
 
 var (
@@ -40,13 +42,14 @@ var (
 
 // fixtureOwner is the value at the account/name claim key. OwnerID and
 // ClaimedAt keep the appliance claim format; the root is readable only after
-// the claim is sealed at the same owner revision.
+// the claim is sealed. A sealed owner past the initial revision has a listener.
 type fixtureOwner struct {
 	OwnerID       string              `json:"ownerId"`
 	ClaimedAt     time.Time           `json:"claimedAt"`
 	OwnerRevision uint64              `json:"ownerRevision,omitempty"`
 	Sealed        bool                `json:"sealed,omitempty"`
 	Root          *LoadBalancerRecord `json:"root,omitempty"`
+	Listener      *fixtureListener    `json:"listener,omitempty"`
 }
 
 // fixtureClaim is a claim held by the caller: its key, the KV revision the
@@ -93,9 +96,16 @@ func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
 	if err := json.Unmarshal(raw, &owner); err != nil {
 		return fixtureOwner{}, fmt.Errorf("%w: %w", errFixtureClaimMalformed, err)
 	}
-	if owner.OwnerID == "" || owner.ClaimedAt.IsZero() || owner.OwnerRevision != fixtureOwnerRevision ||
-		owner.Root == nil || owner.Root.LoadBalancerID != owner.OwnerID {
+	if owner.OwnerID == "" || owner.ClaimedAt.IsZero() || owner.OwnerRevision < fixtureOwnerRevision ||
+		owner.Root == nil || owner.Root.LoadBalancerID != owner.OwnerID ||
+		(owner.Listener == nil) != (owner.OwnerRevision == fixtureOwnerRevision) ||
+		(!owner.Sealed && owner.OwnerRevision != fixtureOwnerRevision) {
 		return fixtureOwner{}, errFixtureClaimMalformed
+	}
+	if owner.Listener != nil {
+		if err := owner.Listener.check(owner.Root); err != nil {
+			return fixtureOwner{}, fmt.Errorf("%w: %w", errFixtureClaimMalformed, err)
+		}
 	}
 	return owner, nil
 }
@@ -192,8 +202,9 @@ func (f *fixtureOwnerStore) Begin(ctx context.Context, root *LoadBalancerRecord)
 
 // Seal makes the pending root readable by a CAS of the exact claim revision.
 // A failed write is resolved by re-reading the claim: the caller's own sealed
-// root is success, a missing or replaced claim is errFixtureOwnerLost, and a
-// known rejection with the claim still at its revision is errFixtureSealRejected.
+// root is success, also after a later edit advanced it, a missing or replaced
+// claim is errFixtureOwnerLost, and a known rejection with the claim still at
+// its revision is errFixtureSealRejected.
 func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*LoadBalancerRecord, error) {
 	sealed, err := claim.snapshot()
 	if err != nil {
@@ -215,7 +226,7 @@ func (f *fixtureOwnerStore) Seal(ctx context.Context, claim *fixtureClaim) (*Loa
 	if rerr != nil {
 		return nil, errors.Join(fmt.Errorf("kv update %s: %w", claim.Key, uerr), rerr)
 	}
-	if cur != nil && cur.OwnerID == sealed.OwnerID && cur.OwnerRevision == sealed.OwnerRevision && cur.Sealed {
+	if cur != nil && cur.OwnerID == sealed.OwnerID && cur.Sealed {
 		return cur.Root, nil
 	}
 	if cur == nil || cur.OwnerID != sealed.OwnerID || definiteKVConflict(uerr) {
@@ -267,14 +278,102 @@ func (f *fixtureOwnerStore) Invalidate(ctx context.Context, claim *fixtureClaim)
 	return fmt.Errorf("kv delete %s: %w", claim.Key, derr)
 }
 
-// GetSealed point-reads the sealed root for an account/name. A missing or
-// pending claim reads as nil.
-func (f *fixtureOwnerStore) GetSealed(ctx context.Context, name, accountID string) (*LoadBalancerRecord, error) {
+// GetSealedOwner point-reads the whole sealed owner for an account/name: root,
+// listener and targets at one owner revision. A missing or pending claim reads
+// as nil.
+func (f *fixtureOwnerStore) GetSealedOwner(ctx context.Context, name, accountID string) (*fixtureOwner, error) {
 	_, cur, err := f.read(ctx, LBNameKey(name, accountID))
 	if err != nil || cur == nil || !cur.Sealed {
 		return nil, err
 	}
+	return cur, nil
+}
+
+// GetSealed point-reads the sealed root for an account/name. A missing or
+// pending claim reads as nil.
+func (f *fixtureOwnerStore) GetSealed(ctx context.Context, name, accountID string) (*LoadBalancerRecord, error) {
+	cur, err := f.GetSealedOwner(ctx, name, accountID)
+	if err != nil || cur == nil {
+		return nil, err
+	}
 	return cur.Root, nil
+}
+
+// sameFixtureListener compares two listeners by their persisted form.
+func sameFixtureListener(a, b *fixtureListener) (bool, error) {
+	ra, err := json.Marshal(a)
+	if err != nil {
+		return false, fmt.Errorf("marshal listener: %w", err)
+	}
+	rb, err := json.Marshal(b)
+	if err != nil {
+		return false, fmt.Errorf("marshal listener: %w", err)
+	}
+	return bytes.Equal(ra, rb), nil
+}
+
+// fixtureEdit returns the listener the owner should hold next, given its own
+// copy of the sealed owner just read. It runs again on the latest owner after a
+// lost race, so the caller revalidates there. An equal listener writes nothing.
+type fixtureEdit func(cur fixtureOwner) (*fixtureListener, error)
+
+// Edit replaces the listener of ownerID's sealed owner at key by one CAS of the
+// read revision, at the next owner revision. A definite conflict reruns edit on
+// the latest owner; an unknown outcome is adopted only if the re-read shows the
+// exact intended snapshot, and is never retried against a newer revision.
+func (f *fixtureOwnerStore) Edit(ctx context.Context, key, ownerID string, edit fixtureEdit) (*fixtureOwner, error) {
+	for range fixtureEditAttempts {
+		entry, cur, err := f.read(ctx, key)
+		switch {
+		case err != nil:
+			return nil, err
+		case cur == nil || cur.OwnerID != ownerID:
+			return nil, errFixtureOwnerLost
+		case !cur.Sealed:
+			return nil, errFixtureNotSealed
+		}
+		view, err := decodeFixtureOwner(entry.Value())
+		if err != nil {
+			return nil, fmt.Errorf("decode %s: %w", key, err)
+		}
+		next, err := edit(view)
+		if err != nil {
+			return nil, err
+		}
+		same, err := sameFixtureListener(cur.Listener, next)
+		if err != nil {
+			return nil, err
+		}
+		if same {
+			return cur, nil
+		}
+		want := *cur
+		want.Listener = next
+		want.OwnerRevision = cur.OwnerRevision + 1
+		value, err := json.Marshal(want)
+		if err != nil {
+			return nil, fmt.Errorf("marshal fixture owner %s: %w", key, err)
+		}
+		if want, err = decodeFixtureOwner(value); err != nil {
+			return nil, fmt.Errorf("edit of %s: %w", key, err)
+		}
+		_, uerr := f.kv.Update(ctx, key, value, entry.Revision())
+		if uerr == nil {
+			return &want, nil
+		}
+		if definiteKVConflict(uerr) {
+			continue
+		}
+		after, rerr := f.kv.Get(ctx, key)
+		if rerr == nil && bytes.Equal(after.Value(), value) {
+			return &want, nil
+		}
+		if rerr != nil && !errors.Is(rerr, jetstream.ErrKeyNotFound) {
+			return nil, errors.Join(fmt.Errorf("kv update %s: %w: %w", key, errFixtureEditUncertain, uerr), rerr)
+		}
+		return nil, fmt.Errorf("kv update %s: %w: %w", key, errFixtureEditUncertain, uerr)
+	}
+	return nil, fmt.Errorf("elbv2: edit of %s exhausted retries", key)
 }
 
 // GetSealedByArn resolves a network load balancer ARN in the caller's region

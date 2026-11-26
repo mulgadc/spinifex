@@ -3,11 +3,14 @@ package elbv2
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +50,7 @@ func TestReapStuckProvisioningLBs(t *testing.T) {
 	got, err := svc.store.GetLoadBalancer(t.Context(), stuck.LoadBalancerID)
 	require.NoError(t, err)
 	assert.Equal(t, StateFailed, got.State)
-	assert.NotEmpty(t, got.StateReason)
+	assert.Equal(t, provisioningTimeoutReason(), got.StateReason)
 
 	got, err = svc.store.GetLoadBalancer(t.Context(), fresh.LoadBalancerID)
 	require.NoError(t, err)
@@ -84,9 +87,13 @@ func TestStartLifecycleReaper(t *testing.T) {
 	cancel()
 }
 
-// A load balancer the reaper gives up on must not leave its managed VM running:
-// the VM holds capacity and no customer data, and nothing else would stop it.
-func TestReapStuckProvisioningLBsTerminatesOnlyTheFailedLBsVM(t *testing.T) {
+func provisioningTimeoutReason() string {
+	return fmt.Sprintf("lb-agent did not heartbeat within %s of provisioning", lbProvisioningTimeout)
+}
+
+// A timed-out appliance stays failed with its VM, so only an explicit delete
+// reclaims it. Verifies: ADR-0003:S7
+func TestReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 	launcher := &mockSystemInstanceLauncher{}
@@ -111,33 +118,39 @@ func TestReapStuckProvisioningLBsTerminatesOnlyTheFailedLBsVM(t *testing.T) {
 	got, err := svc.store.GetLoadBalancer(t.Context(), stuck.LoadBalancerID)
 	require.NoError(t, err)
 	assert.Equal(t, StateFailed, got.State)
-	assert.NotEmpty(t, got.StateReason, "the failure reason stays on the LB")
+	assert.Equal(t, provisioningTimeoutReason(), got.StateReason, "the failure reason stays on the LB")
+	assert.Equal(t, "i-stuck", got.InstanceID, "the failed LB keeps its VM reference")
 
-	terminated := func() []string {
-		launcher.mu.Lock()
-		defer launcher.mu.Unlock()
-		return append([]string(nil), launcher.terminateCalls...)
+	got, err = svc.store.GetLoadBalancer(t.Context(), noVM.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Equal(t, StateFailed, got.State)
+	for _, lb := range []*LoadBalancerRecord{fresh, active, heartbeating} {
+		got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+		require.NoError(t, err)
+		assert.Equal(t, lb.State, got.State, "lb %s", lb.LoadBalancerID)
+		assert.Equal(t, lb.InstanceID, got.InstanceID, "lb %s", lb.LoadBalancerID)
 	}
-	require.Eventually(t, func() bool { return len(terminated()) > 0 }, 2*time.Second, 10*time.Millisecond,
-		"the reaper must terminate the failed LB's VM")
-	assert.Equal(t, []string{"i-stuck"}, terminated(),
-		"only the failed LB's own VM is terminated, never another LB's")
+
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	assert.Empty(t, launcher.terminateCalls, "the timeout must not terminate any VM")
 }
 
-func TestReapStuckProvisioningLBsDetachesTheFailedLBsENIs(t *testing.T) {
+// Verifies: ADR-0003:S7
+func TestReapStuckProvisioningLBsKeepsTheFailedLBsENIAttached(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		terminateErr error
-		wantStatus   string
 	}{
-		{"terminated VM releases its ENI", nil, "available"},
-		{"a VM that cannot be stopped keeps its ENI attached", errors.New("nats timeout"), "in-use"},
+		{"a VM that could be stopped keeps its ENI", nil},
+		{"a VM that cannot be stopped keeps its ENI", errors.New("nats timeout")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, vpcSvc, subnetID := setupMicrovmTestService(t)
-			svc.InstanceLauncher = &mockSystemInstanceLauncher{terminateErr: tc.terminateErr}
+			launcher := &mockSystemInstanceLauncher{terminateErr: tc.terminateErr}
+			svc.InstanceLauncher = launcher
 
 			eniOut, err := vpcSvc.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String(subnetID)}, testAccountID)
 			require.NoError(t, err)
@@ -154,9 +167,113 @@ func TestReapStuckProvisioningLBsDetachesTheFailedLBsENIs(t *testing.T) {
 
 			svc.reapStuckProvisioningLBs(t.Context(), now)
 
+			got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+			require.NoError(t, err)
+			assert.Equal(t, StateFailed, got.State)
+			assert.Equal(t, provisioningTimeoutReason(), got.StateReason)
+			assert.Equal(t, "i-stuck", got.InstanceID)
+			assert.Equal(t, []string{eniID}, got.ENIs)
+
 			rec, err := vpcSvc.GetENIRecord(testAccountID, eniID)
 			require.NoError(t, err, "the ENI stays for DeleteLoadBalancer to remove")
-			assert.Equal(t, tc.wantStatus, rec.Status)
+			assert.Equal(t, "in-use", rec.Status)
+			assert.Equal(t, "i-stuck", rec.InstanceId)
+
+			launcher.mu.Lock()
+			defer launcher.mu.Unlock()
+			assert.Empty(t, launcher.terminateCalls)
 		})
 	}
+}
+
+// The appliance timeout owns only records with no realization.
+func TestReapStuckProvisioningLBsLeavesOtherRealizations(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	launcher := &mockSystemInstanceLauncher{}
+	svc.InstanceLauncher = launcher
+	now := time.Now().UTC()
+
+	ovn := testLBRecord("ovnaged00000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	ovn.Type = LoadBalancerTypeNetwork
+	ovn.Realization = "ovn"
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), ovn))
+	before, err := svc.store.GetLoadBalancer(t.Context(), ovn.LoadBalancerID)
+	require.NoError(t, err)
+
+	svc.reapStuckProvisioningLBs(t.Context(), now)
+
+	got, err := svc.store.GetLoadBalancer(t.Context(), ovn.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Equal(t, before, got, "an aged ovn record stays unchanged")
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	assert.Empty(t, launcher.terminateCalls)
+}
+
+// writeHookKV runs hook once, just before the first Put or Update of trigger.
+type writeHookKV struct {
+	jetstream.KeyValue
+
+	fired   atomic.Bool
+	trigger string
+	hook    func()
+}
+
+func (k *writeHookKV) before(key string) {
+	if key == k.trigger && k.fired.CompareAndSwap(false, true) {
+		k.hook()
+	}
+}
+
+func (k *writeHookKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	k.before(key)
+	return k.KeyValue.Put(ctx, key, value)
+}
+
+func (k *writeHookKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	k.before(key)
+	return k.KeyValue.Update(ctx, key, value, last)
+}
+
+// A heartbeat that commits between the reaper's read and its write wins.
+func TestReapStuckProvisioningLBsKeepsAWinningHeartbeat(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	launcher := &mockSystemInstanceLauncher{}
+	svc.InstanceLauncher = launcher
+	now := time.Now().UTC()
+
+	lb := testLBRecord("racehb000000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	lb.InstanceID = "i-race"
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	inner := svc.store.kv
+	var heartbeatErr error
+	var committed *LoadBalancerRecord
+	gate := &writeHookKV{KeyValue: inner, trigger: KeyPrefixLB + lb.LoadBalancerID}
+	gate.hook = func() {
+		_, heartbeatErr = svc.LBAgentHeartbeat(t.Context(), &LBAgentHeartbeatInput{
+			LBID: aws.String(lb.LoadBalancerID), InstanceID: aws.String(lb.InstanceID),
+		}, testAccountID)
+		committed, _ = svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	}
+	svc.store.kv = gate
+
+	svc.reapStuckProvisioningLBs(t.Context(), now)
+	svc.store.kv = inner
+
+	require.True(t, gate.fired.Load(), "the reaper must reach its write")
+	require.NoError(t, heartbeatErr)
+	require.NotNil(t, committed)
+	require.Equal(t, StateActive, committed.State, "the heartbeat commits before the reaper writes")
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Equal(t, StateActive, got.State, "the committed heartbeat activation survives")
+	assert.Empty(t, got.StateReason)
+	assert.False(t, got.LastHeartbeat.IsZero(), "the committed heartbeat time survives")
+	assert.Equal(t, "i-race", got.InstanceID)
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	assert.Empty(t, launcher.terminateCalls)
 }

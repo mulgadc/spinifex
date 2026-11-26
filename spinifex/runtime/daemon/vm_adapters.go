@@ -464,8 +464,8 @@ func (a *volumeMounterAdapter) commitExports(instance *vm.VM, published []vm.EBS
 		if done {
 			return
 		}
-		instance.EBSRequests.Mu.Lock() //nolint:staticcheck // an empty section waits for the holder
-		instance.EBSRequests.Mu.Unlock()
+		instance.EBSRequests.Mu.Lock()
+		instance.EBSRequests.Mu.Unlock() //nolint:staticcheck // an empty section waits for the holder
 	}
 }
 

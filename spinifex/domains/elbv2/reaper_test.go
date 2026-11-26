@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,8 +93,8 @@ func provisioningTimeoutReason() string {
 }
 
 // A timed-out appliance stays failed with its VM, so only an explicit delete
-// reclaims it. Verifies: ADR-0003:S7
-func TestReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
+// reclaims it. Verifies: ADR-0003:S7.
+func TestS7_ReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 	launcher := &mockSystemInstanceLauncher{}
@@ -102,6 +103,8 @@ func TestReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
 
 	stuck := testLBRecord("stuck0000000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
 	stuck.InstanceID = "i-stuck"
+	crossAccount := []ExtraENIInput{{ENIID: "eni-seta-001", SubnetID: "subnet-seta", AccountID: "210987654321"}}
+	stuck.CrossAccountENIs = crossAccount
 	noVM := testLBRecord("novm0000000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
 	fresh := testLBRecord("fresh0000000000", StateProvisioning, now, time.Time{})
 	fresh.InstanceID = "i-fresh"
@@ -119,7 +122,8 @@ func TestReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateFailed, got.State)
 	assert.Equal(t, provisioningTimeoutReason(), got.StateReason, "the failure reason stays on the LB")
-	assert.Equal(t, "i-stuck", got.InstanceID, "the failed LB keeps its VM reference")
+	assert.Equal(t, "i-stuck", got.InstanceID, "ADR-0003:S7: the failed LB keeps its VM reference")
+	assert.Equal(t, crossAccount, got.CrossAccountENIs, "ADR-0003:S7: the failed LB keeps its cross-account ENI reference")
 
 	got, err = svc.store.GetLoadBalancer(t.Context(), noVM.LoadBalancerID)
 	require.NoError(t, err)
@@ -133,11 +137,11 @@ func TestReapStuckProvisioningLBsRetainsTheFailedLBsVM(t *testing.T) {
 
 	launcher.mu.Lock()
 	defer launcher.mu.Unlock()
-	assert.Empty(t, launcher.terminateCalls, "the timeout must not terminate any VM")
+	assert.Empty(t, launcher.terminateCalls, "ADR-0003:S7: automatic failure handling must not terminate the VM")
 }
 
-// Verifies: ADR-0003:S7
-func TestReapStuckProvisioningLBsKeepsTheFailedLBsENIAttached(t *testing.T) {
+// Verifies: ADR-0003:S7.
+func TestS7_ReapStuckProvisioningLBsKeepsTheFailedLBsENIAttached(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name         string
@@ -176,17 +180,61 @@ func TestReapStuckProvisioningLBsKeepsTheFailedLBsENIAttached(t *testing.T) {
 
 			rec, err := vpcSvc.GetENIRecord(testAccountID, eniID)
 			require.NoError(t, err, "the ENI stays for DeleteLoadBalancer to remove")
-			assert.Equal(t, "in-use", rec.Status)
+			assert.Equal(t, "in-use", rec.Status, "ADR-0003:S7: the timeout must not detach the ENI")
 			assert.Equal(t, "i-stuck", rec.InstanceId)
 
 			launcher.mu.Lock()
 			defer launcher.mu.Unlock()
-			assert.Empty(t, launcher.terminateCalls)
+			assert.Empty(t, launcher.terminateCalls, "ADR-0003:S7: automatic failure handling must not terminate the VM")
 		})
 	}
 }
 
+// An explicit delete still reclaims the VM and ENI the timeout retained.
+func TestDeleteLoadBalancerReclaimsATimedOutAppliance(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, subnetID := setupMicrovmTestService(t)
+	launcher := &mockSystemInstanceLauncher{terminateDone: make(chan struct{})}
+	svc.InstanceLauncher = launcher
+
+	eniOut, err := vpcSvc.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.NoError(t, err)
+	eniID := aws.StringValue(eniOut.NetworkInterface.NetworkInterfaceId)
+	_, err = vpcSvc.AttachENI(testAccountID, eniID, "i-stuck", 0)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	lb := testLBRecord("delaged00000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+	lb.InstanceID = "i-stuck"
+	lb.ENIs = []string{eniID}
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+	svc.reapStuckProvisioningLBs(t.Context(), now)
+	got, err := svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, got.State)
+	launcher.mu.Lock()
+	require.Empty(t, launcher.terminateCalls)
+	launcher.mu.Unlock()
+
+	_, err = svc.DeleteLoadBalancer(t.Context(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	launcher.waitTerminate()
+	launcher.mu.Lock()
+	assert.Equal(t, []string{"i-stuck"}, launcher.terminateCalls)
+	launcher.mu.Unlock()
+	_, err = vpcSvc.GetENIRecord(testAccountID, eniID)
+	assert.Error(t, err, "the delete removes the retained ENI")
+	got, err = svc.store.GetLoadBalancer(t.Context(), lb.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
 // The appliance timeout owns only records with no realization.
+// Verifies: Q-78.
 func TestReapStuckProvisioningLBsLeavesOtherRealizations(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -205,7 +253,7 @@ func TestReapStuckProvisioningLBsLeavesOtherRealizations(t *testing.T) {
 
 	got, err := svc.store.GetLoadBalancer(t.Context(), ovn.LoadBalancerID)
 	require.NoError(t, err)
-	assert.Equal(t, before, got, "an aged ovn record stays unchanged")
+	assert.Equal(t, before, got, "Q-78: a partial failure must not fail an unrelated realization")
 	launcher.mu.Lock()
 	defer launcher.mu.Unlock()
 	assert.Empty(t, launcher.terminateCalls)

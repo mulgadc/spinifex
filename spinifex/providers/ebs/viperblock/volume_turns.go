@@ -74,14 +74,19 @@ func (cfg *Config) volumeOpHandler(publish bool, handler providerMsgHandler) nat
 			return
 		}
 		ticket := cfg.volumeTurns.take(req.VolumeID)
-		cfg.volumeOps.Go(func() {
+		go func() {
 			defer ticket.done()
 			ticket.wait()
 			if publish {
 				cfg.publishSlots <- struct{}{}
 				defer func() { <-cfg.publishSlots }()
 			}
+			// A closed connection means shutdown, which cleans up every export.
+			// Queued work is dropped, as the NATS pending queue drops it.
+			if !msg.Sub.IsValid() {
+				return
+			}
 			traced(msg)
-		})
+		}()
 	}
 }

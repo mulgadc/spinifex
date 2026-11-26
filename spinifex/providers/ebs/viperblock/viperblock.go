@@ -257,12 +257,10 @@ type Config struct {
 	// guessing at a sleep.
 	ready chan struct{}
 
-	// volumeTurns orders the publishes and unpublishes of each volume,
-	// publishSlots bounds the publishes running at once, and volumeOps counts
-	// the dispatched operations that have not finished.
+	// volumeTurns orders the publishes and unpublishes of each volume, and
+	// publishSlots bounds the publishes running at once.
 	volumeTurns  volumeTurns
 	publishSlots chan struct{}
-	volumeOps    sync.WaitGroup
 
 	mu sync.Mutex
 }
@@ -870,8 +868,6 @@ func (cfg *Config) validateNodeName() error {
 // It snapshots MountedVolumes and clears it while holding the lock, then
 // flushes/kills outside the lock since VB.Close does heavy I/O.
 func (cfg *Config) Shutdown() {
-	// A dispatched publish still running could register an export after the snapshot.
-	cfg.volumeOps.Wait()
 	cfg.mu.Lock()
 	volumes := make([]MountedVolume, len(cfg.MountedVolumes))
 	copy(volumes, cfg.MountedVolumes)

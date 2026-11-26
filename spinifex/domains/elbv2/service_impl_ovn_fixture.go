@@ -3,6 +3,7 @@ package elbv2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"regexp"
@@ -30,18 +31,18 @@ type ovnFixture struct {
 	groups  *ec2vpc.GroupLookup
 }
 
-// validateLBName applies AWS's load balancer name rules.
-func validateLBName(name string) error {
+// lbNameProblem applies AWS's load balancer name rules. It returns the reason
+// a name breaks them, or "" for a valid name.
+func lbNameProblem(name string) string {
 	switch {
 	case len(name) > maxLBNameLength:
-		return awserrors.Errorf(awserrors.ErrorValidationError, "The load balancer name '%s' cannot be longer than '%d' characters", name, maxLBNameLength)
+		return fmt.Sprintf("The load balancer name '%s' cannot be longer than '%d' characters", name, maxLBNameLength)
 	case strings.HasPrefix(name, "internal-"):
-		return awserrors.Errorf(awserrors.ErrorValidationError, "The load balancer name '%s' cannot begin with 'internal-'", name)
+		return fmt.Sprintf("The load balancer name '%s' cannot begin with 'internal-'", name)
 	case !lbNamePattern.MatchString(name):
-		return awserrors.Errorf(awserrors.ErrorValidationError,
-			"The load balancer name '%s' can contain only alphanumeric characters and hyphens, and cannot begin or end with a hyphen", name)
+		return fmt.Sprintf("The load balancer name '%s' can contain only alphanumeric characters and hyphens, and cannot begin or end with a hyphen", name)
 	}
-	return nil
+	return ""
 }
 
 func invalidOVNConfiguration(format string, args ...any) error {
@@ -104,8 +105,8 @@ func (s *ELBv2ServiceImpl) createOVNFixtureLoadBalancer(ctx context.Context, inp
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if err := validateLBName(name); err != nil {
-		return nil, err
+	if problem := lbNameProblem(name); problem != "" {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "%s", problem)
 	}
 	tags, err := tagsFromSDK(input.Tags)
 	if err != nil {

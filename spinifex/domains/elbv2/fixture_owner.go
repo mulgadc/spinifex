@@ -287,7 +287,7 @@ func (f *fixtureOwnerStore) GetSealedByArn(ctx context.Context, arn, region, acc
 	}
 	parts := strings.Split(parsed.Resource, "/")
 	if len(parts) != 3 || parts[0] != resourcearn.ELBv2LBPathSegment(LoadBalancerTypeNetwork) || parts[2] == "" ||
-		validateLBName(parts[1]) != nil {
+		lbNameProblem(parts[1]) != "" {
 		return nil, nil
 	}
 	root, err := f.GetSealed(ctx, parts[1], accountID)

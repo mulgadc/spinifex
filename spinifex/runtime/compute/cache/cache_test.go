@@ -9,6 +9,7 @@ package instancecache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sync"
@@ -58,6 +59,7 @@ func newTestCache(t *testing.T, mutate ...func(*Config)) (*Cache, jetstream.KeyV
 }
 
 func TestNew_RequiresDomainPolicyAndFallbackAccount(t *testing.T) {
+	t.Parallel()
 	require.PanicsWithValue(t, "instancecache: Config.VisibleToCaller is required", func() {
 		New(nil, Config{})
 	})
@@ -116,7 +118,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("condition not met within %s", timeout)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -138,6 +140,8 @@ func waitForListLen(t *testing.T, c *Cache, accountID string, n int) []*vm.VM {
 // Process-wide manual metric reader, installed once per test binary so the
 // resync-failure and decode-failure counters can be observed. Cumulative for
 // the life of the binary, so tests read a before/after delta.
+// A test that reads a delta must not call t.Parallel: every Cache in the
+// binary adds to the same counters.
 var (
 	metricsReaderOnce sync.Once
 	metricsReader     *sdkmetric.ManualReader
@@ -176,6 +180,7 @@ func counterSum(t *testing.T, name string) int64 {
 // --- Unit, in instancecache ------------------------------------------------
 
 func TestList_PutAppearsAfterWatchDelivers(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	ctx := t.Context()
 	go c.Run(ctx)
@@ -188,6 +193,7 @@ func TestList_PutAppearsAfterWatchDelivers(t *testing.T) {
 }
 
 func TestList_DeleteAndPurgeRemove(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
 	putRecord(t, kv, "i-2", testRecord("i-2", acctA, vm.StateRunning))
@@ -206,6 +212,7 @@ func TestList_DeleteAndPurgeRemove(t *testing.T) {
 }
 
 func TestPeriodicResync_RemovesEntryTheWatchNeverToldItAbout(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-real", testRecord("i-real", acctA, vm.StateRunning))
 
@@ -229,12 +236,15 @@ func TestPeriodicResync_RemovesEntryTheWatchNeverToldItAbout(t *testing.T) {
 }
 
 func TestSync_LeaksNothingOnRepeatedSnapshotFailure(t *testing.T) {
-	c, kv, conn := newTestCache(t)
+	installMetricsReader(t)
+	c, kv, conn := newTestCache(t, func(cfg *Config) { cfg.RetryInterval = 2 * time.Millisecond })
 	putGarbage(t, kv, "i-bad")
 
 	ctx := t.Context()
 	baseline := conn.nc.NumSubscriptions()
-	go c.Run(ctx)
+	runDone := make(chan struct{})
+	go func() { c.Run(ctx); close(runDone) }()
+	t.Cleanup(func() { <-runDone })
 
 	// The initial sync's snapshot fails on the garbage record every retry, so
 	// the replay watcher is never opened: nothing persists to leak. Snapshot
@@ -242,13 +252,17 @@ func TestSync_LeaksNothingOnRepeatedSnapshotFailure(t *testing.T) {
 	// so the assertion is that the count always settles back to baseline,
 	// not that it never blips.
 	for range 10 {
-		time.Sleep(20 * time.Millisecond)
+		failures := counterSum(t, "mulga.instancecache.resync_failures")
+		waitFor(t, time.Second, func() bool {
+			return counterSum(t, "mulga.instancecache.resync_failures") > failures
+		})
 		waitFor(t, time.Second, func() bool { return conn.nc.NumSubscriptions() == baseline })
 	}
 	require.False(t, c.Ready())
 }
 
 func TestPeriodicResync_TTLExpiredRecordRemovedWithNoWatchEvent(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	bucket := fmt.Sprintf("instances-ttl-%d", time.Now().UnixNano())
 	kv, err := js.CreateKeyValue(context.Background(),
@@ -269,7 +283,11 @@ func TestPeriodicResync_TTLExpiredRecordRemovedWithNoWatchEvent(t *testing.T) {
 	waitForReady(t, c)
 	waitForListLen(t, c, acctA, 1)
 
-	time.Sleep(500 * time.Millisecond) // past the bucket TTL; no delete event is ever delivered
+	// Wait until the server has expired the key; no delete event is ever delivered.
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := kv.Get(context.Background(), testPrefix+"i-ttl")
+		return errors.Is(err, jetstream.ErrKeyNotFound)
+	})
 
 	c.mu.RLock()
 	_, stillThere := c.entries["i-ttl"]
@@ -294,8 +312,11 @@ func TestPeriodicResync_UndecodableRecordMarksDegraded(t *testing.T) {
 	beforeAge, hadAge := c.resyncAge()
 	require.True(t, hadAge)
 
+	decodes := counterSum(t, "mulga.instancecache.decode_failures")
 	putGarbage(t, kv, "i-bad")
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, 2*time.Second, func() bool {
+		return counterSum(t, "mulga.instancecache.decode_failures") > decodes
+	})
 
 	c.periodicResync(ctx)
 
@@ -313,6 +334,7 @@ func TestPeriodicResync_UndecodableRecordMarksDegraded(t *testing.T) {
 }
 
 func TestDegraded_ClearedByNextSuccessfulResync(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
 
@@ -323,12 +345,10 @@ func TestDegraded_ClearedByNextSuccessfulResync(t *testing.T) {
 	require.False(t, c.Degraded(), "a cache that has never failed a sync must not report degraded")
 
 	putGarbage(t, kv, "i-bad")
-	time.Sleep(50 * time.Millisecond)
 	c.periodicResync(ctx)
 	require.True(t, c.Degraded())
 
 	require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-bad"))
-	time.Sleep(50 * time.Millisecond)
 	c.periodicResync(ctx)
 	require.False(t, c.Degraded(), "the next successful resync must clear degraded")
 }
@@ -357,6 +377,7 @@ func TestWatch_UndecodableUpdateLeavesExistingEntry(t *testing.T) {
 }
 
 func TestList_NotReadyBeforeFirstSync(t *testing.T) {
+	t.Parallel()
 	c, _, _ := newTestCache(t)
 	list, ready := c.List(context.Background(), acctA)
 	require.False(t, ready)
@@ -374,6 +395,7 @@ func TestList_NotReadyBeforeFirstSync(t *testing.T) {
 // whatever a test independently recomputes.
 
 func TestFence_PutDuringInitialSnapshot_SurvivesInstall(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
@@ -392,6 +414,7 @@ func TestFence_PutDuringInitialSnapshot_SurvivesInstall(t *testing.T) {
 }
 
 func TestFence_DeleteDuringInitialSnapshot_RemovedFromInstall(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
@@ -411,6 +434,7 @@ func TestFence_DeleteDuringInitialSnapshot_RemovedFromInstall(t *testing.T) {
 }
 
 func TestFence_PutDuringPeriodicResync_SurvivesInstall(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
@@ -432,6 +456,7 @@ func TestFence_PutDuringPeriodicResync_SurvivesInstall(t *testing.T) {
 }
 
 func TestFence_DeleteDuringPeriodicResync_RemovedFromInstall(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
@@ -456,6 +481,7 @@ func TestFence_DeleteDuringPeriodicResync_RemovedFromInstall(t *testing.T) {
 // --- Lifecycle ---------------------------------------------------------------
 
 func TestPeriodicResync_FailureLeavesLiveWatcherAndMapServing(t *testing.T) {
+	t.Parallel()
 	c, kv, conn := newTestCache(t)
 	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
 
@@ -479,6 +505,7 @@ func TestPeriodicResync_FailureLeavesLiveWatcherAndMapServing(t *testing.T) {
 }
 
 func TestPeriodicResync_FailureLosesNothing(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
@@ -523,6 +550,7 @@ func TestPeriodicResync_FailureLosesNothing(t *testing.T) {
 }
 
 func TestPeriodicResync_TwentyConsecutiveSuccessesOneWatcherEach(t *testing.T) {
+	t.Parallel()
 	c, kv, conn := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
@@ -551,6 +579,7 @@ func TestPeriodicResync_TwentyConsecutiveSuccessesOneWatcherEach(t *testing.T) {
 }
 
 func TestReplaceWatcher_OldStoppedAndJoinedBeforeNewGoesLive(t *testing.T) {
+	t.Parallel()
 	c, kv, conn := newTestCache(t)
 	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
 
@@ -594,6 +623,7 @@ func TestReplaceWatcher_OldStoppedAndJoinedBeforeNewGoesLive(t *testing.T) {
 // --- The account index ------------------------------------------------------
 
 func TestList_ReturnsOnlyThatAccountsInstances(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-a", testRecord("i-a", acctA, vm.StateRunning))
 	putRecord(t, kv, "i-b", testRecord("i-b", acctB, vm.StateRunning))
@@ -612,6 +642,7 @@ func TestList_ReturnsOnlyThatAccountsInstances(t *testing.T) {
 }
 
 func TestList_GlobalDoesNotSeeOtherAccountsInstances(t *testing.T) {
+	t.Parallel()
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-cust", testRecord("i-cust", acctA, vm.StateRunning))
 	putRecord(t, kv, "i-global", testRecord("i-global", awsidentifiers.GlobalAccountID, vm.StateRunning))
@@ -635,6 +666,7 @@ func TestList_GlobalDoesNotSeeOtherAccountsInstances(t *testing.T) {
 }
 
 func TestList_VisibilityAppliedAfterIndexLookup(t *testing.T) {
+	t.Parallel()
 	c, _, _ := newTestCache(t)
 
 	// Deliberately mis-file: the index says i-misfiled belongs to acctA, but

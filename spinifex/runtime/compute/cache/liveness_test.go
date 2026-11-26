@@ -40,6 +40,7 @@ func putHeartbeat(t *testing.T, kv jetstream.KeyValue, node string, now time.Tim
 // boundary is checked from both sides so the comparison cannot be inverted
 // without a failure.
 func TestLiveness_StaleOnlyPastThreshold(t *testing.T) {
+	t.Parallel()
 	l, kv := newTestLiveness(t)
 	now := time.Now()
 	l.SetClock(func() time.Time { return now })
@@ -59,6 +60,7 @@ func TestLiveness_StaleOnlyPastThreshold(t *testing.T) {
 // A node that has never published a heartbeat is Unknown, not Stale. Silence
 // from a node nobody has heard from is not evidence that it died.
 func TestLiveness_UnheardNodeIsUnknownNotStale(t *testing.T) {
+	t.Parallel()
 	l, kv := newTestLiveness(t)
 	now := time.Now()
 	l.SetClock(func() time.Time { return now })
@@ -71,6 +73,7 @@ func TestLiveness_UnheardNodeIsUnknownNotStale(t *testing.T) {
 // last one. Asserting liveness the gateway can no longer confirm is the lie
 // this whole path exists to remove.
 func TestLiveness_UnreadableStoreIsUnknown(t *testing.T) {
+	t.Parallel()
 	l, kv := newTestLiveness(t)
 	now := time.Now()
 	l.SetClock(func() time.Time { return now })
@@ -89,6 +92,7 @@ func TestLiveness_UnreadableStoreIsUnknown(t *testing.T) {
 // An empty node name is Unknown, and a nil Liveness answers rather than
 // panicking, so a caller wired without one degrades instead of crashing.
 func TestLiveness_EmptyNodeAndNilReceiver(t *testing.T) {
+	t.Parallel()
 	l, _ := newTestLiveness(t)
 	require.Equal(t, instancecache.NodeUnknown, l.State(context.Background(), ""))
 
@@ -99,6 +103,7 @@ func TestLiveness_EmptyNodeAndNilReceiver(t *testing.T) {
 // The memo collapses repeated reads but must not outlive its window, or a
 // node that goes silent would keep reporting live.
 func TestLiveness_MemoExpires(t *testing.T) {
+	t.Parallel()
 	l, kv := newTestLiveness(t)
 	now := time.Now()
 	l.SetClock(func() time.Time { return now })

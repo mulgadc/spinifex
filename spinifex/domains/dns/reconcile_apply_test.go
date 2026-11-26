@@ -46,6 +46,7 @@ func labelsOfType(t *testing.T, s3cfg *nsconfig.S3Config, zone string, rtype uin
 // could carry a ChangeBatch to a peer: if the record reaches the zone object,
 // the leader wrote it.
 func TestReconcileOnce_WritesTheZoneWithoutPublishing(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 	r := reconcilerFor(w, func() DesiredSet {
 		return DesiredSet{Changes: []Change{upsert("lb-1.elb."+testBase, "10.200.1.9")}}
@@ -62,6 +63,7 @@ func TestReconcileOnce_WritesTheZoneWithoutPublishing(t *testing.T) {
 // from the desired set would take the NS set with it, which is an outage for the
 // zone rather than a missing address.
 func TestReconcileOnce_StructuralRecordsSurviveAPrune(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 	objects[testBase+".toml"] = `version = 1.0
 [domain]
@@ -114,6 +116,7 @@ address = "10.200.1.99"
 // until an instance lands in it, so the first pass to write one materialises it,
 // and a zone materialised without its apex and NS set does not resolve at all.
 func TestReconcileOnce_MaterialisedZoneCarriesApexAndNameservers(t *testing.T) {
+	t.Parallel()
 	w, objects := newMultiNodeTestWriter(t)
 	r := reconcilerFor(w, func() DesiredSet {
 		return DesiredSet{Changes: []Change{{
@@ -171,6 +174,7 @@ func recordsOfType(t *testing.T, s3cfg *nsconfig.S3Config, rtype uint16) map[str
 // to the published assignment: a join adds nsK up to four, a fifth node changes
 // nothing, and a node that leaves takes its glue with it.
 func TestReconcileOnce_BaseZoneNameserversFollowTheCluster(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 	objects[testBase+".toml"] = `version = 1.0
 [domain]
@@ -226,6 +230,7 @@ address = "10.9.9.9"
 // A topology that publishes no nameserver, such as a loopback-only dev node,
 // leaves the seeded set alone rather than emptying it.
 func TestReconcileOnce_NoPublishedNameserversKeepsTheSeed(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, BaseZoneNameserverChanges(testBase, nil))
 	prune := prunableFor(PruneScope{})
 	assert.False(t, prune(testBase, "ns1."), "glue is prunable only with nameserver authority")

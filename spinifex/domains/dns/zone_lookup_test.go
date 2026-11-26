@@ -90,6 +90,7 @@ secret_key = "READONLY"
 }
 
 func TestHostsZone(t *testing.T) {
+	t.Parallel()
 	objects := map[string]string{
 		"lab.example.com.toml": minimalZoneTOML("lab.example.com"),
 	}
@@ -110,6 +111,7 @@ func TestHostsZone(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, HostsZone(cfg, tc.domain))
 		})
 	}
@@ -119,6 +121,7 @@ func TestHostsZone(t *testing.T) {
 // labels remain, so a lookup for "example.com" (or anything under it) never
 // issues a GET for "com.toml".
 func TestHostsZone_NeverQueriesBareTLD(t *testing.T) {
+	t.Parallel()
 	cfg, requested := hostsZoneTestConfig(t, map[string]string{}, nil)
 
 	got := HostsZone(cfg, "sub.example.com")
@@ -159,6 +162,7 @@ func TestHostsZone_S3ErrorEverywhereReturnsFalse(t *testing.T) {
 // misconfigured) northstar S3 backend is "not hosted", not an error — the same
 // degrade-safe default zoneS3Config's other callers (Writer, Reconciler) use.
 func TestHostsZone_NorthstarNotConfigured(t *testing.T) {
+	t.Parallel()
 	assert.False(t, HostsZone(&config.Config{}, "lab.example.com"))
 	assert.False(t, HostsZone(nil, "lab.example.com"))
 }

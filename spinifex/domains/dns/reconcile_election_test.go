@@ -34,6 +34,7 @@ func dnsLease(js jetstream.JetStream, holder string) *kvsync.Lease {
 // therefore not touch the object at all — if it did, two nodes could be
 // read-modify-writing the same zone with nothing serialising them.
 func TestReconcileOnce_ALoserOfTheElectionDoesNotWriteTheZone(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	w, objects := newTestWriter(t)
 	before := objects[testBase+".toml"]
@@ -59,6 +60,7 @@ func TestReconcileOnce_ALoserOfTheElectionDoesNotWriteTheZone(t *testing.T) {
 // The counterpart, so the test above is not passing because the pass was broken
 // for some other reason: with the lease free, the same reconciler writes.
 func TestReconcileOnce_TheWinnerOfTheElectionWritesTheZone(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	w, objects := newTestWriter(t)
 

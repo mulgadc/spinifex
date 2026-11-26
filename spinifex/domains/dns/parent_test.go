@@ -89,6 +89,7 @@ func newTree() *fakeTree {
 }
 
 func TestParentLookupFollowsReferralsToTheParent(t *testing.T) {
+	t.Parallel()
 	tree := newTree()
 	p := &dns.ParentLookup{
 		Roots:    []string{"10.0.0.9", "10.0.0.1"}, // the first root is down
@@ -120,6 +121,7 @@ func TestParentLookupFollowsReferralsToTheParent(t *testing.T) {
 }
 
 func TestParentLookupFailsWhenNoServerAnswers(t *testing.T) {
+	t.Parallel()
 	tree := newTree()
 	tree.servers["10.0.1.1"] = func(mdns.Question) *mdns.Msg { return &mdns.Msg{MsgHdr: mdns.MsgHdr{Rcode: mdns.RcodeServerFailure}} }
 	p := &dns.ParentLookup{Roots: []string{"10.0.0.1"}, Exchange: tree.exchange}
@@ -129,6 +131,7 @@ func TestParentLookupFailsWhenNoServerAnswers(t *testing.T) {
 }
 
 func TestParentLookupRefusesAReferralUpwards(t *testing.T) {
+	t.Parallel()
 	tree := newTree()
 	tree.servers["10.0.1.1"] = func(mdns.Question) *mdns.Msg {
 		return referralTo(".", []mdns.RR{glue("a.root.test.", "10.0.0.1")}, "a.root.test.")

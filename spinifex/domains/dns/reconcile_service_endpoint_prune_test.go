@@ -24,6 +24,7 @@ func prunableForServiceZone(scope PruneScope) func(zone, label string) bool {
 // by substring instead of zone, a future EC2 prefix change could make the two
 // collide and delete each other's records.
 func TestPrunable_ServiceEndpointMatchesOnZoneNotLabel(t *testing.T) {
+	t.Parallel()
 	prune := prunableForServiceZone(PruneScope{ServiceEndpoint: true, EC2: true})
 
 	assert.True(t, prune(testServiceZone, "ec2.ap-southeast-2"),
@@ -41,6 +42,7 @@ func TestPrunable_ServiceEndpointMatchesOnZoneNotLabel(t *testing.T) {
 // Without ServiceEndpoint authority nothing in that zone is prunable, even
 // when every other class is authoritative this cycle.
 func TestPrunable_ServiceEndpointRequiresItsOwnAuthority(t *testing.T) {
+	t.Parallel()
 	prune := prunableForServiceZone(PruneScope{EC2: true, ELB: true, EKS: true, RDS: true})
 	assert.False(t, prune(testServiceZone, "ec2.ap-southeast-2"),
 		"other classes' authority does not extend to the service-endpoint zone")
@@ -50,6 +52,7 @@ func TestPrunable_ServiceEndpointRequiresItsOwnAuthority(t *testing.T) {
 // pruning on the shared zone; the collision degrades to "service-endpoint
 // records are never pruned" instead.
 func TestPrunable_ServiceEndpointZoneEqualToBaseDomainDoesNotShadowOtherClasses(t *testing.T) {
+	t.Parallel()
 	r := &Reconciler{baseDomain: testBase, internalDomain: testPrivate, serviceZone: testBase}
 	prune := r.prunable(PruneScope{ServiceEndpoint: true, ELB: true})
 	assert.True(t, prune(testBase, "app-web-abc.ap-southeast-2.elb."),

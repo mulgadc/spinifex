@@ -32,6 +32,7 @@ func ackAs(t *testing.T, nc *nats.Conn, reply func(zone string) []dns.ZoneReload
 }
 
 func TestRequestZoneReloadCollectsOneAckPerServer(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	for _, node := range []string{"node1", "node2", "node3"} {
 		ackAs(t, nc, func(zone string) []dns.ZoneReloadAck {
@@ -52,6 +53,7 @@ func TestRequestZoneReloadCollectsOneAckPerServer(t *testing.T) {
 }
 
 func TestRequestZoneReloadIgnoresAcksForOtherZones(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	ackAs(t, nc, func(zone string) []dns.ZoneReloadAck {
 		return []dns.ZoneReloadAck{{Zone: "other.com", Node: "stray"}, {Zone: zone, Node: "node1"}}
@@ -66,6 +68,8 @@ func TestRequestZoneReloadIgnoresAcksForOtherZones(t *testing.T) {
 }
 
 func TestRequestZoneReloadReturnsPartialAcksAtDeadline(t *testing.T) {
+	// Not parallel: the acks must arrive before the deadline, and load from the
+	// parallel tests can delay them past it.
 	_, nc := testutil.StartTestNATS(t)
 	ackAs(t, nc, func(zone string) []dns.ZoneReloadAck {
 		return []dns.ZoneReloadAck{{Zone: zone, Node: "node1", Error: "s3 unavailable"}}
@@ -80,6 +84,7 @@ func TestRequestZoneReloadReturnsPartialAcksAtDeadline(t *testing.T) {
 }
 
 func TestRequestZoneReloadFailsOnClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	nc.Close()
 	_, err := dns.RequestZoneReload(context.Background(), nc, "example.com", 1)

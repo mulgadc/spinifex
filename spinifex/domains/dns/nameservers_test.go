@@ -11,6 +11,7 @@ import (
 )
 
 func TestNameserverIP(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "10.11.12.1", nameserverIP(config.Config{AdvertiseIP: "10.11.12.1"}))
 	assert.Equal(t, "10.11.12.2", nameserverIP(config.Config{Host: "10.11.12.2:8443"}))
 	assert.Equal(t, "10.0.0.9", nameserverIP(config.Config{AdvertiseIP: "10.0.0.9", Host: "10.0.0.1"}))
@@ -19,6 +20,7 @@ func TestNameserverIP(t *testing.T) {
 }
 
 func TestNameserverSeeds(t *testing.T) {
+	t.Parallel()
 	// Single node with no northstar config path → fall back to the local node.
 	single := &config.ClusterConfig{
 		Node:  "node1",
@@ -50,6 +52,7 @@ func TestNameserverSeeds(t *testing.T) {
 // Every node must derive the same seed set, so the zone's NS records do not
 // depend on which node wins the create-if-absent race.
 func TestNameserverSeedsIdenticalFromEveryNode(t *testing.T) {
+	t.Parallel()
 	nodes := map[string]config.Config{
 		"node1": {AdvertiseIP: "10.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
 		"node2": {AdvertiseIP: "10.0.0.2", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
@@ -67,6 +70,7 @@ func TestNameserverSeedsIdenticalFromEveryNode(t *testing.T) {
 // cluster-wide zone, not publish nsN A 127.0.0.1 glue that every peer would
 // follow to its own loopback, and the surviving nodes must still seed a zone.
 func TestNameserverSeedsExcludeLoopbackNodes(t *testing.T) {
+	t.Parallel()
 	nodes := map[string]config.Config{
 		"node1": {AdvertiseIP: "10.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
 		"node2": {AdvertiseIP: "127.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
@@ -92,6 +96,7 @@ func TestNameserverSeedsExcludeLoopbackNodes(t *testing.T) {
 // is loopback, so the filter empties the set. Without the fallback the zone would
 // be created with no SOA, no NS and no glue — and never overwritten.
 func TestNameserverSeedsSingleNodeLoopbackFallback(t *testing.T) {
+	t.Parallel()
 	dev := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{
 		"node1": {Host: "0.0.0.0", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
 	}}
@@ -105,6 +110,7 @@ func TestNameserverSeedsSingleNodeLoopbackFallback(t *testing.T) {
 }
 
 func TestResolverNameserverIPs(t *testing.T) {
+	t.Parallel()
 	// Multi-node: WAN IPs of the northstar nodes, ordered, non-northstar excluded.
 	multi := &config.ClusterConfig{
 		Node: "node1",
@@ -160,12 +166,14 @@ func seedIPs(seeds []nsconfig.NameserverSeed) []string {
 // A large cluster publishes at most four nameservers, while every northstar
 // node stays a resolver backend for the guest shim.
 func TestNameserverSeedsCappedAtFour(t *testing.T) {
+	t.Parallel()
 	cluster := &config.ClusterConfig{Node: "node01", Nodes: northstarNodes(12)}
 	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}, seedIPs(NameserverSeeds(cluster)))
 	assert.Len(t, ResolverNameserverIPs(cluster), 12)
 }
 
 func TestNameserverSeedsHonourCountAndPins(t *testing.T) {
+	t.Parallel()
 	nodes := northstarNodes(6)
 	nodes["node06"] = config.Config{AdvertiseIP: "127.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}}
 
@@ -188,6 +196,7 @@ func TestNameserverSeedsHonourCountAndPins(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			cluster := &config.ClusterConfig{Node: "node01", Nodes: nodes, Northstar: tc.ns}
 			assert.Equal(t, tc.want, seedIPs(NameserverSeeds(cluster)))
 		})

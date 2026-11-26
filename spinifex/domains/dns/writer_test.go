@@ -178,6 +178,7 @@ insecure = true
 }
 
 func TestWriterUpsertPublicAndPrivate(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 
 	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
@@ -198,6 +199,7 @@ func TestWriterUpsertPublicAndPrivate(t *testing.T) {
 }
 
 func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 	changes := EC2Changes(ActionUpsert, "ap-southeast-2", "spx3.net", "", "1.2.3.4", "172.31.26.216")
 
@@ -223,6 +225,7 @@ func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
 // zone the writer has never seen (spinifex.internal, not the pre-seeded base
 // zone) and a multi-address RRset UpsertRecord alone cannot express.
 func TestWriterUpsertSetMaterialisesAndReplacesTheWholeSet(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 
 	changes := ServiceEndpointChanges("us-east-1", "spinifex.internal", []string{"10.0.0.1", "10.0.0.2"})
@@ -253,6 +256,7 @@ func TestWriterUpsertSetMaterialisesAndReplacesTheWholeSet(t *testing.T) {
 }
 
 func TestWriterDeleteMissingZoneNoop(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriter(t)
 	// Delete a private record before any private zone exists → no zone created.
 	del := EC2Changes(ActionDelete, "ap-southeast-2", "spx3.net", "", "", "172.31.26.216")
@@ -264,6 +268,7 @@ func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 }
 
 func TestRecordType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -276,6 +281,7 @@ func TestRecordType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := recordType(tt.in)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
@@ -284,6 +290,7 @@ func TestRecordType(t *testing.T) {
 }
 
 func TestWriterRejectsUnsupportedRecordType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		rtype string
@@ -294,6 +301,7 @@ func TestWriterRejectsUnsupportedRecordType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w, objects := newTestWriter(t)
 			before := objects["spx3.net.toml"]
 			change := Change{
@@ -313,6 +321,7 @@ func TestWriterRejectsUnsupportedRecordType(t *testing.T) {
 }
 
 func TestWriterQuotaDisabledAllowsGrowth(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriterWithQuota(t, false, 1)
 
 	changes := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "1.2.3.4"}}
@@ -322,6 +331,7 @@ func TestWriterQuotaDisabledAllowsGrowth(t *testing.T) {
 }
 
 func TestWriterEnabledNonPositiveQuotaDefaultsToAWSLimit(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		limit int
@@ -331,6 +341,7 @@ func TestWriterEnabledNonPositiveQuotaDefaultsToAWSLimit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w, objects := newTestWriterWithQuota(t, true, tt.limit)
 			cfg := nsconfig.NewZoneConfig(nsconfig.BaseZoneSeed{Domain: "spx3.net"})
 			cfg.Records = make([]nsconfig.Records, DefaultRecordsPerHostedZone)
@@ -355,6 +366,7 @@ func TestWriterEnabledNonPositiveQuotaDefaultsToAWSLimit(t *testing.T) {
 }
 
 func TestWriterRejectsUpsertOverRecordQuota(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriterWithQuota(t, true, 1) // base zone already holds the apex NS record
 
 	changes := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "1.2.3.4"}}
@@ -365,6 +377,7 @@ func TestWriterRejectsUpsertOverRecordQuota(t *testing.T) {
 }
 
 func TestWriterReplacingRecordSetNotQuotaLimited(t *testing.T) {
+	t.Parallel()
 	w, objects := newTestWriterWithQuota(t, true, 2)
 
 	add := []Change{{Action: ActionUpsert, Zone: "spx3.net", Name: "host.spx3.net", Type: "A", Value: "1.2.3.4"}}
@@ -385,6 +398,7 @@ func TestWriterReplacingRecordSetNotQuotaLimited(t *testing.T) {
 // first would pin the zone's NS topology to one node for the life of the object.
 // Asserted on a multi-node cluster: on single-node the two derivations coincide.
 func TestWriterMaterialisesZoneWithClusterNameservers(t *testing.T) {
+	t.Parallel()
 	w, objects := newMultiNodeTestWriter(t)
 
 	_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{
@@ -404,6 +418,7 @@ func TestWriterMaterialisesZoneWithClusterNameservers(t *testing.T) {
 }
 
 func TestWriterDisabledWithoutNorthstar(t *testing.T) {
+	t.Parallel()
 	w := NewWriter(&config.Config{}, nil, nil)
 	assert.False(t, w.Enabled())
 	_, err := w.ApplyBatch(&ChangeBatch{Changes: []Change{{Action: ActionUpsert}}})
@@ -411,6 +426,7 @@ func TestWriterDisabledWithoutNorthstar(t *testing.T) {
 }
 
 func TestResolveBaseDomain(t *testing.T) {
+	t.Parallel()
 	w, _ := newTestWriter(t)
 	assert.Equal(t, "spx3.net", w.baseDomain)
 	assert.Empty(t, ResolveBaseDomain(&config.Config{}))
@@ -419,6 +435,7 @@ func TestResolveBaseDomain(t *testing.T) {
 // The resolvers prefer the non-secret cluster-config domains so confined
 // services need not read the 0600 northstar.toml.
 func TestResolveDomainsPreferClusterConfig(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{Northstar: config.NorthstarConfig{
 		DefaultDomain:  "example.net",
 		InternalDomain: "vpc.internal",

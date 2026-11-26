@@ -545,8 +545,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 	})
 
+	// Not parallel with the other groups: their volumes would join the one-item
+	// page walk below on a shared provider and could exhaust its page budget.
 	t.Run("ListVolumes", func(t *testing.T) {
-		t.Parallel()
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
 			t.Parallel()
 			if capabilities.VolumeEnumeration {
@@ -978,8 +979,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 	})
 
+	// Not parallel with the other groups: their volumes would join the one-item
+	// page walk below on a shared provider and could exhaust its page budget.
 	t.Run("ListSnapshots", func(t *testing.T) {
-		t.Parallel()
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
 			t.Parallel()
 			if capabilities.SnapshotEnumeration {

@@ -13,8 +13,8 @@ import (
 )
 
 // NodeDiscovery counts the daemon nodes that answer on the cluster discovery
-// subject. It remembers the last real answer, so the fan-out runs once per
-// activeNodesTTL rather than once per request that needs the node count.
+// subject. Run refreshes the count in the background, so a request that needs
+// it never waits for the discovery fan-out.
 type NodeDiscovery struct {
 	NATS     *nats.Conn
 	Expected int
@@ -24,36 +24,71 @@ type NodeDiscovery struct {
 	at    time.Time
 }
 
-const activeNodesTTL = 5 * time.Second
+// activeNodesTTL is the interval between background refreshes. A var only so
+// tests can shorten it.
+var activeNodesTTL = 5 * time.Second
 
 // discoverActiveNodesTimeout is how long the discovery fan-out collects replies.
 // A var only so tests can shorten it.
 var discoverActiveNodesTimeout = 500 * time.Millisecond
 
-// ActiveNodes discovers the number of active spinifex daemon nodes in the
-// cluster by publishing a discovery request and counting unique responses. It
-// carries the request context so the discovery fan-out joins the caller's trace.
-// Returns the number of active nodes (minimum 1 if fallback is needed).
-//
-// The result is cached for activeNodesTTL. The gather itself stays unbounded:
-// it counts whoever answers, which may legitimately exceed the configured node
-// count during a grow, and bounding it by that count would stop early and drop
-// a live node's resources from every fan-out that follows.
-func (d *NodeDiscovery) ActiveNodes(ctx context.Context) int {
-	if d.NATS == nil {
-		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", d.Expected)
+// ActiveNodes returns the count from the last good refresh, or Expected when
+// there is none. It never gathers, so it adds no latency to a request.
+func (d *NodeDiscovery) ActiveNodes(context.Context) int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.count == 0 {
 		return d.Expected
 	}
+	return d.count
+}
 
-	if count, ok := d.cachedActiveNodes(); ok {
+// DiscoverNow gathers on the caller's path, for a check that must not use a
+// background count. It returns Expected when no node answers.
+func (d *NodeDiscovery) DiscoverNow(ctx context.Context) int {
+	if count, ok := d.discover(ctx); ok {
 		return count
+	}
+	return d.Expected
+}
+
+// Run refreshes the count at once and then every activeNodesTTL until ctx is
+// done. A failed refresh clears the count, so ActiveNodes falls back to Expected.
+func (d *NodeDiscovery) Run(ctx context.Context) {
+	ticker := time.NewTicker(activeNodesTTL)
+	defer ticker.Stop()
+	for {
+		count, ok := d.discover(ctx)
+		d.mu.Lock()
+		if ok {
+			d.count, d.at = count, time.Now()
+		} else {
+			d.count = 0
+		}
+		d.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// discover counts every node that answers, which can exceed the configured
+// count during a grow. Stopping at that count would drop a live node from the
+// fan-outs that follow. It returns false on an error or when no node answers.
+func (d *NodeDiscovery) discover(ctx context.Context) (int, bool) {
+	if d.NATS == nil {
+		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", d.Expected)
+		return 0, false
 	}
 
 	frames, _, err := natsmsg.Gather(ctx, d.NATS, clusterv1.NodesDiscoverSubject, []byte("{}"),
 		natsmsg.GatherOpts{Timeout: discoverActiveNodesTimeout})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", d.Expected)
-		return d.Expected
+		return 0, false
 	}
 
 	nodesSeen := make(map[string]bool)
@@ -69,29 +104,9 @@ func (d *NodeDiscovery) ActiveNodes(ctx context.Context) int {
 	activeNodes := len(nodesSeen)
 	if activeNodes == 0 {
 		slog.WarnContext(ctx, "DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", d.Expected)
-		return d.Expected
-	}
-
-	d.rememberActiveNodes(activeNodes)
-	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
-	return activeNodes
-}
-
-// cachedActiveNodes returns a count discovered within the TTL. Only a real
-// discovery is cached: a fallback is not evidence of anything and caching one
-// would make a momentary NATS problem outlive itself.
-func (d *NodeDiscovery) cachedActiveNodes() (int, bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if d.count == 0 || time.Since(d.at) > activeNodesTTL {
 		return 0, false
 	}
-	return d.count, true
-}
 
-func (d *NodeDiscovery) rememberActiveNodes(count int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.count = count
-	d.at = time.Now()
+	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
+	return activeNodes, true
 }

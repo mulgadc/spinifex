@@ -583,6 +583,7 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
+	go nodes.Run(janitorCtx)
 	// Every gateway keeps its own copy of the console branding, so the public
 	// route never waits on NATS. The bucket opens lazily, so a branding store
 	// that is down cannot stop the gateway.
@@ -707,7 +708,7 @@ func launchService(config *config.ClusterConfig) error {
 	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: iamService,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, nodes.ActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, nodes.DiscoverNow(ctx), accountID, profileARN)
 		},
 	})
 	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})

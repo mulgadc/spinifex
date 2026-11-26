@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 const (
@@ -173,18 +174,36 @@ var TagStatusValues = []string{"TAGGED", "UNTAGGED", "ANY"}
 // when refusing a value.
 var ImageStatusValues = []string{"ARCHIVED", "ACTIVE", "ANY", "ACTIVATING"}
 
-// validateMaxResults refuses a maxResults outside MaxResults' range of
-// 1-1000; an omitted value is valid.
-func validateMaxResults(n *int64) error {
+// defaultMaxResults is the page size AWS applies when maxResults is omitted.
+const defaultMaxResults = 100
+
+// parsePage refuses a maxResults outside 1-1000, maxResults or nextToken sent
+// with the explicit ID list idsField names (when ids is non-zero), and a token
+// Spinifex did not issue. It returns the page they select.
+func parsePage(maxResults *int64, nextToken *string, idsField string, ids int) (paging.Request, error) {
 	switch {
-	case n == nil:
-		return nil
-	case *n < minMaxResults:
-		return ConstraintError("maxResults", fmt.Sprintf("Member must have value greater than or equal to %d", minMaxResults))
-	case *n > maxMaxResults:
-		return ConstraintError("maxResults", fmt.Sprintf("Member must have value less than or equal to %d", maxMaxResults))
+	case maxResults == nil:
+	case *maxResults < minMaxResults:
+		return paging.Request{}, ConstraintError("maxResults", fmt.Sprintf("Member must have value greater than or equal to %d", minMaxResults))
+	case *maxResults > maxMaxResults:
+		return paging.Request{}, ConstraintError("maxResults", fmt.Sprintf("Member must have value less than or equal to %d", maxMaxResults))
 	}
-	return nil
+	if ids > 0 {
+		if maxResults != nil || nextToken != nil {
+			return paging.Request{}, awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
+				"maxResults and nextToken cannot be used together with %s", idsField)
+		}
+		return paging.Request{}, nil
+	}
+	from, err := paging.DecodeToken(aws.StringValue(nextToken))
+	if err != nil {
+		return paging.Request{}, awserrors.Errorf(awserrors.ErrorECRInvalidParameter, "Invalid parameter at 'nextToken': the token is not valid")
+	}
+	limit := defaultMaxResults
+	if maxResults != nil {
+		limit = int(*maxResults)
+	}
+	return paging.Request{Limit: limit, From: from}, nil
 }
 
 // exclusionFilter is one imageTagMutabilityExclusionFilters member.

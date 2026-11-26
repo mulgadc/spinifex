@@ -3,9 +3,8 @@ package ochre
 import (
 	"context"
 	"errors"
-	"slices"
+	"fmt"
 	"strconv"
-	"strings"
 	"time"
 	"uuid"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -372,36 +372,78 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 	return guardrailViewToGetOutput(rec.ARN, id, bedrock.GuardrailStatusReady, snap.Version, snap.guardrailView), nil
 }
 
-// ListGuardrails returns the caller account's own guardrails, sorted by
-// creation time (id as a deterministic tie-breaker), so one tenant never sees
-// another's and repeated calls return a stable order.
-func ListGuardrails(ctx context.Context, accountID string, store *GuardrailStore, _ *bedrock.ListGuardrailsInput) (*bedrock.ListGuardrailsOutput, error) {
-	recs, err := store.store.List(ctx, accountID+"/")
+// ListGuardrails returns the DRAFT of each of the caller account's own
+// guardrails, oldest first, or every version of one guardrail when
+// input.GuardrailIdentifier names it, paged by maxResults and nextToken.
+func ListGuardrails(ctx context.Context, accountID string, store *GuardrailStore, input *bedrock.ListGuardrailsInput) (*bedrock.ListGuardrailsOutput, error) {
+	if input == nil {
+		input = &bedrock.ListGuardrailsInput{}
+	}
+	req, err := bedrockPageRequest(input.MaxResults, input.NextToken)
 	if err != nil {
 		return nil, err
 	}
 
-	slices.SortFunc(recs, func(a, b GuardrailRecord) int {
-		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
-			return c
-		}
-		return strings.Compare(a.GuardrailID, b.GuardrailID)
-	})
-
-	summaries := make([]*bedrock.GuardrailSummary, 0, len(recs))
-	for _, rec := range recs {
-		summaries = append(summaries, &bedrock.GuardrailSummary{
-			Arn:         aws.String(rec.ARN),
-			CreatedAt:   aws.Time(rec.CreatedAt),
-			Description: nonEmptyStringPtr(rec.Description),
-			Id:          aws.String(rec.GuardrailID),
-			Name:        aws.String(rec.Name),
-			Status:      aws.String(rec.Status),
-			UpdatedAt:   aws.Time(rec.UpdatedAt),
-			Version:     aws.String(guardrailDraftVersion),
-		})
+	type entry struct {
+		key string
+		sum *bedrock.GuardrailSummary
 	}
-	return &bedrock.ListGuardrailsOutput{Guardrails: summaries}, nil
+	var entries []entry
+	if ident := aws.StringValue(input.GuardrailIdentifier); ident != "" {
+		id, err := ResolveGuardrailID(ident, store.region, accountID)
+		if err != nil {
+			return nil, err
+		}
+		rec, found, err := store.get(ctx, accountID, id)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errGuardrailNotFound(id, "")
+		}
+		entries = append(entries, entry{key: guardrailVersionSortKey(0), sum: guardrailSummary(rec, rec.Status, guardrailDraftVersion, rec.guardrailView)})
+		for _, snap := range rec.Versions {
+			n, err := strconv.Atoi(snap.Version)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, entry{key: guardrailVersionSortKey(n), sum: guardrailSummary(rec, bedrock.GuardrailStatusReady, snap.Version, snap.guardrailView)})
+		}
+	} else {
+		recs, err := store.store.List(ctx, accountID+"/")
+		if err != nil {
+			return nil, err
+		}
+		for _, rec := range recs {
+			entries = append(entries, entry{key: timeSortKey(rec.CreatedAt, rec.GuardrailID, false), sum: guardrailSummary(rec, rec.Status, guardrailDraftVersion, rec.guardrailView)})
+		}
+	}
+
+	page, next := paging.Page(entries, func(e entry) string { return e.key }, req)
+	summaries := make([]*bedrock.GuardrailSummary, 0, len(page))
+	for _, e := range page {
+		summaries = append(summaries, e.sum)
+	}
+	return &bedrock.ListGuardrailsOutput{Guardrails: summaries, NextToken: pageToken(next)}, nil
+}
+
+// guardrailVersionSortKey orders DRAFT (0) before the numbered versions.
+func guardrailVersionSortKey(version int) string {
+	return fmt.Sprintf("%010d", version)
+}
+
+// guardrailSummary is one ListGuardrails row for version view of rec.
+func guardrailSummary(rec GuardrailRecord, status, version string, view guardrailView) *bedrock.GuardrailSummary {
+	return &bedrock.GuardrailSummary{
+		Arn:         aws.String(rec.ARN),
+		CreatedAt:   aws.Time(view.CreatedAt),
+		Description: nonEmptyStringPtr(view.Description),
+		Id:          aws.String(rec.GuardrailID),
+		Name:        aws.String(view.Name),
+		Status:      aws.String(status),
+		UpdatedAt:   aws.Time(view.UpdatedAt),
+		Version:     aws.String(version),
+	}
 }
 
 // UpdateGuardrail mutates the DRAFT only. AWS's own UpdateGuardrailInput

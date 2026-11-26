@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 	"uuid"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -289,24 +291,49 @@ func GetProvisionedModelThroughput(ctx context.Context, accountID string, store 
 }
 
 // ListProvisionedModelThroughputs returns accountID's own commitments only,
-// sorted by creation time, so one tenant never sees another's. Status is the
-// last value written to each record (Create's Creating, unchanged by
-// Update), not live-derived — unlike Get, a list scan does not pay for one
-// endpoint describe per commitment.
-func ListProvisionedModelThroughputs(ctx context.Context, accountID string, store *ProvisionedStore, _ *bedrock.ListProvisionedModelThroughputsInput) (*bedrock.ListProvisionedModelThroughputsOutput, error) {
+// filtered and sorted by creation time as input asks, then paged. Status is the
+// last value written to each record, not live-derived like Get.
+func ListProvisionedModelThroughputs(ctx context.Context, accountID string, store *ProvisionedStore, input *bedrock.ListProvisionedModelThroughputsInput) (*bedrock.ListProvisionedModelThroughputsOutput, error) {
+	if input == nil {
+		input = &bedrock.ListProvisionedModelThroughputsInput{}
+	}
+	req, err := bedrockPageRequest(input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	if input.SortBy != nil && *input.SortBy != bedrock.SortByProvisionedModelsCreationTime {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "invalid sortBy %q", *input.SortBy)
+	}
+	descending := false
+	if input.SortOrder != nil {
+		switch *input.SortOrder {
+		case bedrock.SortOrderAscending:
+		case bedrock.SortOrderDescending:
+			descending = true
+		default:
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "invalid sortOrder %q", *input.SortOrder)
+		}
+	}
+	if input.StatusEquals != nil && !slices.Contains(bedrock.ProvisionedModelStatus_Values(), *input.StatusEquals) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "invalid statusEquals %q", *input.StatusEquals)
+	}
+
 	recs, err := store.store.List(ctx, accountID+"/")
 	if err != nil {
 		return nil, err
 	}
 
-	slices.SortFunc(recs, func(a, b ProvisionedModelRecord) int {
-		return a.CreationTime.Compare(b.CreationTime)
-	})
-
-	summaries := make([]*bedrock.ProvisionedModelSummary, 0, len(recs))
+	type entry struct {
+		key string
+		sum *bedrock.ProvisionedModelSummary
+	}
+	entries := make([]entry, 0, len(recs))
 	for _, rec := range recs {
 		fmArn := modelARN(rec.ModelID)
-		summaries = append(summaries, &bedrock.ProvisionedModelSummary{
+		if !provisionedListMatches(input, rec, fmArn) {
+			continue
+		}
+		entries = append(entries, entry{key: timeSortKey(rec.CreationTime, rec.ARN, descending), sum: &bedrock.ProvisionedModelSummary{
 			CommitmentDuration:   nonEmptyStringPtr(rec.CommitmentDuration),
 			CreationTime:         aws.Time(rec.CreationTime),
 			DesiredModelArn:      aws.String(fmArn),
@@ -318,9 +345,32 @@ func ListProvisionedModelThroughputs(ctx context.Context, accountID string, stor
 			ProvisionedModelArn:  aws.String(rec.ARN),
 			ProvisionedModelName: aws.String(rec.ProvisionedModelName),
 			Status:               aws.String(rec.Status),
-		})
+		}})
 	}
-	return &bedrock.ListProvisionedModelThroughputsOutput{ProvisionedModelSummaries: summaries}, nil
+
+	page, next := paging.Page(entries, func(e entry) string { return e.key }, req)
+	summaries := make([]*bedrock.ProvisionedModelSummary, 0, len(page))
+	for _, e := range page {
+		summaries = append(summaries, e.sum)
+	}
+	return &bedrock.ListProvisionedModelThroughputsOutput{ProvisionedModelSummaries: summaries, NextToken: pageToken(next)}, nil
+}
+
+// provisionedListMatches reports whether rec passes every filter input sets.
+func provisionedListMatches(input *bedrock.ListProvisionedModelThroughputsInput, rec ProvisionedModelRecord, modelArn string) bool {
+	switch {
+	case input.CreationTimeAfter != nil && !rec.CreationTime.After(*input.CreationTimeAfter):
+		return false
+	case input.CreationTimeBefore != nil && !rec.CreationTime.Before(*input.CreationTimeBefore):
+		return false
+	case input.StatusEquals != nil && rec.Status != *input.StatusEquals:
+		return false
+	case input.ModelArnEquals != nil && modelArn != *input.ModelArnEquals:
+		return false
+	case input.NameContains != nil && !strings.Contains(rec.ProvisionedModelName, *input.NameContains):
+		return false
+	}
+	return true
 }
 
 // UpdateProvisionedModelThroughput honours name changes only. AWS allows a

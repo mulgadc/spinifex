@@ -177,9 +177,9 @@ func TestOVNFixtureCreate_CommittedSealWithLostResponseAndReadResolvesAfterResta
 
 func TestOVNFixtureCreate_UncertainSealKeepsPendingClaimAndSlots(t *testing.T) {
 	cases := []struct {
-		name     string
-		moved    bool
-		hook     func(h *ovnCreateHarness) func(string, []byte, func() (uint64, error)) (uint64, error)
+		name  string
+		moved bool
+		hook  func(h *ovnCreateHarness) func(string, []byte, func() (uint64, error)) (uint64, error)
 	}{
 		{"timeout before publish", false, func(*ovnCreateHarness) func(string, []byte, func() (uint64, error)) (uint64, error) {
 			return func(string, []byte, func() (uint64, error)) (uint64, error) { return 0, nats.ErrTimeout }

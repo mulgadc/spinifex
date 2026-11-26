@@ -438,19 +438,24 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 	if err != nil {
 		return err
 	}
-	// The manager lock comes before EBSRequests.Mu, and the daemon persists the
-	// record under it. An entry that changed since the publish is left as it is.
+	a.commitExports(instance, requests)
+	return nil
+}
+
+// commitExports copies the exports of published to the instance's requests
+// under the manager lock, which the daemon persists the record under. An entry
+// that changed since the publish is left as it is.
+func (a *volumeMounterAdapter) commitExports(instance *vm.VM, published []vm.EBSRequest) {
 	a.vms.Inspect(instance, func(v *vm.VM) {
 		v.EBSRequests.Mu.Lock()
 		defer v.EBSRequests.Mu.Unlock()
-		for k, req := range requests {
+		for k, req := range published {
 			if k < len(v.EBSRequests.Requests) && v.EBSRequests.Requests[k].Name == req.Name {
 				cur := &v.EBSRequests.Requests[k]
 				cur.NBDURI, cur.BlockDevice, cur.BlockSizeBytes = req.NBDURI, req.BlockDevice, req.BlockSizeBytes
 			}
 		}
 	})
-	return nil
 }
 
 // publishAll publishes a copy of each of the instance's requests while it holds

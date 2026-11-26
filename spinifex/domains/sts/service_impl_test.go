@@ -24,14 +24,12 @@ func (nopJWKSResolver) LookupClusterJWKS(context.Context, string, string) ([]byt
 	return nil, false, nil
 }
 
-// newTestSetup spins up a NATS+JetStream test server, builds a real
-// IAMServiceImpl (cheaper than hand-rolling a 40-method stub), and returns
-// the wired-up STSServiceImpl together with the underlying NATS conn for
-// tests that need to interact with KV directly. The JWKS resolver is a
-// fakeJWKSResolver (see fakeResolver) — no EKS package is involved.
+// newTestSetup returns an STSServiceImpl wired to a real IAMServiceImpl and a
+// fakeJWKSResolver, on a JetStream server of its own seeded from the shared
+// store, and the NATS conn for tests that touch KV directly.
 func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	nc := startSeededJetStream(t)
 
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
@@ -41,9 +39,6 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 
 	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, newFakeJWKSResolver())
 	require.NoError(t, err)
-	for _, id := range []string{testCallerAccountID, testCrossAccountID, "123456789012", "111122223333"} {
-		putTestAccount(t, nc, id, iamdomain.AccountStatusActive)
-	}
 	return stsSvc, nc
 }
 

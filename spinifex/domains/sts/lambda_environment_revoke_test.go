@@ -52,6 +52,7 @@ func TestRevokeLambdaEnvironmentSession_DeletesOnlyAMatchingRecord(t *testing.T)
 
 // A non-Lambda session carries empty labels, so an empty scope must not match it.
 func TestRevokeLambdaEnvironmentSession_LeavesOtherSessionKinds(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	user := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
@@ -80,6 +81,7 @@ func (r *replacingKV) Get(ctx context.Context, key string) (jetstream.KeyValueEn
 }
 
 func TestRevokeLambdaEnvironmentSession_KeepsARecordReplacedAfterTheRead(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 	akid := issueLambdaSession(t, svc, *role.Arn, testLambdaEnvID, 3600)

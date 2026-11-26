@@ -586,6 +586,7 @@ var mfaConstraintCases = func() []struct {
 }()
 
 func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "name", trustPolicyAllowingUser(testCallerARN()))
 
@@ -614,17 +615,18 @@ func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 		{"bad name!", patternMessage("bad name!")},
 		{"ué", patternMessage("ué")}, // non-ASCII; literal regex deliberately excludes Unicode
 	}
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, ""))
+	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
+
 	for _, tc := range bad {
 		t.Run("session_"+tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 				basicAssumeRoleInput(*role.Arn, tc.name))
 			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 		})
 	}
-
-	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
-		basicAssumeRoleInput(*role.Arn, ""))
-	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
 }
 
 func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
@@ -978,6 +980,7 @@ func TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants(t *testing.T) {
 }
 
 func TestServiceSourcesForCaller(t *testing.T) {
+	t.Parallel()
 	const acct = testCallerAccountID
 	cases := []struct {
 		name      string
@@ -995,6 +998,7 @@ func TestServiceSourcesForCaller(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, serviceSourcesForCaller(tc.callerARN, acct))
 		})
 	}

@@ -33,8 +33,8 @@ type PresignedCallerIdentity struct {
 	PrincipalType string
 }
 
-// presignedTimeNow is the time-source seam; tests override it to pin the clock.
-var presignedTimeNow = func() time.Time { return time.Now().UTC() }
+// presignedTimeNow is the default clock for presigned URL checks.
+func presignedTimeNow() time.Time { return time.Now().UTC() }
 
 // VerifyPresignedGetCallerIdentity validates a SigV4-presigned GetCallerIdentity URL
 // and resolves the calling principal. Called by the EKS token webhook over NATS.
@@ -63,7 +63,7 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 	// Canonical MIME key on Set; sigv4 lowercases header names for the SignedHeaders set.
 	r.Header.Set("X-K8s-Aws-Id", expectedClusterName)
 
-	req, err := sigv4.Parse(r, sigv4.WithTime(presignedTimeNow()))
+	req, err := sigv4.Parse(r, sigv4.WithTime(s.presignedNow()))
 	if err != nil {
 		slog.Warn("VerifyPresignedGetCallerIdentity: envelope parse failed", "err", err)
 		return nil, mapSigv4Err(err)
@@ -170,7 +170,7 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		if cred == nil {
 			return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 		}
-		if presignedTimeNow().After(cred.ExpiresAt) {
+		if s.presignedNow().After(cred.ExpiresAt) {
 			return nil, "", nil, errors.New(awserrors.ErrorExpiredToken)
 		}
 		secret, err := iamdomain.DecryptSecret(cred.SecretEncrypted, s.masterKey)

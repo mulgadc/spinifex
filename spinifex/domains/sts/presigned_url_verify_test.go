@@ -53,21 +53,20 @@ func seedAccessKey(t *testing.T, svc *STSServiceImpl, accountID, userName string
 	return aws.StringValue(out.AccessKey.AccessKeyId), aws.StringValue(out.AccessKey.SecretAccessKey)
 }
 
-func withFrozenTime(t *testing.T, now time.Time) {
+func withFrozenTime(t *testing.T, svc *STSServiceImpl, now time.Time) {
 	t.Helper()
-	prev := presignedTimeNow
-	presignedTimeNow = func() time.Time { return now }
-	t.Cleanup(func() { presignedTimeNow = prev })
+	svc.presignedNow = func() time.Time { return now }
 }
 
 // ----- Happy paths --------------------------------------------------------
 
 func TestVerifyPresignedGetCallerIdentity_HappyPath_LongLived(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "alice")
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "demo-cluster"
 	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
@@ -82,6 +81,7 @@ func TestVerifyPresignedGetCallerIdentity_HappyPath_LongLived(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
+	t.Parallel()
 	// A session credential (ASIA prefix) signs the URL. VerifyPresigned must
 	// resolve via LookupSessionCredential, decrypt the secret, and match.
 	svc, _ := newTestSetup(t)
@@ -96,7 +96,7 @@ func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
 	secret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "session-cluster"
 	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
@@ -114,6 +114,7 @@ func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
 // A GetSessionToken session is the IAM user itself, as GetCallerIdentity reports
 // it on AWS: the user ARN, path included, and the user's UserId.
 func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	out, err := svc.iamSvc.CreateUser(testCallerAccountID, &iam.CreateUserInput{
 		UserName: aws.String(testCallerUserName), Path: aws.String("/eng/"),
@@ -124,7 +125,7 @@ func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.
 	require.NoError(t, err)
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "user-session-cluster"
 	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
@@ -142,6 +143,7 @@ func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.
 // GetCallerIdentity reports the account ID as root's UserId, so the presigned
 // door must agree with the SigV4 one for a root session.
 func TestVerifyPresignedGetCallerIdentity_RootSession_UserIDIsAccountID(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, "root")
 	tokOut, err := svc.GetSessionToken(testCallerAccountID, "root", principalTypeUser,
@@ -149,7 +151,7 @@ func TestVerifyPresignedGetCallerIdentity_RootSession_UserIDIsAccountID(t *testi
 	require.NoError(t, err)
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "root-session-cluster"
 	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
@@ -187,9 +189,10 @@ func rewriteSession(t *testing.T, svc *STSServiceImpl, roleName, cluster string,
 // A record minted before PrincipalType existed carries an empty value and is a
 // role session.
 func TestVerifyPresignedGetCallerIdentity_LegacyEmptyPrincipalType_ResolvesAsAssumedRole(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "legacy-cluster"
 	u, assumeOut := rewriteSession(t, svc, "irsa-legacy", cluster, signedAt, func(c *SessionCredential) {
@@ -207,9 +210,10 @@ func TestVerifyPresignedGetCallerIdentity_LegacyEmptyPrincipalType_ResolvesAsAss
 // The EKS webhook maps the returned ARN to a Kubernetes identity, so an identity
 // that resolves without one must be refused, not returned empty.
 func TestVerifyPresignedGetCallerIdentity_EmptyARN_Rejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "no-arn-cluster"
 	u, _ := rewriteSession(t, svc, "irsa-noarn", cluster, signedAt, func(c *SessionCredential) {
@@ -226,6 +230,7 @@ func TestVerifyPresignedGetCallerIdentity_EmptyARN_Rejected(t *testing.T) {
 // all, so a stale session left a working path to a cluster identity mapping
 // keyed on an ARN whose role no longer exists.
 func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale",
 		trustPolicyAllowingUser(testCallerARN()))
@@ -240,7 +245,7 @@ func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
 	createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale", trustPolicyAllowingWildcard())
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "stale-cluster"
 	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
@@ -256,6 +261,7 @@ func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
 // clear, so it must stay behind the signature. A faulting IAM backend makes the
 // check's presence observable — its error is distinct from a signature rejection.
 func TestVerifyPresignedGetCallerIdentity_BadSignature_SkipsPrincipalCheck(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-order",
 		trustPolicyAllowingUser(testCallerARN()))
@@ -267,7 +273,7 @@ func TestVerifyPresignedGetCallerIdentity_BadSignature_SkipsPrincipalCheck(t *te
 	goodSecret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 	const cluster = "order-cluster"
 
 	boom := errors.New("jetstream unavailable")
@@ -293,10 +299,11 @@ func TestVerifyPresignedGetCallerIdentity_BadSignature_SkipsPrincipalCheck(t *te
 // ----- Cross-cluster anti-replay (Q10 mandatory) --------------------------
 
 func TestVerifyPresignedGetCallerIdentity_CrossClusterReplay(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "bob")
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	// Sign for cluster-A.
 	u := presignTestURL(t, akid, secret, "cluster-A", signedAt, 900)
@@ -309,6 +316,7 @@ func TestVerifyPresignedGetCallerIdentity_CrossClusterReplay(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_MissingXK8sAwsIdInSignedHeaders(t *testing.T) {
+	t.Parallel()
 	// An attacker presigning without x-k8s-aws-id in SignedHeaders strips the
 	// cross-cluster check from the canonical request. Verify must refuse even
 	// though the signature itself is valid — the URL is structurally untrustworthy.
@@ -316,7 +324,7 @@ func TestVerifyPresignedGetCallerIdentity_MissingXK8sAwsIdInSignedHeaders(t *tes
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "eve")
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	// Presign without setting X-K8s-Aws-Id, so SignedHeaders is host only.
 	req, err := http.NewRequest(http.MethodGet,
@@ -334,6 +342,7 @@ func TestVerifyPresignedGetCallerIdentity_MissingXK8sAwsIdInSignedHeaders(t *tes
 // ----- Expiry -------------------------------------------------------------
 
 func TestVerifyPresignedGetCallerIdentity_Expired(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "carol")
 
@@ -342,7 +351,7 @@ func TestVerifyPresignedGetCallerIdentity_Expired(t *testing.T) {
 	u := presignTestURL(t, akid, secret, cluster, signedAt, 60)
 
 	// Verifier clock 5 minutes after signing — beyond 60s expiry.
-	withFrozenTime(t, signedAt.Add(5*time.Minute))
+	withFrozenTime(t, svc, signedAt.Add(5*time.Minute))
 	_, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorExpiredToken, err.Error())
@@ -351,12 +360,13 @@ func TestVerifyPresignedGetCallerIdentity_Expired(t *testing.T) {
 // ----- Tampered URL detection ---------------------------------------------
 
 func TestVerifyPresignedGetCallerIdentity_TamperedQueryParameter(t *testing.T) {
+	t.Parallel()
 	// Flip an unrelated query param (Action) after signing — must invalidate
 	// the signature because Action is part of the canonical query string.
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "dave")
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	u := presignTestURL(t, akid, secret, "c", signedAt, 900)
 	tampered := strings.Replace(u, "GetCallerIdentity", "GetSessionToken", 1)
@@ -400,9 +410,10 @@ func TestVerifyPresignedGetCallerIdentity_BadAlgorithm(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_UnknownAccessKey(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	u := presignTestURL(t, "AKIAGHOSTEXAMPLE0000", "fake-secret", "c", signedAt, 900)
 	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
@@ -411,9 +422,10 @@ func TestVerifyPresignedGetCallerIdentity_UnknownAccessKey(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_UnknownAKIDPrefix(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 	u := presignTestURL(t, "QQQQEXAMPLE000000000", "x", "c", signedAt, 900)
 	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
 	require.Error(t, err)
@@ -421,11 +433,12 @@ func TestVerifyPresignedGetCallerIdentity_UnknownAKIDPrefix(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_BadServiceInCredential(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "frank")
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	// Build a URL whose credential scope claims s3 instead of sts — the
 	// service mismatch is structural, no signature work needed.
@@ -446,12 +459,13 @@ func TestVerifyPresignedGetCallerIdentity_BadServiceInCredential(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_CredentialDateMismatch(t *testing.T) {
+	t.Parallel()
 	// X-Amz-Date date portion (YYYYMMDD) and credential-scope date must agree.
 	// AWS-CLI enforces this; mismatch is a tampered URL.
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "george")
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	q := url.Values{}
 	wrongDate := signedAt.Add(-24 * time.Hour).Format("20060102")
@@ -474,11 +488,12 @@ func TestVerifyPresignedGetCallerIdentity_CredentialDateMismatch(t *testing.T) {
 // payload-hash bug (verify used the S3-only "UNSIGNED-PAYLOAD" instead of the
 // empty-string SHA256 that botocore signs non-S3 requests with).
 func TestVerifyPresignedGetCallerIdentity_RealSDKPresign(t *testing.T) {
+	t.Parallel()
 	svc, _ := newTestSetup(t)
 	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "carol")
 
 	signedAt := time.Now().UTC().Truncate(time.Second)
-	withFrozenTime(t, signedAt)
+	withFrozenTime(t, svc, signedAt)
 
 	const cluster = "prod-cluster"
 	req, err := http.NewRequest(http.MethodGet,

@@ -24,7 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const otherAccountID = "210987654321"
+const (
+	otherAccountID    = "210987654321"
+	ovnDependencyKind = "ovn-load-balancer"
+)
 
 var (
 	opKVWrites = []string{"Put", "PutString", "Create", "Update", "Delete", "Purge"}
@@ -247,12 +250,12 @@ func (h *ovnCreateHarness) restart() {
 	h.vpcKV = &opKV{KeyValue: h.bucket(ec2vpc.KVBucketVPCs)}
 	h.subnetKV = &opKV{KeyValue: h.bucket(ec2vpc.KVBucketSubnets)}
 	h.sgKV = &opKV{KeyValue: h.bucket(ec2vpc.KVBucketSecurityGroups)}
+	svc.store.kv = h.elbKV
 	parents := ec2vpc.NewParents(h.vpcKV, h.subnetKV)
-	svc.ovn = &ovnFixture{
-		owners:  &fixtureOwnerStore{kv: h.elbKV, parents: parents, now: h.clock.now, claimTTL: lbNameClaimTTL},
-		parents: parents,
-		groups:  ec2vpc.NewGroupLookup(h.sgKV),
-	}
+	owners := &fixtureOwnerStore{kv: h.elbKV, parents: parents, now: h.clock.now, claimTTL: lbNameClaimTTL}
+	svc.ovn = &ovnFixture{owners: owners, parents: parents, groups: ec2vpc.NewGroupLookup(h.sgKV)}
+	h.vpcs.SetDependencyCheck(ovnDependencyKind, owners.vpcBlocksDeletion)
+	h.vpcs.SetSubnetDependencyCheck(ovnDependencyKind, owners.subnetBlocksDeletion)
 	h.svc = svc
 }
 
@@ -389,6 +392,19 @@ func TestOVNFixtureCreate_ReturnsProvisioningRootAndRetriesAfterRestart(t *testi
 	_, err = h.create(h.input("ovn-nlb", h.subnetID, h.groups[1]))
 	requireFenceCode(t, err, awserrors.ErrorELBv2DuplicateLoadBalancer)
 	assert.Equal(t, elbAfter, h.state(KVBucketELBv2))
+
+	h.takeOps()
+	_, err = h.vpcs.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(h.subnetID)}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation, "the restarted service keeps the subnet slot binding")
+	assert.Contains(t, h.takeOps()[KVBucketELBv2], "Get "+subnetSlotKey(testAccountID, h.subnetID))
+	sub, _, err := ec2vpc.NewParents(h.bucket(ec2vpc.KVBucketVPCs), h.bucket(ec2vpc.KVBucketSubnets)).Subnet(t.Context(), testAccountID, h.subnetID)
+	require.NoError(t, err)
+	require.NotNil(t, sub, "the subnet survives")
+	assert.False(t, sub.Deleting, "a refused delete leaves no mark")
+	assert.Equal(t, elbAfter, h.state(KVBucketELBv2), "the claim and both slots survive")
+
+	_, err = h.vpcs.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(h.subnet2ID)}, testAccountID)
+	require.NoError(t, err, "a subnet with no slot still deletes")
 }
 
 func TestOVNFixtureCreate_SubnetMappingAndGroupPointReads(t *testing.T) {

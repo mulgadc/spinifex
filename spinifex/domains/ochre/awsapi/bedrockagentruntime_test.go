@@ -489,3 +489,69 @@ func TestRetrievalOperations_QueryEmbeddingFailureIsModelError(t *testing.T) {
 		assert.Equal(t, http.StatusFailedDependency, awserrors.HTTPStatusForError(err))
 	})
 }
+
+func TestRetrieve_NumberOfResultsRange(t *testing.T) {
+	kb, _ := newBedrockAgentTestStores(t)
+	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
+
+	cases := []struct {
+		name    string
+		n       *int64
+		wantK   int
+		wantErr bool
+	}{
+		{name: "omitted", n: nil, wantK: 5},
+		{name: "max", n: aws.Int64(100), wantK: 100},
+		{name: "zero", n: aws.Int64(0), wantErr: true},
+		{name: "above max", n: aws.Int64(101), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vector := &fakeBedrockAgentVectorService{}
+			input := &bedrockagentruntime.RetrieveInput{
+				KnowledgeBaseId: aws.String("kb-1"),
+				RetrievalQuery:  &bedrockagentruntime.KnowledgeBaseQuery{Text: aws.String("dragons")},
+			}
+			if tc.n != nil {
+				input.RetrievalConfiguration = &bedrockagentruntime.KnowledgeBaseRetrievalConfiguration{
+					VectorSearchConfiguration: &bedrockagentruntime.KnowledgeBaseVectorSearchConfiguration{NumberOfResults: tc.n},
+				}
+			}
+			_, err := Retrieve(context.Background(), bedrockAgentTestAccount, kb, vector, nil, input)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
+				assert.Nil(t, vector.queryReq)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, vector.queryReq)
+			assert.Equal(t, tc.wantK, vector.queryReq.K)
+		})
+	}
+}
+
+func TestRetrieveAndGenerate_RejectsNumberOfResultsOutOfRange(t *testing.T) {
+	kb, _ := newBedrockAgentTestStores(t)
+	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
+	for _, n := range []int64{0, 101} {
+		vector := &fakeBedrockAgentVectorService{}
+		input := &bedrockagentruntime.RetrieveAndGenerateInput{
+			Input: &bedrockagentruntime.RetrieveAndGenerateInput_{Text: aws.String("dragons")},
+			RetrieveAndGenerateConfiguration: &bedrockagentruntime.RetrieveAndGenerateConfiguration{
+				Type: aws.String(bedrockagentruntime.RetrieveAndGenerateTypeKnowledgeBase),
+				KnowledgeBaseConfiguration: &bedrockagentruntime.KnowledgeBaseRetrieveAndGenerateConfiguration{
+					KnowledgeBaseId: aws.String("kb-1"),
+					ModelArn:        aws.String("anthropic.claude-v2"),
+					RetrievalConfiguration: &bedrockagentruntime.KnowledgeBaseRetrievalConfiguration{
+						VectorSearchConfiguration: &bedrockagentruntime.KnowledgeBaseVectorSearchConfiguration{NumberOfResults: aws.Int64(n)},
+					},
+				},
+			},
+		}
+		_, err := RetrieveAndGenerate(context.Background(), bedrockAgentTestAccount, kb, vector, (&fakeConverse{}).call, nil, input)
+		require.Error(t, err, "numberOfResults=%d", n)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
+		assert.Nil(t, vector.queryReq)
+	}
+}

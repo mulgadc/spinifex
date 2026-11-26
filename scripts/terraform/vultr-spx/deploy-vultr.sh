@@ -353,6 +353,37 @@ import_image() {
         die "image import failed; see /root/image-import.log on $IP"
 }
 
+# write_credentials KEY SECRET sets the profile's keys in the shared credentials file without putting
+# the secret in any process argument: it reaches python on stdin. Other profiles are kept, the old
+# file is saved beside it, and the new one is 0600.
+write_credentials() {
+    local code
+    code='
+import configparser, os, shutil, sys, time
+profile = sys.argv[1]
+key, secret = sys.stdin.read().split("\n")[:2]
+path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or os.path.expanduser("~/.aws/credentials")
+os.umask(0o077)
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+cp = configparser.RawConfigParser()
+cp.optionxform = str
+if os.path.exists(path):
+    cp.read(path)
+    shutil.copy2(path, "%s.pre-vultr.%d" % (path, int(time.time())))
+if not cp.has_section(profile):
+    cp.add_section(profile)
+cp.set(profile, "aws_access_key_id", key)
+cp.set(profile, "aws_secret_access_key", secret)
+cp.remove_option(profile, "aws_session_token")
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    cp.write(f)
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+'
+    printf '%s\n%s\n' "$1" "$2" | python3 -I -c "$code" "$PROFILE" || die "could not write the credentials file"
+}
+
 write_profile() {
     log "writing the CA to $CA_FILE and AWS profile $PROFILE"
     mkdir -p "$(dirname "$CA_FILE")"
@@ -362,8 +393,7 @@ write_profile() {
     key="$(awk -F' *= *' '/aws_access_key_id/{print $2}' <<<"$creds")"
     secret="$(awk -F' *= *' '/aws_secret_access_key/{print $2}' <<<"$creds")"
     [ -n "$key" ] && [ -n "$secret" ] || die "no [spinifex] credentials on $IP"
-    aws configure set --profile "$PROFILE" aws_access_key_id "$key"
-    aws configure set --profile "$PROFILE" aws_secret_access_key "$secret"
+    write_credentials "$key" "$secret"
     aws configure set --profile "$PROFILE" region "$SPX_REGION"
     aws configure set --profile "$PROFILE" endpoint_url "https://$IP:9999"
     aws configure set --profile "$PROFILE" ca_bundle "$CA_FILE"

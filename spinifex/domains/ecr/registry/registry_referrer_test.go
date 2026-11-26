@@ -52,6 +52,7 @@ func TestPutManifest_SubjectRecordedAndAdvertised(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			body := imageWithSubject(cfg, absentSubjectDgt, tt.artifactType)
 			w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/"+digestOf([]byte(body)), []byte(body),
 				map[string]string{"Content-Type": mediaTypeOCIManifest})

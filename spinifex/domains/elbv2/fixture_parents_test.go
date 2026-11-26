@@ -745,6 +745,11 @@ func TestFixtureFence_ParentsComeFromPendingSnapshot(t *testing.T) {
 
 // A slot that is not exactly the owner's scoped VPC and subnet pair is a store
 // error. The delete refuses before any invalidation or slot deletion.
+// validSlotJSON is the slot admission would write for claim.
+func validSlotJSON(f *fenceFixture, claim *fixtureClaim) string {
+	return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"` + f.vpcID + `","subnetId":"` + f.subnetID + `"}`
+}
+
 func TestFixtureFence_MalformedSlotFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -762,6 +767,12 @@ func TestFixtureFence_MalformedSlotFailsClosed(t *testing.T) {
 		},
 		"pair differs from the claim root": func(f *fenceFixture, claim *fixtureClaim) string {
 			return `{"claimKey":"` + claim.Key + `","ownerId":"` + claim.Owner.OwnerID + `","vpcId":"vpc-elsewhere","subnetId":"` + f.subnetID + `"}`
+		},
+		"valid slot then trailing data": func(f *fenceFixture, claim *fixtureClaim) string {
+			return validSlotJSON(f, claim) + `junk`
+		},
+		"valid slot then a second value": func(f *fenceFixture, claim *fixtureClaim) string {
+			return validSlotJSON(f, claim) + "\n" + validSlotJSON(f, claim)
 		},
 	}
 	for name, value := range cases {

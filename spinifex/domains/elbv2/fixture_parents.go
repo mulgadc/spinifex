@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -57,8 +58,9 @@ func subnetSlotKey(accountID, subnetID string) string {
 	return keyPrefixOVNSubnetSlot + accountID + "." + subnetID
 }
 
-// readSlot point-reads the slot at key in accountID's scope. A value with an
-// unknown field, a claim outside the account, or a pair without key is malformed.
+// readSlot point-reads the slot at key in accountID's scope. A value that is not
+// one JSON object of known fields, names a claim outside the account, or has a
+// pair without key is malformed.
 func (f *fixtureOwnerStore) readSlot(ctx context.Context, accountID, key string) (jetstream.KeyValueEntry, *fixtureSlot, error) {
 	entry, err := f.kv.Get(ctx, key)
 	if err != nil {
@@ -72,6 +74,9 @@ func (f *fixtureOwnerStore) readSlot(ctx context.Context, accountID, key string)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&slot); err != nil {
 		return nil, nil, fmt.Errorf("decode %s: %w: %w", key, errFixtureSlotMalformed, err)
+	}
+	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
+		return nil, nil, fmt.Errorf("decode %s: %w: data after the slot value", key, errFixtureSlotMalformed)
 	}
 	if slot.OwnerID == "" || slot.VpcID == "" || slot.SubnetID == "" ||
 		!strings.HasPrefix(slot.ClaimKey, LBNameKey("", accountID)) || !slices.Contains(slot.keys(accountID), key) {

@@ -177,7 +177,7 @@ ovn-nbctl --db="$NBDB" set NB_Global . ipsec=false
 ovs-vsctl remove Open_vSwitch . other_config ipsec_encapsulation
 ```
 
-This is manual today and should move into the reconciler. Note that these commands are a *complement* to the config change, not a substitute for it — setting `NB_Global.ipsec=false` without `ipsec_enabled = false` leaves the daemon reconciling encryption back on, and leaves the guest MTU and queue-pair count on their encrypted values.
+This is manual today and should move into the reconciler. Note that these commands are a *complement* to the config change, not a substitute for it — setting `NB_Global.ipsec=false` without `ipsec_enabled = false` leaves the daemon reconciling encryption back on, and leaves the guest MTU on its encrypted value.
 
 **Restart guests after changing this in either direction.** The guest MTU moves
 with the setting, but a running guest holds its DHCP lease for up to an hour and

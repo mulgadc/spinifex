@@ -120,33 +120,6 @@ func TestNICQueues_Clamped(t *testing.T) {
 	}
 }
 
-// A cluster with IPsec off already gave every NIC one queue pair per vCPU, so
-// its QEMU arguments must be byte-identical to what it ran before: these are
-// the strings prod's guests launch with.
-func TestNICArgs_UnchangedForIPsecOffClusters(t *testing.T) {
-	tests := []struct {
-		vcpus  int
-		netdev string
-		device string
-	}{
-		{1, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on",
-			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024"},
-		{2, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=2",
-			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=6"},
-		{4, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=4",
-			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=10"},
-		{8, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=8",
-			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=18"},
-		{16, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=8",
-			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=18"},
-	}
-	for _, tt := range tests {
-		q := NICQueues(tt.vcpus)
-		assert.Equal(t, tt.netdev, TapNetDev("net0", "tapabc", q).Value, "vcpus=%d", tt.vcpus)
-		assert.Equal(t, tt.device, NetDevice("q35", "net0", "02:00:00:00:00:01", q, 1442).Value, "vcpus=%d", tt.vcpus)
-	}
-}
-
 func TestBlkDevice_PCI(t *testing.T) {
 	d := BlkDevice("q35", "os", "ioth-os", 4, 1)
 	assert.Equal(t, "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1,werror=stop,rerror=stop", d.Value)

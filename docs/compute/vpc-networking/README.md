@@ -74,7 +74,7 @@ Measured on the reference cluster: 4 nodes, AMD EPYC 7513 (128 threads), Mellano
 | aggregate into one guest | 3.17 Gbit/s | **21.82 Gbit/s** | **6.9x** |
 | per client, mean | 1.06 Gbit/s | **7.27 Gbit/s** | |
 | guest MTU | 1408 | 1442 | applied automatically |
-| NIC queue pairs | 1 | 4 | applied automatically |
+| NIC queue pairs | 1 | 4 | historical: now one per vCPU in both cases |
 | busiest receive core | 97.4% busy, 71.8% softirq | under 15%, spread over 16 cores | |
 
 Disk throughput is unaffected in either direction — Predastore and Viperblock traffic does not ride the VPC overlay.

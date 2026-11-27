@@ -1375,15 +1375,16 @@ type countingResourceController struct {
 }
 
 func (c *countingResourceController) Allocate(_ string) error { c.allocations++; return nil }
-func (c *countingResourceController) AllocateAdopted(_ string) error {
-	c.allocations++
-	return nil
-}
 func (c *countingResourceController) Deallocate(_ string)     { c.deallocations++ }
 func (c *countingResourceController) ReleaseToReservation(crID, _ string) {
 	c.releasedToCRID = append(c.releasedToCRID, crID)
 }
 func (c *countingResourceController) CanAllocate(_ string, n int) int { return n }
+
+func (c *countingResourceController) AllocateAdopted(_ string) error {
+	c.allocations++
+	return nil
+}
 
 // signalingStore is a no-op StateStore that fires onSave once per
 // SaveRunningState call. Used by recovery-failure tests to wait for the

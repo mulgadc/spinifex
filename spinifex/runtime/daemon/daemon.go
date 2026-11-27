@@ -134,6 +134,7 @@ type ResourceManager struct {
 	// readViperblockMem reads viperblock's cgroup limit and use; nil or a failed
 	// read leaves the export gate open.
 	readViperblockMem func() (limitMiB, currentMiB int64, ok bool)
+
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 

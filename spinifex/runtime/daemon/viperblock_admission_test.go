@@ -33,7 +33,7 @@ func TestRunInstancesRefusedWhenViperblockMemoryIsFull(t *testing.T) {
 	rm.readViperblockMem = func() (int64, int64, bool) { return 251 * 1024 * 15 / 100, 50 * 768, true }
 	rm.mu.Unlock()
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		require.NoError(t, rm.allocateAdopted(micro), "guest %d of 50 already runs here", i+1)
 	}
 
@@ -85,7 +85,7 @@ func gatedRM(t *testing.T, room int) (*ResourceManager, *ec2.InstanceTypeInfo) {
 	rm.readViperblockMem = func() (int64, int64, bool) { return limit, 0, true }
 	micro := &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.micro"),
 		VCpuInfo: &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)}, MemoryInfo: &ec2.MemoryInfo{SizeInMiB: aws.Int64(1024)}}
-	for i := 0; i < 20-room; i++ {
+	for range 20 - room {
 		require.NoError(t, rm.allocate(micro))
 	}
 	return rm, micro
@@ -103,16 +103,14 @@ func TestViperblockGateAdmitsOneOfTwoConcurrentLaunchesForTheLastSlot(t *testing
 	rm, micro := gatedRM(t, 1)
 	var ok, refused atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			if rm.allocate(micro) == nil {
 				ok.Add(1)
 			} else {
 				refused.Add(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, int32(1), ok.Load())

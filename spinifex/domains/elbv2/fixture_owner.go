@@ -79,16 +79,18 @@ func newFixtureClaim(key string, revision uint64, raw []byte) (*fixtureClaim, er
 }
 
 // fixtureOwnerStore keeps each OVN load balancer root in its account/name
-// claim, outside the appliance lb. prefix.
+// claim, outside the appliance lb. prefix. Owner and slot reads that decide a
+// write or a dependency come from the stream leader, and kv makes the writes.
 type fixtureOwnerStore struct {
-	kv       jetstream.KeyValue
-	parents  *ec2vpc.Parents
-	now      func() time.Time
-	claimTTL time.Duration
+	kv        jetstream.KeyValue
+	leaderGet fixtureLeaderGet
+	parents   *ec2vpc.Parents
+	now       func() time.Time
+	claimTTL  time.Duration
 }
 
 func newFixtureOwnerStore(s *Store, parents *ec2vpc.Parents) *fixtureOwnerStore {
-	return &fixtureOwnerStore{kv: s.kv, parents: parents, now: s.now, claimTTL: s.claimTTL}
+	return &fixtureOwnerStore{kv: s.kv, leaderGet: leaderGetOf(s.js, KVBucketELBv2), parents: parents, now: s.now, claimTTL: s.claimTTL}
 }
 
 func decodeFixtureOwner(raw []byte) (fixtureOwner, error) {
@@ -129,7 +131,7 @@ func sealWriteRejected(err error) bool {
 }
 
 func (f *fixtureOwnerStore) read(ctx context.Context, key string) (jetstream.KeyValueEntry, *fixtureOwner, error) {
-	entry, err := f.kv.Get(ctx, key)
+	entry, err := f.leaderGet(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil, nil
@@ -364,7 +366,7 @@ func (f *fixtureOwnerStore) Edit(ctx context.Context, key, ownerID string, edit 
 		if definiteKVConflict(uerr) {
 			continue
 		}
-		after, rerr := f.kv.Get(ctx, key)
+		after, rerr := f.leaderGet(ctx, key)
 		if rerr == nil && bytes.Equal(after.Value(), value) {
 			return &want, nil
 		}

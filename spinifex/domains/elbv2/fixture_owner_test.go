@@ -80,6 +80,19 @@ func (kv *ownerHookKV) Get(ctx context.Context, key string) (jetstream.KeyValueE
 	return kv.KeyValue.Get(ctx, key)
 }
 
+// leaderGet is the stream leader point read, which runs after the Get hook.
+func (kv *ownerHookKV) leaderGet(js jetstream.JetStream) fixtureLeaderGet {
+	get := leaderGetOf(js, kv.Bucket())
+	return func(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+		if kv.beforeGet != nil {
+			if err := kv.beforeGet(key); err != nil {
+				return nil, err
+			}
+		}
+		return get(ctx, key)
+	}
+}
+
 type fixtureHarness struct {
 	appliance *Store
 	clock     *testClock
@@ -98,7 +111,7 @@ func newFixtureHarness(t *testing.T) *fixtureHarness {
 func (h *fixtureHarness) owners() (*fixtureOwnerStore, *ownerHookKV) {
 	owners := newFixtureOwnerStore(h.appliance, nil)
 	kv := &ownerHookKV{KeyValue: owners.kv}
-	owners.kv = kv
+	owners.kv, owners.leaderGet = kv, kv.leaderGet(h.appliance.js)
 	return owners, kv
 }
 

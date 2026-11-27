@@ -62,7 +62,7 @@ func subnetSlotKey(accountID, subnetID string) string {
 // one JSON object of known fields, names a claim outside the account, or has a
 // pair without key is malformed.
 func (f *fixtureOwnerStore) readSlot(ctx context.Context, accountID, key string) (jetstream.KeyValueEntry, *fixtureSlot, error) {
-	entry, err := f.kv.Get(ctx, key)
+	entry, err := f.leaderGet(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil, nil

@@ -119,6 +119,17 @@ func (kv *fenceKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry
 	return kv.KeyValue.Get(ctx, key)
 }
 
+// leaderGet is the stream leader point read, which is held and failed as a Get.
+func (kv *fenceKV) leaderGet(js jetstream.JetStream) fixtureLeaderGet {
+	get := leaderGetOf(js, kv.Bucket())
+	return func(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+		if err := kv.pass(ctx, "Get", key, false); err != nil {
+			return nil, err
+		}
+		return get(ctx, key)
+	}
+}
+
 func (kv *fenceKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
 	if err := kv.pass(ctx, "Create", key, false); err != nil {
 		return 0, err
@@ -255,8 +266,8 @@ func newFenceFixture(t *testing.T) *fenceFixture {
 	return f
 }
 
-func (f *fenceFixture) owners(kv jetstream.KeyValue, parents *ec2vpc.Parents) *fixtureOwnerStore {
-	return &fixtureOwnerStore{kv: kv, parents: parents, now: f.clock.now, claimTTL: lbNameClaimTTL}
+func (f *fenceFixture) owners(kv *fenceKV, parents *ec2vpc.Parents) *fixtureOwnerStore {
+	return &fixtureOwnerStore{kv: kv, leaderGet: kv.leaderGet(f.js), parents: parents, now: f.clock.now, claimTTL: lbNameClaimTTL}
 }
 
 // restartDeleteSide replaces the delete side's owner store, as a daemon

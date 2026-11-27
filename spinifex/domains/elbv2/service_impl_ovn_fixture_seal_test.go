@@ -77,9 +77,9 @@ func requireAbandonedThenRetried(t *testing.T, h *ovnCreateHarness, ops []string
 	require.GreaterOrEqual(t, update, 0, "the seal was attempted: %v", ops)
 	vpcSlot, subnetSlot := vpcSlotKey(testAccountID, h.vpcID), subnetSlotKey(testAccountID, h.subnetID)
 	assert.Equal(t, []string{
-		"Update " + claimKey, "Get " + claimKey, // refused seal, then the re-read
-		"Get " + claimKey, "Delete " + claimKey, // exact-revision invalidate
-		"Get " + vpcSlot, "Delete " + vpcSlot, "Get " + subnetSlot, "Delete " + subnetSlot,
+		"Update " + claimKey, "LeaderGet " + claimKey, // refused seal, then the re-read
+		"LeaderGet " + claimKey, "Delete " + claimKey, // exact-revision invalidate
+		"LeaderGet " + vpcSlot, "Delete " + vpcSlot, "LeaderGet " + subnetSlot, "Delete " + subnetSlot,
 	}, ops[update:], "the claim is invalidated before its slots are cleared")
 
 	_, _, ok := h.rawClaim(sealTestName)
@@ -169,7 +169,7 @@ func TestOVNFixtureCreate_CommittedSealWithLostResponseAndReadResolvesAfterResta
 	require.NoError(t, err)
 	assert.Equal(t, stored.Root.LoadBalancerArn, aws.StringValue(lb.LoadBalancerArn), "the retry returns the durable identity")
 	assert.Equal(t, stored.Root.CreatedAt, aws.TimeValue(lb.CreatedTime))
-	assert.Equal(t, []string{"Get " + LBNameKey(sealTestName, testAccountID)}, h.takeOps()[KVBucketELBv2])
+	assert.Equal(t, []string{"LeaderGet " + LBNameKey(sealTestName, testAccountID)}, h.takeOps()[KVBucketELBv2])
 	again, _, _ := h.rawClaim(sealTestName)
 	assert.Equal(t, rev, again)
 	assert.Equal(t, elbAfter, h.state(KVBucketELBv2))

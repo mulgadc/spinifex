@@ -101,7 +101,7 @@ func TestOVNFixtureListener_CreateSealsOneListenerAndRepeats(t *testing.T) {
 		Protocol: aws.String(ProtocolTCP), Port: aws.Int64(80),
 		DefaultActions: []*elbv2.Action{{Type: aws.String(ActionTypeForward), TargetGroupArn: aws.String(tgArn)}},
 	}, got)
-	h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + nameKey, "Get " + tgKey, "Get " + nameKey, "Update " + nameKey}})
+	h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + nameKey, "Get " + tgKey, "LeaderGet " + nameKey, "Update " + nameKey}})
 
 	owner := h.owner("ovn-nlb")
 	assert.Equal(t, uint64(2), owner.OwnerRevision)
@@ -122,7 +122,7 @@ func TestOVNFixtureListener_CreateSealsOneListenerAndRepeats(t *testing.T) {
 	again, err := h.listener(listenerInput(lbArn, tgArn, 80))
 	require.NoError(t, err, "the same settings repeat")
 	assert.Equal(t, got, again)
-	h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + nameKey, "Get " + tgKey, "Get " + nameKey}})
+	h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + nameKey, "Get " + tgKey, "LeaderGet " + nameKey}})
 	assert.Equal(t, elbBefore, h.state(KVBucketELBv2))
 	assert.Equal(t, uint64(2), h.owner("ovn-nlb").OwnerRevision)
 
@@ -194,7 +194,7 @@ func TestOVNFixtureListener_RefusesRawShapesBeforeReads(t *testing.T) {
 			_, err := h.svc.CreateListener(t.Context(), tc.input, testAccountID)
 			if tc.code == "" {
 				requireFenceCode(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
-				h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + LBNameKey("ovn-nlb", testAccountID)}})
+				h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}})
 			} else {
 				requireFenceCode(t, err, tc.code)
 				h.requireCalls(map[string][]string{})
@@ -230,7 +230,7 @@ func TestOVNFixtureListener_MalformedGroupARNReadsNoGroup(t *testing.T) {
 			h.takeOps()
 			_, err := h.listener(listenerInput(lbArn, arn, 80))
 			requireFenceCode(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
-			h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + LBNameKey("ovn-nlb", testAccountID)}})
+			h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}})
 			h.requireNoEffects(elbBefore, sideBefore)
 		})
 	}
@@ -419,7 +419,7 @@ func TestOVNFixtureListener_DeleteRefusesHeldListener(t *testing.T) {
 
 	_, err = h.svc.DeleteListener(t.Context(), &elbv2.DeleteListenerInput{ListenerArn: aws.String(listenerArn)}, testAccountID)
 	requireFenceCode(t, err, awserrors.ErrorOperationNotPermitted)
-	h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + LBNameKey("ovn-nlb", testAccountID)}})
+	h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}})
 	h.requireNoEffects(elbBefore, sideBefore)
 	assert.Equal(t, want, h.owner("ovn-nlb"))
 

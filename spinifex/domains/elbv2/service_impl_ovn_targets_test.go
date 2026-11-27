@@ -137,7 +137,7 @@ func TestOVNFixtureTargets_RegisterSealsSetAndRepeats(t *testing.T) {
 	tgArn := h.bound()
 	a, b := h.running(1), h.running(2)
 	nameKey := LBNameKey("ovn-nlb", testAccountID)
-	reads := []string{"Get " + KeyPrefixTG + groupID(tgArn), "Get " + vpcSlotKey(testAccountID, h.vpcID), "Get " + nameKey, "Get " + nameKey}
+	reads := []string{"Get " + KeyPrefixTG + groupID(tgArn), "LeaderGet " + vpcSlotKey(testAccountID, h.vpcID), "LeaderGet " + nameKey, "LeaderGet " + nameKey}
 	tgBefore, err := h.svc.store.GetTargetGroupByArn(t.Context(), tgArn)
 	require.NoError(t, err)
 	sideBefore := h.sideEffects()

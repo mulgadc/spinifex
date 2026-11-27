@@ -563,3 +563,30 @@ func TestCleanupExtraENITaps_ErrorsAreLogged(t *testing.T) {
 		t.Errorf("expected both extras to be attempted, got %d cleanup calls", len(plumber.cleanupCalls))
 	}
 }
+
+// An extra ENI on a cold boot gets one queue pair per vCPU from the default
+// deps, which is what a cluster running IPsec builds.
+func TestSetupExtraENINICs_QueuesFollowVCPUsWithIPsecOn(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	instance := &VM{
+		ID:        "i-mq",
+		ExtraENIs: []ExtraENI{{ENIID: "eni-aaa", ENIMac: "02:00:00:aa:aa:aa", ENIIP: "10.0.1.4", SubnetID: "subnet-a"}},
+	}
+	instance.Config.CPUCount = 4
+	instance.Config.MachineType = "q35"
+
+	if err := m.setupExtraENINICs(instance); err != nil {
+		t.Fatalf("setupExtraENINICs failed: %v", err)
+	}
+
+	if len(plumber.setupCalls) != 1 || plumber.setupCalls[0].Queues != 4 {
+		t.Errorf("SetupTap specs = %+v, want one tap with 4 queues", plumber.setupCalls)
+	}
+	if len(instance.Config.NetDevs) != 1 || !strings.Contains(instance.Config.NetDevs[0].Value, ",queues=4") {
+		t.Errorf("netdevs = %+v, want queues=4", instance.Config.NetDevs)
+	}
+	if len(instance.Config.Devices) != 1 || !strings.Contains(instance.Config.Devices[0].Value, ",mq=on,vectors=10") {
+		t.Errorf("devices = %+v, want mq=on,vectors=10", instance.Config.Devices)
+	}
+}

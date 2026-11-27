@@ -447,3 +447,35 @@ func TestHotUnplugENI_CleansUpTap(t *testing.T) {
 func containsSlot(slots []int, s int) bool {
 	return slices.Contains(slots, s)
 }
+
+// A hot-plugged ENI gets one queue pair per vCPU from the manager's default
+// deps, which is what a cluster running IPsec builds. ENA sizes queues by
+// instance whatever the encryption on the wire.
+func TestHotPlugENI_QueuesFollowVCPUsWithIPsecOn(t *testing.T) {
+	mgr, v, stub, plumber := newHotPlugTestVMWithPlumber(t, 2)
+	v.Config.CPUCount = 4
+	v.Config.MachineType = "q35"
+
+	if _, err := mgr.HotPlugENI(t.Context(), v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+		t.Fatalf("HotPlugENI: %v", err)
+	}
+
+	for _, c := range stub.Calls() {
+		switch c.Execute {
+		case "netdev_add":
+			if got := c.Args["queues"]; got != 4 {
+				t.Errorf("netdev_add queues = %v, want 4", got)
+			}
+		case "device_add":
+			if got := c.Args["mq"]; got != true {
+				t.Errorf("device_add mq = %v, want true", got)
+			}
+			if got := c.Args["vectors"]; got != 10 {
+				t.Errorf("device_add vectors = %v, want 10", got)
+			}
+		}
+	}
+	if len(plumber.setupCalls) != 1 || plumber.setupCalls[0].Queues != 4 {
+		t.Errorf("SetupTap specs = %+v, want one tap with 4 queues", plumber.setupCalls)
+	}
+}

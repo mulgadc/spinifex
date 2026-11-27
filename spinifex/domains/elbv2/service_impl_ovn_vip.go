@@ -11,8 +11,8 @@ import (
 var errOVNVIPRefused = errors.New("elbv2: load balancer address reservation refused")
 
 // reserveOVNFixtureVIP reserves, or recovers, the one private address of the
-// sealed network load balancer arn in the caller's region and account. It reads
-// fresh owner, slot and parent evidence first and writes only the IPAM entry.
+// sealed internal IPv4 OVN network load balancer arn. It reads fresh owner,
+// slot and parent evidence first and writes only the IPAM entry.
 func (s *ELBv2ServiceImpl) reserveOVNFixtureVIP(ctx context.Context, arn, accountID string) (string, error) {
 	if s.ovn == nil || s.ovn.vips == nil {
 		return "", fmt.Errorf("%w: no address allocator", errOVNVIPRefused)
@@ -23,6 +23,10 @@ func (s *ELBv2ServiceImpl) reserveOVNFixtureVIP(ctx context.Context, arn, accoun
 	}
 	if root == nil {
 		return "", fmt.Errorf("%w: no sealed load balancer %s", errOVNVIPRefused, arn)
+	}
+	if root.Realization != realizationOVN || root.Type != LoadBalancerTypeNetwork ||
+		root.Scheme != SchemeInternal || root.IPAddressType != IPAddressTypeIPv4 {
+		return "", fmt.Errorf("%w: load balancer %s is not an internal IPv4 OVN network load balancer", errOVNVIPRefused, arn)
 	}
 	if root.VpcId == "" || len(root.Subnets) != 1 || root.Subnets[0] == "" {
 		return "", fmt.Errorf("%w: load balancer %s needs one VPC and one subnet", errOVNVIPRefused, arn)

@@ -255,10 +255,12 @@ func TestOVNFixtureVIP_ElectedPassReservesAndRecoversOneAddress(t *testing.T) {
 	triggerA, stopA := h.drift(passA, leaseA)
 	triggerB, stopB := h.drift(passB, leaseB)
 
-	writing, release := make(chan struct{}), make(chan struct{})
+	writing, held := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	defer release()
 	ipamKV.hook = func(write func() (uint64, error)) (uint64, error) {
 		close(writing)
-		<-release
+		<-held
 		if _, err := write(); err != nil {
 			return 0, err
 		}
@@ -285,7 +287,7 @@ func TestOVNFixtureVIP_ElectedPassReservesAndRecoversOneAddress(t *testing.T) {
 		t.Fatal("the contender did not run its election")
 	}
 
-	close(release)
+	release()
 	lost := h.awaitPass(passA)
 	require.ErrorIs(t, lost.err, context.DeadlineExceeded, "an unknown write result is not success")
 	stopA()
@@ -343,7 +345,7 @@ func (h *ovnCreateHarness) rewrite(bucket, key string, edit func(map[string]any)
 	require.NoError(h.t, err)
 }
 
-// rewriteRoot changes the stored sealed root of name in place.
+// rewriteRoot edits the stored sealed root of name in place.
 func (h *ovnCreateHarness) rewriteRoot(name string, edit func(root map[string]any)) {
 	h.rewrite(KVBucketELBv2, LBNameKey(name, testAccountID), func(v map[string]any) { edit(v["root"].(map[string]any)) })
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -152,4 +155,44 @@ func TestOVNFixtureGate_MalformedStoredTupleRefusesEdit(t *testing.T) {
 	_, err = h.svc.RegisterTargets(t.Context(), &elbv2.RegisterTargetsInput{TargetGroupArn: aws.String(tgArn), Targets: descs(tuple(b, 0))}, testAccountID)
 	requireFenceCode(t, err, awserrors.ErrorServerInternal)
 	assert.Equal(t, before, h.state(KVBucketELBv2), "a malformed row is not edited")
+}
+
+// A stored claim key that is not one literal subject is unreadable, so the
+// subnet delete fails closed and the parent and both slots stay. No stream read
+// is sent with the invalid selector.
+func TestOVNFixtureGate_DeleteSubnetRefusesNonLiteralClaimKey(t *testing.T) {
+	for name, suffix := range map[string]string{"wildcard": ".>", "token wildcard": "*", "empty token": "..x"} {
+		t.Run(name, func(t *testing.T) {
+			h := newOVNCreateHarness(t)
+			h.sealedOVN("ovn-nlb")
+			key := subnetSlotKey(testAccountID, h.subnetID)
+			var slot fixtureSlot
+			require.NoError(t, json.Unmarshal(h.rawEntry(key).Value(), &slot))
+			slot.ClaimKey = LBNameKey("ovn-nlb", testAccountID) + suffix
+			raw, err := json.Marshal(slot)
+			require.NoError(t, err)
+			_, err = h.bucket(KVBucketELBv2).Put(t.Context(), key, raw)
+			require.NoError(t, err)
+			before := h.state(KVBucketELBv2)
+			reads, err := h.nc.SubscribeSync("$JS.API.STREAM.MSG.GET.>")
+			require.NoError(t, err)
+
+			_, err = h.vpcs.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(h.subnetID)}, testAccountID)
+			require.Error(t, err, "an unreadable dependency blocks")
+			// The flush round trip delivers every earlier request to reads first.
+			require.NoError(t, h.nc.Flush())
+			n, _, err := reads.Pending()
+			require.NoError(t, err)
+			require.NotZero(t, n, "the owner reads go to the stream leader")
+			for range n {
+				msg, err := reads.NextMsg(time.Second)
+				require.NoError(t, err)
+				assert.NotContains(t, string(msg.Data), slot.ClaimKey, "the invalid selector reaches no stream read")
+			}
+			require.NoError(t, reads.Unsubscribe())
+			assert.Equal(t, before, h.state(KVBucketELBv2), "both slots and the owner stay as committed")
+			_, err = h.bucket(ec2vpc.KVBucketSubnets).Get(t.Context(), kvstore.AccountKey(testAccountID, h.subnetID))
+			require.NoError(t, err, "the subnet stays")
+		})
+	}
 }

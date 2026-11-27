@@ -32,6 +32,8 @@ type ovnFixture struct {
 	groups  *ec2vpc.GroupLookup
 	// instances is the EC2 named instance lookup that checks registrations.
 	instances projection.NamedInstanceLookup
+	// vips reserves the private load balancer addresses. Nil refuses reservation.
+	vips *ec2vpc.IPAM
 }
 
 // lbNameProblem applies AWS's load balancer name rules. It returns the reason

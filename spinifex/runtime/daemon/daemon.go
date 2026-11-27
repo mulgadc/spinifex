@@ -129,8 +129,10 @@ type ResourceManager struct {
 	// volume. The UEFI store is an object, so a guest has no second nbdkit.
 	nbdkitMainMiB int
 	// exports: root volumes admitted on this node, each charged nbdkitMainMiB
-	// against viperblock's cgroup limit by exportGate.
+	// against viperblock's cgroup limit by exportGate; pending holds the admission
+	// times of those too recent to show in the cgroup's reading.
 	exports int
+	pending []time.Time
 	// readViperblockMem reads viperblock's cgroup limit and use; nil or a failed
 	// read leaves the export gate open.
 	readViperblockMem func() (limitMiB, currentMiB int64, ok bool)
@@ -2739,6 +2741,9 @@ func (d *Daemon) startCluster() error {
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
+	if d.ctx != nil && d.resourceMgr.readViperblockMem != nil {
+		go d.resourceMgr.resyncSubscriptions(d.ctx, exportResync)
+	}
 
 	d.startHeartbeat()
 	d.startRecordRepair()
@@ -3767,7 +3772,7 @@ func (rm *ResourceManager) allocateGated(instanceType *ec2.InstanceTypeInfo, exp
 	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)
 	rm.allocatedMem += memoryGB
-	rm.exports++
+	rm.exportAdmitted(time.Now())
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
@@ -3781,7 +3786,7 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU -= int(vCPUs)
 	rm.allocatedMem -= memoryGB
-	rm.exports = max(rm.exports-1, 0)
+	rm.exportReleased()
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
@@ -3837,9 +3842,6 @@ func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler natsHandler,
 	rm.nodeID = nodeID
 	rm.instanceSubs = make(map[string]*nats.Subscription)
 	rm.updateInstanceSubscriptions()
-	if rm.readViperblockMem != nil {
-		go rm.resyncSubscriptions(exportResync)
-	}
 }
 
 // updateInstanceSubscriptions subscribes/unsubscribes per-type NATS topics
@@ -3853,7 +3855,12 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 	rm.subsMu.Lock()
 	defer rm.subsMu.Unlock()
 
-	for typeName, typeInfo := range rm.instanceTypes {
+	// A copy under rm.mu: a GPU reload rewrites the map while the resync timer runs.
+	rm.mu.RLock()
+	types := maps.Clone(rm.instanceTypes)
+	rm.mu.RUnlock()
+
+	for typeName, typeInfo := range types {
 		fits, gate := rm.admit(typeInfo, 1)
 		canFit := fits >= 1
 

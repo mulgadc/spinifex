@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
@@ -15,8 +16,11 @@ const (
 	// exportMarginPct of the limit is kept free: viperblock's own working set grows with load.
 	exportMarginPct = 5
 	// exportResync re-checks the limit, so a node that stopped answering a type answers
-	// again when reclaim lowers memory.current with no launch or terminate to trigger it.
+	// again when reclaim or a detach lowers memory.current with no terminate to trigger it.
 	exportResync = 10 * time.Second
+	// exportPending is how long an admitted export is assumed not yet to show in
+	// memory.current: it is charged on top of the reading until then.
+	exportPending = 2 * time.Minute
 )
 
 // readViperblockMemMiB returns viperblock's cgroup memory limit and use in MiB. It is
@@ -57,14 +61,15 @@ func parseCgroupMiB(s string) (int64, bool) {
 }
 
 // exportCount clamps n launches to the root volumes that fit under the limit. The use is
-// the larger of what admitted exports are charged and what the cgroup holds now, so
-// launches admitted but not yet open still count, and so do attached data volumes. Pure.
-func exportCount(n int, limitMiB, currentMiB int64, exports int, perExportMiB int64) int {
+// the cgroup's reading plus the exports admitted too recently to show in it, or the
+// charge of every admitted export if that is larger. Attached data volumes show in the
+// reading. Pure.
+func exportCount(n int, limitMiB, currentMiB int64, exports, pending int, perExportMiB int64) int {
 	if n <= 0 || perExportMiB <= 0 {
 		return n
 	}
 	budget := limitMiB - limitMiB*exportMarginPct/100
-	used := max(int64(exports)*perExportMiB, currentMiB)
+	used := max(int64(exports)*perExportMiB, currentMiB+int64(pending)*perExportMiB)
 	fit := (budget - used) / perExportMiB
 	if fit <= 0 {
 		return 0
@@ -82,14 +87,51 @@ func (rm *ResourceManager) exportGate(n int) int {
 	if !ok {
 		return n
 	}
-	return exportCount(n, limit, current, rm.exports, int64(rm.nbdkitMainMiB))
+	return exportCount(n, limit, current, rm.exports, rm.pendingExports(time.Now()), int64(rm.nbdkitMainMiB))
 }
 
-// resyncSubscriptions re-evaluates every type's subscription on a timer.
-func (rm *ResourceManager) resyncSubscriptions(every time.Duration) {
+// pendingExports counts admissions younger than exportPending. Caller holds rm.mu.
+func (rm *ResourceManager) pendingExports(now time.Time) int {
+	n := 0
+	for _, at := range rm.pending {
+		if now.Sub(at) < exportPending {
+			n++
+		}
+	}
+	return n
+}
+
+// exportAdmitted records one admitted export, dropping expired pending entries.
+// Caller holds rm.mu for write.
+func (rm *ResourceManager) exportAdmitted(now time.Time) {
+	rm.exports++
+	kept := rm.pending[:0]
+	for _, at := range rm.pending {
+		if now.Sub(at) < exportPending {
+			kept = append(kept, at)
+		}
+	}
+	rm.pending = append(kept, now)
+}
+
+// exportReleased records one closed export. Caller holds rm.mu for write.
+func (rm *ResourceManager) exportReleased() {
+	rm.exports = max(rm.exports-1, 0)
+	if len(rm.pending) > 0 {
+		rm.pending = rm.pending[1:]
+	}
+}
+
+// resyncSubscriptions re-evaluates every type's subscription on a timer until ctx ends.
+func (rm *ResourceManager) resyncSubscriptions(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for range t.C {
-		rm.updateInstanceSubscriptions()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			rm.updateInstanceSubscriptions()
+		}
 	}
 }

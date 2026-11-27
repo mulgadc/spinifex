@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -8,7 +9,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,15 +59,17 @@ func TestRunInstancesRefusedWhenViperblockMemoryIsFull(t *testing.T) {
 }
 
 func TestExportCount(t *testing.T) {
-	// A 37.65 GiB limit less its 5% margin is 36,627 MiB: 47 root volumes at 768 MiB.
+	// A 37.65 GiB limit less its 5% margin is 36,626 MiB: 47 root volumes at 768 MiB.
 	limit := int64(251 * 1024 * 15 / 100)
-	assert.Equal(t, 47, exportCount(100, limit, 0, 0, 768), "an empty node fits 47")
-	assert.Equal(t, 5, exportCount(5, limit, 0, 0, 768), "a request under the limit is not clamped")
-	assert.Equal(t, 7, exportCount(100, limit, 0, 40, 768), "admitted exports count before they open")
-	assert.Equal(t, 0, exportCount(100, limit, limit, 0, 768), "a full cgroup admits none")
+	assert.Equal(t, 47, exportCount(100, limit, 0, 0, 0, 768), "an empty node fits 47")
+	assert.Equal(t, 5, exportCount(5, limit, 0, 0, 0, 768), "a request under the limit is not clamped")
+	assert.Equal(t, 7, exportCount(100, limit, 0, 40, 0, 768), "admitted exports count before they open")
+	assert.Equal(t, 0, exportCount(100, limit, limit, 0, 0, 768), "a full cgroup admits none")
 	// Three attached data volumes show in memory.current, so the next launch refuses sooner.
-	assert.Equal(t, 4, exportCount(100, limit, 43*768, 40, 768), "memory.current counts attached volumes")
-	assert.Equal(t, 0, exportCount(0, limit, 0, 0, 768))
+	assert.Equal(t, 4, exportCount(100, limit, 43*768, 40, 0, 768), "memory.current counts attached volumes")
+	// With the reading binding, exports admitted too recently to show in it are added to it.
+	assert.Equal(t, 2, exportCount(100, limit, 43*768, 40, 2, 768), "pending exports add to the reading")
+	assert.Equal(t, 0, exportCount(0, limit, 0, 0, 0, 768))
 }
 
 func TestParseCgroupMiB(t *testing.T) {
@@ -117,6 +124,73 @@ func TestViperblockGateAdmitsOneOfTwoConcurrentLaunchesForTheLastSlot(t *testing
 	assert.Equal(t, int32(1), refused.Load())
 }
 
+// The reading, not the admitted charges, binds: attached volumes and viperblock's own
+// working set put memory.current above the roots' charge. Admitted launches that have
+// not opened yet must still be debited, so two launches cannot share one last slot.
+func TestViperblockGateDebitsPendingLaunchesWhenTheReadingBinds(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	limit, _, _ := rm.readViperblockMem()
+	budget := limit - limit*exportMarginPct/100
+	rm.readViperblockMem = func() (int64, int64, bool) { return limit, budget - 768, true }
+	var ok atomic.Int32
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			if rm.allocate(micro) == nil {
+				ok.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), ok.Load(), "one slot by the reading admits one launch")
+}
+
+func TestViperblockGateExpiresPendingOnceTheReadingCanShowIt(t *testing.T) {
+	rm, _ := gatedRM(t, 20)
+	now := time.Now()
+	rm.exportAdmitted(now.Add(-3 * time.Minute))
+	rm.exportAdmitted(now)
+	assert.Equal(t, 1, rm.pendingExports(now), "an admission older than exportPending is in the reading")
+	rm.exportReleased()
+	rm.exportReleased()
+	assert.Equal(t, 0, rm.exports)
+	assert.Equal(t, 0, rm.pendingExports(now))
+}
+
+// A full node drops its queue subscription, keeps the node-targeted one, and rejoins the
+// queue when the reading falls, with no terminate: the resync timer's update.
+func TestViperblockGateDropsAndRejoinsTheQueueSubscription(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	limit, _, _ := rm.readViperblockMem()
+	var full atomic.Bool
+	rm.readViperblockMem = func() (int64, int64, bool) {
+		if full.Load() {
+			return limit, limit, true
+		}
+		return limit, 0, true
+	}
+	rm.instanceTypes = map[string]*ec2.InstanceTypeInfo{"t3.micro": micro}
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+	rm.initSubscriptions(nc, func(*nats.Msg) string { return outcomeSuccess }, nil, "vb-node")
+	queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	require.Equal(t, 1, queueSubs)
+	require.Equal(t, 1, nodeSubs)
+
+	full.Store(true)
+	rm.updateInstanceSubscriptions()
+	queueSubs, nodeSubs = countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	assert.Equal(t, 0, queueSubs, "a full node leaves the queue")
+	assert.Equal(t, 1, nodeSubs, "the node-targeted subject stays, and allocate refuses there")
+	require.Error(t, rm.allocate(micro))
+
+	full.Store(false)
+	rm.updateInstanceSubscriptions()
+	queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	assert.Equal(t, 1, queueSubs, "the node rejoins the queue when the reading falls")
+}
+
 func TestViperblockGateNeverRefusesAnAdoptedGuest(t *testing.T) {
 	rm, micro := gatedRM(t, 0)
 	require.NoError(t, rm.allocateAdopted(micro), "a guest restored on startup is counted, not refused")
@@ -157,4 +231,24 @@ func TestViperblockGateIsOpenWithoutACgroup(t *testing.T) {
 	rm, micro := gatedRM(t, 0)
 	rm.readViperblockMem = func() (int64, int64, bool) { return 0, 0, false }
 	assert.Equal(t, 1, rm.CanAllocate(micro, 1), "a node with no viperblock cgroup has no export limit")
+}
+
+// StartInstances on a node whose viperblock limit is full answers InsufficientInstanceCapacity,
+// as AWS does for a start it cannot place, and the instance stays stopped for a retry.
+func TestStartInstancesRefusedWhenViperblockMemoryIsFull(t *testing.T) {
+	t.Parallel()
+	store := vmmock.New()
+	v := stoppedVMFixture("i-vbfull-start", testAccountID)
+	store.Stopped[v.ID] = v
+	d := daemonWithFakeStateStore(t, store)
+	d.resourceMgr.mu.Lock()
+	d.resourceMgr.readViperblockMem = func() (int64, int64, bool) { return 10 * 768, 10 * 768, true }
+	d.resourceMgr.mu.Unlock()
+
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	reply := requestHandler(t, d.natsConn, "ec2.start.vbfull", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"])
+	restored, ok := store.WroteStopped[v.ID]
+	require.True(t, ok, "a refused start writes the claimed instance back to the stopped store")
+	assert.Equal(t, vm.StateStopped, restored.Status, "it stays stopped, with its volume, for a retry")
 }

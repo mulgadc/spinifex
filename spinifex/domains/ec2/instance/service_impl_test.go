@@ -3816,6 +3816,35 @@ func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
 	assert.Empty(t, prov.reservationAllocated, "nothing allocated when below MinCount")
 }
 
+// A reservation with free slots on a node with no room for the root volume is the
+// node's capacity: the caller gets InsufficientInstanceCapacity, not
+// ReservationCapacityExceeded, and nothing stays consumed.
+func TestPrepareRunInstances_ReservationOnAFullNodeIsInsufficientCapacity(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:       types,
+		reservationAvailFn:  func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+		reservationAllocErr: errors.New(awserrors.ErrorInsufficientInstanceCapacity),
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.Empty(t, prov.reservationAllocated)
+}
+
 // Invariant guardrail: a mid-launch failure on the reservation path must return
 // every consumed slot to the reservation (reservationReleased == reservationAllocated)
 // and never leak one onto the general pool (Deallocate untouched). Each per-instance

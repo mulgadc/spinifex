@@ -195,6 +195,23 @@ func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
 	assert.Nil(t, store.stopped[v.ID], "drain-stopped instance must not be migrated to the stopped bucket")
 	assert.Equal(t, 1, rc.allocateCount("t3.micro"),
 		"resources must be re-allocated before queuing for relaunch")
+	assert.Zero(t, rc.adoptedCount("t3.micro"),
+		"a relaunch opens a new export, so it is admitted like a launch, not adopted")
+}
+
+// A guest whose QEMU survived the restart already holds its export: it is adopted,
+// so a node at its viperblock limit never refuses a guest it is serving.
+func TestClassifyRestoredInstances_SurvivingQEMUIsAdopted(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	m, _, rc := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	v := &VM{ID: "i-survived", Status: StateRunning, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	m.classifyRestoredInstances()
+
+	assert.Equal(t, 1, rc.adoptedCount("t3.micro"), "a surviving guest must be adopted")
 }
 
 // TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched covers the

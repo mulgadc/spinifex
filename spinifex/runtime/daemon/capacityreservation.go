@@ -118,7 +118,7 @@ func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *e
 	rm.allocatedVCPU += rec.VCPUPerInstance
 	rm.allocatedMem += rec.MemGBPerInstance
 	rec.ConsumedCount++
-	rm.exports++
+	rm.exportAdmitted(time.Now())
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
@@ -142,7 +142,7 @@ func (rm *ResourceManager) ReleaseToReservation(crID string, it *ec2.InstanceTyp
 		rm.allocatedVCPU -= int(instanceTypeVCPUs(it))
 		rm.allocatedMem -= float64(rm.instanceMemChargeMiB(it)) / 1024.0
 	}
-	rm.exports = max(rm.exports-1, 0)
+	rm.exportReleased()
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()

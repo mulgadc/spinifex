@@ -8,6 +8,7 @@ import "sync"
 type fakeResourceController struct {
 	mu             sync.Mutex
 	allocated      map[string]int
+	adopted        map[string]int // the AllocateAdopted subset of allocated
 	deallocated    []string
 	released       []string // "<reservationID>/<type>" per ReleaseToReservation call
 	allocateErr    error
@@ -15,7 +16,7 @@ type fakeResourceController struct {
 }
 
 func newFakeResourceController() *fakeResourceController {
-	return &fakeResourceController{allocated: map[string]int{}, canAllocateRet: 100}
+	return &fakeResourceController{allocated: map[string]int{}, adopted: map[string]int{}, canAllocateRet: 100}
 }
 
 func (f *fakeResourceController) Allocate(typeName string) error {
@@ -28,8 +29,22 @@ func (f *fakeResourceController) Allocate(typeName string) error {
 	return nil
 }
 
-// AllocateAdopted is Allocate for the fake: restore's failure tests set allocateErr.
-func (f *fakeResourceController) AllocateAdopted(typeName string) error { return f.Allocate(typeName) }
+// AllocateAdopted is Allocate for the fake, also counted apart; restore's failure tests set allocateErr.
+func (f *fakeResourceController) AllocateAdopted(typeName string) error {
+	if err := f.Allocate(typeName); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adopted[typeName]++
+	return nil
+}
+
+func (f *fakeResourceController) adoptedCount(typeName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.adopted[typeName]
+}
 
 func (f *fakeResourceController) Deallocate(typeName string) {
 	f.mu.Lock()

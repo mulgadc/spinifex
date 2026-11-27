@@ -766,6 +766,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	// Each Allocate is atomic; under contention we may get fewer than
 	// allocatableCount — the < minCount branch below rolls back.
 	var allocatedCount int
+	var lastAllocErr error
 	for i := 0; i < launchCount; i++ {
 		var allocErr error
 		if reservationID == "" {
@@ -775,6 +776,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		}
 		if allocErr != nil {
 			slog.ErrorContext(ctx, "PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", allocErr)
+			lastAllocErr = allocErr
 			break
 		}
 		allocatedCount++
@@ -788,7 +790,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			}
 		}
 		errCode := awserrors.ErrorInsufficientInstanceCapacity
-		if reservationID != "" {
+		// A reservation with free slots can still meet a node that has no room for the
+		// volume: that is the node's capacity, not the reservation's.
+		if reservationID != "" && (lastAllocErr == nil || lastAllocErr.Error() != awserrors.ErrorInsufficientInstanceCapacity) {
 			errCode = awserrors.ErrorReservationCapacityExceeded
 		}
 		slog.ErrorContext(ctx, "PrepareRunInstances: insufficient capacity after allocation", "allocated", allocatedCount, "minCount", minCount)

@@ -193,6 +193,9 @@ type Result struct {
 	Forced      bool          `json:"forced"`
 	Stages      []StageResult `json:"stages"`
 
+	// Participants is each participant's last report, in phase order.
+	Participants []ParticipantResult `json:"participants,omitempty"`
+
 	// AccountDeleted is false whenever anything was left stuck: the account
 	// stays TERMINATING so the residue stays attributable to it.
 	AccountDeleted bool `json:"accountDeleted"`

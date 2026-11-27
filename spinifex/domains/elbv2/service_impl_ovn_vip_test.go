@@ -29,6 +29,18 @@ type vipIPAMKV struct {
 	mu     sync.Mutex
 	writes int
 	hook   func(write func() (uint64, error)) (uint64, error)
+	// read runs once, at the start of the next allocator leader read.
+	read func()
+}
+
+func (kv *vipIPAMKV) beforeRead() {
+	kv.mu.Lock()
+	read := kv.read
+	kv.read = nil
+	kv.mu.Unlock()
+	if read != nil {
+		read()
+	}
 }
 
 func (kv *vipIPAMKV) write(write func() (uint64, error)) (uint64, error) {
@@ -66,10 +78,16 @@ func (kv *vipIPAMKV) writeCount() int {
 	return kv.writes
 }
 
-// vipJS hands the IPAM store the counted handle; leader reads use the real client.
+// vipJS hands the IPAM store the counted handle; leader reads use the real
+// client after the handle's read hook.
 type vipJS struct {
 	jetstream.JetStream
-	kv jetstream.KeyValue
+	kv *vipIPAMKV
+}
+
+func (j vipJS) Options() jetstream.JetStreamOptions {
+	j.kv.beforeRead()
+	return j.JetStream.Options()
 }
 
 func (j vipJS) KeyValue(ctx context.Context, bucket string) (jetstream.KeyValue, error) {

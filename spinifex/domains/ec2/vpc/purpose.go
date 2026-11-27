@@ -8,4 +8,7 @@ const (
 	PurposeENIPublic  = "eni-public" // auto-assigned public IP
 	PurposeEIP        = "eip"
 	PurposeIGWLRP     = "igw-lrp"
+	// PurposeLBVIP is a private load balancer address. Only its owner's exact
+	// mapping token may release it, so the legacy operations refuse it.
+	PurposeLBVIP = "lb-vip"
 )

@@ -1,6 +1,7 @@
 package vpc
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"sync"
@@ -374,4 +375,59 @@ func TestIPAM_AllocateConcurrentNoDuplicates(t *testing.T) {
 	entries, err := ipam.AllocatedIPs(t.Context(), "subnet-1")
 	require.NoError(t, err)
 	assert.Len(t, entries, allocations)
+}
+
+// seedIPAMRow writes record as the committed row for its subnet and returns
+// the bucket and the bytes the row holds.
+func seedIPAMRow(t *testing.T, record IPAMRecord) (*IPAM, jetstream.KeyValue, []byte) {
+	t.Helper()
+	ipam := setupTestIPAM(t)
+	kv, err := ipam.store.KV(t.Context())
+	require.NoError(t, err)
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), record.SubnetId, data)
+	require.NoError(t, err)
+	return ipam, kv, data
+}
+
+// committedIPAMRow returns the bytes the subnet's row holds now.
+func committedIPAMRow(t *testing.T, kv jetstream.KeyValue, subnetID string) []byte {
+	t.Helper()
+	entry, err := kv.Get(t.Context(), subnetID)
+	require.NoError(t, err)
+	return entry.Value()
+}
+
+func TestIPAM_ReleaseIPRefusesVIPEntry(t *testing.T) {
+	t.Parallel()
+	const subnet = "subnet-vip-release"
+	ipam, kv, before := seedIPAMRow(t, IPAMRecord{
+		SubnetId:  subnet,
+		CidrBlock: "10.0.40.0/24",
+		Allocated: []IPEntry{
+			{IP: "10.0.40.4", Purpose: PurposeENIPrimary, OwnerID: "eni-0a"},
+			{IP: "10.0.40.5", Purpose: PurposeLBVIP, OwnerID: "lb-0a"},
+		},
+	})
+
+	err := ipam.ReleaseIP(t.Context(), subnet, "10.0.40.5")
+	assert.ErrorIs(t, err, ErrPurposeReserved, "an address-only release must not free a load balancer address")
+	assert.Equal(t, string(before), string(committedIPAMRow(t, kv, subnet)), "a refused release leaves the row unchanged")
+}
+
+func TestIPAM_ReleaseIPBesideVIPEntry(t *testing.T) {
+	t.Parallel()
+	const subnet = "subnet-vip-neighbour"
+	vip := IPEntry{IP: "10.0.41.5", Purpose: PurposeLBVIP, OwnerID: "lb-0b"}
+	ipam, kv, _ := seedIPAMRow(t, IPAMRecord{
+		SubnetId:  subnet,
+		CidrBlock: "10.0.41.0/24",
+		Allocated: []IPEntry{{IP: "10.0.41.4", Purpose: PurposeENIPrimary, OwnerID: "eni-0b"}, vip},
+	})
+
+	require.NoError(t, ipam.ReleaseIP(t.Context(), subnet, "10.0.41.4"))
+	var after IPAMRecord
+	require.NoError(t, json.Unmarshal(committedIPAMRow(t, kv, subnet), &after))
+	assert.Equal(t, []IPEntry{vip}, after.Allocated, "the ENI release leaves the VIP entry exactly as it was")
 }

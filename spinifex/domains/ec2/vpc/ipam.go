@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -31,6 +34,35 @@ var ErrIPOutOfRange = errors.New("ip address not usable in subnet")
 // ErrIPInUse means the requested address is already allocated in the subnet.
 var ErrIPInUse = errors.New("ip address already allocated")
 
+// ErrPurposeReserved means a legacy operation was asked to write or free a
+// purpose that only its owner's typed operation may change.
+var ErrPurposeReserved = errors.New("ip address purpose reserved")
+
+// errVIPSeen stops an address-only release that read a load balancer address,
+// so the stream leader decides it rather than a possibly lagging replica.
+var errVIPSeen = errors.New("load balancer address read")
+
+// errNoIPAMLeader means the allocator was built over a bare KV handle, so a
+// decision that needs the stream leader's row cannot be made.
+var errNoIPAMLeader = errors.New("IPAM has no stream leader to read from")
+
+// literalKVKey matches a KV key that names exactly one subject, so a leader
+// read can never become a wildcard filter.
+var literalKVKey = regexp.MustCompile(`^[-/_=.a-zA-Z0-9]+$`)
+
+func validLiteralKVKey(key string) bool {
+	return literalKVKey.MatchString(key) && key[0] != '.' && key[len(key)-1] != '.' && !strings.Contains(key, "..")
+}
+
+// refuseLegacyPurpose stops AllocateIP and ClaimIP minting a load balancer
+// address, which has no exact owner for a later release without its token.
+func refuseLegacyPurpose(purpose string) error {
+	if purpose == PurposeLBVIP {
+		return fmt.Errorf("%w: %s", ErrPurposeReserved, purpose)
+	}
+	return nil
+}
+
 // IPEntry tags one IP allocation with its Purpose + owner (eni-, eipalloc-,
 // etc) so multi-VPC clusters can reclaim/audit by (owner, purpose).
 type IPEntry struct {
@@ -49,6 +81,8 @@ type IPAMRecord struct {
 // IPAM manages IP address allocation for VPC subnets using NATS KV with CAS.
 type IPAM struct {
 	store *kvstore.Store[IPAMRecord]
+	// leader is false over a bare KV handle, which has no stream leader to ask.
+	leader bool
 }
 
 // ipamConfig describes the IPAM bucket. js is captured for the migration, which
@@ -80,7 +114,7 @@ func NewIPAM(ctx context.Context, js jetstream.JetStream) (*IPAM, error) {
 	if _, err := store.KV(ctx); err != nil {
 		return nil, fmt.Errorf("failed to create IPAM KV bucket: %w", err)
 	}
-	return &IPAM{store: store}, nil
+	return &IPAM{store: store, leader: true}, nil
 }
 
 // NewIPAMWithKV creates an IPAM with an existing KV bucket (for testing).
@@ -91,6 +125,9 @@ func NewIPAMWithKV(kv jetstream.KeyValue) *IPAM {
 // AllocateIP allocates an IP from the subnet, reserving the first 4 and last
 // addresses per AWS convention. Uses CAS for conflict-free multi-node allocation.
 func (m *IPAM) AllocateIP(ctx context.Context, subnetId, cidrBlock, purpose, ownerID string) (string, error) {
+	if err := refuseLegacyPurpose(purpose); err != nil {
+		return "", err
+	}
 	var ip string
 	err := m.store.Upsert(ctx, subnetId, func(record *IPAMRecord) (bool, error) {
 		// Only an absent record takes the caller's CIDR. A stored one keeps its
@@ -124,6 +161,9 @@ func (m *IPAM) AllocateIP(ctx context.Context, subnetId, cidrBlock, purpose, own
 // uses the same CAS loop as AllocateIP so a concurrent claim of the same
 // address always leaves exactly one winner.
 func (m *IPAM) ClaimIP(ctx context.Context, subnetId, cidrBlock, purpose, ownerID, requestedIP string) (string, error) {
+	if err := refuseLegacyPurpose(purpose); err != nil {
+		return "", err
+	}
 	addr, err := netip.ParseAddr(requestedIP)
 	if err != nil {
 		return "", fmt.Errorf("%w: %q is not a valid IP address", ErrIPOutOfRange, requestedIP)
@@ -187,16 +227,23 @@ func isClaimableAddr(prefix netip.Prefix, addr netip.Addr) bool {
 }
 
 // ReleaseIP releases a previously allocated IP address back to the subnet pool.
+// It refuses a load balancer address, which only its owner's token may free.
 func (m *IPAM) ReleaseIP(ctx context.Context, subnetId, ip string) error {
 	err := m.store.Mutate(ctx, subnetId, func(record *IPAMRecord) (bool, error) {
 		for i, entry := range record.Allocated {
 			if entry.IP == ip {
+				if entry.Purpose == PurposeLBVIP {
+					return false, errVIPSeen
+				}
 				record.Allocated = append(record.Allocated[:i], record.Allocated[i+1:]...)
 				return true, nil
 			}
 		}
-		return false, fmt.Errorf("IP %s not allocated in subnet %s", ip, subnetId)
+		return false, ipNotAllocated(subnetId, ip)
 	})
+	if errors.Is(err, errVIPSeen) {
+		err = m.releaseLeaderConfirmed(ctx, subnetId, ip)
+	}
 	if errors.Is(err, kvstore.ErrNotFound) {
 		return fmt.Errorf("no IPAM record for subnet %s", subnetId)
 	}
@@ -206,6 +253,46 @@ func (m *IPAM) ReleaseIP(ctx context.Context, subnetId, ip string) error {
 
 	slog.Info("IPAM released IP", "subnet", subnetId, "ip", ip)
 	return nil
+}
+
+func ipNotAllocated(subnetId, ip string) error {
+	return fmt.Errorf("IP %s not allocated in subnet %s", ip, subnetId)
+}
+
+// leaderGet reads the subnet row from the stream leader, refusing before any
+// read when the allocator has no JetStream client to reach the leader.
+func (m *IPAM) leaderGet(ctx context.Context, subnetId string) (*IPAMRecord, uint64, error) {
+	if !m.leader {
+		return nil, 0, fmt.Errorf("%w: subnet %s", errNoIPAMLeader, subnetId)
+	}
+	return m.store.LeaderGet(ctx, subnetId)
+}
+
+// releaseLeaderConfirmed decides an address-only release that read a load
+// balancer address. A replica can still show one the leader has since given
+// to another owner, so the leader's row and revision decide every attempt.
+func (m *IPAM) releaseLeaderConfirmed(ctx context.Context, subnetId, ip string) error {
+	if !validLiteralKVKey(subnetId) {
+		return fmt.Errorf("IPAM subnet key %q is not a literal key", subnetId)
+	}
+	for range ipamCASAttempts {
+		record, rev, err := m.leaderGet(ctx, subnetId)
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(record.Allocated, func(e IPEntry) bool { return e.IP == ip })
+		if i < 0 {
+			return ipNotAllocated(subnetId, ip)
+		}
+		if record.Allocated[i].Purpose == PurposeLBVIP {
+			return fmt.Errorf("%w: %s in subnet %s is a load balancer address", ErrPurposeReserved, ip, subnetId)
+		}
+		record.Allocated = slices.Delete(record.Allocated, i, i+1)
+		if _, err := m.store.CompareAndSet(ctx, subnetId, record, rev); !errors.Is(err, kvstore.ErrConflict) {
+			return err
+		}
+	}
+	return fmt.Errorf("IPAM CAS exhausted for subnet %s after %d attempts", subnetId, ipamCASAttempts)
 }
 
 // AllocatedIPs returns the list of allocated IP entries for a subnet.

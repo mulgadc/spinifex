@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -418,12 +419,16 @@ func TestS7_DriftPassKeepsAPublicIPWhenItsENIIsPartial(t *testing.T) {
 			}
 
 			putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", tc.value(t))
+			addThirdENI(t, js)
 			intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
 			if err != nil {
 				t.Fatalf("LoadIntentFromKV: %v", err)
 			}
 			err = r.Reconcile(t.Context(), intent)
 
+			if !hasPort(m, "eni-c") {
+				t.Errorf("drift pass did not create port-eni-c, a healthy record beside the bad one")
+			}
 			if findNATByExternal(m, "dnat_and_snat", publicA) == nil {
 				t.Errorf("drift pass deleted the dnat_and_snat row for %s", publicA)
 			}
@@ -458,6 +463,11 @@ func TestS7_HostEIPPassKeepsABindingWhenItsENIIsPartial(t *testing.T) {
 				t.Fatalf("host bindings after converging = %v, want both addresses", b.bound)
 			}
 
+			// A rebooted node has lost the survivor's binding; the partial pass
+			// must still restore it.
+			b.mu.Lock()
+			delete(b.bound, publicB)
+			b.mu.Unlock()
 			putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", tc.value(t))
 			err := r.ReconcileHostEIPs(t.Context())
 
@@ -465,7 +475,7 @@ func TestS7_HostEIPPassKeepsABindingWhenItsENIIsPartial(t *testing.T) {
 				t.Errorf("host EIP pass removed the binding for %s (unbinds %v)", publicA, b.unbinds)
 			}
 			if !b.has(publicB) {
-				t.Errorf("host EIP pass removed the survivor's binding for %s", publicB)
+				t.Errorf("host EIP pass did not restore the survivor's binding for %s", publicB)
 			}
 			if err == nil {
 				t.Errorf("ReconcileHostEIPs = nil, want an error naming the partial intent")
@@ -551,6 +561,12 @@ func TestS7_HostIngressKeepsRoutesWhenTopologyIntentIsPartial(t *testing.T) {
 				t.Fatalf("routes after converging = %v, want 10.0.0.0/16 via vpc-a's gateway", before)
 			}
 
+			// A healthy VPC whose route went missing must still get it back.
+			if tc.vpcB != "10.0.0.0/16" {
+				if err := routes.Remove(t.Context(), tc.vpcB); err != nil {
+					t.Fatalf("remove route: %v", err)
+				}
+			}
 			putRaw(t, js, tc.bucket, tc.key, poison)
 			_, err := h.Pass(t.Context())
 
@@ -608,5 +624,92 @@ func TestS7_DriftPassAddsNoDropGateWhenARouteTableDoesNotDecode(t *testing.T) {
 	}
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+}
+
+// An EIP record with an address that does not parse is skipped like any other
+// unusable record, so its absence cannot remove the ENI's live public address.
+func TestS7_DriftPassKeepsAPublicIPWhenAnEIPAddressDoesNotParse(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	publicIPFixture(t).seed(t, js)
+	b := newRoutedBinder()
+	r, m := newRoutedReconciler(t, js, b)
+	convergeFromKV(t, r, js)
+	requireStampedRow(t, m, publicA, "eni-a")
+
+	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
+		"acct.eipalloc-a": mustJSON(t, ec2eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: "203.0.113.999", State: "associated",
+			ENIId: "eni-a", PrivateIp: "10.0.1.10", MacAddress: "02:00:00:00:00:0a", VpcId: "vpc-a",
+		}),
+	})
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	err = r.Reconcile(t.Context(), intent)
+
+	if findNATByExternal(m, "dnat_and_snat", publicA) == nil {
+		t.Errorf("drift pass deleted the dnat_and_snat row for %s", publicA)
+	}
+	if !b.has(publicA) {
+		t.Errorf("drift pass removed the host binding for %s (unbinds %v)", publicA, b.unbinds)
+	}
+	if !errors.Is(err, ErrPassIncomplete) {
+		t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+}
+
+// When an EIP record cannot be read, the ENI's own public address can be a
+// stale copy. The apply phase must not swap the live EIP for it.
+func TestS7_DriftPassKeepsALiveEIPWhenItsRecordDoesNotDecode(t *testing.T) {
+	t.Parallel()
+	const userEIP = "203.0.113.20"
+	js := startKV(t)
+	publicIPFixture(t).seed(t, js)
+	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
+		"acct.eipalloc-a": mustJSON(t, ec2eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: userEIP, State: "associated",
+			ENIId: "eni-a", PrivateIp: "10.0.1.10", MacAddress: "02:00:00:00:00:0a", VpcId: "vpc-a",
+		}),
+	})
+	b := newRoutedBinder()
+	r, m := newRoutedReconciler(t, js, b)
+	convergeFromKV(t, r, js)
+	requireStampedRow(t, m, userEIP, "eni-a")
+	if !b.has(userEIP) {
+		t.Fatalf("host bindings after converging = %v, want %s", b.bound, userEIP)
+	}
+
+	putRaw(t, js, ec2eip.KVBucketEIPs, "acct.eipalloc-a", poison)
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	err = r.Reconcile(t.Context(), intent)
+
+	if findNATByExternal(m, "dnat_and_snat", userEIP) == nil {
+		t.Errorf("drift pass replaced the live EIP %s with the ENI's stale address", userEIP)
+	}
+	if !b.has(userEIP) {
+		t.Errorf("drift pass removed the host binding for %s (unbinds %v)", userEIP, b.unbinds)
+	}
+	if !errors.Is(err, ErrPassIncomplete) {
+		t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+}
+
+// A bucket that cannot be opened is not an empty bucket: reading it as empty
+// lets the host loops remove every route and binding it would have named.
+func TestLoadIntentFromKV_FailsWhenABucketCannotBeOpened(t *testing.T) {
+	t.Parallel()
+	_, nc, js := testutil.StartTestJetStream(t)
+	twoVPCFixture(t).seed(t, js)
+	nc.Close()
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err == nil {
+		t.Fatalf("LoadIntentFromKV on a closed connection = nil error with %d VPCs, want an error", len(intent.VPCs))
 	}
 }

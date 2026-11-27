@@ -834,6 +834,12 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 	// The DNAT rows go in first and in order: AddEIP mutates NB and is the cheap
 	// half, so serialising it costs nothing and keeps NB writes single-threaded.
 	for _, spec := range specs {
+		if partial := intent.TopologyIncomplete; partial != nil && r.replacesLiveEIP(ctx, spec) {
+			slog.Error("reconcile/apply: not replacing a live EIP against partial intent",
+				"external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", partial)
+			res.fail(classEIP, spec.ExternalIP, partial)
+			continue
+		}
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 			res.fail(classEIP, spec.ExternalIP, err)
@@ -900,6 +906,18 @@ func (r *reconciler) guestPortIdle(spec policy.EIPSpec, idle map[string]string) 
 		slog.Info("reconcile/apply: guest port's instance is no longer stopped; probing its datapath again", logKV...)
 	}
 	return isIdle
+}
+
+// replacesLiveEIP reports whether AddEIP for spec would remove a live row: one
+// on the same private IP with another external IP, or one on the same external
+// IP for another private IP. A failed lookup counts as a replacement.
+func (r *reconciler) replacesLiveEIP(ctx context.Context, spec policy.EIPSpec) bool {
+	byLogical, err := r.ovn.FindNATByLogicalIP(ctx, topology.VPCRouter(spec.VPCID), "dnat_and_snat", spec.LogicalIP)
+	if err != nil || (byLogical != nil && byLogical.ExternalIP != spec.ExternalIP) {
+		return true
+	}
+	byExternal, err := r.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", spec.ExternalIP)
+	return err != nil || (byExternal != nil && byExternal.LogicalIP != spec.LogicalIP)
 }
 
 // forgetIdlePorts drops idle marks for ports that no longer carry a public IP, so

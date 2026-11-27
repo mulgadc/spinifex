@@ -28,6 +28,9 @@ func (f *fakeResourceController) Allocate(typeName string) error {
 	return nil
 }
 
+// AllocateAdopted is Allocate for the fake: restore's failure tests set allocateErr.
+func (f *fakeResourceController) AllocateAdopted(typeName string) error { return f.Allocate(typeName) }
+
 func (f *fakeResourceController) Deallocate(typeName string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

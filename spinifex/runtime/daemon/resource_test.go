@@ -714,49 +714,30 @@ func TestHostUnderMemoryPressure(t *testing.T) {
 }
 
 func TestResolveNbdkitCharge(t *testing.T) {
-	t.Run("defaults when unset", func(t *testing.T) {
-		main, aux := resolveNbdkitCharge(func(string) string { return "" })
-		assert.Equal(t, defaultNbdkitMainMiB, main)
-		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+	t.Run("default when unset", func(t *testing.T) {
+		assert.Equal(t, defaultNbdkitMainMiB, resolveNbdkitCharge(func(string) string { return "" }))
 	})
-
-	t.Run("env overrides both", func(t *testing.T) {
-		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "1024", "SPINIFEX_NBDKIT_AUX_MIB": "0"}
-		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
-		assert.Equal(t, 1024, main)
-		assert.Equal(t, 0, aux)
+	t.Run("env overrides", func(t *testing.T) {
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "1024"}
+		assert.Equal(t, 1024, resolveNbdkitCharge(func(k string) string { return env[k] }))
 	})
-
 	t.Run("invalid and negative values ignored", func(t *testing.T) {
-		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "nope", "SPINIFEX_NBDKIT_AUX_MIB": "-50"}
-		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
-		assert.Equal(t, defaultNbdkitMainMiB, main)
-		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+		for _, v := range []string{"nope", "-50"} {
+			env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": v}
+			assert.Equal(t, defaultNbdkitMainMiB, resolveNbdkitCharge(func(k string) string { return env[k] }), v)
+		}
 	})
-}
-
-func TestNbdkitChargeMiB(t *testing.T) {
-	t.Parallel()
-	// Default layout: 1 main + 2 aux at the measured per-class figures.
-	assert.Equal(t, int64(768+2*96), nbdkitChargeMiB(1, 2, 768, 96))
-	// Aux-only / main-only decompose linearly.
-	assert.Equal(t, int64(192), nbdkitChargeMiB(0, 2, 768, 96))
-	assert.Equal(t, int64(768), nbdkitChargeMiB(1, 0, 768, 96))
-	// Zeroed charges (struct-literal RM in other tests) cost nothing.
-	assert.Equal(t, int64(0), nbdkitChargeMiB(1, 2, 0, 0))
 }
 
 // TestRG6_FullCostCharge asserts RG-6: an instance's admission charge is its
-// guest -m PLUS one nbdkit process per volume (main 768 MiB, aux 96 MiB over the
-// default 1-main+2-aux layout), and an allocate/deallocate round-trip restores
-// the exact baseline with no drift.
+// guest -m plus the one nbdkit for its root volume (768 MiB; the UEFI store is an
+// object, with no nbdkit), and an allocate/deallocate round-trip has no drift.
 func TestRG6_FullCostCharge(t *testing.T) {
 	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, defaultNbdkitMainMiB, rm.nbdkitMainMiB)
-	require.Equal(t, defaultNbdkitAuxMiB, rm.nbdkitAuxMiB)
 
 	it := &ec2.InstanceTypeInfo{
 		InstanceType: aws.String("t3.medium"),
@@ -764,7 +745,7 @@ func TestRG6_FullCostCharge(t *testing.T) {
 		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)},
 	}
 
-	wantCharge := int64(4096) + nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
+	wantCharge := int64(4096 + 768)
 	assert.Equal(t, wantCharge, rm.instanceMemChargeMiB(it),
 		"RG-6: charge must be guest -m + nbdkit per volume, not guest -m alone")
 	assert.Greater(t, rm.instanceMemChargeMiB(it), instanceTypeMemoryMiB(it),
@@ -776,6 +757,7 @@ func TestRG6_FullCostCharge(t *testing.T) {
 	rm.reservedVCPU, rm.reservedMem = 0, 0
 	rm.allocatedVCPU, rm.allocatedMem = 0, 0
 	rm.readMemAvailableGB = nil // isolate accounting from the live gate
+	rm.readViperblockMem = nil
 	rm.mu.Unlock()
 
 	require.NoError(t, rm.allocate(it))

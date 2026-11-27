@@ -171,7 +171,7 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 
 		if typeKnown && m.deps.Resources != nil && instance.InstanceType != "" {
 			slog.Info("Re-allocating resources for instance", "instanceId", instance.ID, "type", instance.InstanceType)
-			if err := m.deps.Resources.Allocate(instance.InstanceType); err != nil {
+			if err := m.deps.Resources.AllocateAdopted(instance.InstanceType); err != nil {
 				slog.Error("Failed to re-allocate resources for instance on startup, moving to stopped",
 					"instanceId", instance.ID, "err", err)
 				markUnschedulable(instance,

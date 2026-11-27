@@ -125,10 +125,15 @@ type ResourceManager struct {
 	// reservations: in-memory capacity reservations owned by this node, keyed
 	// by id. Mutated together with reservedCR* under mu.
 	reservations map[string]*capacityReservation
-	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
-	// admission so nbdkit backing a guest's volumes is accounted explicitly.
+	// nbdkitMainMiB: the nbdkit memory charged at admission for a guest's root
+	// volume. The UEFI store is an object, so a guest has no second nbdkit.
 	nbdkitMainMiB int
-	nbdkitAuxMiB  int
+	// exports: root volumes admitted on this node, each charged nbdkitMainMiB
+	// against viperblock's cgroup limit by exportGate.
+	exports int
+	// readViperblockMem reads viperblock's cgroup limit and use; nil or a failed
+	// read leaves the export gate open.
+	readViperblockMem func() (limitMiB, currentMiB int64, ok bool)
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
@@ -575,7 +580,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		memReader = readMemAvailableGB
 	}
 
-	nbdkitMainMiB, nbdkitAuxMiB := resolveNbdkitCharge(os.Getenv)
+	nbdkitMainMiB := resolveNbdkitCharge(os.Getenv)
 
 	return &ResourceManager{
 		hostVCPU:           hostVCPU,
@@ -583,10 +588,10 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		reservedVCPU:       reservedVCPU,
 		reservedMem:        reservedMem,
 		nbdkitMainMiB:      nbdkitMainMiB,
-		nbdkitAuxMiB:       nbdkitAuxMiB,
 		instanceTypes:      instanceTypes,
 		gpuManager:         gpuMgr,
 		readMemAvailableGB: memReader,
+		readViperblockMem:  readViperblockMemMiB,
 		reservations:       make(map[string]*capacityReservation),
 	}, nil
 }
@@ -610,8 +615,7 @@ func instanceTypeMemoryMiB(it *ec2.InstanceTypeInfo) int64 {
 // instanceMemChargeMiB is the full per-instance memory charge: guest -m plus
 // nbdkit processes for its volumes. All admission gates use this value.
 func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 {
-	return instanceTypeMemoryMiB(it) +
-		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
+	return instanceTypeMemoryMiB(it) + int64(rm.nbdkitMainMiB)
 }
 
 // GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility.
@@ -3653,7 +3657,7 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // admission never advertises more instances than there are GPU slots to
 // back them.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
-	n, _ := rm.admitLocked(instanceType, count)
+	n, _ := rm.admitLocked(instanceType, count, true)
 	return n
 }
 
@@ -3661,14 +3665,15 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 func (rm *ResourceManager) admit(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	return rm.admitLocked(instanceType, count)
+	return rm.admitLocked(instanceType, count, true)
 }
 
 // admitLocked returns the admission count and which gate bound it. A refusal
 // that names its gate is the difference between "the node is full" and "the
 // host is short of free memory right now", which have different fixes and are
 // otherwise indistinguishable from InsufficientInstanceCapacity.
-func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
+// exports false skips the viperblock gate, for a guest this node already serves.
+func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count int, exports bool) (int, string) {
 	instanceTypeName := ""
 	if instanceType.InstanceType != nil {
 		instanceTypeName = *instanceType.InstanceType
@@ -3691,6 +3696,11 @@ func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count
 	n := rm.liveMemGate(budget, instanceType)
 	if n < budget {
 		return n, "live-memory"
+	}
+	if exports {
+		if m := rm.exportGate(n); m < n {
+			return m, "viperblock-memory"
+		}
 	}
 	return n, "budget"
 }
@@ -3733,8 +3743,18 @@ func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo
 // lock and then both commit, overcommitting the host. Multi-instance launch
 // paths loop on allocate per VM, relying on this per-call atomicity.
 func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
+	return rm.allocateGated(instanceType, true)
+}
+
+// allocateAdopted reserves for a guest restored on startup: its export is already
+// open in viperblock's memory, so it is counted and the viperblock gate is not applied.
+func (rm *ResourceManager) allocateAdopted(instanceType *ec2.InstanceTypeInfo) error {
+	return rm.allocateGated(instanceType, false)
+}
+
+func (rm *ResourceManager) allocateGated(instanceType *ec2.InstanceTypeInfo, exports bool) error {
 	rm.mu.Lock()
-	if rm.canAllocateLocked(instanceType, 1) < 1 {
+	if n, _ := rm.admitLocked(instanceType, 1, exports); n < 1 {
 		rm.mu.Unlock()
 		instanceTypeName := ""
 		if instanceType.InstanceType != nil {
@@ -3746,6 +3766,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)
 	rm.allocatedMem += memoryGB
+	rm.exports++
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
@@ -3759,6 +3780,7 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU -= int(vCPUs)
 	rm.allocatedMem -= memoryGB
+	rm.exports = max(rm.exports-1, 0)
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
@@ -3814,6 +3836,9 @@ func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler natsHandler,
 	rm.nodeID = nodeID
 	rm.instanceSubs = make(map[string]*nats.Subscription)
 	rm.updateInstanceSubscriptions()
+	if rm.readViperblockMem != nil {
+		go rm.resyncSubscriptions(exportResync)
+	}
 }
 
 // updateInstanceSubscriptions subscribes/unsubscribes per-type NATS topics

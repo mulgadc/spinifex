@@ -614,6 +614,14 @@ func (a *resourceControllerAdapter) Allocate(instanceType string) error {
 	return a.rm.allocate(it)
 }
 
+func (a *resourceControllerAdapter) AllocateAdopted(instanceType string) error {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return fmt.Errorf("instance type %s not found", instanceType)
+	}
+	return a.rm.allocateAdopted(it)
+}
+
 func (a *resourceControllerAdapter) Deallocate(instanceType string) {
 	it := a.rm.instanceTypes[instanceType]
 	if it == nil {

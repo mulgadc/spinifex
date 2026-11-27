@@ -3,13 +3,12 @@ package accountlifecycle
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
-	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	accountlifecyclev1 "github.com/mulgadc/spinifex/contracts/accountlifecycle/v1"
 	migrationv1 "github.com/mulgadc/spinifex/contracts/migration/v1"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/migration/accounttermination"
 	"github.com/mulgadc/spinifex/spinifex/domains/migration/executor"
 	migrationstore "github.com/mulgadc/spinifex/spinifex/domains/migration/store"
@@ -174,6 +173,7 @@ func TestParticipantReplyThatBreaksTheContractIsNeverClean(t *testing.T) {
 // as when a record appears after the phase ends.
 type flipParticipant struct {
 	fakeParticipant
+
 	reads int
 }
 
@@ -320,5 +320,5 @@ func TestTerminationWithNoUpgradedNodeKeepsTheAccount(t *testing.T) {
 	_, err = e.Teardown(t.Context(), request())
 	require.ErrorIs(t, err, ErrParticipantBlocked)
 	assert.False(t, accounts.deleted)
-	assert.False(t, errors.Is(err, ErrResourcesStuck))
+	assert.NotErrorIs(t, err, ErrResourcesStuck)
 }

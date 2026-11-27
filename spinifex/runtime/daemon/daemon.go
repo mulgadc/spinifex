@@ -191,12 +191,6 @@ type Daemon struct {
 	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
 	// advertisedLevel is the last level the heartbeat reported, 0 before the first.
 	advertisedLevel    atomic.Int64
-
-	// The migration executor and termination participant. migrationReady is
-	// set once both run, and gates the advertised feature level.
-	migrationExecutor    *migrationexecutor.Executor
-	migrationParticipant *migrationtermination.Participant
-	migrationReady       atomic.Bool
 	eksService         *ekscluster.EKSServiceImpl
 	ecsService         *ecsdomain.Service
 	ecsScheduler       *ecsdomain.Scheduler
@@ -229,6 +223,12 @@ type Daemon struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	shutdownWg    sync.WaitGroup
+
+	// The migration executor and termination participant. migrationReady is
+	// set once both run, and gates the advertised feature level.
+	migrationExecutor    *migrationexecutor.Executor
+	migrationParticipant *migrationtermination.Participant
+	migrationReady       atomic.Bool
 
 	// recoveryRetryWg tracks the post-restore retry loop, which writes the
 	// local state file when it finishes. Tests wait on it before cleanup.

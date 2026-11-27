@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	accountlifecyclev1 "github.com/mulgadc/spinifex/contracts/accountlifecycle/v1"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/migration/admission"
 	"github.com/mulgadc/spinifex/spinifex/domains/migration/executor"
 	"github.com/mulgadc/spinifex/spinifex/domains/migration/store"
@@ -23,7 +23,9 @@ var t0 = time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
 
 type terminating map[string]bool
 
-func (m terminating) AccountTerminating(_ context.Context, id string) (bool, error) { return m[id], nil }
+func (m terminating) AccountTerminating(_ context.Context, id string) (bool, error) {
+	return m[id], nil
+}
 
 // objects records every prefix deleted; failNext fails that many calls.
 type objects struct {

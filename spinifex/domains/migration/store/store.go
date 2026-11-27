@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,12 +81,7 @@ func BucketName(accountID string) string { return BucketPrefix + accountID }
 
 // ValidKind reports whether kind is a declared record kind.
 func ValidKind(kind string) bool {
-	for _, k := range Kinds() {
-		if k == kind {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(Kinds(), kind)
 }
 
 // ValidID reports whether id is one KV key token of letters, digits and '-'.

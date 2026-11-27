@@ -22,7 +22,9 @@ func clock() time.Time { return t0 }
 
 type terminating map[string]bool
 
-func (m terminating) AccountTerminating(_ context.Context, id string) (bool, error) { return m[id], nil }
+func (m terminating) AccountTerminating(_ context.Context, id string) (bool, error) {
+	return m[id], nil
+}
 
 // levelGate returns a real feature-level gate over a record at level.
 func levelGate(t *testing.T, js jetstream.JetStream, record string) *featurelevel.Gate {
@@ -128,6 +130,7 @@ func TestSeal_RefusedUnlessIAMHoldsTheAccountTerminating(t *testing.T) {
 // widest window a create can race the termination command through.
 type sealOnCreate struct {
 	jetstream.KeyValueManager
+
 	seal func()
 }
 
@@ -150,6 +153,7 @@ func (s *sealOnCreate) wrap(name string, kv jetstream.KeyValue) jetstream.KeyVal
 
 type sealingKV struct {
 	jetstream.KeyValue
+
 	seal func()
 }
 

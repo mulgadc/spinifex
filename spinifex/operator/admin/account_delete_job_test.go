@@ -9,14 +9,18 @@ import (
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
+	"github.com/mulgadc/spinifex/spinifex/domains/migration/accounttermination"
+	"github.com/mulgadc/spinifex/spinifex/domains/migration/executor"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/s3"
+	accountlifecyclev1 "github.com/mulgadc/spinifex/contracts/accountlifecycle/v1"
 	admissionv1 "github.com/mulgadc/spinifex/contracts/admission/v1"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	migrationv1 "github.com/mulgadc/spinifex/contracts/migration/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -139,6 +143,16 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = quotaCapSub.Unsubscribe() })
+
+	// The real migration participant: an account with no migration records
+	// drains clean, as on a cluster where every node runs this release.
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	exec, err := executor.New(js, "node-1", executor.NoObjects{}, nil)
+	require.NoError(t, err)
+	participant, err := accounttermination.New(js, iamdomain.NewAccountStatusReader(js), exec, executor.NoObjects{}, nil, time.Now)
+	require.NoError(t, err)
+	serveMigrationParticipant(t, nc, participant)
 	require.NoError(t, nc.Flush())
 
 	return Deps{
@@ -709,4 +723,36 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 60*time.Second, 10*time.Millisecond)
+}
+
+// serveMigrationParticipant answers the participant subjects the engine's
+// participant phase drives.
+func serveMigrationParticipant(t *testing.T, nc *nats.Conn, p *accounttermination.Participant) {
+	t.Helper()
+	serve := func(subject string, handle func(ctx context.Context, data []byte) (any, error)) {
+		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+			out, err := handle(t.Context(), msg.Data)
+			if err != nil {
+				return
+			}
+			data, _ := json.Marshal(out)
+			_ = msg.Respond(data)
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+	serve(accountlifecyclev1.InventorySubject(migrationv1.ParticipantName), func(ctx context.Context, data []byte) (any, error) {
+		var req accountlifecyclev1.InventoryRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return nil, err
+		}
+		return p.Inventory(ctx, &req, "")
+	})
+	serve(accountlifecyclev1.TerminateSubject(migrationv1.ParticipantName), func(ctx context.Context, data []byte) (any, error) {
+		var req accountlifecyclev1.TerminateRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return nil, err
+		}
+		return p.Terminate(ctx, &req, "")
+	})
 }

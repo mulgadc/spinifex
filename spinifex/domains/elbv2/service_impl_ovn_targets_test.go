@@ -410,7 +410,7 @@ func TestOVNFixtureTargets_SetLimit(t *testing.T) {
 	h.takeOps()
 
 	err := h.register(tgArn, tuple(h.running(99), 0))
-	requireFenceCode(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest)
+	requireFenceCode(t, err, awserrors.ErrorELBv2TooManyTargetsAggregate)
 	h.requireNoEffects(elbBefore, sideBefore)
 	assert.Equal(t, want, h.owner("ovn-nlb"))
 	require.NoError(t, h.register(tgArn, full[0]), "a duplicate at the limit is still a no-op")
@@ -426,7 +426,7 @@ func TestOVNFixtureTargets_ConcurrentEditsBothCommit(t *testing.T) {
 	})
 
 	require.NoError(t, h.register(tgArn, tuple(a, 0)))
-	assert.Equal(t, []string{a, b}, h.instance.take(), "the retry reuses the request's earlier check of a")
+	assert.Equal(t, []string{a, b, a}, h.instance.take(), "the retry checks a again against the newer set")
 	owner := h.owner("ovn-nlb")
 	assert.Equal(t, uint64(4), owner.OwnerRevision, "one revision per committed edit")
 	assert.Equal(t, []fixtureTarget{{a, 8080}, {b, 8080}}, owner.Listener.Targets)
@@ -449,7 +449,11 @@ func TestOVNFixtureTargets_RetryChecksTupleRemovedByWinner(t *testing.T) {
 			})
 
 			err := h.register(tgArn, tuple(a, 0), tuple(b, 0))
-			assert.Equal(t, []string{b, a}, h.instance.take(), "a is checked once it becomes an addition")
+			wantReads := []string{b, a, b}
+			if stopRemoved {
+				wantReads = []string{b, a}
+			}
+			assert.Equal(t, wantReads, h.instance.take(), "each attempt checks each of its additions once until one refuses")
 			owner := h.owner("ovn-nlb")
 			if stopRemoved {
 				requireFenceCode(t, err, awserrors.ErrorELBv2InvalidTarget)

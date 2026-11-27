@@ -148,8 +148,8 @@ func (s *ELBv2ServiceImpl) ovnTargetEligible(ctx context.Context, accountID, id,
 }
 
 // registerOVNFixtureTargets adds the request's missing tuples to the owner's
-// set. On a CAS retry the additions and cap are recomputed from the request,
-// and every addition is checked before the write.
+// set. Each CAS attempt recomputes the additions from the request, decides the
+// cap before any instance read, and checks each added instance once.
 func (s *ELBv2ServiceImpl) registerOVNFixtureTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -158,7 +158,6 @@ func (s *ELBv2ServiceImpl) registerOVNFixtureTargets(ctx context.Context, input 
 	if err != nil {
 		return nil, err
 	}
-	checked := map[string]error{}
 	add := func(cur fixtureOwner, tuples []fixtureTarget) ([]fixtureTarget, bool, error) {
 		var adds []fixtureTarget
 		for _, t := range tuples {
@@ -169,18 +168,18 @@ func (s *ELBv2ServiceImpl) registerOVNFixtureTargets(ctx context.Context, input 
 		if len(adds) == 0 {
 			return nil, false, nil
 		}
-		for _, t := range adds {
-			res, ok := checked[t.InstanceID]
-			if !ok {
-				res = s.ovnTargetEligible(ctx, accountID, t.InstanceID, cur.Root.VpcId)
-				checked[t.InstanceID] = res
-			}
-			if res != nil {
-				return nil, false, res
-			}
-		}
 		if len(cur.Listener.Targets)+len(adds) > fixtureMaxTargets {
-			return nil, false, invalidOVNConfiguration("A target group of this load balancer can hold at most %d targets", fixtureMaxTargets)
+			return nil, false, awserrors.Errorf(awserrors.ErrorELBv2TooManyTargetsAggregate, "A target group of this load balancer can hold at most %d targets", fixtureMaxTargets)
+		}
+		checked := map[string]bool{}
+		for _, t := range adds {
+			if checked[t.InstanceID] {
+				continue
+			}
+			checked[t.InstanceID] = true
+			if err := s.ovnTargetEligible(ctx, accountID, t.InstanceID, cur.Root.VpcId); err != nil {
+				return nil, false, err
+			}
 		}
 		next := append(slices.Clone(cur.Listener.Targets), adds...)
 		slices.SortFunc(next, compareFixtureTargets)

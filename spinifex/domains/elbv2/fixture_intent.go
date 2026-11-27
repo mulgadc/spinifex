@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 )
 
@@ -74,7 +75,7 @@ func (l *fixtureListener) check(root *LoadBalancerRecord) error {
 		return fmt.Errorf("%d targets exceed the limit of %d", len(l.Targets), fixtureMaxTargets)
 	}
 	for i, t := range l.Targets {
-		if !strings.HasPrefix(t.InstanceID, "i-") || len(t.InstanceID) == len("i-") || !validFixturePort(t.Port) {
+		if !projection.ValidInstanceID(t.InstanceID) || !validFixturePort(t.Port) {
 			return fmt.Errorf("target %q port %d is not an instance tuple", t.InstanceID, t.Port)
 		}
 		if i > 0 && compareFixtureTargets(l.Targets[i-1], t) >= 0 {

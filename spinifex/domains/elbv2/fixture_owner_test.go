@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"sync"
@@ -636,7 +637,7 @@ func TestFixtureOwner_EditAdvancesOneRevisionPerChange(t *testing.T) {
 	assert.Equal(t, uint64(2), same.OwnerRevision)
 	assert.Equal(t, before, kvEntry(t, h, key).Revision(), "an unchanged edit must not write")
 
-	targets := []fixtureTarget{{"i-0b", 8080}, {"i-0a", 9090}, {"i-0a", 8080}}
+	targets := []fixtureTarget{{"i-0000000b", 8080}, {"i-0000000a", 9090}, {"i-0000000a", 8080}}
 	edited, err = owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, nil, targets...))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(3), edited.OwnerRevision)
@@ -645,7 +646,7 @@ func TestFixtureOwner_EditAdvancesOneRevisionPerChange(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, uint64(3), got.OwnerRevision)
-	assert.Equal(t, []fixtureTarget{{"i-0a", 8080}, {"i-0a", 9090}, {"i-0b", 8080}}, got.Listener.Targets)
+	assert.Equal(t, []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000a", 9090}, {"i-0000000b", 8080}}, got.Listener.Targets)
 	assert.Equal(t, listener.ListenerArn, got.Listener.ListenerArn)
 	assert.Equal(t, root, got.Root, "an edit never changes the sealed root")
 
@@ -668,7 +669,7 @@ func TestFixtureOwner_EditRefusesWithoutWriting(t *testing.T) {
 	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
 	key := sealedFixture(t, owners, root)
 	var calls int
-	_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0a", 80}), &calls))
+	_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 80}), &calls))
 	require.NoError(t, err)
 
 	pendingRoot := newFixtureRoot("cccc000000000003", "ovn-pending")
@@ -700,7 +701,7 @@ func TestFixtureOwner_EditRefusesWithoutWriting(t *testing.T) {
 
 	tooMany := make([]fixtureTarget, fixtureMaxTargets+1)
 	for i := range tooMany {
-		tooMany[i] = fixtureTarget{"i-" + strconv.Itoa(10+i), 80}
+		tooMany[i] = fixtureTarget{fmt.Sprintf("i-%08x", 10+i), 80}
 	}
 	otherLB := newFixtureRoot("eeee000000000005", "ovn-other")
 	zeroPort := fixtureListenerOf(root)
@@ -711,11 +712,12 @@ func TestFixtureOwner_EditRefusesWithoutWriting(t *testing.T) {
 	require.ErrorIs(t, err, errFixtureClaimMalformed, "an edit cannot remove the listener")
 	broken := map[string]*fixtureListener{
 		"listener port":     zeroPort,
-		"target port":       fixtureListenerOf(root, fixtureTarget{"i-0a", 65536}),
+		"target port":       fixtureListenerOf(root, fixtureTarget{"i-0000000a", 65536}),
 		"too many":          fixtureListenerOf(root, tooMany...),
-		"duplicate":         fixtureListenerOf(root, fixtureTarget{"i-0a", 80}, fixtureTarget{"i-0a", 80}),
-		"unsorted":          fixtureListenerOf(root, fixtureTarget{"i-0b", 80}, fixtureTarget{"i-0a", 80}),
+		"duplicate":         fixtureListenerOf(root, fixtureTarget{"i-0000000a", 80}, fixtureTarget{"i-0000000a", 80}),
+		"unsorted":          fixtureListenerOf(root, fixtureTarget{"i-0000000b", 80}, fixtureTarget{"i-0000000a", 80}),
 		"not an instance":   fixtureListenerOf(root, fixtureTarget{"10.0.0.1", 80}),
+		"short instance ID": fixtureListenerOf(root, fixtureTarget{"i-0a", 80}),
 		"other LB listener": fixtureListenerOf(otherLB),
 		"foreign group":     foreignGroup,
 	}
@@ -791,21 +793,21 @@ func TestFixtureOwner_ConflictingEditRerunsOnLatest(t *testing.T) {
 			return
 		}
 		raced = true
-		won, err := other.Edit(ctx, key, root.LoadBalancerID, addTargets(&otherCalls, nil, fixtureTarget{"i-0b", 8080}))
+		won, err := other.Edit(ctx, key, root.LoadBalancerID, addTargets(&otherCalls, nil, fixtureTarget{"i-0000000b", 8080}))
 		require.NoError(t, err)
 		require.Equal(t, uint64(3), won.OwnerRevision)
 	}
 	calls = 0
 	var seen []fixtureOwner
-	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, &seen, fixtureTarget{"i-0a", 8080}))
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, &seen, fixtureTarget{"i-0000000a", 8080}))
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls, "a definite conflict reruns the edit")
 	require.Len(t, seen, 2)
 	assert.Equal(t, uint64(2), seen[0].OwnerRevision)
 	assert.Equal(t, uint64(3), seen[1].OwnerRevision, "the rerun sees the winner's snapshot")
-	assert.Equal(t, []fixtureTarget{{"i-0b", 8080}}, seen[1].Listener.Targets)
+	assert.Equal(t, []fixtureTarget{{"i-0000000b", 8080}}, seen[1].Listener.Targets)
 	assert.Equal(t, uint64(4), edited.OwnerRevision)
-	assert.Equal(t, []fixtureTarget{{"i-0a", 8080}, {"i-0b", 8080}}, rawOwner(t, h.appliance, root.Name).Listener.Targets)
+	assert.Equal(t, []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000b", 8080}}, rawOwner(t, h.appliance, root.Name).Listener.Targets)
 }
 
 // A stored edit whose response is lost is adopted when the re-read shows the
@@ -823,7 +825,7 @@ func TestFixtureOwner_EditLostAckAdoptsIntendedSnapshot(t *testing.T) {
 		return nats.ErrTimeout
 	}
 	var calls int
-	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0a", 8080}), &calls))
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080}), &calls))
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
 	assert.Equal(t, uint64(2), edited.OwnerRevision)
@@ -849,7 +851,7 @@ func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
 				kv.beforeUpdate = func(string) {
 					kv.beforeUpdate = nil
 					var n int
-					_, err := other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0b", 8080}))
+					_, err := other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0000000b", 8080}))
 					require.NoError(t, err)
 				}
 				kv.afterUpdate = func(_ string, err error) error {
@@ -857,7 +859,7 @@ func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
 					return nats.ErrTimeout
 				}
 			},
-			wantStored: []fixtureTarget{{"i-0b", 8080}},
+			wantStored: []fixtureTarget{{"i-0000000b", 8080}},
 			wantRev:    3,
 		},
 		"stored, then superseded": {
@@ -866,12 +868,12 @@ func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
 					require.NoError(t, err)
 					kv.afterUpdate = nil
 					var n int
-					_, err = other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0b", 8080}))
+					_, err = other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0000000b", 8080}))
 					require.NoError(t, err)
 					return nats.ErrTimeout
 				}
 			},
-			wantStored: []fixtureTarget{{"i-0a", 8080}, {"i-0b", 8080}},
+			wantStored: []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000b", 8080}},
 			wantRev:    4,
 		},
 		"stored, re-read fails": {
@@ -883,7 +885,7 @@ func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
 				}
 			},
 			readFail:   true,
-			wantStored: []fixtureTarget{{"i-0a", 8080}},
+			wantStored: []fixtureTarget{{"i-0000000a", 8080}},
 			wantRev:    3,
 		},
 	}
@@ -901,7 +903,7 @@ func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
 
 			c.hook(t, h, kv, other, key, root.LoadBalancerID)
 			calls = 0
-			_, err = owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, nil, fixtureTarget{"i-0a", 8080}))
+			_, err = owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, nil, fixtureTarget{"i-0000000a", 8080}))
 			require.ErrorIs(t, err, errFixtureEditUncertain)
 			if c.readFail {
 				require.ErrorIs(t, err, errInjectedRead)
@@ -929,7 +931,7 @@ func TestFixtureOwner_LostSealAckAfterAcceptedEdit(t *testing.T) {
 	claim, _, err := owners.Begin(ctx, root)
 	require.NoError(t, err)
 
-	listener := fixtureListenerOf(root, fixtureTarget{"i-0a", 8080})
+	listener := fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080})
 	kv.afterUpdate = func(_ string, err error) error {
 		require.NoError(t, err, "the seal must reach the server")
 		var n int
@@ -966,7 +968,7 @@ func TestFixtureOwner_ParentGuardReadsAdvancedOwner(t *testing.T) {
 		require.NoError(t, owners.acquireSlot(ctx, testAccountID, k, slot))
 	}
 	var calls int
-	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0a", 8080}), &calls))
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080}), &calls))
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), edited.OwnerRevision)
 	h.clock.advance(h.appliance.claimTTL + time.Second)

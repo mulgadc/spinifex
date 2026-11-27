@@ -806,8 +806,8 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 				continue
 			}
 			if results[i].err != nil {
-				slog.ErrorContext(ctx, "DescribeVolumesModifications volume not found", "volumeId", *vid, "err", results[i].err)
-				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+				slog.ErrorContext(ctx, "DescribeVolumesModifications volume read failed", "volumeId", *vid, "err", results[i].err)
+				return nil, results[i].err
 			}
 		}
 		seen := make(map[string]bool, len(results))
@@ -866,13 +866,16 @@ type volumeModificationResult struct {
 
 // fetchVolumeModificationsByIDs reads each requested volume's document through
 // fetchVolumeMetasByIDs, returning results positionally aligned with volumeIDs.
-// Every failed read, including a cross-tenant volume, is InvalidVolume.NotFound.
+// A read the deadline stopped is ServerInternal; every other failure, including
+// a cross-tenant volume, is InvalidVolume.NotFound.
 func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeModificationResult {
 	metas := s.fetchVolumeMetasByIDs(ctx, volumeIDs, accountID)
 	results := make([]volumeModificationResult, len(metas))
 	for i, r := range metas {
 		switch {
 		case r.absent:
+		case r.unread:
+			results[i] = volumeModificationResult{err: r.err}
 		case r.err != nil:
 			results[i] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 		default:
@@ -908,10 +911,12 @@ func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*
 }
 
 // volumeMetaResult bundles a per-ID document lookup. absent marks a nil entry
-// in the requested IDs, which is neither a document nor an error.
+// in the requested IDs, which is neither a document nor an error. unread marks
+// an ID the deadline stopped, which says nothing about whether it exists.
 type volumeMetaResult struct {
 	meta   ebsmetadata.Volume
 	absent bool
+	unread bool
 	err    error
 }
 
@@ -944,7 +949,7 @@ func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs
 		}
 		// select picks either ready case, so the deadline is checked again.
 		if ctx.Err() != nil {
-			results[i] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal)}
+			results[i] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
 			continue
 		}
 		wg.Add(1)
@@ -953,9 +958,12 @@ func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs
 			defer func() { <-slots }()
 			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil {
-				if objectstore.IsNoSuchKeyError(err) {
+				switch {
+				case objectstore.IsNoSuchKeyError(err):
 					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
-				} else {
+				case ctx.Err() != nil:
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
+				default:
 					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal)}
 				}
 				return

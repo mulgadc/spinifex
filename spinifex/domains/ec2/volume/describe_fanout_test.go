@@ -239,3 +239,59 @@ func TestDescribeVolumesFamily_ReadsEndInsideTheReplyTimeout(t *testing.T) {
 		})
 	}
 }
+
+// gateGetStore holds the first batch of reads open until the test releases
+// them, and records any read that starts after its context was cancelled.
+type gateGetStore struct {
+	objectstore.ObjectStore
+
+	batch      int
+	firstBatch chan struct{}
+	release    chan struct{}
+	started    atomic.Int64
+	late       atomic.Int64
+}
+
+func (s *gateGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if ctx.Err() != nil {
+		s.late.Add(1)
+	}
+	if n := s.started.Add(1); n <= int64(s.batch) {
+		if n == int64(s.batch) {
+			close(s.firstBatch)
+		}
+		<-s.release
+	}
+	return s.ObjectStore.GetObject(ctx, in)
+}
+
+// Once the request's context ends, no read may start, and the IDs left unread
+// fail as a server error: they were never looked up, so they are not missing.
+func TestDescribeVolumesFamily_StartsNoReadAfterCancel(t *testing.T) {
+	for _, m := range describeFamily {
+		t.Run(m.name, func(t *testing.T) {
+			mem := objectstore.NewMemoryObjectStore()
+			ids := seedFanoutVolumes(t, mem, 4*ebsmetadata.FetchConcurrency)
+			store := &gateGetStore{ObjectStore: mem, batch: ebsmetadata.FetchConcurrency,
+				firstBatch: make(chan struct{}), release: make(chan struct{})}
+			svc := newFanoutService(t, store)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := m.call(ctx, svc, aws.StringSlice(ids))
+				done <- err
+			}()
+			<-store.firstBatch
+			cancel()
+			close(store.release)
+			err := <-done
+
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error(), "unread IDs are a server error, not a missing volume")
+			assert.Zero(t, store.late.Load(), "a read started after the context was cancelled")
+			assert.Equal(t, int64(ebsmetadata.FetchConcurrency), store.started.Load(), "reads started")
+		})
+	}
+}

@@ -125,6 +125,18 @@ func (r *reconciler) pluggedPorts(ctx context.Context) (map[string]struct{}, err
 	return r.localPorts(ctx)
 }
 
+// partialIntent returns the first incomplete marker on any of reads. A sweep
+// deletes what intent does not name, so it must not run against a read that
+// skipped records which exist.
+func partialIntent(reads ...IntentState) error {
+	for _, in := range reads {
+		if in.TopologyIncomplete != nil {
+			return in.TopologyIncomplete
+		}
+	}
+	return nil
+}
+
 // reloadForPrune re-reads intent for an orphan sweep to compare against. Every
 // sweep matches live OVN rows against the start-of-pass snapshot, which the apply
 // phase can leave tens of seconds behind KV, so a resource created mid-pass looks
@@ -302,6 +314,11 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		res.fail(classSG, "orphan-prune", err)
 		return
 	}
+	if err := partialIntent(intent, fresh); err != nil {
+		slog.Error("reconcile/apply: refusing orphan port group sweep against partial intent", "err", err)
+		res.fail(classSG, "orphan-prune", err)
+		return
+	}
 
 	wantPGs := make(map[string]struct{}, len(intent.SGs)+len(fresh.SGs))
 	for groupID := range intent.SGs {
@@ -472,6 +489,11 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 	fresh, err := r.reloadForPrune(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan ENI port prune", "err", err)
+		res.fail(classPort, "orphan-prune", err)
+		return
+	}
+	if err := partialIntent(intent, fresh); err != nil {
+		slog.Error("reconcile/apply: refusing orphan ENI port sweep against partial intent", "err", err)
 		res.fail(classPort, "orphan-prune", err)
 		return
 	}
@@ -1002,6 +1024,12 @@ func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, re
 		res.fail(classEIP, "orphan-prune", err)
 		return
 	}
+	// The NAT sweep also removes host bindings, so this guards both.
+	if err := partialIntent(intent, fresh); err != nil {
+		slog.Error("reconcile/apply: refusing orphan EIP sweep against partial intent", "err", err)
+		res.fail(classEIP, "orphan-prune", err)
+		return
+	}
 	r.addLive(live, fresh)
 	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
 		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
@@ -1220,6 +1248,13 @@ func (r *reconciler) applyNATGWRoutes(ctx context.Context, intent IntentState, _
 // applyDropGates installs DROP policies for subnets with an attached IGW but
 // no 0.0.0.0/0 route, preventing unintended egress via the VPC default route.
 func (r *reconciler) applyDropGates(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
+	// A skipped route table looks like a subnet with no default route, and a
+	// gate there outranks its live reroute. Existing gates stay as they are.
+	if err := intent.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: adding no drop gate against partial intent", "err", err)
+		res.fail(classDropGate, "intent", err)
+		return
+	}
 	for _, spec := range intent.DropGates {
 		if err := r.igw.EnsureSubnetEgressDrop(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
 			slog.Error("reconcile/apply: EnsureSubnetEgressDrop failed",

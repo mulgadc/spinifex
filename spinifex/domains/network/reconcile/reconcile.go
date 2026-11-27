@@ -362,6 +362,12 @@ func (r *reconciler) ReconcileHostEIPs(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("re-read intent for host EIP pass: %w", err)
 	}
+	if partial := intent.TopologyIncomplete; partial != nil {
+		// Bind what is known and remove nothing: after a reboot this pass is
+		// what restores every binding on the node.
+		bindErr := r.nat.EnsureHostEIPs(ctx, r.hostBindSpecs(intent))
+		return errors.Join(fmt.Errorf("host EIP pass left every binding in place: %w", partial), bindErr)
+	}
 	return r.nat.BindHostEIPs(ctx, r.hostBindSpecs(intent))
 }
 

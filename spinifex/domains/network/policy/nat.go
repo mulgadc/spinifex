@@ -76,6 +76,10 @@ type NATManager interface {
 	// mode.
 	BindHostEIPs(ctx context.Context, specs []EIPSpec) error
 
+	// EnsureHostEIPs installs the same host-side plumbing as BindHostEIPs and
+	// removes nothing, for a caller whose specs may be missing live addresses.
+	EnsureHostEIPs(ctx context.Context, specs []EIPSpec) error
+
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
@@ -448,6 +452,16 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 // run left a node that never won the reconcile lease with no route to its own
 // guests.
 func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
+	return m.bindHostEIPs(ctx, specs, true)
+}
+
+// EnsureHostEIPs is documented on the NATManager interface.
+func (m *natManager) EnsureHostEIPs(ctx context.Context, specs []EIPSpec) error {
+	return m.bindHostEIPs(ctx, specs, false)
+}
+
+// bindHostEIPs is the one bind loop; prune adds the sweep of everything else.
+func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bool) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
 		return nil
 	}
@@ -477,7 +491,7 @@ func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
 			errs = append(errs, err)
 		}
 	}
-	if !incomplete {
+	if prune && !incomplete {
 		if err := m.pruneHostEIPs(live, foreign); err != nil {
 			errs = append(errs, err)
 		}

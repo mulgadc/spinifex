@@ -43,6 +43,34 @@ type IntentState struct {
 	// IdlePorts maps a public-IP guest LSP to its instance when that instance is
 	// stopped or terminated. Its port has no tap, so the datapath probe skips it.
 	IdlePorts map[string]string
+	// TopologyIncomplete is non-nil when a topology record was skipped because
+	// it did not decode or a field did not parse. Intent then lacks a resource
+	// that exists, so no path may remove or replace live state against it.
+	TopologyIncomplete error
+}
+
+// skipLog collects the keys of records a topology loader could not use.
+type skipLog struct {
+	count int
+	keys  []string
+}
+
+// maxSkipKeys bounds the keys named in TopologyIncomplete, so a bucket of bad
+// records still makes one short log line.
+const maxSkipKeys = 3
+
+func (l *skipLog) add(key string) {
+	l.count++
+	if len(l.keys) < maxSkipKeys {
+		l.keys = append(l.keys, key)
+	}
+}
+
+func (l *skipLog) err() error {
+	if l.count == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d topology record(s) did not decode or parse, first %s", l.count, strings.Join(l.keys, ", "))
 }
 
 // The instance record space the daemon owns. Duplicated rather than imported
@@ -88,41 +116,43 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		IdlePorts:   make(map[string]string),
 	}
 
-	localVPCs, vpcIDs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
+	skips := &skipLog{}
+	localVPCs, vpcIDs, err := loadVPCs(ctx, js, localAZ, intent.VPCs, skips)
 	if err != nil {
 		return IntentState{}, err
 	}
 	subnetAZs := map[string]string{}
-	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets, subnetAZs); err != nil {
+	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets, subnetAZs, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
+	if err := loadSGs(ctx, js, localVPCs, intent.SGs, skips); err != nil {
 		return IntentState{}, err
 	}
 	portInstances := make(map[string]string)
-	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances); err != nil {
+	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs); err != nil {
+	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs); err != nil {
+	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs, skips); err != nil {
 		return IntentState{}, err
 	}
 	loadIdlePorts(ctx, js, intent, portInstances)
-	routeTables, err := loadRouteTables(ctx, js, localVPCs)
+	routeTables, err := loadRouteTables(ctx, js, localVPCs, skips)
 	if err != nil {
 		return IntentState{}, err
 	}
-	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
+	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs, skips); err != nil {
 		return IntentState{}, err
 	}
-	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes, skips)
 	intent.PeeringIntent = loadPeering(ctx, js, localVPCs, vpcIDs)
 	intent.PeeringRoutes = loadPeeringRoutes(intent.VPCs, intent.Subnets, routeTables)
 	intent.TransitGatewayIntent = loadTransitGateways(ctx, js, intent.VPCs, vpcIDs, subnetAZs)
 	intent.TGWRoutes = loadTGWRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
+	intent.TopologyIncomplete = skips.err()
 
 	return intent, nil
 }
@@ -134,6 +164,7 @@ func loadSubnetEgressRoutes(
 	subnets map[string]topology.SubnetSpec,
 	routeTables []ec2routetable.RouteTableRecord,
 	igwOut, natgwOut map[string]SubnetEgressIntent,
+	skips *skipLog,
 ) {
 	byTable := routeTableSubnets(subnets, routeTables)
 	for _, rt := range routeTables {
@@ -149,6 +180,7 @@ func loadSubnetEgressRoutes(
 			if err != nil {
 				slog.Warn("reconcile/intent: route CIDR parse failed",
 					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
+				skips.add(rt.RouteTableId)
 				continue
 			}
 			var sink map[string]SubnetEgressIntent
@@ -212,7 +244,7 @@ func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 
 // loadVPCs fills out with this AZ's VPCs and returns their IDs, and the ID of
 // every VPC with a key in any AZ, readable or not; nil if the bucket is absent.
-func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, map[string]struct{}, error) {
+func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec, skips *skipLog) (map[string]struct{}, map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketVPCs)
@@ -248,6 +280,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		var rec ec2vpc.VPCRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: VPC unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if !matchesLocalAZ(rec.AZ, localAZ) {
@@ -256,6 +289,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		prefix, err := netip.ParsePrefix(rec.CidrBlock)
 		if err != nil {
 			slog.Warn("reconcile/intent: VPC CIDR parse failed", "vpc_id", rec.VpcId, "cidr", rec.CidrBlock, "err", err)
+			skips.add(key)
 			continue
 		}
 		out[rec.VpcId] = topology.VPCSpec{
@@ -268,7 +302,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 	return localVPCs, vpcIDs, nil
 }
 
-func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string) error {
+func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string, skips *skipLog) error {
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSubnets)
 	if err != nil {
 		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
@@ -292,6 +326,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		var rec ec2vpc.SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: subnet unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -300,6 +335,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		prefix, err := netip.ParsePrefix(rec.CidrBlock)
 		if err != nil {
 			slog.Warn("reconcile/intent: subnet CIDR parse failed", "subnet_id", rec.SubnetId, "cidr", rec.CidrBlock, "err", err)
+			skips.add(key)
 			continue
 		}
 		out[rec.SubnetId] = topology.SubnetSpec{
@@ -312,7 +348,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 	return nil
 }
 
-func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
+func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec, skips *skipLog) error {
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSecurityGroups)
 	if err != nil {
 		slog.Debug("reconcile/intent: SG bucket not available, skipping", "err", err)
@@ -336,6 +372,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		var rec ec2vpc.SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -351,7 +388,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 	return nil
 }
 
-func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string) error {
+func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string, skips *skipLog) error {
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketENIs)
 	if err != nil {
 		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
@@ -375,6 +412,7 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		var rec ec2vpc.ENIRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -383,16 +421,25 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		addr, err := netip.ParseAddr(rec.PrivateIpAddress)
 		if err != nil {
 			slog.Warn("reconcile/intent: ENI IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PrivateIpAddress, "err", err)
+			skips.add(key)
 			continue
 		}
 		mac, err := net.ParseMAC(rec.MacAddress)
 		if err != nil {
 			slog.Warn("reconcile/intent: ENI MAC parse failed", "eni", rec.NetworkInterfaceId, "mac", rec.MacAddress, "err", err)
+			skips.add(key)
 			continue
 		}
 		// PublicIP (auto-assigned or ELB) marks the ENI for drop-gate exemption;
-		// zero/invalid when absent. User EIPs come from the EIP bucket instead.
-		publicIP, _ := netip.ParseAddr(rec.PublicIpAddress)
+		// zero when absent. User EIPs come from the EIP bucket instead. A bad
+		// address keeps the ENI, so its private port is still repaired.
+		var publicIP netip.Addr
+		if rec.PublicIpAddress != "" {
+			if publicIP, err = netip.ParseAddr(rec.PublicIpAddress); err != nil {
+				slog.Warn("reconcile/intent: ENI public IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PublicIpAddress, "err", err)
+				skips.add(key)
+			}
+		}
 		out[rec.NetworkInterfaceId] = topology.PortSpec{
 			PortID:       rec.NetworkInterfaceId,
 			SubnetID:     rec.SubnetId,
@@ -470,7 +517,7 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 	return false
 }
 
-func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
+func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec, skips *skipLog) error {
 	kv, err := js.KeyValue(ctx, ec2igw.KVBucketIGW)
 	if err != nil {
 		slog.Debug("reconcile/intent: IGW bucket not available, skipping", "err", err)
@@ -494,6 +541,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		var rec ec2igw.IGWRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if rec.VpcId == "" || !strings.EqualFold(rec.State, "available") {
@@ -512,7 +560,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 	return nil
 }
 
-func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
+func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec, skips *skipLog) error {
 	kv, err := js.KeyValue(ctx, ec2eip.KVBucketEIPs)
 	if err != nil {
 		slog.Debug("reconcile/intent: EIP bucket not available, skipping", "err", err)
@@ -536,6 +584,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		var rec ec2eip.EIPRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if !strings.EqualFold(rec.State, "associated") || rec.VpcId == "" || rec.PublicIp == "" || rec.PrivateIp == "" {
@@ -560,7 +609,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 }
 
 // loadRouteTables snapshots every local-VPC route table.
-func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]ec2routetable.RouteTableRecord, error) {
+func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, skips *skipLog) ([]ec2routetable.RouteTableRecord, error) {
 	kv, err := js.KeyValue(ctx, ec2routetable.KVBucketRouteTables)
 	if err != nil {
 		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
@@ -585,6 +634,7 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		var rec ec2routetable.RouteTableRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -609,6 +659,7 @@ func loadNATGWs(
 	subnets map[string]topology.SubnetSpec,
 	routeTables []ec2routetable.RouteTableRecord,
 	out map[string]policy.NATGWSpec,
+	skips *skipLog,
 ) error {
 	kv, err := js.KeyValue(ctx, ec2natgw.KVBucketNatGateways)
 	if err != nil {
@@ -633,6 +684,7 @@ func loadNATGWs(
 		var rec ec2natgw.NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
 		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" {

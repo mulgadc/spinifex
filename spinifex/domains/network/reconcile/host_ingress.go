@@ -120,9 +120,18 @@ func (h *HostIngress) Pass(ctx context.Context) (time.Duration, error) {
 		return h.gatewayTransitIP(ctx, vpcID)
 	})
 
+	// Partial intent can drop a VPC or hand its CIDR to another one, so only
+	// a CIDR with no route at all may change.
+	partial := intent.TopologyIncomplete
 	var errs []error
+	if partial != nil {
+		errs = append(errs, fmt.Errorf("host ingress left every route in place: %w", partial))
+	}
 	for cidr, via := range plan.want {
 		if have[cidr] == via {
+			continue
+		}
+		if _, routed := have[cidr]; routed && partial != nil {
 			continue
 		}
 		if err := h.Routes.Ensure(ctx, cidr, via); err != nil {
@@ -130,6 +139,9 @@ func (h *HostIngress) Pass(ctx context.Context) (time.Duration, error) {
 		}
 	}
 	for cidr, via := range have {
+		if partial != nil {
+			break
+		}
 		_, wanted := plan.want[cidr]
 		_, held := plan.held[cidr]
 		if wanted || held {

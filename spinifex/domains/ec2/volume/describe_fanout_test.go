@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -189,6 +190,52 @@ func TestDescribeVolumesFamily_KeepsPerIDResults(t *testing.T) {
 			_, err = m.call(context.Background(), svc, []*string{aws.String(ids[0]), aws.String(ids[2])})
 			require.Error(t, err)
 			assert.Equal(t, m.storeFailure, err.Error(), "a store failure that is not NoSuchKey")
+		})
+	}
+}
+
+// deadlineGetStore records the deadline of the context each read runs under.
+type deadlineGetStore struct {
+	objectstore.ObjectStore
+
+	mu        sync.Mutex
+	deadlines []time.Time
+	missing   int
+}
+
+func (s *deadlineGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	s.mu.Lock()
+	if d, ok := ctx.Deadline(); ok {
+		s.deadlines = append(s.deadlines, d)
+	} else {
+		s.missing++
+	}
+	s.mu.Unlock()
+	return s.ObjectStore.GetObject(ctx, in)
+}
+
+// The daemon handler has no deadline of its own, so the reads must carry one
+// that ends before the gateway stops waiting for the reply.
+func TestDescribeVolumesFamily_ReadsEndInsideTheReplyTimeout(t *testing.T) {
+	const replyTimeout = 30 * time.Second
+	for _, m := range describeFamily {
+		t.Run(m.name, func(t *testing.T) {
+			mem := objectstore.NewMemoryObjectStore()
+			ids := seedFanoutVolumes(t, mem, 3)
+			store := &deadlineGetStore{ObjectStore: mem}
+			svc := newFanoutService(t, store)
+
+			start := time.Now()
+			_, err := m.call(context.Background(), svc, aws.StringSlice(ids))
+			require.NoError(t, err)
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			assert.Zero(t, store.missing, "a read ran with no deadline")
+			require.Len(t, store.deadlines, len(ids))
+			for _, d := range store.deadlines {
+				assert.True(t, d.Before(start.Add(replyTimeout)), "read deadline %v is not inside the reply timeout", d.Sub(start))
+			}
 		})
 	}
 }

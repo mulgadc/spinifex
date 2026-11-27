@@ -1785,3 +1785,14 @@ func TestSpinifexTomlTemplate_NonDefaultProviderLoadsBesidePeers(t *testing.T) {
 	assert.Contains(t, cfg.Nodes, "node2")
 	assert.Contains(t, cfg.Nodes, "node3")
 }
+
+// The --ipsec default reaches the rendered config as an explicit key, so a
+// later upgrade, which keeps the file, keeps the install's choice.
+func TestAdminInitFlag_IPSecDefaultRendersExplicitFalse(t *testing.T) {
+	v, err := adminInitCmd.Flags().GetBool("ipsec")
+	require.NoError(t, err)
+
+	raw, err := os.ReadFile(renderSpinifexToml(t, admin.ConfigSettings{IPSecEnabled: v}))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "ipsec_enabled = false")
+}

@@ -424,7 +424,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
-	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("ipsec", false, "Encrypt intra-AZ Geneve between nodes via OVN native IPsec (cluster-wide). Off by default; pass --ipsec=true on any fabric you do not trust: a shared switch, more than one site, or a provider network")
 	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join

@@ -45,9 +45,9 @@ Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overla
 
 ## Overlay Encryption (IPsec)
 
-**IPsec is on by default.** Spinifex encrypts the Geneve overlay with OVN native IPsec — ESP transport mode, `rfc4106(gcm(aes))` 128, authenticated with each node's certificate under the cluster CA. Every packet between two instances on different hosts is encrypted on the wire.
+**IPsec is off by default for a new install.** Pass `spx admin init --ipsec=true` (or `install-node.sh --ipsec on`) and Spinifex encrypts the Geneve overlay with OVN native IPsec — ESP transport mode, `rfc4106(gcm(aes))` 128, authenticated with each node's certificate under the cluster CA. Every packet between two instances on different hosts is then encrypted on the wire. An existing cluster keeps the setting it was installed with.
 
-This is the right default and matches the AWS trust model: east-west guest traffic crosses a physical fabric that the VPC abstraction otherwise asks you to trust implicitly. It is also, on a fabric you already control, the single largest performance cost in the stack.
+Turn it on wherever the fabric between nodes is not yours alone: a shared switch, more than one site, or a provider network. There, east-west guest traffic crosses a physical fabric that the VPC abstraction otherwise asks you to trust implicitly, which is the AWS trust model. Off is the default because most installs are one rack on a fabric the operator owns, where IPsec is the single largest performance cost in the stack.
 
 ### When disabling is appropriate
 
@@ -69,7 +69,7 @@ Note that this setting governs the overlay only. It has no effect on TLS termina
 
 Measured on the reference cluster: 4 nodes, AMD EPYC 7513 (128 threads), Mellanox **ConnectX-5** (MT27800, firmware 16.35.8002) on a 100 GbE fabric, `t3.xlarge` guests (4 vCPU), Ubuntu 26.04, kernel 6.12. Three client guests running `iperf` at 4 streams for 60s into one server guest, over their private addresses.
 
-| | IPsec on (default) | IPsec off | |
+| | IPsec on | IPsec off (default) | |
 | --- | --- | --- | --- |
 | aggregate into one guest | 3.17 Gbit/s | **21.82 Gbit/s** | **6.9x** |
 | per client, mean | 1.06 Gbit/s | **7.27 Gbit/s** | |
@@ -157,14 +157,14 @@ For Docker, in `/etc/docker/daemon.json`:
 
 ```json
 {
-  "mtu": 1408,
+  "mtu": 1442,
   "default-network-opts": {
-    "bridge": { "com.docker.network.driver.mtu": "1408" }
+    "bridge": { "com.docker.network.driver.mtu": "1442" }
   }
 }
 ```
 
-Use 1442 when `ipsec_enabled = false`, and restart the Docker daemon so the default bridge is recreated.
+This is for the default, `ipsec_enabled = false`. Use 1408 on a cluster with IPsec on. Then restart the Docker daemon so the default bridge is recreated.
 The gateway MTU follows `ipsec_enabled` and converges on the next reconcile pass, so change the inner MTU together with the guest MTU.
 
 ## Private vs Public Subnets

@@ -339,7 +339,7 @@ sudo spx admin init --force \
 
 It is also what decides how many nodes the cluster's JetStream state is replicated across, so it is worth getting right rather than raising later — see [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated). Every joining server takes the count from server 1, so it is chosen once, here. `--nodes 2` is refused: use 1 for a single server, or 3 and up for a cluster that can survive losing one.
 
-IPsec encrypts the Geneve overlay between servers and is on by default. Joining servers take the setting from server 1, so it is chosen once, on init. On servers that share a trusted private link, `--ipsec=false` leaves the overlay unencrypted in exchange for considerably higher throughput between instances.
+IPsec encrypts the Geneve overlay between servers, which carries instance traffic, and it is **off by default**. Joining servers take the setting from server 1, so it is chosen once, on init. On any fabric you do not trust, such as a shared switch, more than one site, or a provider network, add `--ipsec=true` to the init command above. It encrypts every packet between instances on different servers, at a cost in throughput between them. The other channels between servers, NATS, the AWS gateway and Predastore, use TLS whatever this setting is.
 
 The init output displays the join command including the token:
 

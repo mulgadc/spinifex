@@ -177,7 +177,7 @@ Control-plane and data-plane traffic between Spinifex nodes, for completeness an
 | Predastore meta | UDP 7660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Raft consensus over buckets and the object index. Same port on every machine. |
 | OVN NB/SB (client) | 6641 / 6642 | Cluster network only (TLS planned) | Network control plane; vpcd and ovn-controller dial the quorum |
 | OVN NB/SB (RAFT) | 6643 / 6644 | Cluster network only (TLS planned) | NB/SB database replication across the 3 quorum nodes |
-| OVN tunnels (Geneve) | UDP 6081 | Encapsulated by IPsec when `network.ipsec_enabled` is true, which is the default on multi-node clusters | Tenant traffic overlay between chassis, on the `vpc` plane |
+| OVN tunnels (Geneve) | UDP 6081 | Encapsulated by IPsec when `network.ipsec_enabled` is true. A new install writes `false` unless `spx admin init --ipsec=true` is passed, so Geneve is plaintext by default | Tenant traffic overlay between chassis, on the `vpc` plane |
 | OVN IPsec (IKE / NAT-T / ESP) | UDP 500, UDP 4500, IP proto 50 | Certificate-based against the cluster CA, negotiated by `ovs-monitor-ipsec` | Protects the Geneve tunnels above. OVN-native only: no layer configures strongSwan or libreswan directly. On Oracle Linux the daemon also blocks outbound Geneve that no SA covers, so a peer failing IKE gets no plaintext. |
 | Instance DNS forwarding | UDP/TCP 5300 | None | Each node's per-instance DNS shim forwards guest queries to peer nodes' northstar `:5300` |
 
@@ -253,7 +253,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 
 | File | Keys | Controls |
 |------|------|----------|
-| `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking`, `network.ipsec_enabled` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. `network.ipsec_enabled` (default `true`) decides whether OVN-native IPsec protects the Geneve tunnels, and therefore whether the IKE daemon (`charon`, or `pluto` on Oracle Linux) listens on 500/4500 — single-node clusters never enable it. |
+| `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking`, `network.ipsec_enabled` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. `network.ipsec_enabled` (written `false` by a new install unless `--ipsec=true`; a config with no key reads as `true`) decides whether OVN-native IPsec protects the Geneve tunnels, and therefore whether the IKE daemon (`charon`, or `pluto` on Oracle Linux) listens on 500/4500 — single-node clusters never enable it. |
 | `/etc/spinifex/nats.conf` | `listen`, `cluster.listen`, `cluster.routes`, `http`, `tls`, `cluster.authorization` | NATS client/cluster/monitoring listeners, peer routes, TLS, cluster token. |
 | `/etc/spinifex/predastore/predastore.toml` | `[[host]].bind_addr`, `[[host]].addr`, `[[host]].tls_cert`, `[[host]].tls_key`, `[[host.node]].role`, `[[host.node]].port` | Predastore host and node layout: `bind_addr` is the address the host's sockets bind, `addr` is the address peer hosts dial it on, and both carry no port — the nodes pinned to the host supply their own. The service's `--host`/`--port` override the bind address and the gate's S3 port. |
 | `/etc/spinifex/northstar/northstar.toml` | `listen`, `forwarders` | DNS listen addresses (`:53` on the advertise address, `:5300` wildcard) and upstream resolvers. |

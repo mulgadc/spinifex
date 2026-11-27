@@ -138,7 +138,7 @@ across cores while preserving ordering. It requires the SA to be created with a
 
 Measured on the test rig, three clients into one guest, 4 streams each, 60s:
 
-| | IPsec on (default) | IPsec off | |
+| | IPsec on | IPsec off (default) | |
 | --- | --- | --- | --- |
 | aggregate into one guest | 3.58 Gbit/s | **17.6 Gbit/s** | **4.9x** |
 | per client | 1.19 Gbit/s | **5.88 Gbit/s** | |

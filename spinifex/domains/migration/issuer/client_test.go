@@ -102,14 +102,14 @@ func TestClient_CreateSession_MalformedResponses(t *testing.T) {
 
 func TestClient_CreateSession_ErrorCodeForms(t *testing.T) {
 	for name, tt := range map[string]struct{ header, body, want string }{
-		"header with uri":      {"AccessDeniedException:http://x/", `{}`, "AccessDeniedException"},
-		"type with namespace":  {"", `{"__type":"com.amazon#ValidationException","message":"m"}`, "ValidationException"},
-		"code field":           {"", `{"code":"ThrottlingException"}`, "ThrottlingException"},
-		"header beats body":    {"ResourceNotFoundException", `{"__type":"Other"}`, "ResourceNotFoundException"},
-		"namespace in header":  {"aws.protocoltests#FooError", `{}`, "FooError"},
+		"header with uri":     {"AccessDeniedException:http://x/", `{}`, "AccessDeniedException"},
+		"type with namespace": {"", `{"__type":"com.amazon#ValidationException","message":"m"}`, "ValidationException"},
+		"code field":          {"", `{"code":"ThrottlingException"}`, "ThrottlingException"},
+		"header beats body":   {"ResourceNotFoundException", `{"__type":"Other"}`, "ResourceNotFoundException"},
+		"namespace in header": {"aws.protocoltests#FooError", `{}`, "FooError"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := &http.Response{StatusCode: 400, Header: http.Header{}}
+			resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}}
 			if tt.header != "" {
 				resp.Header.Set("X-Amzn-Errortype", tt.header)
 			}

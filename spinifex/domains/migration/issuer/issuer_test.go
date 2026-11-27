@@ -169,6 +169,6 @@ func TestClientCertificate_RefusesJSON(t *testing.T) {
 	require.NoError(t, err)
 	_, err = json.Marshal(cc)
 	assert.Error(t, err)
-	_, err = json.Marshal(struct{ C *ClientCertificate }{cc})
+	_, err = json.Marshal([]*ClientCertificate{cc})
 	assert.Error(t, err)
 }

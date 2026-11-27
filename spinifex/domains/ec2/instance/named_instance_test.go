@@ -1,20 +1,15 @@
 package instance
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -43,54 +38,54 @@ func namedVM() *vm.VM {
 }
 
 func TestProjectNamedInstance(t *testing.T) {
-	running := &NamedInstance{
-		InstanceID: namedID, AccountID: namedAccount, State: vm.StateRunning,
+	running := &projection.NamedInstance{
+		InstanceID: namedID, AccountID: namedAccount, State: "running",
 		PrimaryInterfaceID: "eni-primary", VpcID: "vpc-a", SubnetID: "subnet-a",
 	}
 	now := time.Now()
 	for name, tc := range map[string]struct {
 		caller string
 		edit   func(*vm.VM)
-		want   func(*NamedInstance) *NamedInstance
+		want   func(*projection.NamedInstance) *projection.NamedInstance
 	}{
-		"running": {namedAccount, func(*vm.VM) {}, func(n *NamedInstance) *NamedInstance { return n }},
+		"running": {namedAccount, func(*vm.VM) {}, func(n *projection.NamedInstance) *projection.NamedInstance { return n }},
 		"stopped keeps its placement": {namedAccount, func(v *vm.VM) { v.Status = vm.StateStopped },
-			func(n *NamedInstance) *NamedInstance { n.State = vm.StateStopped; return n }},
+			func(n *projection.NamedInstance) *projection.NamedInstance { n.State = "stopped"; return n }},
 		"terminate decided": {namedAccount, func(v *vm.VM) { v.DeletionTimestamp = &now },
-			func(n *NamedInstance) *NamedInstance { n.Deleting = true; return n }},
+			func(n *projection.NamedInstance) *projection.NamedInstance { n.Deleting = true; return n }},
 		"other account":            {namedOther, func(*vm.VM) {}, nil},
 		"managed, customer caller": {namedAccount, func(v *vm.VM) { v.ManagedBy = "elbv2" }, nil},
 		"unowned, customer caller": {namedAccount, func(v *vm.VM) { v.AccountID = "" }, nil},
 		"managed, global caller": {awsidentifiers.GlobalAccountID, func(v *vm.VM) { v.ManagedBy, v.AccountID = "elbv2", awsidentifiers.GlobalAccountID },
-			func(n *NamedInstance) *NamedInstance { n.AccountID = awsidentifiers.GlobalAccountID; return n }},
+			func(n *projection.NamedInstance) *projection.NamedInstance { n.AccountID = awsidentifiers.GlobalAccountID; return n }},
 		"primary in another VPC, matching secondary": {namedAccount, func(v *vm.VM) {
 			v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
 				namedNIC("eni-second", "vpc-a", "subnet-a", 1), namedNIC("eni-primary", "vpc-b", "subnet-b", 0),
 			}
-		}, func(n *NamedInstance) *NamedInstance { n.VpcID, n.SubnetID = "vpc-b", "subnet-b"; return n }},
+		}, func(n *projection.NamedInstance) *projection.NamedInstance { n.VpcID, n.SubnetID = "vpc-b", "subnet-b"; return n }},
 		"device 0 is not the recorded primary": {namedAccount, func(v *vm.VM) {
 			v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{namedNIC("eni-other", "vpc-a", "subnet-a", 0)}
-		}, func(n *NamedInstance) *NamedInstance {
+		}, func(n *projection.NamedInstance) *projection.NamedInstance {
 			n.PrimaryInterfaceID, n.VpcID, n.SubnetID = "", "", ""
 			return n
 		}},
 		"no recorded primary": {namedAccount, func(v *vm.VM) { v.ENIId = "" },
-			func(n *NamedInstance) *NamedInstance {
+			func(n *projection.NamedInstance) *projection.NamedInstance {
 				n.PrimaryInterfaceID, n.VpcID, n.SubnetID = "", "", ""
 				return n
 			}},
 		"no interfaces": {namedAccount, func(v *vm.VM) { v.Instance.NetworkInterfaces = nil },
-			func(n *NamedInstance) *NamedInstance {
+			func(n *projection.NamedInstance) *projection.NamedInstance {
 				n.PrimaryInterfaceID, n.VpcID, n.SubnetID = "", "", ""
 				return n
 			}},
 		"no attachment index": {namedAccount, func(v *vm.VM) { v.Instance.NetworkInterfaces[0].Attachment.DeviceIndex = nil },
-			func(n *NamedInstance) *NamedInstance {
+			func(n *projection.NamedInstance) *projection.NamedInstance {
 				n.PrimaryInterfaceID, n.VpcID, n.SubnetID = "", "", ""
 				return n
 			}},
 		"no instance projection": {namedAccount, func(v *vm.VM) { v.Instance = nil },
-			func(n *NamedInstance) *NamedInstance {
+			func(n *projection.NamedInstance) *projection.NamedInstance {
 				n.PrimaryInterfaceID, n.VpcID, n.SubnetID = "", "", ""
 				return n
 			}},
@@ -105,147 +100,7 @@ func TestProjectNamedInstance(t *testing.T) {
 			}
 			want := *running
 			assert.Equal(t, tc.want(&want), got)
+			assert.Equal(t, v.Status == vm.StateRunning, got.Running(), "the predicate follows the recorded state")
 		})
-	}
-}
-
-func TestValidInstanceID(t *testing.T) {
-	for _, id := range []string{"i-01234567", namedID} {
-		assert.True(t, ValidInstanceID(id), id)
-	}
-	for _, id := range []string{"", "i-", "i-0123456", "i-0123456789abcdef", "i-0123456789ABCDEF0", "i-0123456*", "i-01234567.x", "x-01234567", "i-01234567\n"} {
-		assert.False(t, ValidInstanceID(id), "%q", id)
-	}
-}
-
-func namedBucket(t *testing.T) (jetstream.JetStream, jetstream.KeyValue) {
-	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: instanceStateBucket, History: 1})
-	require.NoError(t, err)
-	return js, kv
-}
-
-func putNamed(t *testing.T, kv jetstream.KeyValue, key string, v *vm.VM) {
-	raw, err := json.Marshal(v.Record())
-	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), key, raw)
-	require.NoError(t, err)
-}
-
-func TestNamedInstanceReader_PointReadsLiveRecord(t *testing.T) {
-	js, kv := namedBucket(t)
-	putNamed(t, kv, instanceRecordPrefix+namedID, namedVM())
-	stopped := namedVM()
-	stopped.ID, stopped.Status = "i-0000000000000000a", vm.StateStopped
-	putNamed(t, kv, instanceRecordPrefix+stopped.ID, stopped)
-	r := NewNamedInstanceReader(js)
-
-	got, err := r.NamedInstance(t.Context(), namedAccount, namedID)
-	require.NoError(t, err)
-	assert.Equal(t, &NamedInstance{
-		InstanceID: namedID, AccountID: namedAccount, State: vm.StateRunning,
-		PrimaryInterfaceID: "eni-primary", VpcID: "vpc-a", SubnetID: "subnet-a",
-	}, got)
-
-	got, err = r.NamedInstance(t.Context(), namedAccount, stopped.ID)
-	require.NoError(t, err)
-	assert.Equal(t, vm.StateStopped, got.State, "a stopped instance keeps its live record")
-
-	for id, drop := range map[string]func(context.Context, string, ...jetstream.KVDeleteOpt) error{
-		"i-0000000000000000d": kv.Delete, "i-0000000000000000e": kv.Purge,
-	} {
-		gone := namedVM()
-		gone.ID = id
-		putNamed(t, kv, instanceRecordPrefix+id, gone)
-		require.NoError(t, drop(t.Context(), instanceRecordPrefix+id))
-	}
-
-	for name, tc := range map[string]struct{ caller, id string }{
-		"absent":        {namedAccount, "i-0000000000000000b"},
-		"deleted":       {namedAccount, "i-0000000000000000d"},
-		"purged":        {namedAccount, "i-0000000000000000e"},
-		"other account": {namedOther, namedID},
-	} {
-		got, err := r.NamedInstance(t.Context(), tc.caller, tc.id)
-		require.NoError(t, err, name)
-		assert.Nil(t, got, name)
-	}
-}
-
-// leaderAhead is a store whose replica still holds the running record after
-// the stream leader has recorded the stop.
-type leaderAhead struct {
-	*kvstore.Store[vm.InstanceRecord]
-	leader *vm.InstanceRecord
-}
-
-func (l leaderAhead) LeaderGet(context.Context, string) (*vm.InstanceRecord, uint64, error) {
-	return l.leader, 2, nil
-}
-
-// The decision reads the leader's state, not a lagging replica's older running state.
-func TestNamedInstanceReader_ReadsTheLeader(t *testing.T) {
-	js, kv := namedBucket(t)
-	putNamed(t, kv, instanceRecordPrefix+namedID, namedVM())
-	stopped := namedVM()
-	stopped.Status = vm.StateStopped
-	store := kvstore.New[vm.InstanceRecord](js, kvstore.Config{Name: instanceStateBucket, History: 1, AttachOnly: true})
-	r := &NamedInstanceReader{records: leaderAhead{Store: store, leader: stopped.Record()}}
-
-	got, err := r.NamedInstance(t.Context(), namedAccount, namedID)
-	require.NoError(t, err)
-	assert.Equal(t, vm.StateStopped, got.State)
-}
-
-func TestNamedInstanceReader_FailuresAreNotAbsence(t *testing.T) {
-	js, kv := namedBucket(t)
-	putNamed(t, kv, instanceRecordPrefix+namedID, namedVM())
-
-	t.Run("cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		_, err := NewNamedInstanceReader(js).NamedInstance(ctx, namedAccount, namedID)
-		require.Error(t, err)
-	})
-	t.Run("record under another name", func(t *testing.T) {
-		other := namedVM()
-		other.ID = "i-0000000000000000c"
-		putNamed(t, kv, instanceRecordPrefix+"i-0000000000000000d", other)
-		_, err := NewNamedInstanceReader(js).NamedInstance(t.Context(), namedAccount, "i-0000000000000000d")
-		require.ErrorContains(t, err, `names "i-0000000000000000c"`)
-	})
-	t.Run("record with no stored identity", func(t *testing.T) {
-		record := namedVM().Record()
-		record.Metadata.Name = ""
-		raw, err := json.Marshal(record)
-		require.NoError(t, err)
-		_, err = kv.Put(t.Context(), instanceRecordPrefix+namedID, raw)
-		require.NoError(t, err)
-		got, err := NewNamedInstanceReader(js).NamedInstance(t.Context(), namedAccount, namedID)
-		require.ErrorContains(t, err, `names ""`)
-		assert.Nil(t, got)
-	})
-	t.Run("undecodable record", func(t *testing.T) {
-		_, err := kv.Put(t.Context(), instanceRecordPrefix+"i-0000000000000000e", []byte("{"))
-		require.NoError(t, err)
-		_, err = NewNamedInstanceReader(js).NamedInstance(t.Context(), namedAccount, "i-0000000000000000e")
-		require.Error(t, err)
-	})
-	t.Run("missing bucket", func(t *testing.T) {
-		_, _, bare := testutil.StartTestJetStream(t)
-		_, err := NewNamedInstanceReader(bare).NamedInstance(t.Context(), namedAccount, namedID)
-		require.Error(t, err)
-		_, err = bare.KeyValue(t.Context(), instanceStateBucket)
-		require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "a reader never creates the record space")
-	})
-}
-
-func TestNamedInstanceReader_MalformedIDReadsNothing(t *testing.T) {
-	_, _, bare := testutil.StartTestJetStream(t)
-	r := NewNamedInstanceReader(bare)
-	for _, id := range []string{"", "i-*", "i->", "i-01234567.x", "vol-01234567", "i-0123 4567"} {
-		got, err := r.NamedInstance(t.Context(), namedAccount, id)
-		require.NoError(t, err, "a read of the missing bucket would fail: %q", id)
-		assert.Nil(t, got)
 	}
 }

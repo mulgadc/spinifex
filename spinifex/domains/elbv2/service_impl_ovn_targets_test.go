@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -31,11 +32,11 @@ type fakeInstances struct {
 	onRead func(id string)
 }
 
-var _ instance.NamedInstanceLookup = (*fakeInstances)(nil)
+var _ projection.NamedInstanceLookup = (*fakeInstances)(nil)
 
 func newFakeInstances() *fakeInstances { return &fakeInstances{vms: map[string]*vm.VM{}} }
 
-func (f *fakeInstances) NamedInstance(_ context.Context, accountID, id string) (*instance.NamedInstance, error) {
+func (f *fakeInstances) NamedInstance(_ context.Context, accountID, id string) (*projection.NamedInstance, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, id)
 	hook, fail := f.onRead, f.fail

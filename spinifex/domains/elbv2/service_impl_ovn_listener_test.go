@@ -234,7 +234,6 @@ func TestOVNFixtureListener_MalformedGroupARNReadsNoGroup(t *testing.T) {
 			h.requireNoEffects(elbBefore, sideBefore)
 		})
 	}
-
 }
 
 func TestOVNFixtureListener_PersistedGroupARNFormsStayAccepted(t *testing.T) {

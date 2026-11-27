@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -88,9 +88,10 @@ func (h *ovnCreateHarness) putLive(kv jetstream.KeyValue, v *vm.VM) {
 	require.NoError(h.t, err)
 }
 
-// The three operations answer within their deadlines while a reader of the
-// owner key holds its updates, and the real EC2 reader admits the registration.
-func TestOVNFixtureIntent_RequestsDoNotWaitForAHeldReader(t *testing.T) {
+// runOVNFixtureIntentHeldReader checks that the three operations answer within
+// their deadlines while a reader of the owner key holds its updates, and that
+// the named reader newReader builds admits and refuses by the live record.
+func runOVNFixtureIntentHeldReader(t *testing.T, newReader func(jetstream.JetStream) projection.NamedInstanceLookup) {
 	h := newOVNCreateHarness(t)
 	lbArn := aws.StringValue(h.sealedOVN("ovn-nlb").LoadBalancerArn)
 	tgArn := aws.StringValue(h.tcpGroup("ovn-tg", 8080).TargetGroupArn)
@@ -99,7 +100,7 @@ func TestOVNFixtureIntent_RequestsDoNotWaitForAHeldReader(t *testing.T) {
 	records := h.liveRecords()
 	a := h.running(1)
 	h.putLive(records, h.instance.vms[a])
-	h.svc.ovn.instances = instance.NewNamedInstanceReader(h.js)
+	h.svc.ovn.instances = newReader(h.js)
 	sideBefore := h.sideEffects()
 	keysBefore := keySet(h.state(KVBucketELBv2))
 
@@ -122,15 +123,14 @@ func TestOVNFixtureIntent_RequestsDoNotWaitForAHeldReader(t *testing.T) {
 	ctx, cancel = h.bounded()
 	_, err = h.svc.RegisterTargets(ctx, &elbv2.RegisterTargetsInput{TargetGroupArn: aws.String(tgArn), Targets: descs(tuple(a, 0), tuple(a, 9000))}, testAccountID)
 	cancel()
-	require.NoError(t, err, "the EC2 reader admits a running instance in the VPC")
+	require.NoError(t, err, "the named reader admits a running instance in the VPC")
 	ctx, cancel = h.bounded()
 	_, err = h.svc.DeregisterTargets(ctx, &elbv2.DeregisterTargetsInput{TargetGroupArn: aws.String(tgArn), Targets: descs(tuple(a, 9000))}, testAccountID)
 	cancel()
 	require.NoError(t, err)
 
-	stopped := *h.instance.vms[a]
-	stopped.Status = vm.StateStopped
-	h.putLive(records, &stopped)
+	h.instance.set(a, func(v *vm.VM) { v.Status = vm.StateStopped })
+	h.putLive(records, h.instance.vms[a])
 	err = h.register(tgArn, tuple(a, 9001))
 	requireFenceCode(t, err, awserrors.ErrorELBv2InvalidTarget)
 

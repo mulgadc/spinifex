@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -31,7 +31,7 @@ type ovnFixture struct {
 	parents *ec2vpc.Parents
 	groups  *ec2vpc.GroupLookup
 	// instances is the EC2 named instance lookup that checks registrations.
-	instances instance.NamedInstanceLookup
+	instances projection.NamedInstanceLookup
 }
 
 // lbNameProblem applies AWS's load balancer name rules. It returns the reason

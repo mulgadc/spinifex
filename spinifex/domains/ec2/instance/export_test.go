@@ -60,9 +60,3 @@ func ParseDataVolumeParams(input *ec2.RunInstancesInput) []DataVolumeParams {
 	}
 	return out
 }
-
-// The instance record space names a test pins to the daemon's.
-const (
-	InstanceStateBucketName  = instanceStateBucket
-	InstanceRecordPrefixName = instanceRecordPrefix
-)

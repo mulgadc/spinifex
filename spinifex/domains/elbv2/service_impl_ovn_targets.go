@@ -9,9 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // ovnTargetRequest is one requested target: an instance and its explicit
@@ -42,7 +41,7 @@ func ovnTargetsShape(arn *string, targets []*elbv2.TargetDescription, region, ac
 			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "An availability zone is not supported for an instance target")
 		case t.Port != nil && !validFixturePort(*t.Port):
 			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "A target port must be between 1 and 65535")
-		case !instance.ValidInstanceID(*t.Id):
+		case !projection.ValidInstanceID(*t.Id):
 			return nil, awserrors.Errorf(awserrors.ErrorELBv2InvalidTarget, "The target '%s' is not a valid instance ID", *t.Id)
 		}
 		out = append(out, ovnTargetRequest{id: *t.Id, port: aws.Int64Value(t.Port)})
@@ -140,7 +139,7 @@ func (s *ELBv2ServiceImpl) ovnTargetEligible(ctx context.Context, accountID, id,
 		slog.ErrorContext(ctx, "RegisterTargets: fixture instance read failed", "instanceId", id, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if n == nil || n.InstanceID != id || n.AccountID != accountID || n.State != vm.StateRunning || n.Deleting ||
+	if n == nil || n.InstanceID != id || n.AccountID != accountID || !n.Running() || n.Deleting ||
 		n.PrimaryInterfaceID == "" || n.VpcID != vpcID {
 		return awserrors.Errorf(awserrors.ErrorELBv2InvalidTarget,
 			"The target '%s' is not a running instance in the load balancer's VPC", id)

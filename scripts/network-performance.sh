@@ -142,6 +142,7 @@ done
 declare -A RETRANS_BEFORE
 for c in "${CLIENT_LIST[@]}"; do
     RETRANS_BEFORE[$c]=$(retrans_of "$c" 2>/dev/null)
+    [[ "${RETRANS_BEFORE[$c]}" =~ ^[0-9]+$ ]] || fail "$c: nstat gave no TcpRetransSegs counter"
 done
 for g in "$SERVER" "${CLIENT_LIST[@]}"; do
     irqs_of "$g" > "$OUT_DIR/$g.irq-before.txt" 2>/dev/null || true
@@ -207,7 +208,8 @@ done
 : > "$OUT_DIR/retrans.txt"
 for c in "${CLIENT_LIST[@]}"; do
     after=$(retrans_of "$c" 2>/dev/null)
-    delta=$(( ${after:-0} - ${RETRANS_BEFORE[$c]:-0} ))
+    [[ "$after" =~ ^[0-9]+$ ]] || fail "$c: nstat gave no TcpRetransSegs counter after the run"
+    delta=$(( after - RETRANS_BEFORE[$c] ))
     printf '%s\t%s\n' "$c" "$delta" >> "$OUT_DIR/retrans.txt"
     log "  $c TCP retransmits over the run: $delta"
 done
@@ -243,8 +245,11 @@ for c in "${CLIENT_LIST[@]}"; do
         awk '{v[NR] = $1} END { if (NR) { a = int((NR + 1) / 2); b = int(NR * 0.99); if (b < 1) b = 1; print v[a], v[b] } }')"
     [ -n "$p50" ] && [ -n "$p99" ] ||
         fail "$c: ping to $SERVER_IP returned no RTT samples, see $OUT_DIR/$c.ping.txt"
-    printf '%s\tp50 %s ms\tp99 %s ms\n' "$c" "$p50" "$p99" >> "$OUT_DIR/latency.txt"
-    log "  $c -> $SERVER_IP RTT p50 $p50 ms, p99 $p99 ms"
+    # ping's summary: "rtt min/avg/max/mdev = 0.1/0.2/0.3/0.0 ms".
+    IFS=/ read -r rmin ravg rmax _ <<<"$(sed -n 's/^rtt [^=]*= *//p' "$OUT_DIR/$c.ping.txt")"
+    printf '%s\tmin %s ms\tavg %s ms\tmax %s ms\tp50 %s ms\tp99 %s ms\n' \
+        "$c" "${rmin:-?}" "${ravg:-?}" "${rmax:-?}" "$p50" "$p99" >> "$OUT_DIR/latency.txt"
+    log "  $c -> $SERVER_IP RTT min ${rmin:-?}, avg ${ravg:-?}, max ${rmax:-?}, p50 $p50, p99 $p99 ms"
 done
 
 # summary.txt keeps one "<client> <Gbit/s>" line per client first, which

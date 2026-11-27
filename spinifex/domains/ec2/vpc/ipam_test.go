@@ -377,10 +377,6 @@ func TestIPAM_AllocateConcurrentNoDuplicates(t *testing.T) {
 	assert.Len(t, entries, allocations)
 }
 
-// seededVIPPurpose is the persisted purpose value of a private load balancer
-// address, written here in today's encoding before any code knows it.
-const seededVIPPurpose = "lb-vip"
-
 // seedIPAMRow writes record as the committed row for its subnet and returns
 // the bucket and the bytes the row holds.
 func seedIPAMRow(t *testing.T, record IPAMRecord) (*IPAM, jetstream.KeyValue, []byte) {
@@ -411,19 +407,19 @@ func TestIPAM_ReleaseIPRefusesVIPEntry(t *testing.T) {
 		CidrBlock: "10.0.40.0/24",
 		Allocated: []IPEntry{
 			{IP: "10.0.40.4", Purpose: PurposeENIPrimary, OwnerID: "eni-0a"},
-			{IP: "10.0.40.5", Purpose: seededVIPPurpose, OwnerID: "lb-0a"},
+			{IP: "10.0.40.5", Purpose: PurposeLBVIP, OwnerID: "lb-0a"},
 		},
 	})
 
 	err := ipam.ReleaseIP(t.Context(), subnet, "10.0.40.5")
-	assert.Error(t, err, "an address-only release must not free a load balancer address")
+	assert.ErrorIs(t, err, ErrPurposeReserved, "an address-only release must not free a load balancer address")
 	assert.Equal(t, string(before), string(committedIPAMRow(t, kv, subnet)), "a refused release leaves the row unchanged")
 }
 
 func TestIPAM_ReleaseIPBesideVIPEntry(t *testing.T) {
 	t.Parallel()
 	const subnet = "subnet-vip-neighbour"
-	vip := IPEntry{IP: "10.0.41.5", Purpose: seededVIPPurpose, OwnerID: "lb-0b"}
+	vip := IPEntry{IP: "10.0.41.5", Purpose: PurposeLBVIP, OwnerID: "lb-0b"}
 	ipam, kv, _ := seedIPAMRow(t, IPAMRecord{
 		SubnetId:  subnet,
 		CidrBlock: "10.0.41.0/24",

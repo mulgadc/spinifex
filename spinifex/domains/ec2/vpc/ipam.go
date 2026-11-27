@@ -42,6 +42,10 @@ var ErrPurposeReserved = errors.New("ip address purpose reserved")
 // so the stream leader decides it rather than a possibly lagging replica.
 var errVIPSeen = errors.New("load balancer address read")
 
+// errNoIPAMLeader means the allocator was built over a bare KV handle, so a
+// decision that needs the stream leader's row cannot be made.
+var errNoIPAMLeader = errors.New("IPAM has no stream leader to read from")
+
 // literalKVKey matches a KV key that names exactly one subject, so a leader
 // read can never become a wildcard filter.
 var literalKVKey = regexp.MustCompile(`^[-/_=.a-zA-Z0-9]+$`)
@@ -77,6 +81,8 @@ type IPAMRecord struct {
 // IPAM manages IP address allocation for VPC subnets using NATS KV with CAS.
 type IPAM struct {
 	store *kvstore.Store[IPAMRecord]
+	// leader is false over a bare KV handle, which has no stream leader to ask.
+	leader bool
 }
 
 // ipamConfig describes the IPAM bucket. js is captured for the migration, which
@@ -108,7 +114,7 @@ func NewIPAM(ctx context.Context, js jetstream.JetStream) (*IPAM, error) {
 	if _, err := store.KV(ctx); err != nil {
 		return nil, fmt.Errorf("failed to create IPAM KV bucket: %w", err)
 	}
-	return &IPAM{store: store}, nil
+	return &IPAM{store: store, leader: true}, nil
 }
 
 // NewIPAMWithKV creates an IPAM with an existing KV bucket (for testing).
@@ -253,6 +259,15 @@ func ipNotAllocated(subnetId, ip string) error {
 	return fmt.Errorf("IP %s not allocated in subnet %s", ip, subnetId)
 }
 
+// leaderGet reads the subnet row from the stream leader, refusing before any
+// read when the allocator has no JetStream client to reach the leader.
+func (m *IPAM) leaderGet(ctx context.Context, subnetId string) (*IPAMRecord, uint64, error) {
+	if !m.leader {
+		return nil, 0, fmt.Errorf("%w: subnet %s", errNoIPAMLeader, subnetId)
+	}
+	return m.store.LeaderGet(ctx, subnetId)
+}
+
 // releaseLeaderConfirmed decides an address-only release that read a load
 // balancer address. A replica can still show one the leader has since given
 // to another owner, so the leader's row and revision decide every attempt.
@@ -261,7 +276,7 @@ func (m *IPAM) releaseLeaderConfirmed(ctx context.Context, subnetId, ip string) 
 		return fmt.Errorf("IPAM subnet key %q is not a literal key", subnetId)
 	}
 	for range ipamCASAttempts {
-		record, rev, err := m.store.LeaderGet(ctx, subnetId)
+		record, rev, err := m.leaderGet(ctx, subnetId)
 		if err != nil {
 			return err
 		}

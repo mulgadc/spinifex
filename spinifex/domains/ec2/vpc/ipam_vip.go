@@ -28,7 +28,7 @@ func (m *IPAM) ReserveVIP(ctx context.Context, subnetId, cidrBlock, token string
 		return "", err
 	}
 	for range ipamCASAttempts {
-		record, rev, err := m.store.LeaderGet(ctx, subnetId)
+		record, rev, err := m.leaderGet(ctx, subnetId)
 		switch {
 		case errors.Is(err, kvstore.ErrNotFound):
 			record, rev = &IPAMRecord{SubnetId: subnetId, CidrBlock: prefix.String()}, 0
@@ -143,7 +143,7 @@ func (m *IPAM) ReleaseVIP(ctx context.Context, subnetId, ip, token string) error
 		return fmt.Errorf("%w: %q is not an IPv4 address", ErrInvalidVIPRequest, ip)
 	}
 	for range ipamCASAttempts {
-		record, rev, err := m.store.LeaderGet(ctx, subnetId)
+		record, rev, err := m.leaderGet(ctx, subnetId)
 		if errors.Is(err, kvstore.ErrNotFound) {
 			return nil
 		}

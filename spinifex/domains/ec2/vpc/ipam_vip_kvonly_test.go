@@ -39,7 +39,7 @@ func TestIPAM_KVOnlyRefusesLeaderReads(t *testing.T) {
 			require.NoError(t, err)
 			var callErr error
 			assert.NotPanics(t, func() { callErr = call() })
-			require.Error(t, callErr)
+			require.ErrorIs(t, callErr, errNoIPAMLeader)
 			after, err := kv.Get(t.Context(), subnet)
 			require.NoError(t, err)
 			assert.Equal(t, before.Revision(), after.Revision(), "no write")

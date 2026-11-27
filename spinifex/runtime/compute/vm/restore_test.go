@@ -199,6 +199,21 @@ func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
 		"a relaunch opens a new export, so it is admitted like a launch, not adopted")
 }
 
+// A terminate acknowledged before the restart is finalized whatever the node's capacity:
+// on a full node its QEMU-less record must not be refused and moved to the stopped store.
+func TestClassifyRestoredInstances_ShuttingDownIsNeverRefused(t *testing.T) {
+	m, store, rc := classifyTestManager(t)
+	rc.allocateErr = errors.New("InsufficientInstanceCapacity")
+	v := &VM{ID: "i-shutdown-full", Status: StateShuttingDown, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	m.Replace(map[string]*VM{v.ID: v})
+
+	m.classifyRestoredInstances()
+
+	assert.Equal(t, StateTerminated, v.Status, "the acknowledged terminate finishes")
+	assert.NotNil(t, store.terminated[v.ID])
+	assert.Nil(t, store.stopped[v.ID], "it is never moved to the stopped store for capacity")
+}
+
 // A guest whose QEMU survived the restart already holds its export: it is adopted,
 // so a node at its viperblock limit never refuses a guest it is serving.
 func TestClassifyRestoredInstances_SurvivingQEMUIsAdopted(t *testing.T) {

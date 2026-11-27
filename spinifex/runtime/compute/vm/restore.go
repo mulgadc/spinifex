@@ -171,11 +171,13 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 
 		if typeKnown && m.deps.Resources != nil && instance.InstanceType != "" {
 			slog.Info("Re-allocating resources for instance", "instanceId", instance.ID, "type", instance.InstanceType)
-			// A guest that will be reconnected already holds its export; one that will be
-			// relaunched, including a live QEMU with stale sockets, opens a new one, so it is
-			// admitted like any launch. Mirrors the reconnect decision below.
+			// A guest that will be reconnected already holds its export, and a stop or
+			// terminate in flight is finalized below, never relaunched: neither opens a new
+			// export, so neither is refused for it. A relaunch is admitted like a launch.
 			allocate := m.deps.Resources.Allocate
-			if isInstanceProcessRunning(instance) && (AreVolumeSocketsValid(instance) || !m.backingStoreReady()) {
+			finishing := instance.Status == StateStopping || instance.Status == StateShuttingDown
+			reconnects := isInstanceProcessRunning(instance) && (AreVolumeSocketsValid(instance) || !m.backingStoreReady())
+			if finishing || reconnects {
 				allocate = m.deps.Resources.AllocateAdopted
 			}
 			if err := allocate(instance.InstanceType); err != nil {

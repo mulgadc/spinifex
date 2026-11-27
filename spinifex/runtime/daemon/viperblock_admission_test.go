@@ -149,7 +149,7 @@ func TestViperblockGateDebitsPendingLaunchesWhenTheReadingBinds(t *testing.T) {
 func TestViperblockGateExpiresPendingOnceTheReadingCanShowIt(t *testing.T) {
 	rm, _ := gatedRM(t, 20)
 	now := time.Now()
-	rm.exportAdmitted(now.Add(-3 * time.Minute))
+	rm.exportAdmitted(now.Add(-exportPending - time.Minute))
 	rm.exportAdmitted(now)
 	assert.Equal(t, 1, rm.pendingExports(now), "an admission older than exportPending is in the reading")
 	assert.Equal(t, 0, rm.pendingExports(now.Add(exportPending)), "and every charge expires")

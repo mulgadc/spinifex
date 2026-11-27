@@ -18,9 +18,10 @@ const (
 	// exportResync re-checks the limit, so a node that stopped answering a type answers
 	// again when reclaim or a detach lowers memory.current with no terminate to trigger it.
 	exportResync = 10 * time.Second
-	// exportPending is how long an admitted export is assumed not yet to show in
-	// memory.current: it is charged on top of the reading until then.
-	exportPending = 2 * time.Minute
+	// exportPending is how long an admitted export is charged on top of memory.current,
+	// before it is assumed to show there. It outlasts the 180 s a launch waits for a
+	// network-backed guest to open its drives, so an export that opens slowly stays counted.
+	exportPending = 5 * time.Minute
 )
 
 // readViperblockMemMiB returns viperblock's cgroup memory limit and use in MiB. It is
@@ -115,8 +116,8 @@ func (rm *ResourceManager) exportAdmitted(now time.Time) {
 }
 
 // exportReleased records one closed export. Pending charges are left to expire: a release
-// cannot tell which launch it belongs to, and dropping one could free a slot that another
-// launch, still opening, needs. Caller holds rm.mu for write.
+// cannot tell which launch it belongs to, so a rolled-back launch holds its slot until then,
+// which only refuses sooner. Caller holds rm.mu for write.
 func (rm *ResourceManager) exportReleased() {
 	rm.exports = max(rm.exports-1, 0)
 }

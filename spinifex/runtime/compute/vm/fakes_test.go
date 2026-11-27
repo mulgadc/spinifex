@@ -29,13 +29,12 @@ func (f *fakeResourceController) Allocate(typeName string) error {
 	return nil
 }
 
-// AllocateAdopted is Allocate for the fake, also counted apart; restore's failure tests set allocateErr.
+// AllocateAdopted counts apart from Allocate. allocateErr stands for the viperblock refusal,
+// which adoption never meets, so it does not apply here.
 func (f *fakeResourceController) AllocateAdopted(typeName string) error {
-	if err := f.Allocate(typeName); err != nil {
-		return err
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.allocated[typeName]++
 	f.adopted[typeName]++
 	return nil
 }

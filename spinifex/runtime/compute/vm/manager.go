@@ -56,9 +56,6 @@ type Deps struct {
 	// persists the resulting running-state snapshot.
 	TransitionState func(*VM, InstanceState) error
 
-	// MultiqueueNICs gives each guest NIC one queue pair per vCPU. Follows
-	// network.ipsec_enabled inverted: see NICQueues for why the two are tied.
-	MultiqueueNICs bool
 
 	// GuestMTU is the overlay MTU advertised to guests, mirroring the DHCP
 	// option so a guest that never takes a lease still gets the ceiling.

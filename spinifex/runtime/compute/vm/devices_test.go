@@ -107,15 +107,7 @@ func TestTapNetDev_AlwaysEnablesVhost(t *testing.T) {
 	}
 }
 
-// Disabled means one queue whatever the vCPU count: behind IPsec, extra queues
-// only reorder packets, which TCP reads as loss.
-func TestNICQueues_SingleQueueWhenDisabled(t *testing.T) {
-	for _, vcpus := range []int{-1, 0, 1, 2, 4, 8, 96} {
-		assert.Equal(t, 1, NICQueues(vcpus, false), "vcpus=%d", vcpus)
-	}
-}
-
-func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
+func TestNICQueues_Clamped(t *testing.T) {
 	tests := []struct {
 		vcpus int
 		want  int
@@ -124,7 +116,34 @@ func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
 		{16, MaxNICQueues}, {96, MaxNICQueues},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, NICQueues(tt.vcpus, true), "vcpus=%d", tt.vcpus)
+		assert.Equal(t, tt.want, NICQueues(tt.vcpus), "vcpus=%d", tt.vcpus)
+	}
+}
+
+// A cluster with IPsec off already gave every NIC one queue pair per vCPU, so
+// its QEMU arguments must be byte-identical to what it ran before: these are
+// the strings prod's guests launch with.
+func TestNICArgs_UnchangedForIPsecOffClusters(t *testing.T) {
+	tests := []struct {
+		vcpus  int
+		netdev string
+		device string
+	}{
+		{1, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on",
+			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024"},
+		{2, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=2",
+			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=6"},
+		{4, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=4",
+			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=10"},
+		{8, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=8",
+			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=18"},
+		{16, "tap,id=net0,ifname=tapabc,script=no,downscript=no,vhost=on,queues=8",
+			"virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1442,rx_queue_size=1024,mq=on,vectors=18"},
+	}
+	for _, tt := range tests {
+		q := NICQueues(tt.vcpus)
+		assert.Equal(t, tt.netdev, TapNetDev("net0", "tapabc", q).Value, "vcpus=%d", tt.vcpus)
+		assert.Equal(t, tt.device, NetDevice("q35", "net0", "02:00:00:00:00:01", q, 1442).Value, "vcpus=%d", tt.vcpus)
 	}
 }
 

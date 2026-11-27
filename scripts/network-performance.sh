@@ -227,8 +227,11 @@ for c in "${CLIENT_LIST[@]}"; do
         fail "$c: the UDP client failed
 $(tail -3 "$OUT_DIR/$c.udp.txt" | sed 's/^/         | /')"
     # The client prints the server's report last; take its pps and loss.
+    # Rate and loss can sit on different lines of the report, so each is
+    # taken on its own from whatever follows "Server Report".
     read -r pps loss <<<"$(awk '/Server Report/ {f=1; next}
-        f && /pps/ { for (i = 1; i <= NF; i++) { if ($i == "pps") p = $(i-1); if ($i ~ /^\(.*%\)$/) l = $i } }
+        f { for (i = 2; i <= NF; i++) if ($i == "pps") p = $(i-1)
+            for (i = 1; i <= NF; i++) if ($i ~ /^\([0-9.]+%\)$/) l = $i }
         END { gsub(/[()%]/, "", l); print p, l }' "$OUT_DIR/$c.udp.txt")"
     [ -n "$pps" ] && [ -n "$loss" ] ||
         fail "$c: no server receive report in the UDP run, see $OUT_DIR/$c.udp.txt"

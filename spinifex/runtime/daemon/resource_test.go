@@ -745,7 +745,7 @@ func TestRG6_FullCostCharge(t *testing.T) {
 		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)},
 	}
 
-	wantCharge := int64(4096 + 768)
+	wantCharge := int64(4096 + 1024)
 	assert.Equal(t, wantCharge, rm.instanceMemChargeMiB(it),
 		"RG-6: charge must be guest -m + nbdkit per volume, not guest -m alone")
 	assert.Greater(t, rm.instanceMemChargeMiB(it), instanceTypeMemoryMiB(it),

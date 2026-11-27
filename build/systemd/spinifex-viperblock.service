@@ -1,4 +1,4 @@
-# spinifex-unit-version: 2
+# spinifex-unit-version: 3
 [Unit]
 Description=Spinifex Viperblock (Block Storage)
 PartOf=spinifex.target
@@ -16,10 +16,10 @@ ExecStart=/usr/local/bin/spx service viperblock start
 Restart=on-failure
 RestartSec=5
 OOMScoreAdjust=-500
-# Per-service ceiling bounds a leak in this service alone rather than
-# tripping the slice-wide cap, which would pick an arbitrary victim.
-MemoryHigh=15%
-MemoryMax=25%
+# Per-service ceiling bounds a leak here rather than tripping the slice-wide
+# cap. Every guest's nbdkit runs here; admission sizes launches to MemoryHigh.
+MemoryHigh=30%
+MemoryMax=40%
 # KillMode=process: nbdkit still serving a guest survives a restart here, the
 # way guest QEMU survives a daemon restart. Tearing one out mid-write corrupts
 # that guest's filesystem; idle nbdkit is reaped explicitly on shutdown.

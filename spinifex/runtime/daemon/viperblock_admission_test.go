@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/nats-io/nats.go"
@@ -316,9 +318,25 @@ func TestVolumeMounterPublishLeavesPendingChargesAlone(t *testing.T) {
 	rm, micro := gatedRM(t, 20)
 	require.NoError(t, rm.allocate(micro))
 	require.NoError(t, rm.allocate(micro))
-	adapter := newVolumeMounterAdapter(&holdTestProvider{}, "node-vb")
+	// The daemon's own mounter, as production wires it, over a provider that publishes.
+	d := &Daemon{resourceMgr: rm, ebsProvider: publishingProvider{hold: &holdTestProvider{}}, node: "node-vb"}
+	adapter := d.volumeMounter()
 
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-attach"}))
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-attach"}))
 	assert.Equal(t, 2, rm.pendingExports(time.Now()), "an attach and a repeat publish clear no launch's charge")
+}
+
+// publishingProvider is an EBS provider that only publishes and unpublishes; any other call panics.
+type publishingProvider struct {
+	ebsprovider.EBSProvider
+	hold *holdTestProvider
+}
+
+func (p publishingProvider) PublishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
+	return p.hold.PublishVolume(ctx, req)
+}
+
+func (p publishingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
+	return p.hold.UnpublishVolume(ctx, req)
 }

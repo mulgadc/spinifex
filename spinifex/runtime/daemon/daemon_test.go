@@ -128,6 +128,9 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 
 	daemon, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
+	// The viperblock gate reads the host's own cgroup; a test daemon must not depend on
+	// the machine it runs on. Tests of the gate set their own reader.
+	daemon.resourceMgr.readViperblockMem = nil
 
 	// Connect to NATS
 	nc, err := nats.Connect(natsURL)

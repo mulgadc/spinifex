@@ -213,10 +213,10 @@ func parseMemAvailableKB(data []byte) (int64, bool) {
 	return 0, false
 }
 
-// defaultNbdkitMainMiB is the nbdkit memory charged for a guest's root volume, about
-// 0.75 GB under I/O. Env-tunable via SPINIFEX_NBDKIT_MAIN_MIB. The UEFI store is an
-// object, so a guest has no second nbdkit to charge.
-const defaultNbdkitMainMiB = 768
+// defaultNbdkitMainMiB is the nbdkit memory charged for a guest's root volume: about
+// 1 GiB, measured at deploy on dev-prod. Env-tunable via SPINIFEX_NBDKIT_MAIN_MIB. The
+// UEFI store is an object, so a guest has no second nbdkit to charge.
+const defaultNbdkitMainMiB = 1024
 
 // resolveNbdkitCharge returns the per-guest nbdkit charge, overridable via env.
 func resolveNbdkitCharge(getenv func(string) string) int {

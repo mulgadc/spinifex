@@ -31,7 +31,6 @@ func TestIPAM_ReleaseVIPExactAndReplay(t *testing.T) {
 }
 
 func TestIPAM_ReleaseVIPNoOps(t *testing.T) {
-	t.Parallel()
 	js := ipamTestJS(t)
 
 	t.Run("missing row stays missing", func(t *testing.T) {
@@ -93,7 +92,6 @@ func TestIPAM_ReleaseVIPLeaderReadFails(t *testing.T) {
 }
 
 func TestIPAM_ReleaseVIPRefusesAmbiguousOwnership(t *testing.T) {
-	t.Parallel()
 	js := ipamTestJS(t)
 	exact := IPEntry{IP: "10.0.50.4", Purpose: PurposeLBVIP, OwnerID: "lb-0a"}
 

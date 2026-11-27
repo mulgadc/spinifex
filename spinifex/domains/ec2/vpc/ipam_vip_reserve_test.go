@@ -75,7 +75,6 @@ func TestIPAM_ReserveVIPSharesTheLedgerWithENIs(t *testing.T) {
 }
 
 func TestIPAM_ReserveVIPSameTokenRacesToOneEntry(t *testing.T) {
-	t.Parallel()
 	js := ipamTestJS(t)
 
 	t.Run("create lost to the same token", func(t *testing.T) {
@@ -209,7 +208,6 @@ func TestIPAM_ReserveVIPLeaderReadFails(t *testing.T) {
 }
 
 func TestIPAM_ReserveVIPRefusesInconsistentRow(t *testing.T) {
-	t.Parallel()
 	js := ipamTestJS(t)
 	vip := func(ip, owner string) IPEntry { return IPEntry{IP: ip, Purpose: PurposeLBVIP, OwnerID: owner} }
 

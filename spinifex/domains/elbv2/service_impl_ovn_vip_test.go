@@ -82,6 +82,7 @@ func (kv *vipIPAMKV) writeCount() int {
 // client after the handle's read hook.
 type vipJS struct {
 	jetstream.JetStream
+
 	kv *vipIPAMKV
 }
 
@@ -166,6 +167,7 @@ func (p *vipPass) ReconcileHostEIPs(context.Context) error { return nil }
 // knows a contender's election ran, and counts its lease writes.
 type contenderStore struct {
 	kvsync.KVStore
+
 	loads  chan []byte
 	writes atomic.Int32
 }
@@ -317,7 +319,8 @@ func TestOVNFixtureVIP_ElectedPassReservesAndRecoversOneAddress(t *testing.T) {
 		{IP: "10.81.1.4", Purpose: ec2vpc.PurposeLBVIP, OwnerID: root.LoadBalancerID},
 	}}, row, "the write committed one entry from the subnet's own CIDR under the load balancer ID")
 	assert.Equal(t, elbBefore, h.state(KVBucketELBv2), "the owner and both slots are not written")
-	assert.Equal(t, parentsBefore, []map[string]uint64{h.state(ec2vpc.KVBucketVPCs), h.state(ec2vpc.KVBucketSubnets)}, "the parents are not touched")
+	parentsAfter := []map[string]uint64{h.state(ec2vpc.KVBucketVPCs), h.state(ec2vpc.KVBucketSubnets)}
+	assert.Equal(t, parentsBefore, parentsAfter, "the parents are not touched")
 
 	h.restart()
 	ipamKV = h.openVIPs()
@@ -475,7 +478,8 @@ func TestOVNFixtureVIP_RefusesBeforeAllocating(t *testing.T) {
 			assert.Zero(t, ipamKV.writeCount(), "no allocator write")
 			assert.Equal(t, sideBefore, h.sideEffects(), "no IPAM row or other side effect")
 			assert.Equal(t, elbBefore, h.state(KVBucketELBv2))
-			assert.Equal(t, parentsBefore, []map[string]uint64{h.state(ec2vpc.KVBucketVPCs), h.state(ec2vpc.KVBucketSubnets)})
+			parentsAfter := []map[string]uint64{h.state(ec2vpc.KVBucketVPCs), h.state(ec2vpc.KVBucketSubnets)}
+			assert.Equal(t, parentsBefore, parentsAfter)
 		})
 	}
 }

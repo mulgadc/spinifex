@@ -20,6 +20,7 @@ import (
 // lostAck replaces a committed write's reply with an error.
 type laggingIPAMKV struct {
 	jetstream.KeyValue
+
 	mu           sync.Mutex
 	stale        map[string]jetstream.KeyValueEntry
 	staleReads   int
@@ -96,6 +97,7 @@ func (k *laggingIPAMKV) writes() int {
 // to the real client. leaderDown points leader reads at a prefix nothing serves.
 type ipamLeaderJS struct {
 	jetstream.JetStream
+
 	kv         jetstream.KeyValue
 	leaderDown bool
 }

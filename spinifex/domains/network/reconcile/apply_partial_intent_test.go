@@ -298,10 +298,19 @@ func TestS7_DriftPassKeepsAPortGroupWhenItsSGRecordDoesNotDecode(t *testing.T) {
 type routedBinder struct {
 	mu      sync.Mutex
 	bound   map[string]struct{}
+	binds   map[string]int
 	unbinds []string
 }
 
-func newRoutedBinder() *routedBinder { return &routedBinder{bound: map[string]struct{}{}} }
+func newRoutedBinder() *routedBinder {
+	return &routedBinder{bound: map[string]struct{}{}, binds: map[string]int{}}
+}
+
+func (b *routedBinder) bindCount(ip string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.binds[ip]
+}
 
 func (b *routedBinder) hooks() policy.HostEIPBinder {
 	return policy.HostEIPBinder{
@@ -309,6 +318,7 @@ func (b *routedBinder) hooks() policy.HostEIPBinder {
 			b.mu.Lock()
 			defer b.mu.Unlock()
 			b.bound[eip.ExternalIP] = struct{}{}
+			b.binds[eip.ExternalIP]++
 			return nil
 		},
 		Unbind: func(ip string) error {
@@ -477,6 +487,7 @@ func TestS7_HostEIPPassKeepsABindingWhenItsENIIsPartial(t *testing.T) {
 			if !b.has(publicB) {
 				t.Errorf("host EIP pass did not restore the survivor's binding for %s", publicB)
 			}
+
 			if err == nil {
 				t.Errorf("ReconcileHostEIPs = nil, want an error naming the partial intent")
 			}
@@ -711,5 +722,35 @@ func TestLoadIntentFromKV_FailsWhenABucketCannotBeOpened(t *testing.T) {
 	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
 	if err == nil {
 		t.Fatalf("LoadIntentFromKV on a closed connection = nil error with %d VPCs, want an error", len(intent.VPCs))
+	}
+}
+
+// Bind replaces an address's route, and partial intent can hold a stale
+// address, so a partial pass binds only what has no binding at all.
+func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	publicIPFixture(t).seed(t, js)
+	b := newRoutedBinder()
+	r, _ := newRoutedReconciler(t, js, b)
+	if err := r.ReconcileHostEIPs(t.Context()); err != nil {
+		t.Fatalf("converging ReconcileHostEIPs: %v", err)
+	}
+	b.mu.Lock()
+	delete(b.bound, publicB)
+	b.mu.Unlock()
+	bindsA := b.bindCount(publicA)
+
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
+	err := r.ReconcileHostEIPs(t.Context())
+
+	if got := b.bindCount(publicA); got != bindsA {
+		t.Errorf("partial pass re-bound %s, which replaces its route (%d binds, want %d)", publicA, got, bindsA)
+	}
+	if !b.has(publicB) {
+		t.Errorf("partial pass did not restore the missing binding for %s", publicB)
+	}
+	if err == nil {
+		t.Errorf("ReconcileHostEIPs = nil, want an error naming the partial intent")
 	}
 }

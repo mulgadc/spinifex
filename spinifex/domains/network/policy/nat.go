@@ -55,6 +55,10 @@ type NATManager interface {
 	// same ExternalIP on any router first (pool reuse across VPCs).
 	AddEIP(ctx context.Context, eip EIPSpec) error
 
+	// EnsureEIP is AddEIP that only creates: it returns ErrEIPWouldReplace and
+	// changes nothing when the row would remove or re-point a live one.
+	EnsureEIP(ctx context.Context, eip EIPSpec) error
+
 	// DeleteEIP removes the (ExternalIP, LogicalIP) rule and flushes the host
 	// ARP entry for ExternalIP so a recycled IP is not shadowed by the stale
 	// MAC. portName, when set, owner-scopes the delete: a row whose stamped
@@ -76,8 +80,8 @@ type NATManager interface {
 	// mode.
 	BindHostEIPs(ctx context.Context, specs []EIPSpec) error
 
-	// EnsureHostEIPs installs the same host-side plumbing as BindHostEIPs and
-	// removes nothing, for a caller whose specs may be missing live addresses.
+	// EnsureHostEIPs plumbs only the addresses with no host binding yet, and
+	// removes and replaces nothing, for specs that may be missing live addresses.
 	EnsureHostEIPs(ctx context.Context, specs []EIPSpec) error
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
@@ -270,7 +274,19 @@ func (m *natManager) exemptSetUUID(ctx context.Context) (*string, error) {
 	return &uuid, nil
 }
 
+// ErrEIPWouldReplace is EnsureEIP refusing to change a live dnat_and_snat row.
+var ErrEIPWouldReplace = errors.New("EIP would replace a live dnat_and_snat row")
+
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
+	return m.addEIP(ctx, eip, true)
+}
+
+// EnsureEIP is documented on the NATManager interface.
+func (m *natManager) EnsureEIP(ctx context.Context, eip EIPSpec) error {
+	return m.addEIP(ctx, eip, false)
+}
+
+func (m *natManager) addEIP(ctx context.Context, eip EIPSpec, mayReplace bool) error {
 	router := topology.VPCRouter(eip.VPCID)
 
 	// Everything below works in datapath addresses, so the row, the idempotency
@@ -350,6 +366,11 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		// Host state (routes, proxy-ARP) is volatile even when the OVN row
 		// survives — reconcile lands here after a reboot, so re-bind.
 		return m.bindHostEIP(ctx, eip)
+	}
+	if !mayReplace {
+		if err := m.refuseReplace(ctx, router, eip, existing, lookupErr); err != nil {
+			return err
+		}
 	}
 	if ownerChanged {
 		slog.Info("policy: AddEIP re-pointing dnat_and_snat — owning ENI changed",
@@ -444,6 +465,20 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 	return nil
 }
 
+// refuseReplace returns ErrEIPWouldReplace when a row already holds the
+// external IP, or the private IP on this router, since the add below would
+// delete it. A lookup that failed counts as a live row.
+func (m *natManager) refuseReplace(ctx context.Context, router string, eip EIPSpec, existing *nbdb.NAT, lookupErr error) error {
+	if lookupErr != nil || existing != nil {
+		return fmt.Errorf("%w: external IP %s", ErrEIPWouldReplace, eip.ExternalIP)
+	}
+	predecessor, err := m.ovn.FindNATByLogicalIP(ctx, router, "dnat_and_snat", eip.LogicalIP)
+	if err != nil || predecessor != nil {
+		return fmt.Errorf("%w: private IP %s on %s", ErrEIPWouldReplace, eip.LogicalIP, router)
+	}
+	return nil
+}
+
 // BindHostEIPs is documented on the NATManager interface.
 //
 // The NB rows are one writer's job, but routes and proxy-ARP are per node and
@@ -471,6 +506,19 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 	// wanted and leaves this node holding a route and proxy-ARP for a guest that
 	// has moved, which on a shared segment answers ARP for someone else's guest.
 	foreign := map[string]struct{}{}
+	// Without a sweep the specs may be partial, so an address already bound
+	// keeps its route as it is; Bind would replace its next hop.
+	var bound map[string]struct{}
+	if !prune && m.hostBinder.List != nil {
+		ips, err := m.hostBinder.List()
+		if err != nil {
+			return fmt.Errorf("list host EIP bindings: %w", err)
+		}
+		bound = make(map[string]struct{}, len(ips))
+		for _, ip := range ips {
+			bound[ip] = struct{}{}
+		}
+	}
 	var errs []error
 	incomplete := false
 	for _, eip := range specs {
@@ -486,6 +534,9 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 		live.ExternalIPs[dpIP] = struct{}{}
 		if m.foreignToThisChassis(eip) {
 			foreign[dpIP] = struct{}{}
+		}
+		if _, ok := bound[dpIP]; ok {
+			continue
 		}
 		if err := m.bindHostEIP(ctx, eip); err != nil {
 			errs = append(errs, err)

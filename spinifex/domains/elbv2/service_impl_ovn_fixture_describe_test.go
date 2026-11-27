@@ -46,7 +46,7 @@ func TestOVNFixtureDescribe_ExactARNReturnsCreateProjection(t *testing.T) {
 	h := newOVNCreateHarness(t)
 	created := h.sealedOVN("ovn-nlb")
 	arn := aws.StringValue(created.LoadBalancerArn)
-	claimGet := []string{"Get " + LBNameKey("ovn-nlb", testAccountID)}
+	claimGet := []string{"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}
 
 	got, err := h.describe(testAccountID, byARN(arn))
 	require.NoError(t, err)
@@ -88,9 +88,9 @@ func TestOVNFixtureDescribe_ScopeAndAbsence(t *testing.T) {
 		"application path":     {testAccountID, resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, "ovn-nlb", id, LoadBalancerTypeApplication), nil},
 		"malformed":            {testAccountID, "arn:aws:elasticloadbalancing:nothing", nil},
 		"empty":                {testAccountID, "", nil},
-		"other ID":             {testAccountID, resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, "ovn-nlb", "cccc000000000003", LoadBalancerTypeNetwork), []string{"Get " + LBNameKey("ovn-nlb", testAccountID)}},
-		"unknown name":         {testAccountID, resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, "ovn-other", id, LoadBalancerTypeNetwork), []string{"Get " + LBNameKey("ovn-other", testAccountID)}},
-		"pending owner":        {testAccountID, pending.LoadBalancerArn, []string{"Get " + LBNameKey("ovn-pending", testAccountID)}},
+		"other ID":             {testAccountID, resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, "ovn-nlb", "cccc000000000003", LoadBalancerTypeNetwork), []string{"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}},
+		"unknown name":         {testAccountID, resourcearn.FormatELBv2LoadBalancer(fixtureRegion, testAccountID, "ovn-other", id, LoadBalancerTypeNetwork), []string{"LeaderGet " + LBNameKey("ovn-other", testAccountID)}},
+		"pending owner":        {testAccountID, pending.LoadBalancerArn, []string{"LeaderGet " + LBNameKey("ovn-pending", testAccountID)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := h.describe(tc.account, byARN(tc.arn))
@@ -203,7 +203,7 @@ func TestOVNFixtureDelete_RefusesSealedRootAndKeepsParents(t *testing.T) {
 
 	_, err := h.svc.DeleteLoadBalancer(t.Context(), &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(arn)}, testAccountID)
 	requireFenceCode(t, err, awserrors.ErrorOperationNotPermitted)
-	h.requireCalls(map[string][]string{KVBucketELBv2: {"Get " + LBNameKey("ovn-nlb", testAccountID)}})
+	h.requireCalls(map[string][]string{KVBucketELBv2: {"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}})
 
 	got, err := h.describe(testAccountID, byARN(arn))
 	require.NoError(t, err)
@@ -268,7 +268,7 @@ func TestOVNFixtureARN_OtherOperationsWriteNothing(t *testing.T) {
 				DefaultActions: []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}},
 			}, testAccountID)
 			return err
-		}, awserrors.ErrorELBv2LoadBalancerNotFound},
+		}, awserrors.ErrorELBv2TargetGroupNotFound},
 		"DescribeListeners": {func() error {
 			_, err := h.svc.DescribeListeners(ctx, &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
 			return err

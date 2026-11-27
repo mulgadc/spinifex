@@ -581,6 +581,7 @@ var (
 	ErrorELBv2TooManyTargetGroups          = "TooManyTargetGroups"
 	ErrorELBv2TooManyListeners             = "TooManyListeners"
 	ErrorELBv2TooManyTargets               = "TooManyRegistrationsForTargetId"
+	ErrorELBv2TooManyTargetsAggregate      = "TooManyTargets" // the limit on all targets together
 	ErrorELBv2InvalidTarget                = "InvalidTarget"
 	ErrorELBv2TargetGroupInUse             = "ResourceInUse"
 	ErrorELBv2InvalidSecurityGroup         = "InvalidSecurityGroup"
@@ -1407,6 +1408,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2TooManyTargetGroups:          {HTTPCode: 400, Message: "You've reached the limit on the number of target groups for your account."},
 	ErrorELBv2TooManyListeners:             {HTTPCode: 400, Message: "You've reached the limit on the number of listeners per load balancer."},
 	ErrorELBv2TooManyTargets:               {HTTPCode: 400, Message: "You've reached the limit on the number of times a target can be registered with a target group."},
+	ErrorELBv2TooManyTargetsAggregate:      {HTTPCode: 400, Message: "You've reached the limit on the number of targets."},
 	ErrorELBv2InvalidTarget:                {HTTPCode: 400, Message: "The specified target does not exist, is not in the same VPC as the target group, or has an unsupported instance type."},
 	ErrorELBv2TargetGroupInUse:             {HTTPCode: 400, Message: "The target group is currently in use by a listener or rule."},
 	ErrorELBv2InvalidSecurityGroup:         {HTTPCode: 400, Message: "The specified security group does not exist."},

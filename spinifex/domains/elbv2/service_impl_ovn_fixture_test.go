@@ -44,13 +44,32 @@ type opKV struct {
 	failGet    error
 	failPrefix string
 	onUpdate   func(key string, value []byte, update func() (uint64, error)) (uint64, error)
+	lagging    map[string]jetstream.KeyValueEntry
+}
+
+// lag makes ordinary Gets of key answer as a lagging replica would: with
+// stale, or as absent when stale is nil. The stream keeps the committed value.
+func (kv *opKV) lag(key string, stale jetstream.KeyValueEntry) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.lagging == nil {
+		kv.lagging = map[string]jetstream.KeyValueEntry{}
+	}
+	kv.lagging[key] = stale
+}
+
+func (kv *opKV) lagged(key string) (jetstream.KeyValueEntry, bool) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	stale, ok := kv.lagging[key]
+	return stale, ok
 }
 
 func (kv *opKV) record(op, key string) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.ops = append(kv.ops, op+" "+key)
-	if op == "Get" && strings.HasPrefix(key, kv.failPrefix) {
+	if (op == "Get" || op == "LeaderGet") && strings.HasPrefix(key, kv.failPrefix) {
 		return kv.failGet
 	}
 	return nil
@@ -88,7 +107,25 @@ func (kv *opKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, e
 	if err := kv.record("Get", key); err != nil {
 		return nil, err
 	}
+	if stale, ok := kv.lagged(key); ok {
+		if stale == nil {
+			return nil, jetstream.ErrKeyNotFound
+		}
+		return stale, nil
+	}
 	return kv.KeyValue.Get(ctx, key)
+}
+
+// leaderGet records a stream leader point read as "LeaderGet key" and fails it
+// as a Get. The lag shim does not apply: the leader holds the committed value.
+func (kv *opKV) leaderGet(js jetstream.JetStream) fixtureLeaderGet {
+	get := leaderGetOf(js, kv.Bucket())
+	return func(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+		if err := kv.record("LeaderGet", key); err != nil {
+			return nil, err
+		}
+		return get(ctx, key)
+	}
 }
 
 func (kv *opKV) GetRevision(ctx context.Context, key string, revision uint64) (jetstream.KeyValueEntry, error) {
@@ -193,6 +230,7 @@ type ovnCreateHarness struct {
 	vpcs     *ec2vpc.VPCServiceImpl
 	launcher *mockSystemInstanceLauncher
 	svc      *ELBv2ServiceImpl
+	instance *fakeInstances
 
 	elbKV, vpcKV, subnetKV, sgKV *opKV
 
@@ -279,8 +317,11 @@ func (h *ovnCreateHarness) restart() {
 	h.sgKV = &opKV{KeyValue: h.bucket(ec2vpc.KVBucketSecurityGroups)}
 	svc.store.kv = h.elbKV
 	parents := ec2vpc.NewParents(h.vpcKV, h.subnetKV)
-	owners := &fixtureOwnerStore{kv: h.elbKV, parents: parents, now: h.clock.now, claimTTL: lbNameClaimTTL}
-	svc.ovn = &ovnFixture{owners: owners, parents: parents, groups: ec2vpc.NewGroupLookup(h.sgKV)}
+	owners := &fixtureOwnerStore{kv: h.elbKV, leaderGet: h.elbKV.leaderGet(h.js), parents: parents, now: h.clock.now, claimTTL: lbNameClaimTTL}
+	if h.instance == nil {
+		h.instance = newFakeInstances()
+	}
+	svc.ovn = &ovnFixture{owners: owners, parents: parents, groups: ec2vpc.NewGroupLookup(h.sgKV), instances: h.instance}
 	h.vpcs.SetDependencyCheck(ovnDependencyKind, owners.vpcBlocksDeletion)
 	h.vpcs.SetSubnetDependencyCheck(ovnDependencyKind, owners.subnetBlocksDeletion)
 	h.svc = svc
@@ -410,7 +451,7 @@ func TestOVNFixtureCreate_ReturnsProvisioningRootAndRetriesAfterRestart(t *testi
 	assert.Equal(t, aws.TimeValue(lb.CreatedTime), aws.TimeValue(again.CreatedTime))
 	assert.Nil(t, again.DNSName)
 	ops = h.takeOps()
-	assert.Equal(t, []string{"Get " + LBNameKey("ovn-nlb", testAccountID)}, ops[KVBucketELBv2],
+	assert.Equal(t, []string{"LeaderGet " + LBNameKey("ovn-nlb", testAccountID)}, ops[KVBucketELBv2],
 		"an equal retry is one point read of the sealed claim")
 	assert.Empty(t, ops[ec2vpc.KVBucketSubnets], "an equal retry does not re-validate parents")
 	assert.Empty(t, ops[ec2vpc.KVBucketSecurityGroups])
@@ -423,7 +464,7 @@ func TestOVNFixtureCreate_ReturnsProvisioningRootAndRetriesAfterRestart(t *testi
 	h.takeOps()
 	_, err = h.vpcs.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(h.subnetID)}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation, "the restarted service keeps the subnet slot binding")
-	assert.Contains(t, h.takeOps()[KVBucketELBv2], "Get "+subnetSlotKey(testAccountID, h.subnetID))
+	assert.Contains(t, h.takeOps()[KVBucketELBv2], "LeaderGet "+subnetSlotKey(testAccountID, h.subnetID))
 	sub, _, err := ec2vpc.NewParents(h.bucket(ec2vpc.KVBucketVPCs), h.bucket(ec2vpc.KVBucketSubnets)).Subnet(t.Context(), testAccountID, h.subnetID)
 	require.NoError(t, err)
 	require.NotNil(t, sub, "the subnet survives")

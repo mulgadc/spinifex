@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -79,6 +81,19 @@ func (kv *ownerHookKV) Get(ctx context.Context, key string) (jetstream.KeyValueE
 	return kv.KeyValue.Get(ctx, key)
 }
 
+// leaderGet is the stream leader point read, which runs after the Get hook.
+func (kv *ownerHookKV) leaderGet(js jetstream.JetStream) fixtureLeaderGet {
+	get := leaderGetOf(js, kv.Bucket())
+	return func(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+		if kv.beforeGet != nil {
+			if err := kv.beforeGet(key); err != nil {
+				return nil, err
+			}
+		}
+		return get(ctx, key)
+	}
+}
+
 type fixtureHarness struct {
 	appliance *Store
 	clock     *testClock
@@ -97,7 +112,7 @@ func newFixtureHarness(t *testing.T) *fixtureHarness {
 func (h *fixtureHarness) owners() (*fixtureOwnerStore, *ownerHookKV) {
 	owners := newFixtureOwnerStore(h.appliance, nil)
 	kv := &ownerHookKV{KeyValue: owners.kv}
-	owners.kv = kv
+	owners.kv, owners.leaderGet = kv, kv.leaderGet(h.appliance.js)
 	return owners, kv
 }
 
@@ -499,5 +514,474 @@ func TestFixtureOwner_MalformedClaimSurvives(t *testing.T) {
 		require.NoError(t, err, name)
 		assert.Equal(t, rev, entry.Revision(), name)
 		assert.Equal(t, raw, entry.Value(), name)
+	}
+}
+
+const (
+	fixtureListenerID = "1111000000000001"
+	fixtureGroupID    = "2222000000000002"
+)
+
+// fixtureListenerOf builds a valid listener of root with targets.
+func fixtureListenerOf(root *LoadBalancerRecord, targets ...fixtureTarget) *fixtureListener {
+	return &fixtureListener{
+		ListenerArn:    resourcearn.FormatELBv2Listener(fixtureRegion, root.AccountID, root.Name, root.LoadBalancerID, fixtureListenerID, LoadBalancerTypeNetwork),
+		Port:           80,
+		TargetGroupArn: resourcearn.FormatELBv2TargetGroup(fixtureRegion, root.AccountID, "tcp-group", fixtureGroupID),
+		TargetPort:     8080,
+		Targets:        targets,
+	}
+}
+
+// sealedFixture seals a fixture root and returns its claim key.
+func sealedFixture(t *testing.T, owners *fixtureOwnerStore, root *LoadBalancerRecord) string {
+	t.Helper()
+	claim, _, err := owners.Begin(t.Context(), root)
+	require.NoError(t, err)
+	_, err = owners.Seal(t.Context(), claim)
+	require.NoError(t, err)
+	return claim.Key
+}
+
+// setListener is an edit that installs l and counts its calls.
+func setListener(l *fixtureListener, calls *int) fixtureEdit {
+	return func(fixtureOwner) (*fixtureListener, error) {
+		*calls++
+		return l, nil
+	}
+}
+
+// addTargets is an edit that adds targets to the current listener in order.
+func addTargets(calls *int, seen *[]fixtureOwner, targets ...fixtureTarget) fixtureEdit {
+	return func(cur fixtureOwner) (*fixtureListener, error) {
+		*calls++
+		if seen != nil {
+			*seen = append(*seen, cur)
+		}
+		next := *cur.Listener
+		next.Targets = append(slices.Clone(next.Targets), targets...)
+		slices.SortFunc(next.Targets, compareFixtureTargets)
+		return &next, nil
+	}
+}
+
+func kvEntry(t *testing.T, h *fixtureHarness, key string) jetstream.KeyValueEntry {
+	t.Helper()
+	entry, err := h.appliance.kv.Get(t.Context(), key)
+	require.NoError(t, err)
+	return entry
+}
+
+// An owner written in the revision-1 form, with no listener field, stays a
+// readable sealed owner and is the base the first edit advances.
+func TestFixtureOwner_RevisionOneOwnerStaysReadable(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+
+	v1 := struct {
+		OwnerID       string              `json:"ownerId"`
+		ClaimedAt     time.Time           `json:"claimedAt"`
+		OwnerRevision uint64              `json:"ownerRevision,omitempty"`
+		Sealed        bool                `json:"sealed,omitempty"`
+		Root          *LoadBalancerRecord `json:"root,omitempty"`
+	}{root.LoadBalancerID, h.clock.now(), 1, true, root}
+	raw, err := json.Marshal(v1)
+	require.NoError(t, err)
+	key := LBNameKey(root.Name, testAccountID)
+	_, err = h.appliance.kv.Put(ctx, key, raw)
+	require.NoError(t, err)
+
+	got, err := owners.GetSealedOwner(ctx, root.Name, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, uint64(fixtureOwnerRevision), got.OwnerRevision)
+	assert.Nil(t, got.Listener)
+	byArn, err := owners.GetSealedByArn(ctx, root.LoadBalancerArn, fixtureRegion, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, byArn)
+	assert.Equal(t, root.LoadBalancerArn, byArn.LoadBalancerArn)
+
+	sealedKey := sealedFixture(t, owners, newFixtureRoot("bbbb000000000002", "ovn-new"))
+	assert.NotContains(t, string(kvEntry(t, h, sealedKey).Value()), `"listener"`, "a new revision-1 owner keeps the revision-1 form")
+
+	var calls int
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root), &calls))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), edited.OwnerRevision)
+	assert.Equal(t, 1, calls)
+}
+
+// Each changed edit advances the owner revision by exactly one and is read back
+// whole; an unchanged edit writes nothing.
+func TestFixtureOwner_EditAdvancesOneRevisionPerChange(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	key := sealedFixture(t, owners, root)
+
+	var calls int
+	listener := fixtureListenerOf(root)
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(listener, &calls))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), edited.OwnerRevision)
+	assert.Equal(t, listener, edited.Listener)
+
+	before := kvEntry(t, h, key).Revision()
+	same, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root), &calls))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), same.OwnerRevision)
+	assert.Equal(t, before, kvEntry(t, h, key).Revision(), "an unchanged edit must not write")
+
+	targets := []fixtureTarget{{"i-0000000b", 8080}, {"i-0000000a", 9090}, {"i-0000000a", 8080}}
+	edited, err = owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, nil, targets...))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(3), edited.OwnerRevision)
+
+	got, err := owners.GetSealedOwner(ctx, root.Name, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, uint64(3), got.OwnerRevision)
+	assert.Equal(t, []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000a", 9090}, {"i-0000000b", 8080}}, got.Listener.Targets)
+	assert.Equal(t, listener.ListenerArn, got.Listener.ListenerArn)
+	assert.Equal(t, root, got.Root, "an edit never changes the sealed root")
+
+	retry, _ := h.owners()
+	claim, sealed, err := retry.Begin(ctx, newFixtureRoot(root.LoadBalancerID, root.Name))
+	require.NoError(t, err)
+	assert.Nil(t, claim)
+	require.NotNil(t, sealed, "a create retry reads the advanced root")
+	assert.Equal(t, root.LoadBalancerArn, sealed.LoadBalancerArn)
+	assert.Equal(t, uint64(3), rawOwner(t, h.appliance, root.Name).OwnerRevision)
+}
+
+// An edit of a missing, pending, replaced or malformed owner, a failing edit
+// and an edit that breaks the snapshot invariants are refused with no write.
+func TestFixtureOwner_EditRefusesWithoutWriting(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	key := sealedFixture(t, owners, root)
+	var calls int
+	_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 80}), &calls))
+	require.NoError(t, err)
+
+	pendingRoot := newFixtureRoot("cccc000000000003", "ovn-pending")
+	pending, _, err := owners.Begin(ctx, pendingRoot)
+	require.NoError(t, err)
+	badKey := LBNameKey("ovn-bad", testAccountID)
+	_, err = h.appliance.kv.Put(ctx, badKey, []byte(`{"ownerId":"dddd000000000004"}`))
+	require.NoError(t, err)
+
+	calls = 0
+	for name, c := range map[string]struct {
+		key, owner string
+		want       error
+	}{
+		"missing":   {LBNameKey("ovn-none", testAccountID), root.LoadBalancerID, errFixtureOwnerLost},
+		"pending":   {pending.Key, pendingRoot.LoadBalancerID, errFixtureNotSealed},
+		"replaced":  {key, "bbbb000000000002", errFixtureOwnerLost},
+		"malformed": {badKey, "dddd000000000004", errFixtureClaimMalformed},
+	} {
+		_, err := owners.Edit(ctx, c.key, c.owner, setListener(fixtureListenerOf(root), &calls))
+		require.ErrorIs(t, err, c.want, name)
+	}
+	assert.Zero(t, calls, "a refused owner never reaches the edit")
+
+	before := kvEntry(t, h, key)
+	editFail := errors.New("injected edit refusal")
+	_, err = owners.Edit(ctx, key, root.LoadBalancerID, func(fixtureOwner) (*fixtureListener, error) { return nil, editFail })
+	require.ErrorIs(t, err, editFail)
+
+	tooMany := make([]fixtureTarget, fixtureMaxTargets+1)
+	for i := range tooMany {
+		tooMany[i] = fixtureTarget{fmt.Sprintf("i-%08x", 10+i), 80}
+	}
+	otherLB := newFixtureRoot("eeee000000000005", "ovn-other")
+	zeroPort := fixtureListenerOf(root)
+	zeroPort.Port = 0
+	foreignGroup := fixtureListenerOf(root)
+	foreignGroup.TargetGroupArn = resourcearn.FormatELBv2TargetGroup(fixtureRegion, "210987654321", "tcp-group", fixtureGroupID)
+	_, err = owners.Edit(ctx, key, root.LoadBalancerID, setListener(nil, &calls))
+	require.ErrorIs(t, err, errFixtureClaimMalformed, "an edit cannot remove the listener")
+	broken := map[string]*fixtureListener{
+		"listener port":     zeroPort,
+		"target port":       fixtureListenerOf(root, fixtureTarget{"i-0000000a", 65536}),
+		"too many":          fixtureListenerOf(root, tooMany...),
+		"duplicate":         fixtureListenerOf(root, fixtureTarget{"i-0000000a", 80}, fixtureTarget{"i-0000000a", 80}),
+		"unsorted":          fixtureListenerOf(root, fixtureTarget{"i-0000000b", 80}, fixtureTarget{"i-0000000a", 80}),
+		"not an instance":   fixtureListenerOf(root, fixtureTarget{"10.0.0.1", 80}),
+		"short instance ID": fixtureListenerOf(root, fixtureTarget{"i-0a", 80}),
+		"other LB listener": fixtureListenerOf(otherLB),
+		"foreign group":     foreignGroup,
+	}
+	for name, l := range broken {
+		_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(l, &calls))
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+	}
+	after := kvEntry(t, h, key)
+	assert.Equal(t, before.Revision(), after.Revision(), "a refused edit must not write")
+	assert.Equal(t, before.Value(), after.Value())
+}
+
+// The decoder refuses an owner whose revision, seal and listener disagree, so
+// no reader or edit acts on it and the value stays as stored.
+func TestFixtureOwner_SnapshotInvariantsOnRead(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+
+	i := 0
+	for name, c := range map[string]struct {
+		revision uint64
+		sealed   bool
+		listener bool
+	}{
+		"pending with a listener":      {1, false, true},
+		"pending past revision one":    {2, false, true},
+		"sealed past one, no listener": {2, true, false},
+		"sealed one with a listener":   {1, true, true},
+	} {
+		i++
+		root := newFixtureRoot("aaaa00000000000"+strconv.Itoa(i), "ovn-inv-"+strconv.Itoa(i))
+		owner := fixtureOwner{OwnerID: root.LoadBalancerID, ClaimedAt: h.clock.now(), OwnerRevision: c.revision, Sealed: c.sealed, Root: root}
+		if c.listener {
+			owner.Listener = fixtureListenerOf(root)
+		}
+		raw, err := json.Marshal(owner)
+		require.NoError(t, err, name)
+		key := LBNameKey(root.Name, testAccountID)
+		rev, err := h.appliance.kv.Put(ctx, key, raw)
+		require.NoError(t, err, name)
+
+		_, err = owners.GetSealedOwner(ctx, root.Name, testAccountID)
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+		var calls int
+		_, err = owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root), &calls))
+		require.ErrorIs(t, err, errFixtureClaimMalformed, name)
+		entry := kvEntry(t, h, key)
+		assert.Equal(t, rev, entry.Revision(), name)
+		assert.Equal(t, raw, entry.Value(), name)
+	}
+}
+
+// Two writers read the same revision. The loser's CAS conflicts and its edit
+// runs again on the winner's snapshot, so the caller revalidates before retry.
+func TestFixtureOwner_ConflictingEditRerunsOnLatest(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, kv := h.owners()
+	other, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	key := sealedFixture(t, owners, root)
+	var calls int
+	_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root), &calls))
+	require.NoError(t, err)
+
+	var otherCalls int
+	raced := false
+	kv.beforeUpdate = func(string) {
+		if raced {
+			return
+		}
+		raced = true
+		won, err := other.Edit(ctx, key, root.LoadBalancerID, addTargets(&otherCalls, nil, fixtureTarget{"i-0000000b", 8080}))
+		require.NoError(t, err)
+		require.Equal(t, uint64(3), won.OwnerRevision)
+	}
+	calls = 0
+	var seen []fixtureOwner
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, &seen, fixtureTarget{"i-0000000a", 8080}))
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "a definite conflict reruns the edit")
+	require.Len(t, seen, 2)
+	assert.Equal(t, uint64(2), seen[0].OwnerRevision)
+	assert.Equal(t, uint64(3), seen[1].OwnerRevision, "the rerun sees the winner's snapshot")
+	assert.Equal(t, []fixtureTarget{{"i-0000000b", 8080}}, seen[1].Listener.Targets)
+	assert.Equal(t, uint64(4), edited.OwnerRevision)
+	assert.Equal(t, []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000b", 8080}}, rawOwner(t, h.appliance, root.Name).Listener.Targets)
+}
+
+// A stored edit whose response is lost is adopted when the re-read shows the
+// exact intended snapshot, with no second edit.
+func TestFixtureOwner_EditLostAckAdoptsIntendedSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, kv := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	key := sealedFixture(t, owners, root)
+
+	kv.afterUpdate = func(_ string, err error) error {
+		require.NoError(t, err, "the edit must reach the server")
+		return nats.ErrTimeout
+	}
+	var calls int
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080}), &calls))
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, uint64(2), edited.OwnerRevision)
+	stored := rawOwner(t, h.appliance, root.Name)
+	assert.Equal(t, *edited, stored)
+}
+
+// An edit with an unknown outcome whose re-read is not its intended snapshot,
+// or cannot be read, is a retryable error. It is never rerun on the newer
+// revision, and the durable owner stays as the re-read found it.
+func TestFixtureOwner_UncertainEditIsNotRetried(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	cases := map[string]struct {
+		hook     func(t *testing.T, h *fixtureHarness, kv *ownerHookKV, other *fixtureOwnerStore, key, owner string)
+		readFail bool
+		// wantStored is the target set the durable owner holds afterwards.
+		wantStored []fixtureTarget
+		wantRev    uint64
+	}{
+		"not stored, newer writer": {
+			hook: func(t *testing.T, _ *fixtureHarness, kv *ownerHookKV, other *fixtureOwnerStore, key, owner string) {
+				kv.beforeUpdate = func(string) {
+					kv.beforeUpdate = nil
+					var n int
+					_, err := other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0000000b", 8080}))
+					require.NoError(t, err)
+				}
+				kv.afterUpdate = func(_ string, err error) error {
+					require.True(t, definiteKVConflict(err), "the stale write must not be stored")
+					return nats.ErrTimeout
+				}
+			},
+			wantStored: []fixtureTarget{{"i-0000000b", 8080}},
+			wantRev:    3,
+		},
+		"stored, then superseded": {
+			hook: func(t *testing.T, _ *fixtureHarness, kv *ownerHookKV, other *fixtureOwnerStore, key, owner string) {
+				kv.afterUpdate = func(_ string, err error) error {
+					require.NoError(t, err)
+					kv.afterUpdate = nil
+					var n int
+					_, err = other.Edit(ctx, key, owner, addTargets(&n, nil, fixtureTarget{"i-0000000b", 8080}))
+					require.NoError(t, err)
+					return nats.ErrTimeout
+				}
+			},
+			wantStored: []fixtureTarget{{"i-0000000a", 8080}, {"i-0000000b", 8080}},
+			wantRev:    4,
+		},
+		"stored, re-read fails": {
+			hook: func(t *testing.T, _ *fixtureHarness, kv *ownerHookKV, _ *fixtureOwnerStore, _, _ string) {
+				kv.afterUpdate = func(_ string, err error) error {
+					require.NoError(t, err)
+					kv.beforeGet = func(string) error { return errInjectedRead }
+					return nats.ErrTimeout
+				}
+			},
+			readFail:   true,
+			wantStored: []fixtureTarget{{"i-0000000a", 8080}},
+			wantRev:    3,
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newFixtureHarness(t)
+			owners, kv := h.owners()
+			other, _ := h.owners()
+			root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+			key := sealedFixture(t, owners, root)
+			var calls int
+			_, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root), &calls))
+			require.NoError(t, err)
+
+			c.hook(t, h, kv, other, key, root.LoadBalancerID)
+			calls = 0
+			_, err = owners.Edit(ctx, key, root.LoadBalancerID, addTargets(&calls, nil, fixtureTarget{"i-0000000a", 8080}))
+			require.ErrorIs(t, err, errFixtureEditUncertain)
+			if c.readFail {
+				require.ErrorIs(t, err, errInjectedRead)
+			}
+			assert.Equal(t, 1, calls, "an uncertain edit is never rerun")
+
+			stored := rawOwner(t, h.appliance, root.Name)
+			assert.Equal(t, c.wantRev, stored.OwnerRevision)
+			assert.Equal(t, c.wantStored, stored.Listener.Targets)
+		})
+	}
+}
+
+var errInjectedRead = errors.New("injected read failure")
+
+// A create whose seal response is lost after an edit already advanced the same
+// root resolves to that root, and the edit survives.
+func TestFixtureOwner_LostSealAckAfterAcceptedEdit(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, kv := h.owners()
+	other, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	claim, _, err := owners.Begin(ctx, root)
+	require.NoError(t, err)
+
+	listener := fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080})
+	kv.afterUpdate = func(_ string, err error) error {
+		require.NoError(t, err, "the seal must reach the server")
+		var n int
+		edited, err := other.Edit(ctx, claim.Key, root.LoadBalancerID, setListener(listener, &n))
+		require.NoError(t, err)
+		require.Equal(t, uint64(2), edited.OwnerRevision)
+		return nats.ErrTimeout
+	}
+	out, err := owners.Seal(ctx, claim)
+	require.NoError(t, err)
+	assert.Equal(t, root, out)
+	kv.afterUpdate = nil
+
+	again, sealed, err := owners.Begin(ctx, newFixtureRoot(root.LoadBalancerID, root.Name))
+	require.NoError(t, err)
+	assert.Nil(t, again)
+	assert.Equal(t, root, sealed)
+	stored := rawOwner(t, h.appliance, root.Name)
+	assert.Equal(t, uint64(2), stored.OwnerRevision)
+	assert.Equal(t, listener, stored.Listener)
+}
+
+// The parent dependency check reads an owner advanced past revision one and
+// still blocks deletion of its VPC and subnet, also after the claim TTL.
+func TestFixtureOwner_ParentGuardReadsAdvancedOwner(t *testing.T) {
+	t.Parallel()
+	h := newFixtureHarness(t)
+	owners, _ := h.owners()
+	ctx := t.Context()
+	root := newFixtureRoot("aaaa000000000001", "ovn-nlb")
+	key := sealedFixture(t, owners, root)
+	slot := fixtureSlot{ClaimKey: key, OwnerID: root.LoadBalancerID, VpcID: root.VpcId, SubnetID: root.Subnets[0]}
+	for _, k := range slot.keys(testAccountID) {
+		require.NoError(t, owners.acquireSlot(ctx, testAccountID, k, slot))
+	}
+	var calls int
+	edited, err := owners.Edit(ctx, key, root.LoadBalancerID, setListener(fixtureListenerOf(root, fixtureTarget{"i-0000000a", 8080}), &calls))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), edited.OwnerRevision)
+	h.clock.advance(h.appliance.claimTTL + time.Second)
+
+	blocks, err := owners.vpcBlocksDeletion(ctx, testAccountID, root.VpcId)
+	require.NoError(t, err)
+	assert.True(t, blocks, "the VPC stays a dependency of the advanced owner")
+	blocks, err = owners.subnetBlocksDeletion(ctx, testAccountID, root.Subnets[0])
+	require.NoError(t, err)
+	assert.True(t, blocks, "the subnet stays a dependency of the advanced owner")
+	for _, k := range slot.keys(testAccountID) {
+		_, got, err := owners.readSlot(ctx, testAccountID, k)
+		require.NoError(t, err)
+		assert.Equal(t, &slot, got, "the dependency check keeps a live slot")
 	}
 }

@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
@@ -62,6 +65,48 @@ func (m *JetStreamManager) LoadInstanceRecord(instanceID string) (*vm.InstanceRe
 		return nil, errors.New("KV bucket not initialized")
 	}
 	return loadRecord(m.records, instanceRecordKey(instanceID))
+}
+
+// NamedInstanceReader point-reads one live instance record from the stream
+// leader under the caller's context. It never opens, creates or migrates the
+// bucket, lists records or reads the terminated space.
+type NamedInstanceReader struct {
+	js jetstream.JetStream
+}
+
+var _ ec2projection.NamedInstanceLookup = (*NamedInstanceReader)(nil)
+
+// NewNamedInstanceReader reads the existing record space through js.
+func NewNamedInstanceReader(js jetstream.JetStream) *NamedInstanceReader {
+	return &NamedInstanceReader{js: js}
+}
+
+// NamedInstance implements ec2projection.NamedInstanceLookup. A missing stream,
+// a failed read or a record under another identity is an error.
+func (r *NamedInstanceReader) NamedInstance(ctx context.Context, accountID, instanceID string) (*ec2projection.NamedInstance, error) {
+	if !ec2projection.ValidInstanceID(instanceID) {
+		return nil, nil
+	}
+	key := instanceRecordKey(instanceID)
+	msg, err := kvstore.LeaderMsgGet(ctx, r.js, "KV_"+InstanceStateBucket,
+		kvstore.MsgGetRequest{LastFor: "$KV." + InstanceStateBucket + "." + key})
+	if errors.Is(err, jetstream.ErrMsgNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read instance %s: %w", instanceID, err)
+	}
+	if op := msg.Header.Get(kvOperationHeader); op == "DEL" || op == "PURGE" {
+		return nil, nil
+	}
+	var record vm.InstanceRecord
+	if err := json.Unmarshal(msg.Data, &record); err != nil {
+		return nil, fmt.Errorf("decode instance %s: %w", instanceID, err)
+	}
+	if record.Metadata.Name != instanceID {
+		return nil, fmt.Errorf("instance record %s names %q", instanceID, record.Metadata.Name)
+	}
+	return ec2instance.ProjectNamedInstance(accountID, instanceID, vm.VMFromRecord(&record)), nil
 }
 
 // UpdateInstanceRecord atomically applies mutate to the current record for

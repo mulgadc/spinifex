@@ -3,6 +3,7 @@ package vpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 
@@ -15,14 +16,18 @@ import (
 )
 
 // laggingIPAMKV serves ordinary reads of pinned keys from an older entry, as a
-// lagging replica would, and runs beforeUpdate ahead of each CAS write.
+// lagging replica would. It runs a hook ahead of each CAS or create write, and
+// lostAck replaces a committed write's reply with an error.
 type laggingIPAMKV struct {
 	jetstream.KeyValue
 	mu           sync.Mutex
 	stale        map[string]jetstream.KeyValueEntry
 	staleReads   int
 	updates      int
+	creates      int
 	beforeUpdate func(attempt int)
+	beforeCreate func(attempt int)
+	lostAck      bool
 }
 
 func (k *laggingIPAMKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
@@ -46,13 +51,45 @@ func (k *laggingIPAMKV) Update(ctx context.Context, key string, value []byte, re
 	if hook != nil {
 		hook(attempt)
 	}
-	return k.KeyValue.Update(ctx, key, value, revision)
+	rev, err := k.KeyValue.Update(ctx, key, value, revision)
+	return k.reply(rev, err)
+}
+
+func (k *laggingIPAMKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	k.mu.Lock()
+	k.creates++
+	attempt, hook := k.creates, k.beforeCreate
+	k.mu.Unlock()
+	if hook != nil {
+		hook(attempt)
+	}
+	rev, err := k.KeyValue.Create(ctx, key, value, opts...)
+	return k.reply(rev, err)
+}
+
+// errLostAck is the reply of a write that committed but whose answer was lost.
+var errLostAck = errors.New("nats: timeout")
+
+func (k *laggingIPAMKV) reply(rev uint64, err error) (uint64, error) {
+	k.mu.Lock()
+	lost := k.lostAck
+	k.mu.Unlock()
+	if err == nil && lost {
+		return 0, errLostAck
+	}
+	return rev, err
 }
 
 func (k *laggingIPAMKV) counts() (staleReads, updates int) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.staleReads, k.updates
+}
+
+func (k *laggingIPAMKV) writes() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.updates + k.creates
 }
 
 // ipamLeaderJS hands the IPAM store the lagging handle while leader reads go
@@ -95,11 +132,17 @@ func laggingIPAM(t *testing.T, js jetstream.JetStream, leaderDown bool) (*IPAM, 
 // putIPAMRow commits record as its subnet's row and returns the new entry.
 func putIPAMRow(t *testing.T, kv jetstream.KeyValue, record IPAMRecord) jetstream.KeyValueEntry {
 	t.Helper()
+	return putIPAMRowAt(t, kv, record.SubnetId, record)
+}
+
+// putIPAMRowAt commits record under key, which can differ from its subnet.
+func putIPAMRowAt(t *testing.T, kv jetstream.KeyValue, key string, record IPAMRecord) jetstream.KeyValueEntry {
+	t.Helper()
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), record.SubnetId, data)
+	_, err = kv.Put(t.Context(), key, data)
 	require.NoError(t, err)
-	entry, err := kv.Get(t.Context(), record.SubnetId)
+	entry, err := kv.Get(t.Context(), key)
 	require.NoError(t, err)
 	return entry
 }

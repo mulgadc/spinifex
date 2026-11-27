@@ -40,19 +40,21 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 		cluster *config.ClusterConfig
 		mgmt    string
 		want    int
+		noMig   bool
 	}{
-		{"ready", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Build},
-		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"gate without endpoint policies", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 1 }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"no gate listener, or a vpcd that omits the contract", with(func(s *projection.EndpointProxyStatus) { s.GateReady, s.GateContract = false, 0 }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below},
-		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"vpcd reports an older build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.Baseline }), advertised, config.DefaultMgmtBridgeIP, below},
-		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, below},
-		{"no entry of its own in either derivation", &ready, peerOnly, "", below},
-		{"gateway bound away from its advertise address", &ready, reboundGateway, config.DefaultMgmtBridgeIP, below},
+		{"ready", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Build, false},
+		{"ready but the migration participant is not running", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Migration - 1, true},
+		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"gate without endpoint policies", with(func(s *projection.EndpointProxyStatus) { s.GateContract = 1 }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"no gate listener, or a vpcd that omits the contract", with(func(s *projection.EndpointProxyStatus) { s.GateReady, s.GateContract = false, 0 }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"vpcd reports an older build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.Baseline }), advertised, config.DefaultMgmtBridgeIP, below, false},
+		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, below, false},
+		{"no entry of its own in either derivation", &ready, peerOnly, "", below, false},
+		{"gateway bound away from its advertise address", &ready, reboundGateway, config.DefaultMgmtBridgeIP, below, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +68,7 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 				t.Cleanup(func() { _ = sub.Unsubscribe() })
 			}
 			d := &Daemon{node: "n1", natsConn: nc, clusterConfig: tc.cluster, mgmtBridgeIP: tc.mgmt}
+			d.migrationReady.Store(!tc.noMig)
 			assert.Equal(t, tc.want, d.advertisedFeatureLevel())
 		})
 	}

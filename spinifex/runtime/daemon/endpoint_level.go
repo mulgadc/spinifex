@@ -35,10 +35,11 @@ func (d *Daemon) advertisedFeatureLevel() int {
 		st.Build < featurelevel.GatewayEndpoints || !agree {
 		level = featurelevel.GatewayEndpoints - 1
 	}
+	level = d.capMigrationLevel(level)
 	if prev := d.advertisedLevel.Swap(int64(level)); prev != int64(level) {
 		slog.Info("Feature level advertised", "level", level, "build", featurelevel.Build,
 			"capture_probe", st.ProbePassed, "gate_ready", st.GateReady, "gate_contract", st.GateContract, "vpcd_build", st.Build,
-			"prefix_list_derivations_agree", agree, "err", err)
+			"prefix_list_derivations_agree", agree, "migration_ready", d.migrationReady.Load(), "err", err)
 	}
 	return level
 }

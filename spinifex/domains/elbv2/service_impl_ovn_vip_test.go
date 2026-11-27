@@ -343,6 +343,11 @@ func (h *ovnCreateHarness) rewrite(bucket, key string, edit func(map[string]any)
 	require.NoError(h.t, err)
 }
 
+// rewriteRoot changes the stored sealed root of name in place.
+func (h *ovnCreateHarness) rewriteRoot(name string, edit func(root map[string]any)) {
+	h.rewrite(KVBucketELBv2, LBNameKey(name, testAccountID), func(v map[string]any) { edit(v["root"].(map[string]any)) })
+}
+
 // Missing, unsealed, foreign, mismatched or unreadable evidence stops before
 // IPAM: no address, no allocator write and no other change.
 func TestOVNFixtureVIP_RefusesBeforeAllocating(t *testing.T) {
@@ -366,6 +371,30 @@ func TestOVNFixtureVIP_RefusesBeforeAllocating(t *testing.T) {
 		}, errOVNVIPRefused},
 		"unsealed owner": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
 			h.rewrite(KVBucketELBv2, LBNameKey(root.Name, testAccountID), func(v map[string]any) { delete(v, "sealed") })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"absent realization": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { delete(r, "realization") })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"another realization": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { r["realization"] = "vm" })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"application type": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { r["type"] = LoadBalancerTypeApplication })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"internet-facing scheme": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { r["scheme"] = SchemeInternetFacing })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"dualstack address type": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { r["ip_address_type"] = "dualstack" })
+			return root.LoadBalancerArn, testAccountID
+		}, errOVNVIPRefused},
+		"absent address type": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {
+			h.rewriteRoot(root.Name, func(r map[string]any) { delete(r, "ip_address_type") })
 			return root.LoadBalancerArn, testAccountID
 		}, errOVNVIPRefused},
 		"missing subnet slot": {func(h *ovnCreateHarness, root *LoadBalancerRecord) (string, string) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -126,4 +127,65 @@ func vipHeldBy(record *IPAMRecord, prefix netip.Prefix, token string) (string, e
 		return "", fmt.Errorf("%w: address %s of mapping %s is also allocated elsewhere in subnet %s", ErrIPAMInconsistent, held, token, record.SubnetId)
 	}
 	return held, nil
+}
+
+// ReleaseVIP frees the load balancer address ip only while token holds it in
+// the subnet, by CAS at the leader's revision. Anything else at that address
+// is left alone, so a replayed or stale release cannot free a replacement.
+func (m *IPAM) ReleaseVIP(ctx context.Context, subnetId, ip, token string) error {
+	if !validLiteralKVKey(subnetId) {
+		return fmt.Errorf("%w: subnet key %q is not a literal key", ErrInvalidVIPRequest, subnetId)
+	}
+	if token == "" {
+		return fmt.Errorf("%w: empty mapping token", ErrInvalidVIPRequest)
+	}
+	if addr, err := netip.ParseAddr(ip); err != nil || !addr.Is4() || addr.String() != ip {
+		return fmt.Errorf("%w: %q is not an IPv4 address", ErrInvalidVIPRequest, ip)
+	}
+	for range ipamCASAttempts {
+		record, rev, err := m.store.LeaderGet(ctx, subnetId)
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		i, err := vipEntryAt(record, subnetId, ip, token)
+		if err != nil || i < 0 {
+			return err
+		}
+		record.Allocated = slices.Delete(record.Allocated, i, i+1)
+		_, err = m.store.CompareAndSet(ctx, subnetId, record, rev)
+		switch {
+		case err == nil:
+			slog.InfoContext(ctx, "IPAM released load balancer address", "subnet", subnetId, "ip", ip, "owner", token)
+			return nil
+		case !errors.Is(err, kvstore.ErrConflict):
+			return err
+		}
+	}
+	return fmt.Errorf("IPAM CAS exhausted for subnet %s after %d attempts", subnetId, ipamCASAttempts)
+}
+
+// vipEntryAt returns the index of token's lb-vip entry at ip, or -1 if token
+// does not hold ip. A row naming another subnet, or a second entry at ip, is
+// ambiguous ownership and refused rather than released.
+func vipEntryAt(record *IPAMRecord, subnetId, ip, token string) (int, error) {
+	if record.SubnetId != subnetId {
+		return -1, fmt.Errorf("%w: row for subnet %s names subnet %q", ErrIPAMInconsistent, subnetId, record.SubnetId)
+	}
+	found, atIP := -1, 0
+	for i, entry := range record.Allocated {
+		if entry.IP != ip {
+			continue
+		}
+		atIP++
+		if entry.Purpose == PurposeLBVIP && entry.OwnerID == token {
+			found = i
+		}
+	}
+	if found >= 0 && atIP > 1 {
+		return -1, fmt.Errorf("%w: address %s of mapping %s has more than one entry in subnet %s", ErrIPAMInconsistent, ip, token, subnetId)
+	}
+	return found, nil
 }

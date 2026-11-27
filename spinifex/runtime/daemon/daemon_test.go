@@ -246,6 +246,7 @@ func TestResourceManager(t *testing.T) {
 		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		rm.readMemAvailableGB = nil // accounting test: decrement must track allocations, not live /proc
+		rm.readViperblockMem = nil
 
 		// Find a .micro instance type
 		var microType *ec2.InstanceTypeInfo
@@ -863,6 +864,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		rm.reservedVCPU = 0
 		rm.reservedMem = 0
 		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
+		rm.readViperblockMem = nil
 		rm.mu.Unlock()
 
 		initial := rm.canAllocate(microType, 100)
@@ -917,6 +919,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		rm.reservedVCPU = 0
 		rm.reservedMem = 0
 		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
+		rm.readViperblockMem = nil
 		rm.mu.Unlock()
 
 		initialMicro := rm.canAllocate(microType, 100)
@@ -997,6 +1000,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	rm.allocatedVCPU = 0
 	rm.allocatedMem = 0
 	rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
+	rm.readViperblockMem = nil
 	rm.mu.Unlock()
 
 	require.Equal(t, capacityFor, rm.canAllocate(microType, goroutines),

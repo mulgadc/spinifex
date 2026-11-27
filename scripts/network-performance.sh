@@ -92,6 +92,11 @@ queues_of() {
              printf "%s " "$nic"; sudo ethtool -l "$nic" | awk "/^Combined/ {printf \"%s \", \$2}"'
 }
 
+# Per-queue virtio-net interrupt totals, summed over CPUs: "<name> <count>".
+irqs_of() {
+    on "$1" "awk '/virtio[0-9]+-(input|output)\\.[0-9]+/ { t = 0; for (i = 2; i <= NF; i++) if (\$i ~ /^[0-9]+\$/) t += \$i; print \$NF, t }' /proc/interrupts"
+}
+
 # Absolute TCP retransmitted segments, from the kernel's SNMP counters.
 retrans_of() { on "$1" "nstat -az TcpRetransSegs | awk '/TcpRetransSegs/ {print \$2}'"; }
 
@@ -137,6 +142,9 @@ done
 declare -A RETRANS_BEFORE
 for c in "${CLIENT_LIST[@]}"; do
     RETRANS_BEFORE[$c]=$(retrans_of "$c" 2>/dev/null)
+done
+for g in "$SERVER" "${CLIENT_LIST[@]}"; do
+    irqs_of "$g" > "$OUT_DIR/$g.irq-before.txt" 2>/dev/null || true
 done
 
 log "running $PARALLEL streams for ${DURATION}s from each client to $SERVER_IP, concurrently"
@@ -187,6 +195,15 @@ done
 
 [ "$failed" -eq 0 ] || fail "at least one client did not complete"
 
+# Which queues carried the run. Diagnostic: a few flows can leave a queue
+# idle on a NIC that negotiated every pair, so this never fails the run.
+: > "$OUT_DIR/interrupts.txt"
+for g in "$SERVER" "${CLIENT_LIST[@]}"; do
+    irqs_of "$g" > "$OUT_DIR/$g.irq-after.txt" 2>/dev/null || true
+    awk -v g="$g" 'NR == FNR { b[$1] = $2; next } { printf "%s\t%s\t%d\n", g, $1, $2 - b[$1] }' \
+        "$OUT_DIR/$g.irq-before.txt" "$OUT_DIR/$g.irq-after.txt" >> "$OUT_DIR/interrupts.txt"
+done
+
 : > "$OUT_DIR/retrans.txt"
 for c in "${CLIENT_LIST[@]}"; do
     after=$(retrans_of "$c" 2>/dev/null)
@@ -224,8 +241,16 @@ for c in "${CLIENT_LIST[@]}"; do
     on "$c" "ping -c 1000 -i 0.01 $SERVER_IP" > "$OUT_DIR/$c.ping.txt" 2>&1 || true
     read -r p50 p99 <<<"$(grep -o 'time=[0-9.]*' "$OUT_DIR/$c.ping.txt" | cut -d= -f2 | sort -n |
         awk '{v[NR] = $1} END { if (NR) { a = int((NR + 1) / 2); b = int(NR * 0.99); if (b < 1) b = 1; print v[a], v[b] } }')"
-    printf '%s\tp50 %s ms\tp99 %s ms\n' "$c" "${p50:-?}" "${p99:-?}" >> "$OUT_DIR/latency.txt"
-    log "  $c -> $SERVER_IP RTT p50 ${p50:-?} ms, p99 ${p99:-?} ms"
+    [ -n "$p50" ] && [ -n "$p99" ] ||
+        fail "$c: ping to $SERVER_IP returned no RTT samples, see $OUT_DIR/$c.ping.txt"
+    printf '%s\tp50 %s ms\tp99 %s ms\n' "$c" "$p50" "$p99" >> "$OUT_DIR/latency.txt"
+    log "  $c -> $SERVER_IP RTT p50 $p50 ms, p99 $p99 ms"
+done
+
+# summary.txt keeps one "<client> <Gbit/s>" line per client first, which
+# test-workload.sh reads, then every other record under a leading tag.
+for f in queues retrans udp latency interrupts; do
+    sed "s/^/$f\t/" "$OUT_DIR/$f.txt" >> "$OUT_DIR/summary.txt"
 done
 
 log "results in $OUT_DIR"

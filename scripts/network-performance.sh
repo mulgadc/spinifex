@@ -17,6 +17,13 @@
 #   --parallel N     Streams per client (default: 4)
 #   --time N         Seconds per client (default: 60)
 #   --out DIR        Results directory (default: /tmp/spinifex-network-bench)
+#   --expect-queues N  Fail unless every guest's primary NIC reports Combined N,
+#                    current and maximum, in ethtool -l (default: record only)
+#
+# Besides TCP throughput it records, per guest, the primary NIC's queue pairs
+# (queues.txt), each client's TCP retransmits over the run (retrans.txt), a
+# 64-byte UDP run's receive rate and loss (udp.txt), and ping RTT p50 and p99
+# to the server while iperf is idle (latency.txt).
 #
 # --server-ip exists because the address that carries the traffic is not the
 # address that carries the SSH session. To measure a VPC overlay, SSH reaches
@@ -30,6 +37,7 @@ SERVER_IP=""
 CLIENTS=""
 SSH_USER="ubuntu"
 SSH_KEY=""
+EXPECT_QUEUES=""
 PARALLEL=4
 DURATION=60
 OUT_DIR="/tmp/spinifex-network-bench"
@@ -44,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --parallel) PARALLEL="$2"; shift 2 ;;
         --time)     DURATION="$2"; shift 2 ;;
         --out)      OUT_DIR="$2"; shift 2 ;;
+        --expect-queues) EXPECT_QUEUES="$2"; shift 2 ;;
         -h|--help)  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          echo "ERROR: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -75,6 +84,17 @@ install_iperf() {
 $(sed 's/^/         | /' <<<"$err")"
 }
 
+# The primary NIC is the default route's device. ethtool -l prints Combined
+# twice: the maximum, then the current setting.
+queues_of() {
+    on "$1" 'command -v ethtool >/dev/null || sudo apt-get install -y -qq ethtool >/dev/null
+             nic=$(ip -o route show default | awk "{print \$5; exit}")
+             printf "%s " "$nic"; sudo ethtool -l "$nic" | awk "/^Combined/ {printf \"%s \", \$2}"'
+}
+
+# Absolute TCP retransmitted segments, from the kernel's SNMP counters.
+retrans_of() { on "$1" "nstat -az TcpRetransSegs | awk '/TcpRetransSegs/ {print \$2}'"; }
+
 log "installing iperf on $SERVER and ${#CLIENT_LIST[@]} client(s)"
 install_iperf "$SERVER"
 for c in "${CLIENT_LIST[@]}"; do
@@ -103,6 +123,21 @@ sleep 2
 on "$SERVER" "pgrep -x iperf >/dev/null" ||
     fail "$SERVER: iperf -s reported success but no iperf process is running.
 $(on "$SERVER" "cat /tmp/iperf-server.log" 2>/dev/null | sed 's/^/         | /')"
+
+: > "$OUT_DIR/queues.txt"
+for g in "$SERVER" "${CLIENT_LIST[@]}"; do
+    read -r nic qmax qcur <<<"$(queues_of "$g" 2>/dev/null)"
+    printf '%s\t%s\tmax=%s\tcurrent=%s\n' "$g" "${nic:-?}" "${qmax:-?}" "${qcur:-?}" >> "$OUT_DIR/queues.txt"
+    log "  $g ${nic:-?} queue pairs: max ${qmax:-?}, current ${qcur:-?}"
+    if [ -n "$EXPECT_QUEUES" ] && { [ "$qmax" != "$EXPECT_QUEUES" ] || [ "$qcur" != "$EXPECT_QUEUES" ]; }; then
+        fail "$g: primary NIC has max ${qmax:-?}, current ${qcur:-?} queue pairs, expected $EXPECT_QUEUES"
+    fi
+done
+
+declare -A RETRANS_BEFORE
+for c in "${CLIENT_LIST[@]}"; do
+    RETRANS_BEFORE[$c]=$(retrans_of "$c" 2>/dev/null)
+done
 
 log "running $PARALLEL streams for ${DURATION}s from each client to $SERVER_IP, concurrently"
 pids=()
@@ -151,4 +186,41 @@ for c in "${CLIENT_LIST[@]}"; do
 done
 
 [ "$failed" -eq 0 ] || fail "at least one client did not complete"
+
+: > "$OUT_DIR/retrans.txt"
+for c in "${CLIENT_LIST[@]}"; do
+    after=$(retrans_of "$c" 2>/dev/null)
+    delta=$(( ${after:-0} - ${RETRANS_BEFORE[$c]:-0} ))
+    printf '%s\t%s\n' "$c" "$delta" >> "$OUT_DIR/retrans.txt"
+    log "  $c TCP retransmits over the run: $delta"
+done
+
+# Small packets, one client at a time so each reading is that client's own.
+# The rate and loss are the server's receive-side report, not the sender's.
+cleanup
+on "$SERVER" "iperf -s -u -e -D > /tmp/iperf-udp-server.log 2>&1 < /dev/null" ||
+    fail "$SERVER: could not start iperf -s -u"
+sleep 2
+: > "$OUT_DIR/udp.txt"
+for c in "${CLIENT_LIST[@]}"; do
+    on "$c" "iperf -c $SERVER_IP -u -e -l 64 -b 10G -t 10" > "$OUT_DIR/$c.udp.txt" 2>&1 || true
+    # The client prints the server's report last; take its pps and loss.
+    read -r pps loss <<<"$(awk '/Server Report/ {f=1; next}
+        f && /pps/ { for (i = 1; i <= NF; i++) { if ($i == "pps") p = $(i-1); if ($i ~ /^\(.*%\)$/) l = $i } }
+        END { gsub(/[()%]/, "", l); print p, l }' "$OUT_DIR/$c.udp.txt")"
+    printf '%s\t%s pps\tloss %s%%\n' "$c" "${pps:-?}" "${loss:-?}" >> "$OUT_DIR/udp.txt"
+    log "  $c -> $SERVER_IP UDP 64 B: ${pps:-?} pps received, ${loss:-?}% lost"
+done
+cleanup
+
+# RTT with iperf idle. ping -q would hide the per-packet times p50 and p99 need.
+: > "$OUT_DIR/latency.txt"
+for c in "${CLIENT_LIST[@]}"; do
+    on "$c" "ping -c 1000 -i 0.01 $SERVER_IP" > "$OUT_DIR/$c.ping.txt" 2>&1 || true
+    read -r p50 p99 <<<"$(grep -o 'time=[0-9.]*' "$OUT_DIR/$c.ping.txt" | cut -d= -f2 | sort -n |
+        awk '{v[NR] = $1} END { if (NR) { a = int((NR + 1) / 2); b = int(NR * 0.99); if (b < 1) b = 1; print v[a], v[b] } }')"
+    printf '%s\tp50 %s ms\tp99 %s ms\n' "$c" "${p50:-?}" "${p99:-?}" >> "$OUT_DIR/latency.txt"
+    log "  $c -> $SERVER_IP RTT p50 ${p50:-?} ms, p99 ${p99:-?} ms"
+done
+
 log "results in $OUT_DIR"

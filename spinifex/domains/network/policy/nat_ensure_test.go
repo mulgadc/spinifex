@@ -2,7 +2,6 @@ package policy
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -49,7 +48,7 @@ func TestNATManager_EnsureEIPNeverReplacesALiveRow(t *testing.T) {
 
 			err = mgr.EnsureEIP(ctx, tc.change(liveEIP()))
 
-			assert.True(t, errors.Is(err, ErrEIPWouldReplace), "EnsureEIP = %v, want ErrEIPWouldReplace", err)
+			assert.ErrorIs(t, err, ErrEIPWouldReplace)
 			after, err := m.FindNATByExternalIP(ctx, "dnat_and_snat", "10.200.0.20")
 			require.NoError(t, err)
 			require.NotNil(t, after, "the live row was removed")

@@ -68,9 +68,8 @@ func (s snapshotStore) ListTerminatedInstances() ([]*VM, error) {
 	}
 	out := make([]*VM, len(listed))
 	for i, v := range listed {
-		c := *v
-		c.Teardown = maps.Clone(v.Teardown)
-		out[i] = &c
+		out[i] = &VM{ID: v.ID, Status: v.Status, LastNode: v.LastNode,
+			TerminatedAt: v.TerminatedAt, Teardown: maps.Clone(v.Teardown)}
 	}
 	return out, nil
 }

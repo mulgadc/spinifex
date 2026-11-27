@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -98,7 +97,7 @@ func BenchmarkDriftPass(b *testing.B) {
 	for _, enis := range []int{1000} {
 		b.Run(fmt.Sprintf("enis=%d", enis), func(b *testing.B) {
 			prev := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			slog.SetDefault(slog.New(slog.DiscardHandler))
 			b.Cleanup(func() { slog.SetDefault(prev) })
 
 			js := benchJetStream(b)

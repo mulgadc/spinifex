@@ -19,7 +19,7 @@ type fakeUEFIStores struct {
 	// removeErr fails RemoveLocalUEFIStore, after recording the call.
 	removeErr error
 	marked    []string
-	removed []string
+	removed   []string
 }
 
 var _ UEFIStoreTerminator = (*fakeUEFIStores)(nil)

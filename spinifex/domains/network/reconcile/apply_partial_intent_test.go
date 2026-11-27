@@ -610,4 +610,3 @@ func TestS7_DriftPassAddsNoDropGateWhenARouteTableDoesNotDecode(t *testing.T) {
 		t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
 	}
 }
-

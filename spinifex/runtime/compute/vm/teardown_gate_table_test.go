@@ -34,6 +34,7 @@ func (l *gateCallLog) snapshot() []string {
 
 type orderedCleaner struct {
 	*recordingInstanceCleaner
+
 	log *gateCallLog
 }
 
@@ -44,6 +45,7 @@ func (c orderedCleaner) DeleteVolumes(v *VM) error {
 
 type orderedUEFIStores struct {
 	*fakeUEFIStores
+
 	log *gateCallLog
 }
 

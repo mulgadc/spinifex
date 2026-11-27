@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -125,7 +124,7 @@ func sortedCopy(ids []string) []string {
 func newFanoutService(t *testing.T, store objectstore.ObjectStore) *VolumeServiceImpl {
 	t.Helper()
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	cfg := &config.Config{AZ: "ap-southeast-2a", Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	return NewVolumeServiceImplWithStore(cfg, store, nil)

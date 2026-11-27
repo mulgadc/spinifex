@@ -13,12 +13,13 @@ import (
 )
 
 // fakeSS puts an ss first on PATH that logs each run to the returned file and
-// then hangs, standing in for a socket listing that never returns.
+// then hangs, standing in for a socket listing that never returns. A child it
+// leaves behind keeps stdout open after ss itself is killed.
 func fakeSS(t *testing.T) (invocations string) {
 	t.Helper()
 	dir := t.TempDir()
 	invocations = filepath.Join(dir, "ss.calls")
-	script := "#!/bin/sh\necho run >> " + invocations + "\nexec sleep 60\n"
+	script := "#!/bin/sh\necho run >> " + invocations + "\nsleep 60 &\nexec sleep 60\n"
 	if err := os.WriteFile(filepath.Join(dir, "ss"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake ss: %v", err)
 	}
@@ -42,17 +43,23 @@ func startSleeper(t *testing.T) int {
 
 // One shared deadline bounds the whole idle check. The first ss hangs and
 // uses all of it, so no later volume may start a check, and no nbdkit that
-// could not be checked may be killed.
+// could not be checked may be killed. Every engine still detaches.
 func TestShutdownIdleCheckSharesOneDeadline(t *testing.T) {
+	logs := captureLogs(t)
 	calls := fakeSS(t)
 	cfg := &Config{}
 	pids := make([]int, 3)
 	for i := range pids {
 		pids[i] = startSleeper(t)
+		name := "vol-bound" + string(rune('a'+i)) + "001"
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-			Name: "vol-bound-" + string(rune('a'+i)), PID: pids[i],
+			Name: name, PID: pids[i], VB: createTestVBWithState(t, name),
 			Socket: filepath.Join(t.TempDir(), "nbd.sock"),
 		})
+	}
+	names := make([]string, len(cfg.MountedVolumes))
+	for i, v := range cfg.MountedVolumes {
+		names[i] = v.Name
 	}
 
 	done := make(chan struct{})
@@ -73,6 +80,11 @@ func TestShutdownIdleCheckSharesOneDeadline(t *testing.T) {
 	for i, pid := range pids {
 		if !alive(pid) {
 			t.Errorf("nbdkit %d killed although its idle check never completed", i)
+		}
+	}
+	for _, name := range names {
+		if n := volumeCloseCount(logs.String(), name); n != 1 {
+			t.Errorf("engine %s closed %d times, want 1: every volume detaches after the deadline", name, n)
 		}
 	}
 }

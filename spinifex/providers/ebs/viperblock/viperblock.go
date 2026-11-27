@@ -935,6 +935,9 @@ func nbdkitInUse(ctx context.Context, vol MountedVolume) bool {
 	// ss -H rows are: <netid> <state> <recvq> <sendq> <local-addr> ...
 	// LISTEN is the idle server socket; ESTAB means a client is attached.
 	for line := range strings.SplitSeq(string(out), "\n") {
+		if ctx.Err() != nil {
+			return true
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -943,5 +946,6 @@ func nbdkitInUse(ctx context.Context, vol MountedVolume) bool {
 			return true
 		}
 	}
-	return false
+	// An idle answer reached after the deadline is not a checked answer.
+	return ctx.Err() != nil
 }

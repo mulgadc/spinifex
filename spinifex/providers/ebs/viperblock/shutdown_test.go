@@ -1,6 +1,7 @@
 package viperblock
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
@@ -125,7 +126,7 @@ func TestNbdkitInUse_ConnectedClientDetected(t *testing.T) {
 	srvConn := <-accepted
 	defer srvConn.Close()
 
-	if !nbdkitInUse(MountedVolume{Name: "vol-attached", Socket: sock}) {
+	if !nbdkitInUse(context.Background(), MountedVolume{Name: "vol-attached", Socket: sock}) {
 		t.Fatal("nbdkitInUse returned false for a socket with a connected client")
 	}
 }
@@ -137,7 +138,7 @@ func TestNbdkitInUse_NoSocketNotInUse(t *testing.T) {
 		t.Skip("ss not available")
 	}
 	sock := filepath.Join(t.TempDir(), "absent.sock")
-	if nbdkitInUse(MountedVolume{Name: "vol-idle", Socket: sock}) {
+	if nbdkitInUse(context.Background(), MountedVolume{Name: "vol-idle", Socket: sock}) {
 		t.Fatal("nbdkitInUse returned true for a socket with no connections")
 	}
 }
@@ -145,7 +146,7 @@ func TestNbdkitInUse_NoSocketNotInUse(t *testing.T) {
 // TestNbdkitInUse_TCPAssumedInUse: TCP transport can't be cheaply confirmed
 // idle, so it defaults to in-use (safe — never kill under a guest).
 func TestNbdkitInUse_TCPAssumedInUse(t *testing.T) {
-	if !nbdkitInUse(MountedVolume{Name: "vol-tcp", Port: 10809}) {
+	if !nbdkitInUse(context.Background(), MountedVolume{Name: "vol-tcp", Port: 10809}) {
 		t.Fatal("nbdkitInUse must assume TCP transport is in use")
 	}
 }

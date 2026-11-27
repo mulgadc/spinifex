@@ -163,7 +163,10 @@ func (g *Gate) Create(ctx context.Context, rec store.Record) (store.Entry, error
 	}
 
 	if err := g.refuseSealed(ctx, rec.AccountID); err != nil {
-		if _, markErr := s.MarkDeleteRequested(ctx, rec.Kind, rec.ID, g.now()); markErr != nil {
+		// The mark outlives a cancelled request; a sweep also retires every
+		// record of a sealed account, so a lost mark leaves nothing behind.
+		markCtx := context.WithoutCancel(ctx)
+		if _, markErr := s.MarkDeleteRequested(markCtx, rec.Kind, rec.ID, g.now()); markErr != nil {
 			return store.Entry{}, errors.Join(err, fmt.Errorf("mark raced record: %w", markErr))
 		}
 		return store.Entry{}, err

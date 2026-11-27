@@ -22,7 +22,7 @@ func (d *Daemon) initMigration(js jetstream.JetStream, terminating admission.Ter
 	if err != nil {
 		return fmt.Errorf("migration executor: %w", err)
 	}
-	participant, err := accounttermination.New(js, terminating, exec, executor.NoObjects{}, nil, time.Now)
+	participant, err := accounttermination.New(js, terminating, exec, nil, time.Now)
 	if err != nil {
 		return fmt.Errorf("migration participant: %w", err)
 	}

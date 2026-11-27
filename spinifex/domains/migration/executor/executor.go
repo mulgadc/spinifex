@@ -75,21 +75,23 @@ func (x *Executor) Node() string { return x.node }
 // Run sweeps once per tick until ctx ends. A failed sweep is logged and the
 // next tick retries it.
 func (x *Executor) Run(ctx context.Context, ticks <-chan time.Time) {
+	var now time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticks:
+		case now = <-ticks:
 		}
-		if err := x.Sweep(ctx); err != nil {
+		if err := x.Sweep(ctx, now); err != nil {
 			slog.WarnContext(ctx, "Migration executor sweep incomplete", "node", x.node, "err", err)
 		}
 	}
 }
 
-// Sweep expires cached sessions, drops the sessions of sealed accounts, and
-// resumes the deletion of every record marked for deletion.
-func (x *Executor) Sweep(ctx context.Context) error {
+// Sweep expires cached sessions, drops the sessions of sealed accounts,
+// resumes the deletion of every record marked for deletion, and retires the
+// bucket of every sealed account. now is the time of the tick.
+func (x *Executor) Sweep(ctx context.Context, now time.Time) error {
 	var errs []error
 	if x.cache != nil {
 		x.cache.Sweep()
@@ -109,11 +111,69 @@ func (x *Executor) Sweep(ctx context.Context) error {
 		return errors.Join(append(errs, err)...)
 	}
 	for _, account := range accounts {
-		if _, err := x.Drain(ctx, account); err != nil && !errors.Is(err, store.ErrNotFound) {
+		sealed, err := x.seals.Sealed(ctx, account)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if sealed {
+			_, err = x.Retire(ctx, account, now)
+		} else {
+			_, err = x.Drain(ctx, account)
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			errs = append(errs, fmt.Errorf("drain account %s: %w", account, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Retire is one termination pass over a sealed account: it marks every record
+// for deletion, drains what no executor holds, and removes the account's
+// objects and bucket once the bucket holds nothing. It returns what waits.
+func (x *Executor) Retire(ctx context.Context, account string, now time.Time) (map[string]int, error) {
+	s, err := store.Open(ctx, x.js, account)
+	if errors.Is(err, store.ErrNotFound) {
+		if err := x.objects.DeletePrefix(ctx, AccountPrefix(account)); err != nil {
+			return nil, fmt.Errorf("delete account objects: %w", err)
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	listing, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var errs []error
+	for _, e := range listing.Entries {
+		if e.Record.DeleteRequested {
+			continue
+		}
+		if _, err := s.MarkDeleteRequested(ctx, e.Record.Kind, e.Record.ID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+			errs = append(errs, err)
+		}
+	}
+	res, err := x.Drain(ctx, account)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return res.Waiting, errors.Join(errs...)
+	}
+
+	after, err := s.List(ctx)
+	if err != nil {
+		return res.Waiting, err
+	}
+	if len(after.Entries) > 0 || after.Unknown > 0 || after.UnreadableCount() > 0 {
+		return res.Waiting, nil
+	}
+	if err := x.objects.DeletePrefix(ctx, AccountPrefix(account)); err != nil {
+		return res.Waiting, fmt.Errorf("delete account objects: %w", err)
+	}
+	return res.Waiting, store.DeleteBucket(ctx, x.js, account)
 }
 
 // DrainResult is what one drain pass left, per kind.

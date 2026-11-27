@@ -83,7 +83,7 @@ func newNode(t *testing.T, js jetstream.JetStream, id string) *node {
 	var err error
 	n.exec, err = executor.New(js, id, n.objs, n.sess)
 	require.NoError(t, err)
-	n.part, err = New(js, terminating{acct: true}, n.exec, n.objs, n.sess, func() time.Time { return t0 })
+	n.part, err = New(js, terminating{acct: true}, n.exec, n.sess, func() time.Time { return t0 })
 	require.NoError(t, err)
 	return n
 }
@@ -134,6 +134,23 @@ func allClean(classes []accountlifecyclev1.ClassReport) bool {
 		}
 	}
 	return len(classes) == 3
+}
+
+// recordGone reports whether the account's record no longer exists, with or
+// without its bucket.
+func recordGone(t *testing.T, js jetstream.JetStream, kind, id string) bool {
+	t.Helper()
+	s, err := store.Open(t.Context(), js, acct)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	require.NoError(t, err)
+	_, err = s.Get(t.Context(), kind, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	require.NoError(t, err)
+	return false
 }
 
 func bucketGone(t *testing.T, js jetstream.JetStream) bool {
@@ -200,9 +217,8 @@ func TestS8_TerminationReturnsBeforeTheOwnerDrains(t *testing.T) {
 
 	_, err = s.RecordStopped(t.Context(), "copy-task", "ct-1", "n2")
 	require.NoError(t, err)
-	require.NoError(t, b.exec.Sweep(t.Context()))
-	_, err = s.Get(t.Context(), "copy-task", "ct-1")
-	require.ErrorIs(t, err, store.ErrNotFound, "the next sweep deletes once the owner stopped")
+	require.NoError(t, b.exec.Sweep(t.Context(), t0))
+	assert.True(t, recordGone(t, js, "copy-task", "ct-1"), "the next sweep deletes once the owner stopped")
 
 	assert.True(t, allClean(terminate(t, a.part).Classes))
 	assert.True(t, bucketGone(t, js))
@@ -223,10 +239,9 @@ func TestS7_InterruptedDeleteResumes(t *testing.T) {
 	require.Len(t, l.Entries, 1, "one record lost its object delete and stays")
 	assert.True(t, l.Entries[0].Record.DeleteRequested)
 
-	require.NoError(t, b.exec.Sweep(t.Context()))
-	l, err = s.List(t.Context())
-	require.NoError(t, err)
-	assert.Empty(t, l.Entries)
+	require.NoError(t, b.exec.Sweep(t.Context(), t0))
+	assert.True(t, recordGone(t, js, "assessment", "a-1"))
+	assert.True(t, recordGone(t, js, "assessment", "a-2"))
 	assert.True(t, allClean(terminate(t, a.part).Classes))
 }
 
@@ -239,7 +254,7 @@ func TestS7_SweepResumesAMarkedRecordWithoutTheCommand(t *testing.T) {
 	_, err := s.MarkDeleteRequested(t.Context(), "connection", "c-1", t0)
 	require.NoError(t, err)
 
-	require.NoError(t, b.exec.Sweep(t.Context()))
+	require.NoError(t, b.exec.Sweep(t.Context(), t0))
 	_, err = s.Get(t.Context(), "connection", "c-1")
 	require.ErrorIs(t, err, store.ErrNotFound)
 	_, err = s.Get(t.Context(), "connection", "c-2")
@@ -256,12 +271,12 @@ func TestDrain_StaleOwnClaimIsStoppedAndDeleted(t *testing.T) {
 	require.NoError(t, err)
 
 	other := newNode(t, js, "n2")
-	require.NoError(t, other.exec.Sweep(t.Context()))
+	require.NoError(t, other.exec.Sweep(t.Context(), t0))
 	_, err = s.Get(t.Context(), "copy-task", "ct-1")
 	require.NoError(t, err, "another node never stops a claim it does not hold")
 
 	restarted := newNode(t, js, "n1")
-	require.NoError(t, restarted.exec.Sweep(t.Context()))
+	require.NoError(t, restarted.exec.Sweep(t.Context(), t0))
 	_, err = s.Get(t.Context(), "copy-task", "ct-1")
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
@@ -270,7 +285,7 @@ func TestTerminate_RefusesAnAccountNotTerminating(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	exec, err := executor.New(js, "n1", &objects{}, nil)
 	require.NoError(t, err)
-	p, err := New(js, terminating{}, exec, &objects{}, nil, nil)
+	p, err := New(js, terminating{}, exec, nil, nil)
 	require.NoError(t, err)
 	s := seed(t, js, store.Record{Kind: "connection", ID: "c-1"})
 
@@ -321,15 +336,72 @@ func TestInventory_NeverReportsCleanForAnUnreadableScan(t *testing.T) {
 	}
 }
 
+// A create that passed the seal check before the account was retired can
+// write a record after the last pass. A sweep retires it with no command.
+func TestS7_SweepRetiresARecordWrittenAfterTheAccountWasRetired(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	n := newNode(t, js, "n1")
+	seed(t, js, store.Record{Kind: "connection", ID: "c-1"})
+	require.True(t, allClean(terminate(t, n.part).Classes))
+	require.True(t, bucketGone(t, js))
+
+	seed(t, js, store.Record{Kind: "connection", ID: "c-late"})
+	require.NoError(t, n.exec.Sweep(t.Context(), t0))
+	assert.True(t, recordGone(t, js, "connection", "c-late"))
+	assert.True(t, bucketGone(t, js))
+
+	other := "444455556666"
+	s, err := store.OpenOrCreate(t.Context(), js, other)
+	require.NoError(t, err)
+	_, err = s.Create(t.Context(), store.Record{Kind: "connection", ID: "c-1", AccountID: other})
+	require.NoError(t, err)
+	require.NoError(t, n.exec.Sweep(t.Context(), t0))
+	_, err = s.Get(t.Context(), "connection", "c-1")
+	require.NoError(t, err, "a sweep never retires an account that is not sealed")
+}
+
+// A failed object delete is never clean, even when the bucket is gone.
+func TestTerminate_FailedPrefixDeleteWithNoBucketIsNotClean(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	n := newNode(t, js, "n1")
+	n.objs.failNext = 1
+	reply := terminate(t, n.part)
+	for _, c := range reply.Classes {
+		assert.Equal(t, accountlifecyclev1.StatusIncomplete, c.Status)
+	}
+	assert.True(t, allClean(terminate(t, n.part).Classes))
+	assert.Contains(t, n.objs.prefixes(), "migration/111122223333/")
+}
+
+// The sweep never deletes the objects named by a record it cannot trust: one
+// from a newer build, or one whose contents name another record.
+func TestS7_SweepKeepsTheObjectsOfAnUntrustedRecord(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	n := newNode(t, js, "n1")
+	seed(t, js)
+	kv, err := js.KeyValue(t.Context(), store.BucketName(acct))
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), "connection.c-1", []byte(`{"schema_version":1,"kind":"connection","id":"c-2","account_id":"111122223333","delete_requested":true}`))
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), "assessment.a-1", []byte(`{"schema_version":9,"kind":"assessment","id":"a-1","account_id":"111122223333","delete_requested":true}`))
+	require.NoError(t, err)
+
+	require.NoError(t, admission.NewSeals(js).Seal(t.Context(), terminating{acct: true}, acct, t0))
+	require.NoError(t, n.exec.Sweep(t.Context(), t0))
+	assert.False(t, allClean(terminate(t, n.part).Classes))
+	assert.Empty(t, n.objs.prefixes(), "no prefix of an untrusted record is deleted")
+	assert.False(t, bucketGone(t, js))
+}
+
 func TestSweep_ExpiresSessionsAndDropsSealedAccounts(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	n := newNode(t, js, "n1")
-	require.NoError(t, n.exec.Sweep(t.Context()))
+	require.NoError(t, n.exec.Sweep(t.Context(), t0))
 	assert.Equal(t, 1, n.sess.sweeps)
 	assert.True(t, n.sess.holds(acct))
 
 	require.NoError(t, admission.NewSeals(js).Seal(t.Context(), terminating{acct: true}, acct, t0))
-	require.NoError(t, n.exec.Sweep(t.Context()))
+	require.NoError(t, n.exec.Sweep(t.Context(), t0))
 	assert.False(t, n.sess.holds(acct), "a node that did not serve the command still drops the account")
 	assert.True(t, n.sess.holds("444455556666"))
 }

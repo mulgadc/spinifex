@@ -275,7 +275,7 @@ func TestTerminationMidRollingUpgradeStillDrains(t *testing.T) {
 
 	upgraded, err := executor.New(js, "n2", executor.NoObjects{}, nil)
 	require.NoError(t, err)
-	part, err := accounttermination.New(js, terminatingAccount{}, upgraded, executor.NoObjects{}, nil, nil)
+	part, err := accounttermination.New(js, terminatingAccount{}, upgraded, nil, nil)
 	require.NoError(t, err)
 	serveMigration(t, nc, part)
 

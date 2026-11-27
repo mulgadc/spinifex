@@ -116,6 +116,31 @@ func TestMutate_RefusesARecordFromANewerBuild(t *testing.T) {
 	assert.Contains(t, string(raw.Value()), `"future":true`, "this build does not rewrite a newer record")
 }
 
+// A record from a newer build or one that names another key is unreadable, so
+// no caller acts on its contents and every scan of the bucket is incomplete.
+func TestList_CountsNewerAndMismatchedRecordsUnreadable(t *testing.T) {
+	s := newStore(t)
+	for key, val := range map[string]string{
+		"connection.c-1": `{"schema_version":2,"kind":"connection","id":"c-1","account_id":"111122223333","delete_requested":true}`,
+		"connection.c-2": `{"schema_version":1,"kind":"connection","id":"c-3","account_id":"111122223333"}`,
+		"assessment.a-1": `{"schema_version":1,"kind":"copy-task","id":"a-1","account_id":"111122223333"}`,
+		"assessment.a-2": `{"schema_version":1,"kind":"assessment","id":"a-2","account_id":"444455556666"}`,
+	} {
+		_, err := s.kv.Create(t.Context(), key, []byte(val))
+		require.NoError(t, err)
+	}
+	_, err := s.Get(t.Context(), "connection", "c-1")
+	require.ErrorIs(t, err, ErrNewerSchema)
+	_, err = s.Get(t.Context(), "connection", "c-2")
+	require.ErrorIs(t, err, ErrMismatch)
+
+	l, err := s.List(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, l.Entries)
+	assert.Equal(t, map[string]int{"connection": 2, "assessment": 2}, l.Unreadable)
+	assert.Equal(t, 4, l.UnreadableCount())
+}
+
 func TestDelete_RefusesARecordThatChangedSinceItWasRead(t *testing.T) {
 	s := newStore(t)
 	rev, err := s.Create(t.Context(), Record{Kind: "connection", ID: "c-1", AccountID: acct})

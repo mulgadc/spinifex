@@ -39,7 +39,7 @@ func (d *migrationDrain) check(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count migration records: %w", err)
 	}
 	if d.out != nil {
-		fmt.Fprintf(d.out, "Migration: %d record(s) or empty bucket(s).\n", n)
+		fmt.Fprintf(d.out, "Migration: %d record(s).\n", n)
 		if n > 0 {
 			fmt.Fprintln(d.out, "Delete every migration connection, assessment and copy task before rolling back: rollback never deletes one.")
 		}

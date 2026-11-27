@@ -150,7 +150,7 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 	require.NoError(t, err)
 	exec, err := executor.New(js, "node-1", executor.NoObjects{}, nil)
 	require.NoError(t, err)
-	participant, err := accounttermination.New(js, iamdomain.NewAccountStatusReader(js), exec, executor.NoObjects{}, nil, time.Now)
+	participant, err := accounttermination.New(js, iamdomain.NewAccountStatusReader(js), exec, nil, time.Now)
 	require.NoError(t, err)
 	serveMigrationParticipant(t, nc, participant)
 	require.NoError(t, nc.Flush())

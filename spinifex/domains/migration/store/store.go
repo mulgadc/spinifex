@@ -37,6 +37,8 @@ var (
 	ErrConflict = errors.New("migration record changed concurrently")
 	// ErrNewerSchema is a record written by a newer build; this build never rewrites it.
 	ErrNewerSchema = errors.New("migration record has a newer schema version")
+	// ErrMismatch is a record whose kind, ID or account differs from its key.
+	ErrMismatch = errors.New("migration record does not match its key")
 )
 
 // Kinds are the record kinds, one per participant class.
@@ -199,6 +201,12 @@ func (s *Store) Get(ctx context.Context, kind, id string) (Entry, error) {
 	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 		return Entry{}, fmt.Errorf("decode migration record: %w", err)
 	}
+	if rec.SchemaVersion > SchemaVersion {
+		return Entry{}, ErrNewerSchema
+	}
+	if rec.Kind != kind || rec.ID != id || rec.AccountID != s.accountID {
+		return Entry{}, fmt.Errorf("%w: key %s holds %s.%s of account %q", ErrMismatch, Key(kind, id), rec.Kind, rec.ID, rec.AccountID)
+	}
 	return Entry{Record: rec, Revision: entry.Revision()}, nil
 }
 
@@ -238,6 +246,15 @@ func (s *Store) List(ctx context.Context) (Listing, error) {
 		out.Entries = append(out.Entries, e)
 	}
 	return out, nil
+}
+
+// UnreadableCount is the number of keys the listing could not read.
+func (l Listing) UnreadableCount() int {
+	n := 0
+	for _, c := range l.Unreadable {
+		n += c
+	}
+	return n
 }
 
 // MarkDeleteRequested sets DeleteRequested on a record. It is idempotent and
@@ -315,9 +332,6 @@ func (s *Store) mutate(ctx context.Context, kind, id string, f func(*Record) (bo
 		if err != nil {
 			return Entry{}, err
 		}
-		if e.Record.SchemaVersion > SchemaVersion {
-			return Entry{}, ErrNewerSchema
-		}
 		changed, err := f(&e.Record)
 		if err != nil || !changed {
 			return e, err
@@ -340,9 +354,9 @@ func (s *Store) mutate(ctx context.Context, kind, id string, f func(*Record) (bo
 	return Entry{}, ErrConflict
 }
 
-// CountAll counts every migration bucket's records across the cluster, and an
-// empty bucket as one, since an older build can drain neither. A failed read
-// is an error, never a lower count.
+// CountAll counts every migration record across the cluster. An empty bucket
+// holds nothing to drain and counts as none. A failed read is an error, never
+// a lower count.
 func CountAll(ctx context.Context, js jetstream.KeyValueManager) (int, error) {
 	accounts, err := AccountIDs(ctx, js)
 	if err != nil {
@@ -361,11 +375,7 @@ func CountAll(ctx context.Context, js jetstream.KeyValueManager) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		n := len(l.Entries) + l.Unknown
-		for _, c := range l.Unreadable {
-			n += c
-		}
-		total += max(n, 1)
+		total += len(l.Entries) + l.Unknown + l.UnreadableCount()
 	}
 	return total, nil
 }

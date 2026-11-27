@@ -17,8 +17,8 @@ func TestMigrationDrainFailsBeforeConnect(t *testing.T) {
 }
 
 // A rollback below the migration level must not leave records that an older
-// engine cannot reach, so every record and every empty bucket is outstanding.
-func TestMigrationDrainCountsRecordsAndEmptyBuckets(t *testing.T) {
+// engine cannot reach. An empty bucket holds none and never blocks it.
+func TestMigrationDrainCountsRecordsNotEmptyBuckets(t *testing.T) {
 	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	var out bytes.Buffer
@@ -42,6 +42,19 @@ func TestMigrationDrainCountsRecordsAndEmptyBuckets(t *testing.T) {
 	out.Reset()
 	n, err = d.check(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, 3, n)
+	assert.Equal(t, 2, n)
 	assert.Contains(t, out.String(), "before rolling back")
+
+	s, err = migrationstore.Open(t.Context(), js, "111122223333")
+	require.NoError(t, err)
+	l, err := s.List(t.Context())
+	require.NoError(t, err)
+	for _, e := range l.Entries {
+		require.NoError(t, s.Delete(t.Context(), e.Record.Kind, e.Record.ID, e.Revision))
+	}
+	out.Reset()
+	n, err = d.check(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, n, "an active account whose last record was deleted no longer blocks rollback")
+	assert.NotContains(t, out.String(), "before rolling back")
 }

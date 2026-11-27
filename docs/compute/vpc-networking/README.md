@@ -83,7 +83,9 @@ The cost is not raw crypto throughput, it is **CPU scaling**. ESP wraps each Gen
 
 **ConnectX-5 cannot offload this.** ASAP² handles OVS flow offload, but IPsec inline crypto requires ConnectX-6 Dx or BlueField. Adding cores or streams does not help either; throughput with IPsec on is flat in stream count because everything funnels through the same core.
 
-The MTU and multiqueue rows above are not separate knobs. Both follow `ipsec_enabled` on their own, because the ESP header consumes 34 bytes of the path budget and because the sign of the multiqueue result flips with encryption. Turning IPsec off is the whole change.
+The MTU row above is not a separate knob. It follows `ipsec_enabled` on its own, because the ESP header consumes 34 bytes of the path budget. Turning IPsec off is the whole change.
+
+The queue-pair row was measured when multiqueue also followed `ipsec_enabled`. It no longer does: every guest NIC now has one queue pair per vCPU, up to 8, whether IPsec is on or off, as ENA sizes its queues by instance. Load balancer and worker VMs stay at one.
 
 Full analysis, including what does *not* fix it and the measurements behind each row: [Performance Tuning → IPsec on the overlay](/docs/performance-tuning#2-ipsec-on-the-overlay).
 

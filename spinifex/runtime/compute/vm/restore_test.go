@@ -346,7 +346,7 @@ func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
 // store is still reaped and relaunched with the local provider not answering.
 func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testing.T) {
 	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
-	m, _, _ := classifyTestManager(t)
+	m, _, rc := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	m.deps.BackingStoreReady = func() bool { return true }
 	m.deps.EBSProviderReady = func() bool { return false }
@@ -363,6 +363,8 @@ func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testin
 	require.Len(t, toLaunch, 1, "a stale export under a ready store is an orphan, provider or not")
 	assert.Same(t, v, toLaunch[0])
 	assert.False(t, isInstanceProcessRunning(v), "the orphaned QEMU must be killed before its relaunch")
+	assert.Zero(t, rc.adoptedCount("t3.micro"),
+		"a live QEMU that is killed and relaunched opens a new export, so it is admitted, not adopted")
 }
 
 // Belt and braces for the same invariant at its last enforcement point: even if a

@@ -3704,15 +3704,16 @@ func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count
 		availGPU, requiresGPU,
 	)
 	n := rm.liveMemGate(budget, instanceType)
+	gate := "budget"
 	if n < budget {
-		return n, "live-memory"
+		gate = "live-memory"
 	}
 	if exports {
 		if m := rm.exportGate(n); m < n {
 			return m, "viperblock-memory"
 		}
 	}
-	return n, "budget"
+	return n, gate
 }
 
 // admissibleGPUInstances returns how many instances of a GPU type the free pool

@@ -95,6 +95,7 @@ func gatedRM(t *testing.T, room int) (*ResourceManager, *ec2.InstanceTypeInfo) {
 	for range 20 - room {
 		require.NoError(t, rm.allocate(micro))
 	}
+	rm.pending = nil // the guests that fill the node are established, their exports open
 	return rm, micro
 }
 
@@ -151,10 +152,35 @@ func TestViperblockGateExpiresPendingOnceTheReadingCanShowIt(t *testing.T) {
 	rm.exportAdmitted(now.Add(-3 * time.Minute))
 	rm.exportAdmitted(now)
 	assert.Equal(t, 1, rm.pendingExports(now), "an admission older than exportPending is in the reading")
-	rm.exportReleased()
-	rm.exportReleased()
-	assert.Equal(t, 0, rm.exports)
-	assert.Equal(t, 0, rm.pendingExports(now))
+	assert.Equal(t, 0, rm.pendingExports(now.Add(exportPending)), "and every charge expires")
+}
+
+// A release cannot tell which launch it belongs to, so it leaves pending charges alone:
+// terminating an established guest must not free the slot of a launch still opening.
+func TestViperblockGateKeepsPendingChargesAcrossAnUnrelatedRelease(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	limit, _, _ := rm.readViperblockMem()
+	budget := limit - limit*exportMarginPct/100
+	// The reading shows 10 established guests and room for exactly one more.
+	rm.readViperblockMem = func() (int64, int64, bool) { return limit, budget - 768, true }
+	require.NoError(t, rm.allocate(micro), "the launch takes the last slot and is pending")
+	rm.deallocate(micro) // an established guest terminates; its memory leaves the reading later
+	assert.Equal(t, 1, rm.pendingExports(time.Now()))
+	assert.Equal(t, 0, rm.CanAllocate(micro, 1), "the pending launch still holds the last slot")
+}
+
+// The live-memory clamp must not return before the viperblock gate: a request that host
+// memory cuts to a positive count is still cut by viperblock.
+func TestViperblockGateAppliesAfterTheLiveMemoryClamp(t *testing.T) {
+	rm, micro := gatedRM(t, 3)
+	rm.readMemAvailableGB = func() (float64, bool) { return 2 + 5*1.75 + 0.1, true } // host memory for 5
+	n, gate := rm.admit(micro, 10)
+	assert.Equal(t, 3, n, "viperblock has room for 3")
+	assert.Equal(t, "viperblock-memory", gate)
+	rm.readMemAvailableGB = func() (float64, bool) { return 2 + 2*1.75 + 0.1, true } // host memory for 2
+	n, gate = rm.admit(micro, 10)
+	assert.Equal(t, 2, n)
+	assert.Equal(t, "live-memory", gate)
 }
 
 // A full node drops its queue subscription, keeps the node-targeted one, and rejoins the

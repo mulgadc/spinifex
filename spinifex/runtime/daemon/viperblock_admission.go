@@ -114,12 +114,11 @@ func (rm *ResourceManager) exportAdmitted(now time.Time) {
 	rm.pending = append(kept, now)
 }
 
-// exportReleased records one closed export. Caller holds rm.mu for write.
+// exportReleased records one closed export. Pending charges are left to expire: a release
+// cannot tell which launch it belongs to, and dropping one could free a slot that another
+// launch, still opening, needs. Caller holds rm.mu for write.
 func (rm *ResourceManager) exportReleased() {
 	rm.exports = max(rm.exports-1, 0)
-	if len(rm.pending) > 0 {
-		rm.pending = rm.pending[1:]
-	}
 }
 
 // resyncSubscriptions re-evaluates every type's subscription on a timer until ctx ends.

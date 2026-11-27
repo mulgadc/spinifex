@@ -22,12 +22,13 @@ import (
 )
 
 // vipIPAMKV is the IPAM bucket handle of the reservation under test. It counts
-// the writes and runs hook around the next one.
+// writes, ordinary reads and leader reads, and runs hook around the next write.
 type vipIPAMKV struct {
 	jetstream.KeyValue
 
 	mu     sync.Mutex
 	writes int
+	reads  int
 	hook   func(write func() (uint64, error)) (uint64, error)
 	// read runs once, at the start of the next allocator leader read.
 	read func()
@@ -35,6 +36,7 @@ type vipIPAMKV struct {
 
 func (kv *vipIPAMKV) beforeRead() {
 	kv.mu.Lock()
+	kv.reads++
 	read := kv.read
 	kv.read = nil
 	kv.mu.Unlock()
@@ -72,6 +74,19 @@ func (kv *vipIPAMKV) Delete(ctx context.Context, key string, opts ...jetstream.K
 	return err
 }
 
+func (kv *vipIPAMKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	kv.mu.Lock()
+	kv.reads++
+	kv.mu.Unlock()
+	return kv.KeyValue.Get(ctx, key)
+}
+
+func (kv *vipIPAMKV) readCount() int {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.reads
+}
+
 func (kv *vipIPAMKV) writeCount() int {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -107,6 +122,9 @@ func (h *ovnCreateHarness) openVIPs() *vipIPAMKV {
 	kv := &vipIPAMKV{KeyValue: h.bucket(ec2vpc.KVBucketIPAM)}
 	vips, err := ec2vpc.NewIPAM(h.t.Context(), vipJS{JetStream: h.js, kv: kv})
 	require.NoError(h.t, err)
+	kv.mu.Lock()
+	kv.reads, kv.writes = 0, 0
+	kv.mu.Unlock()
 	h.svc.ovn.vips = vips
 	return kv
 }
@@ -255,15 +273,22 @@ func (h *ovnCreateHarness) requireAPIOmitsAddress(arn string) {
 	requireNoEndpoint(h.t, replay.LoadBalancers[0], arn)
 }
 
-// An elected drift pass reserves the sealed owner's address while the API
-// answers, a competing contender does no work, a lost write reply recovers the
-// same address after both stores reopen, and listener edits keep it.
+// Create with an allocator attached and no pass running leaves IPAM alone; an
+// elected pass then reserves while the API answers, a contender does no work,
+// a lost reply recovers after both stores reopen, and listener edits keep it.
 func TestOVNFixtureVIP_ElectedPassReservesAndRecoversOneAddress(t *testing.T) {
 	h := newOVNCreateHarness(t)
+	ipamKV := h.openVIPs()
 	lb := h.sealedOVN("ovn-nlb")
 	arn := aws.StringValue(lb.LoadBalancerArn)
-	root := h.owner("ovn-nlb").Root
-	ipamKV := h.openVIPs()
+	requireNoEndpoint(t, lb, arn)
+	owner := h.owner("ovn-nlb")
+	root := owner.Root
+	assert.True(t, owner.Sealed)
+	assert.Equal(t, StateProvisioning, root.State)
+	assert.Zero(t, ipamKV.readCount(), "Create reads no IPAM")
+	assert.Zero(t, ipamKV.writeCount(), "Create writes no IPAM")
+	assert.True(t, h.ipamRowAbsent(), "Create leaves no IPAM row")
 	elbBefore := h.state(KVBucketELBv2)
 	parentsBefore := []map[string]uint64{h.state(ec2vpc.KVBucketVPCs), h.state(ec2vpc.KVBucketSubnets)}
 

@@ -2307,16 +2307,16 @@ func TestDirectBootLaunchConfig_PCIEDataVolumesKeepSerialAndID(t *testing.T) {
 }
 
 // launchPrimaryNIC drives startQEMU's customer path for an instance with
-// vcpus vCPUs and returns the primary tap spec, -netdev and -device. A failing
-// extra-ENI tap stops the launch after the primary NIC is built.
-func launchPrimaryNIC(t *testing.T, vcpus int) (TapSpec, string, string) {
+// vcpus vCPUs on a node whose guest MTU is mtu, and returns the primary tap
+// spec, -netdev and -device. A failing extra-ENI tap stops it after the primary.
+func launchPrimaryNIC(t *testing.T, vcpus, mtu int) (TapSpec, string, string) {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	plumber := &scriptedNetworkPlumber{errs: []error{nil, errors.New("stop after primary")}}
 	m := NewManagerWithDeps(Deps{
 		InstanceTypes:  fakeInstanceTypeResolver{"t3.test": {Architecture: "x86_64", VCPUs: vcpus, MemoryMiB: 1024}},
 		NetworkPlumber: plumber,
-		GuestMTU:       1442,
+		GuestMTU:       mtu,
 	})
 	instance := &VM{
 		ID:           "i-nicq",
@@ -2343,13 +2343,15 @@ func launchPrimaryNIC(t *testing.T, vcpus int) (TapSpec, string, string) {
 	return plumber.calls[0], instance.Config.NetDevs[0].Value, device
 }
 
-// The manager is built with no queue setting, as on a cluster with IPsec on,
-// and the primary NIC of a 4-vCPU guest still gets 4 queue pairs.
+// A manager as a daemon with IPsec on builds it: the 1408 guest MTU is the only
+// field IPsec sets (TestBuildVMManagerDeps_IPsecChangesOnlyGuestMTU). The
+// primary NIC of a 4-vCPU guest still gets 4 queue pairs.
 func TestStartQEMU_PrimaryNICQueuesFollowVCPUs(t *testing.T) {
-	spec, netdev, device := launchPrimaryNIC(t, 4)
+	spec, netdev, device := launchPrimaryNIC(t, 4, 1408)
 	assert.Equal(t, 4, spec.Queues)
-	assert.Contains(t, netdev, ",vhost=on,queues=4")
-	assert.Contains(t, device, ",mq=on,vectors=10")
+	assert.Equal(t, 1408, spec.MTU)
+	assert.Equal(t, "tap,id=net0,ifname="+spec.Name+",script=no,downscript=no,vhost=on,queues=4", netdev)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01,host_mtu=1408,rx_queue_size=1024,mq=on,vectors=10", device)
 }
 
 // A cluster with IPsec off already ran one queue pair per vCPU, so for every
@@ -2358,7 +2360,7 @@ func TestStartQEMU_PrimaryNICUnchangedForIPsecOff(t *testing.T) {
 	wantQueues := []int{1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8}
 	for i, q := range wantQueues {
 		vcpus := i + 1
-		spec, netdev, device := launchPrimaryNIC(t, vcpus)
+		spec, netdev, device := launchPrimaryNIC(t, vcpus, 1442)
 		assert.Equal(t, q, spec.Queues, "vcpus=%d tap queues", vcpus)
 		assert.Equal(t, 1442, spec.MTU, "vcpus=%d tap MTU", vcpus)
 		tap := spec.Name

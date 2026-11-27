@@ -65,8 +65,9 @@ not as the ceiling.
 On a trusted-fabric configuration (IPsec off, multiqueue on) mean per-client
 throughput went from **1.23 Gbit/s to 6.64 Gbit/s** and aggregate into one guest from
 3.69 to **19.92 Gbit/s**. That 5.4x is *relative to an encrypted baseline* — it is
-mostly the cost of encryption being removed, not tuning headroom being found. The
-default, encrypted configuration is the one most clusters should run.
+mostly the cost of encryption being removed, not tuning headroom being found. A new
+install is unencrypted by default; pass `spx admin init --ipsec=true` on any fabric
+you do not trust.
 
 ## 1. Kernel tunables (sysctl)
 
@@ -98,10 +99,11 @@ journalctl -u spinifex-predastore | grep 'receive buffer size'   # must be silen
 
 ## 2. IPsec on the overlay
 
-Spinifex encrypts the geneve overlay with OVN native IPsec by default
-(ESP transport mode, `rfc4106(gcm(aes))` 128). This is the right default and matches
-the AWS trust model. **On a physically trusted fabric it is also the single largest
-performance cost in the stack.**
+With `spx admin init --ipsec=true`, Spinifex encrypts the geneve overlay with OVN
+native IPsec (ESP transport mode, `rfc4106(gcm(aes))` 128), which matches the AWS
+trust model. A new install leaves it off by default, because on a physically trusted
+fabric it is **the single largest performance cost in the stack**. Turn it on for any
+fabric you do not trust: a shared switch, more than one site, or a provider network.
 
 ### Why it costs so much
 

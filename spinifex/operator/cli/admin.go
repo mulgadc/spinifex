@@ -1659,6 +1659,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Println("  spx admin init --force")
 		os.Exit(0)
 	}
+	keptIPSec, err := resolveInitIPSec(ipsecEnabled, cmd.Flags().Changed("ipsec"), spinifexTomlPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if keptIPSec != ipsecEnabled {
+		fmt.Printf("IPsec: keeping ipsec_enabled = %t from %s (pass --ipsec to change it)\n", keptIPSec, spinifexTomlPath)
+	}
+	ipsecEnabled = keptIPSec
 
 	// Resolved once and written to every node (ADR-0018:S3), before anything
 	// is written, so a refused OCI credential leaves the node untouched.

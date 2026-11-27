@@ -220,6 +220,10 @@ func TestIPAM_ReserveVIPRefusesInconsistentRow(t *testing.T) {
 		"token holds two addresses":   {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{vip("10.0.50.4", "lb-0a"), vip("10.0.50.5", "lb-0a")}},
 		"token at a reserved address": {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{vip("10.0.50.1", "lb-0a")}},
 		"token outside the CIDR":      {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{vip("10.0.60.4", "lb-0a")}},
+		"token at an empty address":   {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{vip("", "lb-0a")}},
+		"empty token entry before a valid one": {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{
+			vip("", "lb-0a"), vip("10.0.50.4", "lb-0a"),
+		}},
 		"token address shared": {SubnetId: vipSubnet, CidrBlock: vipCIDR, Allocated: []IPEntry{
 			vip("10.0.50.4", "lb-0a"), {IP: "10.0.50.4", Purpose: PurposeENIPrimary, OwnerID: "eni-0a"},
 		}},

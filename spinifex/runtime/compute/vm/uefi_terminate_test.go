@@ -16,7 +16,9 @@ type fakeUEFIStores struct {
 	mu      sync.Mutex
 	has     bool
 	markErr error
-	marked  []string
+	// removeErr fails RemoveLocalUEFIStore, after recording the call.
+	removeErr error
+	marked    []string
 	removed []string
 }
 
@@ -33,7 +35,7 @@ func (f *fakeUEFIStores) RemoveLocalUEFIStore(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, id)
-	return nil
+	return f.removeErr
 }
 
 func (f *fakeUEFIStores) calls() (marked, removed []string) {

@@ -15,15 +15,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// laggingIPAMKV serves ordinary reads of pinned keys from an older entry, as a
-// lagging replica would. It runs a hook ahead of each CAS or create write, and
-// lostAck replaces a committed write's reply with an error.
+// laggingIPAMKV serves pinned keys from an older entry, as a lagging replica
+// would, runs a hook ahead of each write, can lose a committed write's reply,
+// and counts ordinary reads and the leader reads of its ipamLeaderJS.
 type laggingIPAMKV struct {
 	jetstream.KeyValue
 
 	mu           sync.Mutex
 	stale        map[string]jetstream.KeyValueEntry
 	staleReads   int
+	gets         int
+	leaderReads  int
 	updates      int
 	creates      int
 	beforeUpdate func(attempt int)
@@ -33,6 +35,7 @@ type laggingIPAMKV struct {
 
 func (k *laggingIPAMKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
 	k.mu.Lock()
+	k.gets++
 	entry, ok := k.stale[key]
 	if ok {
 		k.staleReads++
@@ -87,6 +90,19 @@ func (k *laggingIPAMKV) counts() (staleReads, updates int) {
 	return k.staleReads, k.updates
 }
 
+// reads is every ordinary and leader read attempt since the store opened.
+func (k *laggingIPAMKV) reads() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.gets + k.leaderReads
+}
+
+func (k *laggingIPAMKV) countLeaderRead() {
+	k.mu.Lock()
+	k.leaderReads++
+	k.mu.Unlock()
+}
+
 func (k *laggingIPAMKV) writes() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -95,11 +111,13 @@ func (k *laggingIPAMKV) writes() int {
 
 // ipamLeaderJS hands the IPAM store the lagging handle while leader reads go
 // to the real client. leaderDown points leader reads at a prefix nothing serves.
+// leaderRead, when set, runs at the start of every leader read.
 type ipamLeaderJS struct {
 	jetstream.JetStream
 
 	kv         jetstream.KeyValue
 	leaderDown bool
+	leaderRead func()
 }
 
 func (j ipamLeaderJS) KeyValue(ctx context.Context, bucket string) (jetstream.KeyValue, error) {
@@ -110,6 +128,9 @@ func (j ipamLeaderJS) KeyValue(ctx context.Context, bucket string) (jetstream.Ke
 }
 
 func (j ipamLeaderJS) Options() jetstream.JetStreamOptions {
+	if j.leaderRead != nil {
+		j.leaderRead()
+	}
 	opts := j.JetStream.Options()
 	if j.leaderDown {
 		opts.APIPrefix = "$JS.UNSERVED.API"
@@ -126,8 +147,11 @@ func laggingIPAM(t *testing.T, js jetstream.JetStream, leaderDown bool) (*IPAM, 
 	realKV, err := direct.store.KV(t.Context())
 	require.NoError(t, err)
 	lagging := &laggingIPAMKV{KeyValue: realKV, stale: map[string]jetstream.KeyValueEntry{}}
-	ipam, err := NewIPAM(t.Context(), ipamLeaderJS{JetStream: js, kv: lagging, leaderDown: leaderDown})
+	ipam, err := NewIPAM(t.Context(), ipamLeaderJS{JetStream: js, kv: lagging, leaderDown: leaderDown, leaderRead: lagging.countLeaderRead})
 	require.NoError(t, err)
+	lagging.mu.Lock()
+	lagging.gets, lagging.leaderReads = 0, 0
+	lagging.mu.Unlock()
 	return ipam, lagging, realKV
 }
 
@@ -288,3 +312,60 @@ func currentIPAMEntries(t *testing.T, kv jetstream.KeyValue, subnetID string) []
 }
 
 var _ jetstream.KeyValue = (*laggingIPAMKV)(nil)
+
+// An address-only release that read an ENI loses its CAS to the same address
+// becoming a load balancer address, and the reread refuses to free it. Both
+// the ordinary path and the leader-confirmed path recheck the purpose.
+func TestIPAM_ReleaseIPRefusesPurposeChangeBeforeCAS(t *testing.T) {
+	t.Parallel()
+	const subnet = "subnet-vip-swap"
+	eni := IPAMRecord{SubnetId: subnet, CidrBlock: "10.0.44.0/24", Allocated: []IPEntry{
+		{IP: "10.0.44.4", Purpose: PurposeENIPrimary, OwnerID: "eni-0f"},
+	}}
+	vip := IPAMRecord{SubnetId: subnet, CidrBlock: "10.0.44.0/24", Allocated: []IPEntry{
+		{IP: "10.0.44.4", Purpose: PurposeLBVIP, OwnerID: "lb-0f"},
+	}}
+
+	for name, staleVIP := range map[string]bool{"ordinary read": false, "leader-confirmed read": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			js := ipamTestJS(t)
+			ipam, lagging, realKV := laggingIPAM(t, js, false)
+			if staleVIP {
+				lagging.stale[subnet] = putIPAMRow(t, realKV, vip)
+			}
+			putIPAMRow(t, realKV, eni)
+			competitor, err := NewIPAM(t.Context(), js)
+			require.NoError(t, err)
+			var replaced jetstream.KeyValueEntry
+			lagging.beforeUpdate = func(attempt int) {
+				if attempt != 1 {
+					return
+				}
+				assert.NoError(t, competitor.ReleaseIP(context.Background(), subnet, "10.0.44.4"))
+				ip, err := competitor.ReserveVIP(context.Background(), subnet, "10.0.44.0/24", "lb-0f")
+				assert.NoError(t, err)
+				assert.Equal(t, "10.0.44.4", ip, "the replacement reserves the same address")
+				replaced, err = realKV.Get(context.Background(), subnet)
+				assert.NoError(t, err)
+			}
+
+			err = ipam.ReleaseIP(t.Context(), subnet, "10.0.44.4")
+			require.ErrorIs(t, err, ErrPurposeReserved)
+			require.NotNil(t, replaced, "the release reached its CAS")
+			after, err := realKV.Get(t.Context(), subnet)
+			require.NoError(t, err)
+			assert.Equal(t, replaced.Revision(), after.Revision(), "the replacement's revision survives")
+			assert.Equal(t, string(replaced.Value()), string(after.Value()))
+			assert.Equal(t, vip.Allocated, currentIPAMEntries(t, realKV, subnet))
+			staleReads, updates := lagging.counts()
+			assert.Equal(t, 1, updates, "only the stale CAS was attempted, and it lost")
+			wantStale, wantLeader := 0, 1
+			if staleVIP {
+				wantStale, wantLeader = 1, 2
+			}
+			assert.Equal(t, wantStale, staleReads, "the first read took the intended path")
+			assert.Equal(t, wantLeader, lagging.leaderReads, "the leader decided after the lost CAS")
+		})
+	}
+}

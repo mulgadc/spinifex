@@ -190,8 +190,7 @@ func TestIPAM_ReserveVIPRefusesBeforeAnyRead(t *testing.T) {
 		_, err := ipam.ReserveVIP(t.Context(), req[0], req[1], req[2])
 		assert.ErrorIs(t, err, ErrInvalidVIPRequest, name)
 	}
-	staleReads, _ := lagging.counts()
-	assert.Zero(t, staleReads)
+	assert.Zero(t, lagging.reads(), "no ordinary or leader read")
 	assert.Zero(t, lagging.writes())
 }
 

@@ -74,6 +74,7 @@ func TestIPAM_ReleaseVIPRefusesBeforeAnyRead(t *testing.T) {
 		err := ipam.ReleaseVIP(t.Context(), req[0], req[1], req[2])
 		assert.ErrorIs(t, err, ErrInvalidVIPRequest, name)
 	}
+	assert.Zero(t, lagging.reads(), "no ordinary or leader read")
 	assert.Zero(t, lagging.writes())
 }
 

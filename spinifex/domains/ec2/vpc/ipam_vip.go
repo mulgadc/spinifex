@@ -57,7 +57,10 @@ func (m *IPAM) ReserveVIP(ctx context.Context, subnetId, cidrBlock, token string
 		case err == nil:
 			slog.InfoContext(ctx, "IPAM reserved load balancer address", "subnet", subnetId, "ip", next, "owner", token)
 			return next, nil
-		case errors.Is(err, kvstore.ErrExists), errors.Is(err, kvstore.ErrConflict):
+		// A create that loses after reading a delete marker can return the
+		// bare replicated-stream conflict code, which the store does not map.
+		case errors.Is(err, kvstore.ErrExists), errors.Is(err, kvstore.ErrConflict),
+			rev == 0 && kvstore.IsRevisionConflict(err):
 			continue
 		default:
 			return "", err

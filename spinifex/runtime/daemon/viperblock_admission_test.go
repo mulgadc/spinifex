@@ -309,3 +309,16 @@ func TestViperblockGateClampsTheCensusTheSchedulerReads(t *testing.T) {
 	require.NotEmpty(t, caps)
 	assert.Equal(t, 1, caps[0].Available, "a freed slot is advertised again")
 }
+
+// A publish that is not a launch's own (a hot attach, an extra volume, a repeat publish of
+// an open export) must leave every pending launch charge in place.
+func TestVolumeMounterPublishLeavesPendingChargesAlone(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	require.NoError(t, rm.allocate(micro))
+	require.NoError(t, rm.allocate(micro))
+	adapter := newVolumeMounterAdapter(&holdTestProvider{}, "node-vb")
+
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-attach"}))
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-attach"}))
+	assert.Equal(t, 2, rm.pendingExports(time.Now()), "an attach and a repeat publish clear no launch's charge")
+}

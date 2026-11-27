@@ -223,6 +223,20 @@ func TestViperblockGateNeverRefusesAnAdoptedGuest(t *testing.T) {
 	assert.Equal(t, 21, rm.exports)
 }
 
+// A daemon restart adopts guests whose exports are already in memory.current. Charging them
+// as pending too would count them twice and refuse launches a node has room for.
+func TestViperblockGateDoesNotChargeAnAdoptedExportAsPending(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	limit, _, _ := rm.readViperblockMem()
+	// After a restart, 10 adopted guests' exports are in the reading.
+	rm.readViperblockMem = func() (int64, int64, bool) { return limit, 10 * 768, true }
+	for range 10 {
+		require.NoError(t, rm.allocateAdopted(micro))
+	}
+	assert.Zero(t, rm.pendingExports(time.Now()), "adopted exports are counted by the reading, not pending")
+	assert.Equal(t, 10, rm.CanAllocate(micro, 20), "the node still offers the other 10 slots")
+}
+
 func TestViperblockGateReopensWhenAVolumeCloses(t *testing.T) {
 	rm, micro := gatedRM(t, 0)
 	require.Equal(t, 0, rm.CanAllocate(micro, 1))

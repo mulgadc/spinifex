@@ -3777,7 +3777,12 @@ func (rm *ResourceManager) allocateGated(instanceType *ec2.InstanceTypeInfo, exp
 	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)
 	rm.allocatedMem += memoryGB
-	rm.exportAdmitted(time.Now())
+	if exports {
+		rm.exportAdmitted(time.Now())
+	} else {
+		// An adopted guest's export is already open and in memory.current: counted, not pending.
+		rm.exports++
+	}
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()

@@ -81,7 +81,6 @@ account_id = "000000000000"
 # No policy list: the system key must reach every account's buckets, and an
 # entry without a policy is the documented unrestricted form.
 {{- if .NorthstarAccessKey}}
-{{- if .NorthstarAccessKey}}
 
 # Bucket-scoped, read-only credentials for the northstar service (isolation
 # guarantee: ListBucket + GetObject on the northstar bucket only).

@@ -203,13 +203,18 @@ on "$SERVER" "iperf -s -u -e -D > /tmp/iperf-udp-server.log 2>&1 < /dev/null" ||
 sleep 2
 : > "$OUT_DIR/udp.txt"
 for c in "${CLIENT_LIST[@]}"; do
-    on "$c" "iperf -c $SERVER_IP -u -e -l 64 -b 10G -t 10" > "$OUT_DIR/$c.udp.txt" 2>&1 || true
+    # -b 0 removes iperf's UDP rate limit, so the sender offers all it can.
+    on "$c" "iperf -c $SERVER_IP -u -e -l 64 -b 0 -t 10" > "$OUT_DIR/$c.udp.txt" 2>&1 ||
+        fail "$c: the UDP client failed
+$(tail -3 "$OUT_DIR/$c.udp.txt" | sed 's/^/         | /')"
     # The client prints the server's report last; take its pps and loss.
     read -r pps loss <<<"$(awk '/Server Report/ {f=1; next}
         f && /pps/ { for (i = 1; i <= NF; i++) { if ($i == "pps") p = $(i-1); if ($i ~ /^\(.*%\)$/) l = $i } }
         END { gsub(/[()%]/, "", l); print p, l }' "$OUT_DIR/$c.udp.txt")"
-    printf '%s\t%s pps\tloss %s%%\n' "$c" "${pps:-?}" "${loss:-?}" >> "$OUT_DIR/udp.txt"
-    log "  $c -> $SERVER_IP UDP 64 B: ${pps:-?} pps received, ${loss:-?}% lost"
+    [ -n "$pps" ] && [ -n "$loss" ] ||
+        fail "$c: no server receive report in the UDP run, see $OUT_DIR/$c.udp.txt"
+    printf '%s\t%s pps\tloss %s%%\n' "$c" "$pps" "$loss" >> "$OUT_DIR/udp.txt"
+    log "  $c -> $SERVER_IP UDP 64 B: $pps pps received, $loss% lost"
 done
 cleanup
 

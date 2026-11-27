@@ -173,60 +173,95 @@ func TestS7_DriftPassKeepsGuestPortsWhenTopologyIntentIsPartial(t *testing.T) {
 	}
 }
 
-// Each read guards the sweep on its own. The pass intent is the only source
-// when no re-read is wired, and the re-read is the only one that can know about
-// an ENI created after the pass snapshot.
-func TestS7_PortSweepRefusesWhenEitherReadIsPartial(t *testing.T) {
+// Each read guards each sweep on its own. The pass intent is the only source
+// when no re-read is wired, and only the re-read can know about a resource
+// created after the pass snapshot, so each subtest leaves one read partial.
+func TestS7_SweepsRefuseWhenEitherReadIsPartial(t *testing.T) {
 	t.Parallel()
-	t.Run("pass intent partial, no re-read", func(t *testing.T) {
-		t.Parallel()
-		js := startKV(t)
-		twoVPCFixture(t).seed(t, js)
-		r, m := newTestReconciler(t)
-		r.localPorts = noLocalTaps
-		convergeFromKV(t, r, js)
+	type sweep struct {
+		name    string
+		fixture func(t *testing.T) kvFixture
+		fault   [2]string // bucket, key
+		// forget removes the faulted resource from a complete snapshot.
+		forget func(intent *IntentState)
+		run    func(t *testing.T, r *reconciler, intent IntentState, res *passResult)
+		alive  func(m *mock.Client) bool
+	}
+	sweeps := []sweep{
+		{
+			name: "guest port", fixture: twoVPCFixture, fault: [2]string{ec2vpc.KVBucketENIs, "acct.eni-a"},
+			forget: func(in *IntentState) { delete(in.Ports, "eni-a") },
+			run: func(t *testing.T, r *reconciler, in IntentState, res *passResult) {
+				r.pruneOrphanPorts(t.Context(), in, res)
+			},
+			alive: func(m *mock.Client) bool { return hasPort(m, "eni-a") },
+		},
+		{
+			name: "security group port group", fixture: twoVPCFixture, fault: [2]string{ec2vpc.KVBucketSecurityGroups, "acct.sg-a"},
+			forget: func(in *IntentState) { delete(in.SGs, "sg-a") },
+			run: func(t *testing.T, r *reconciler, in IntentState, res *passResult) {
+				actual, err := scanActual(t.Context(), r.ovn)
+				if err != nil {
+					t.Fatalf("scanActual: %v", err)
+				}
+				r.applySGs(t.Context(), in, actual, true, res)
+			},
+			alive: func(m *mock.Client) bool {
+				_, ok := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]
+				return ok
+			},
+		},
+		{
+			name: "elastic ip row", fixture: publicIPFixture, fault: [2]string{ec2vpc.KVBucketENIs, "acct.eni-a"},
+			forget: func(in *IntentState) { delete(in.Ports, "eni-a") },
+			run: func(t *testing.T, r *reconciler, in IntentState, res *passResult) {
+				r.pruneOrphanEIPs(t.Context(), in, res)
+			},
+			alive: func(m *mock.Client) bool { return findNATByExternal(m, "dnat_and_snat", publicA) != nil },
+		},
+	}
+	for _, sw := range sweeps {
+		for _, freshPartial := range []bool{false, true} {
+			name := sw.name + ", pass intent partial, no re-read"
+			if freshPartial {
+				name = sw.name + ", pass intent complete, re-read partial"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				js := startKV(t)
+				sw.fixture(t).seed(t, js)
+				r, m := newRoutedReconciler(t, js, newRoutedBinder())
+				convergeFromKV(t, r, js)
+				if !sw.alive(m) {
+					t.Fatalf("%s missing after converging", sw.name)
+				}
 
-		putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", poison)
-		intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
-		if err != nil {
-			t.Fatalf("LoadIntentFromKV: %v", err)
-		}
-		res := &passResult{}
-		r.pruneOrphanPorts(t.Context(), intent, res)
+				snapshot, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+				if err != nil {
+					t.Fatalf("LoadIntentFromKV: %v", err)
+				}
+				putRaw(t, js, sw.fault[0], sw.fault[1], poison)
+				if freshPartial {
+					// A complete snapshot taken before the resource was created.
+					sw.forget(&snapshot)
+				} else {
+					r.reloadIntent = nil
+					if snapshot, err = LoadIntentFromKV(t.Context(), js, "us-east-1a"); err != nil {
+						t.Fatalf("LoadIntentFromKV after the fault: %v", err)
+					}
+				}
+				res := &passResult{}
+				sw.run(t, r, snapshot, res)
 
-		if !hasPort(m, "eni-a") {
-			t.Errorf("sweep deleted port-eni-a against a partial pass intent")
+				if !sw.alive(m) {
+					t.Errorf("sweep removed the %s against a partial read", sw.name)
+				}
+				if len(res.failures) == 0 {
+					t.Errorf("refused sweep not recorded on the pass")
+				}
+			})
 		}
-		if len(res.failures) == 0 {
-			t.Errorf("refused sweep not recorded on the pass")
-		}
-	})
-	t.Run("pass intent complete, re-read partial", func(t *testing.T) {
-		t.Parallel()
-		js := startKV(t)
-		twoVPCFixture(t).seed(t, js)
-		r, m := newTestReconciler(t)
-		r.reloadIntent = kvLoader(js)
-		r.localPorts = noLocalTaps
-		convergeFromKV(t, r, js)
-
-		// A snapshot taken before eni-a was created: complete, but without it.
-		snapshot, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
-		if err != nil {
-			t.Fatalf("LoadIntentFromKV: %v", err)
-		}
-		delete(snapshot.Ports, "eni-a")
-		putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", poison)
-		res := &passResult{}
-		r.pruneOrphanPorts(t.Context(), snapshot, res)
-
-		if !hasPort(m, "eni-a") {
-			t.Errorf("sweep deleted port-eni-a against a partial re-read")
-		}
-		if len(res.failures) == 0 {
-			t.Errorf("refused sweep not recorded on the pass")
-		}
-	})
+	}
 }
 
 func TestS7_DriftPassKeepsAPortGroupWhenItsSGRecordDoesNotDecode(t *testing.T) {

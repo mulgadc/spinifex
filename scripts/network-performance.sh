@@ -244,8 +244,9 @@ cleanup
 : > "$OUT_DIR/latency.txt"
 for c in "${CLIENT_LIST[@]}"; do
     on "$c" "ping -c 1000 -i 0.01 $SERVER_IP" > "$OUT_DIR/$c.ping.txt" 2>&1 || true
+    # Nearest rank: p99 is sample ceil(0.99 * n) of the sorted RTTs.
     read -r p50 p99 <<<"$(grep -o 'time=[0-9.]*' "$OUT_DIR/$c.ping.txt" | cut -d= -f2 | sort -n |
-        awk '{v[NR] = $1} END { if (NR) { a = int((NR + 1) / 2); b = int(NR * 0.99); if (b < 1) b = 1; print v[a], v[b] } }')"
+        awk '{v[NR] = $1} END { if (NR) { a = int((NR + 1) / 2); b = int(NR * 0.99); if (b < NR * 0.99) b++; print v[a], v[b] } }')"
     [ -n "$p50" ] && [ -n "$p99" ] ||
         fail "$c: ping to $SERVER_IP returned no RTT samples, see $OUT_DIR/$c.ping.txt"
     # ping's summary: "rtt min/avg/max/mdev = 0.1/0.2/0.3/0.0 ms".

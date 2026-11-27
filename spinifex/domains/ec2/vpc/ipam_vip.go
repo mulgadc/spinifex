@@ -98,18 +98,19 @@ func checkVIPRow(record *IPAMRecord, subnetId string, prefix netip.Prefix) error
 // Two entries for the token, or one at an unusable or shared address, leave
 // no single answer, so they are refused rather than one of them chosen.
 func vipHeldBy(record *IPAMRecord, prefix netip.Prefix, token string) (string, error) {
-	held := ""
+	held, matches := "", 0
 	for _, entry := range record.Allocated {
 		if entry.Purpose != PurposeLBVIP || entry.OwnerID != token {
 			continue
 		}
-		if held != "" {
-			return "", fmt.Errorf("%w: mapping %s holds more than one address in subnet %s", ErrIPAMInconsistent, token, record.SubnetId)
-		}
+		matches++
 		held = entry.IP
 	}
-	if held == "" {
+	switch {
+	case matches == 0:
 		return "", nil
+	case matches > 1:
+		return "", fmt.Errorf("%w: mapping %s holds more than one address in subnet %s", ErrIPAMInconsistent, token, record.SubnetId)
 	}
 	addr, err := netip.ParseAddr(held)
 	if err != nil || !isClaimableAddr(prefix, addr) || addr.String() != held {

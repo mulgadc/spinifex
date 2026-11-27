@@ -252,3 +252,20 @@ func TestStartInstancesRefusedWhenViperblockMemoryIsFull(t *testing.T) {
 	require.True(t, ok, "a refused start writes the claimed instance back to the stopped store")
 	assert.Equal(t, vm.StateStopped, restored.Status, "it stays stopped, with its volume, for a retry")
 }
+
+// The scheduler places launches from the node's census, so a full node must report no
+// room there, or it keeps being chosen and refuses each launch at allocate.
+func TestViperblockGateClampsTheCensusTheSchedulerReads(t *testing.T) {
+	rm, micro := gatedRM(t, 0)
+	rm.instanceTypes = map[string]*ec2.InstanceTypeInfo{"t3.micro": micro}
+	_, _, _, _, _, _, caps := rm.GetResourceStats()
+	for _, c := range caps {
+		assert.Zero(t, c.Available, "a full node advertises no %s", c.Name)
+	}
+	assert.Empty(t, rm.GetInstanceTypeAvailability(), "and no availability")
+
+	rm.deallocate(micro)
+	_, _, _, _, _, _, caps = rm.GetResourceStats()
+	require.NotEmpty(t, caps)
+	assert.Equal(t, 1, caps[0].Available, "a freed slot is advertised again")
+}

@@ -678,6 +678,7 @@ func (rm *ResourceManager) GetInstanceTypeAvailability() []ec2instance.InstanceT
 			))
 		}
 
+		count = int64(rm.exportGate(int(count)))
 		if count <= 0 {
 			continue
 		}
@@ -755,6 +756,9 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 		if instancetypes.IsGPUType(it) {
 			typeCap.Available = min(typeCap.Available, rm.admissibleGPUInstances(name))
 		}
+		// The scheduler places launches from this figure, so it carries the viperblock
+		// limit too; otherwise a full node keeps being chosen and refuses at allocate.
+		typeCap.Available = rm.exportGate(typeCap.Available)
 		caps = append(caps, typeCap)
 	}
 	return totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps

@@ -309,39 +309,3 @@ func TestViperblockGateClampsTheCensusTheSchedulerReads(t *testing.T) {
 	require.NotEmpty(t, caps)
 	assert.Equal(t, 1, caps[0].Available, "a freed slot is advertised again")
 }
-
-// An export that has opened is in memory.current; its pending charge must go, or a launch
-// burst counts every volume twice and a node refuses at half its room.
-func TestViperblockGateClearsAPendingChargeWhenItsExportOpens(t *testing.T) {
-	rm, micro := gatedRM(t, 20)
-	limit, _, _ := rm.readViperblockMem()
-	opened := 0
-	rm.readViperblockMem = func() (int64, int64, bool) { return limit, int64(opened) * 768, true }
-	for range 10 {
-		require.NoError(t, rm.allocate(micro))
-	}
-	require.Equal(t, 10, rm.pendingExports(time.Now()))
-	for range 10 {
-		rm.exportOpened()
-		opened++
-	}
-	assert.Zero(t, rm.pendingExports(time.Now()))
-	assert.Equal(t, 10, rm.CanAllocate(micro, 20), "the 10 open exports are counted once")
-}
-
-// A successful publish clears one pending charge through the mounter, and an unpublish
-// does not, because a release cannot tell whose charge it would clear.
-func TestVolumeMounterClearsAPendingChargeOnPublish(t *testing.T) {
-	rm, micro := gatedRM(t, 20)
-	require.NoError(t, rm.allocate(micro))
-	require.Equal(t, 1, rm.pendingExports(time.Now()))
-	adapter := newVolumeMounterAdapter(&holdTestProvider{}, "node-vb")
-	adapter.onPublished = rm.exportOpened
-
-	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-vb"}))
-	assert.Zero(t, rm.pendingExports(time.Now()), "the opened export is no longer pending")
-
-	require.NoError(t, rm.allocate(micro))
-	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, vm.EBSRequest{Name: "vol-vb"}))
-	assert.Equal(t, 1, rm.pendingExports(time.Now()), "an unpublish leaves another launch's charge alone")
-}

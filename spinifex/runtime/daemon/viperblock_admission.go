@@ -115,18 +115,6 @@ func (rm *ResourceManager) exportAdmitted(now time.Time) {
 	rm.pending = append(kept, now)
 }
 
-// exportOpened clears the oldest pending charge: an export that has opened is in
-// memory.current, and charging it as pending too counts it twice, so during a launch
-// burst a node looked full at half its room. The window stays as the bound for a
-// charge whose open is never reported.
-func (rm *ResourceManager) exportOpened() {
-	rm.mu.Lock()
-	if len(rm.pending) > 0 {
-		rm.pending = rm.pending[1:]
-	}
-	rm.mu.Unlock()
-}
-
 // exportReleased records one closed export. Pending charges are left to expire: a release
 // cannot tell which launch it belongs to, so a rolled-back launch holds its slot until then,
 // which only refuses sooner. Caller holds rm.mu for write.

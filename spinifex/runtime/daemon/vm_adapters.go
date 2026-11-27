@@ -106,9 +106,6 @@ type volumeMounterAdapter struct {
 	// volumes serialises every publish and unpublish of a volume on this
 	// node with the unpublish obligation reaper.
 	volumes volumeLocks
-	// onPublished runs after each successful publish, so admission stops charging
-	// an export as pending once it is open and in viperblock's memory. Nil does nothing.
-	onPublished func()
 }
 
 // volumeLocks is a lock per volume, and the time this process last published
@@ -273,9 +270,6 @@ func (a *volumeMounterAdapter) publishLocked(ctx context.Context, accountID stri
 	}
 	a.recordPublished(entry, started)
 	applyExport(req, published.Export)
-	if a.onPublished != nil {
-		a.onPublished()
-	}
 	slog.InfoContext(ctx, "Published volume", "volume", req.Name, "node", a.node, "export_kind", string(published.Export.Kind))
 	return nil
 }

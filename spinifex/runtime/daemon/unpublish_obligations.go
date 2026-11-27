@@ -20,9 +20,6 @@ var _ ec2volume.InstanceNodeLocator = (*JetStreamManager)(nil)
 func (d *Daemon) volumeMounter() *volumeMounterAdapter {
 	d.mounterOnce.Do(func() {
 		d.mounter = newVolumeMounterAdapter(d.ebsProvider, d.node)
-		if d.resourceMgr != nil {
-			d.mounter.onPublished = d.resourceMgr.exportOpened
-		}
 	})
 	return d.mounter
 }

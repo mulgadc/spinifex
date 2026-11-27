@@ -57,12 +57,18 @@ func TestProjectNamedInstance(t *testing.T) {
 		"managed, customer caller": {namedAccount, func(v *vm.VM) { v.ManagedBy = "elbv2" }, nil},
 		"unowned, customer caller": {namedAccount, func(v *vm.VM) { v.AccountID = "" }, nil},
 		"managed, global caller": {awsidentifiers.GlobalAccountID, func(v *vm.VM) { v.ManagedBy, v.AccountID = "elbv2", awsidentifiers.GlobalAccountID },
-			func(n *projection.NamedInstance) *projection.NamedInstance { n.AccountID = awsidentifiers.GlobalAccountID; return n }},
+			func(n *projection.NamedInstance) *projection.NamedInstance {
+				n.AccountID = awsidentifiers.GlobalAccountID
+				return n
+			}},
 		"primary in another VPC, matching secondary": {namedAccount, func(v *vm.VM) {
 			v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
 				namedNIC("eni-second", "vpc-a", "subnet-a", 1), namedNIC("eni-primary", "vpc-b", "subnet-b", 0),
 			}
-		}, func(n *projection.NamedInstance) *projection.NamedInstance { n.VpcID, n.SubnetID = "vpc-b", "subnet-b"; return n }},
+		}, func(n *projection.NamedInstance) *projection.NamedInstance {
+			n.VpcID, n.SubnetID = "vpc-b", "subnet-b"
+			return n
+		}},
 		"device 0 is not the recorded primary": {namedAccount, func(v *vm.VM) {
 			v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{namedNIC("eni-other", "vpc-a", "subnet-a", 0)}
 		}, func(n *projection.NamedInstance) *projection.NamedInstance {

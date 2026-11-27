@@ -341,3 +341,27 @@ func TestCache_SweepDropsExpiredMaterial(t *testing.T) {
 	assert.Nil(t, e.cert)
 	assert.Equal(t, 1, cr.callCount())
 }
+
+func TestCache_DropAccountForgetsOnlyThatAccount(t *testing.T) {
+	c, _, _, cr, _ := newCacheFixture(t)
+	ctx := context.Background()
+	second := testConn
+	second.ConnectionID = "conn-2"
+	other := testConn
+	other.AccountID = "210987654321"
+	for _, conn := range []Connection{testConn, second, other} {
+		_, err := c.Credentials(ctx, conn, discoveryRole)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, []string{"123456789012", "210987654321"}, c.Accounts())
+
+	c.DropAccount(testConn.AccountID)
+	assert.Equal(t, []string{"210987654321"}, c.Accounts())
+
+	_, err := c.Credentials(ctx, other, discoveryRole)
+	require.NoError(t, err)
+	assert.Equal(t, 3, cr.callCount(), "the other account keeps its session")
+	_, err = c.Credentials(ctx, second, discoveryRole)
+	require.NoError(t, err)
+	assert.Equal(t, 4, cr.callCount(), "the dropped account makes a new session")
+}

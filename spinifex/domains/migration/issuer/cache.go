@@ -122,6 +122,41 @@ func (c *Cache) Drop(accountID, connectionID string) {
 	}
 }
 
+// DropAccount forgets the certificates and sessions of every connection of
+// accountID.
+func (c *Cache) DropAccount(accountID string) {
+	c.mu.Lock()
+	var dropped []*connEntry
+	for key, e := range c.conns {
+		if key.account == accountID {
+			dropped = append(dropped, e)
+			delete(c.conns, key)
+		}
+	}
+	c.mu.Unlock()
+	for _, e := range dropped {
+		e.mu.Lock()
+		e.clear()
+		e.mu.Unlock()
+	}
+}
+
+// Accounts lists the accounts that have a cache entry, each once.
+func (c *Cache) Accounts() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for key := range c.conns {
+		if !seen[key.account] {
+			seen[key.account] = true
+			out = append(out, key.account)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Sweep drops sessions and certificates that have expired, so an idle
 // connection holds no credential past its lifetime.
 func (c *Cache) Sweep() {

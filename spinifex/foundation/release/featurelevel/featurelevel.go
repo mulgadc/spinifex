@@ -13,7 +13,7 @@ import (
 
 // Build is the highest level this binary supports. Any change that adds an
 // N-only semantic raises it and declares the level below.
-const Build = 3
+const Build = 4
 
 // Level names one N-only semantic.
 type Level struct {
@@ -33,10 +33,16 @@ const GatewayEndpoints = 2
 // naming one. An older route-table writer drops a route's gateway field.
 const TransitGateways = 3
 
+// Migration is level 4: migration records. Every node serves the migration
+// termination participant and runs its deletion executor, so a termination
+// reaches and drains every record.
+const Migration = 4
+
 var declared = []Level{
 	{N: Baseline, Name: "baseline"},
 	{N: GatewayEndpoints, Name: "vpc-gateway-endpoints"},
 	{N: TransitGateways, Name: "transit-gateways"},
+	{N: Migration, Name: "migration"},
 }
 
 // Levels returns every declared level in ascending order.

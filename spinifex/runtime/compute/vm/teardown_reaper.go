@@ -165,9 +165,9 @@ func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 	return reaped, nil
 }
 
-// retryOutstanding re-drives each not-`done` dependent through its idempotent
-// cleaner and returns the marks. Cleaners have side effects, KV writes included;
-// Sweep merges the marks outside the CAS callback, so a retry never reruns one.
+// retryOutstanding runs each not-`done` dependent's idempotent cleaner and the
+// local UEFI removal, which have side effects (KV writes included), before any
+// CAS. Sweep's CAS callback only merges the returned marks, so a retry reruns none.
 func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownState {
 	c := r.m.deps.InstanceCleaner
 	if c == nil {

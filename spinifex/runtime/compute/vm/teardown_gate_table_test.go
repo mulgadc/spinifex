@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +53,26 @@ type orderedUEFIStores struct {
 func (u orderedUEFIStores) RemoveLocalUEFIStore(id string) error {
 	u.log.add("RemoveLocalUEFIStore")
 	return u.fakeUEFIStores.RemoveLocalUEFIStore(id)
+}
+
+// snapshotStore lists copies of the stored records, so a sweep that changes
+// a listed record changes nothing stored until it writes the record back.
+type snapshotStore struct {
+	*fakeStateStore
+}
+
+func (s snapshotStore) ListTerminatedInstances() ([]*VM, error) {
+	listed, err := s.fakeStateStore.ListTerminatedInstances()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*VM, len(listed))
+	for i, v := range listed {
+		c := *v
+		c.Teardown = maps.Clone(v.Teardown)
+		out[i] = &c
+	}
+	return out, nil
 }
 
 // storedQEMUMark reads the qemu teardown mark from the record the fake store
@@ -104,6 +125,7 @@ func TestTeardownReaperQEMUGateDecisionTable(t *testing.T) {
 			stuck, store := newStuckTerminateReaper(t, cleaner)
 			deps := stuck.m.deps
 			deps.UEFIStores = orderedUEFIStores{fakeUEFIStores: &fakeUEFIStores{removeErr: tc.uefiRemoveErr}, log: log}
+			deps.StateStore = snapshotStore{fakeStateStore: store}
 			stuck.m.SetDeps(deps)
 
 			const id = "i-gate"

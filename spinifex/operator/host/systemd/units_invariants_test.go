@@ -460,6 +460,7 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9",
 		2: "5d691bf5ce4a5a636d5dcc07f7bfa36d0da9eb0d7fb26079f89358ca0e5440cd",
 		3: "5c44e9942a7a95c4ef61d8f09388444e42d08059c24a85ae5fc55785b060324d",
+		4: "bfec4d65d3d2ee99e0a73e84b2b1914cf55cbcb5b987b1c30bcc3716a81d9c0a",
 	},
 	"spinifex-vpcd.service": {
 		1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965",

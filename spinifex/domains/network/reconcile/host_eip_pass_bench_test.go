@@ -79,6 +79,12 @@ func BenchmarkHostEIPPass(b *testing.B) {
 				b.Fatalf("New: %v", err)
 			}
 
+			// The complete case must really be complete, or it would time a pass
+			// that changes nothing.
+			if err := rec.ReconcileHostEIPs(ctx); (err != nil) != partial {
+				b.Fatalf("first ReconcileHostEIPs = %v with partial=%t", err, partial)
+			}
+
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {

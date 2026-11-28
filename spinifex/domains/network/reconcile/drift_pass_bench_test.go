@@ -5,12 +5,17 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
@@ -72,6 +77,11 @@ func seedDriftFixture(b *testing.B, js jetstream.JetStream, vpcs, enis int) {
 	}
 	vpcKV, subnetKV := bucket(ec2vpc.KVBucketVPCs), bucket(ec2vpc.KVBucketSubnets)
 	sgKV, eniKV := bucket(ec2vpc.KVBucketSecurityGroups), bucket(ec2vpc.KVBucketENIs)
+	// The EC2 services create every topology bucket at start; a missing one
+	// reads as lost state, and the pass would change nothing.
+	for _, name := range []string{ec2igw.KVBucketIGW, ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways} {
+		bucket(name)
+	}
 	for v := range vpcs {
 		vpc, subnet, sg := fmt.Sprintf("vpc-%04d", v), fmt.Sprintf("subnet-%04d", v), fmt.Sprintf("sg-%04d", v)
 		benchPut(b, vpcKV, "acct."+vpc, ec2vpc.VPCRecord{VpcId: vpc, CidrBlock: fmt.Sprintf("10.%d.0.0/16", v), VNI: int64(100 + v)})
@@ -129,8 +139,9 @@ func BenchmarkDriftPass(b *testing.B) {
 			if err != nil {
 				b.Fatalf("load: %v", err)
 			}
+			// A partial pass changes nothing, so timing it would measure nothing.
 			if err := rec.Reconcile(ctx, intent); err != nil {
-				b.Fatalf("converging Reconcile: %v", err)
+				b.Fatalf("converging Reconcile (ErrPassIncomplete=%t): %v", errors.Is(err, ErrPassIncomplete), err)
 			}
 
 			b.ReportAllocs()

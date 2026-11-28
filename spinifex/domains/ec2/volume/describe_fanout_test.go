@@ -214,10 +214,11 @@ func (s *deadlineGetStore) GetObject(ctx context.Context, in *s3.GetObjectInput)
 	return s.ObjectStore.GetObject(ctx, in)
 }
 
-// The daemon handler has no deadline of its own, so the reads must carry one
-// that ends before the gateway stops waiting for the reply.
-func TestDescribeVolumesFamily_ReadsEndInsideTheReplyTimeout(t *testing.T) {
-	const replyTimeout = 30 * time.Second
+// The daemon handler has no deadline of its own, so the reads must carry the
+// daemon-local read budget, measured from when the service is called. It does
+// not cover time spent in the gateway or on NATS before the call.
+func TestDescribeVolumesFamily_ReadsCarryTheDaemonReadBudget(t *testing.T) {
+	const readBudget = 25 * time.Second
 	for _, m := range describeFamily {
 		t.Run(m.name, func(t *testing.T) {
 			mem := objectstore.NewMemoryObjectStore()
@@ -234,7 +235,7 @@ func TestDescribeVolumesFamily_ReadsEndInsideTheReplyTimeout(t *testing.T) {
 			assert.Zero(t, store.missing, "a read ran with no deadline")
 			require.Len(t, store.deadlines, len(ids))
 			for _, d := range store.deadlines {
-				assert.True(t, d.Before(start.Add(replyTimeout)), "read deadline %v is not inside the reply timeout", d.Sub(start))
+				assert.False(t, d.After(time.Now().Add(readBudget)), "read deadline %v after the call is past the daemon read budget", d.Sub(start))
 			}
 		})
 	}

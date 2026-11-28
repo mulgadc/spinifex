@@ -24,6 +24,7 @@ import (
 	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
@@ -1377,5 +1378,64 @@ func TestLoadIntentFromKV_AnEmptyPeeringOrTransitGatewayRecordIsPartial(t *testi
 				}
 			})
 		}
+	}
+}
+
+// A record that decodes with its identity but has lost a field it always
+// carries is unusable: read as it is, it reads as a state that removes live
+// links, rules or routes.
+func TestLoadIntentFromKV_ARecordMissingARequiredFieldIsPartial(t *testing.T) {
+	t.Parallel()
+	peer := func(status, req, acc string) []byte {
+		return mustJSON(t, peeringRec("pcx-0123", status, req, "10.0.0.0/16", acc, "10.1.0.0/16"))
+	}
+	cases := []struct {
+		name, bucket, key string
+		raw               func(t *testing.T) []byte
+	}{
+		{"peering with no accepter VPC", ec2projection.PeeringBucket, "pcx.pcx-0123", func(*testing.T) []byte { return peer(ec2vpcpeering.StateActive, "vpc-a", "") }},
+		{"peering with no requester VPC", ec2projection.PeeringBucket, "pcx.pcx-0123", func(*testing.T) []byte { return peer(ec2vpcpeering.StateActive, "", "vpc-b") }},
+		{"peering with no status", ec2projection.PeeringBucket, "pcx.pcx-0123", func(*testing.T) []byte { return peer("", "vpc-a", "vpc-b") }},
+		{"transit gateway with no state", ec2projection.TransitGatewayBucket, "000000000001.tgw-0123", func(*testing.T) []byte {
+			return []byte(`{"id":"tgw-0123","account_id":"000000000001"}`)
+		}},
+		{"attachment with no VPC", ec2projection.TransitGatewayAttachmentBucket, "000000000001.tgw-attach-0123", func(*testing.T) []byte {
+			return []byte(`{"id":"tgw-attach-0123","account_id":"000000000001","transit_gateway_id":"tgw-0123","state":"available"}`)
+		}},
+		{"attachment with no transit gateway", ec2projection.TransitGatewayAttachmentBucket, "000000000001.tgw-attach-0123", func(*testing.T) []byte {
+			return []byte(`{"id":"tgw-attach-0123","account_id":"000000000001","vpc_id":"vpc-a","state":"available"}`)
+		}},
+		{"attachment with no state", ec2projection.TransitGatewayAttachmentBucket, "000000000001.tgw-attach-0123", func(*testing.T) []byte {
+			return []byte(`{"id":"tgw-attach-0123","account_id":"000000000001","transit_gateway_id":"tgw-0123","vpc_id":"vpc-a"}`)
+		}},
+		{"ENI with no security group", ec2vpc.KVBucketENIs, "acct.eni-a", func(t *testing.T) []byte {
+			rec := eniRecord("eni-a", "subnet-a", "vpc-a", "10.0.1.10", "02:00:00:00:00:0a", "sg-a", "")
+			rec.SecurityGroupIds = nil
+			return mustJSON(t, rec)
+		}},
+		{"IGW with no state", ec2igw.KVBucketIGW, "acct.igw-a", func(t *testing.T) []byte {
+			return mustJSON(t, ec2igw.IGWRecord{InternetGatewayId: "igw-a", VpcId: "vpc-a"})
+		}},
+		{"EIP with no state", ec2eip.KVBucketEIPs, "acct.eipalloc-a", func(t *testing.T) []byte {
+			return mustJSON(t, ec2eip.EIPRecord{AllocationId: "eipalloc-a", PublicIp: "203.0.113.20", ENIId: "eni-a", PrivateIp: "10.0.1.10", VpcId: "vpc-a"})
+		}},
+		{"NAT gateway with no state", ec2natgw.KVBucketNatGateways, "acct.nat-1", func(t *testing.T) []byte {
+			return mustJSON(t, ec2natgw.NatGatewayRecord{NatGatewayId: "nat-1", VpcId: "vpc-a", SubnetId: "subnet-a", PublicIp: "198.51.100.5"})
+		}},
+		{"route table association with no subnet", ec2routetable.KVBucketRouteTables, "acct.rtb-a", func(t *testing.T) []byte {
+			return mustJSON(t, ec2routetable.RouteTableRecord{RouteTableId: "rtb-a", VpcId: "vpc-a",
+				Associations: []ec2routetable.AssociationRecord{{AssociationId: "rtbassoc-a"}}})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			twoVPCFixture(t).seed(t, js)
+			putRaw(t, js, tc.bucket, tc.key, tc.raw(t))
+			if _, err := partialLoad(t, js); err == nil {
+				t.Errorf("%s read as complete intent", tc.name)
+			}
+		})
 	}
 }

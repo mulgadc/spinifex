@@ -10,12 +10,13 @@ import (
 	ec2tgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/tgw"
 )
 
-// With neither bucket there is nothing to realise, and no error.
-func TestLoadTransitGateways_NoBucket(t *testing.T) {
+// vpcd creates both buckets at start, so a missing one is lost state. Read as
+// empty, it would let network remove every live router and link.
+func TestLoadTransitGateways_NoBucketIsAnError(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	gws, atts, err := LoadTransitGateways(context.Background(), js)
-	if err != nil || len(gws) != 0 || len(atts) != 0 {
-		t.Fatalf("LoadTransitGateways = %+v, %+v, %v; want empty, nil", gws, atts, err)
+	if err == nil {
+		t.Fatalf("LoadTransitGateways = %+v, %+v, nil; want an error for the missing buckets", gws, atts)
 	}
 }
 

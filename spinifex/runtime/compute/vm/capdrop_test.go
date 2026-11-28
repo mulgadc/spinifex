@@ -23,13 +23,14 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 		t.Skip("measuring inherited capabilities needs a privileged parent; CI runs this as root")
 	}
 
-	// A script stands in for the QEMU binary: it ignores the QEMU arguments
-	// and stays alive long enough for the masks to be read. Going through a
-	// shebang keeps the measurement honest for both shapes — the kernel execs
-	// /bin/sh either way.
+	// A script stands in for the QEMU binary: it signals that the exec has
+	// landed, then stays alive long enough for the masks to be read. Under
+	// the wrapper the pid belongs to setpriv until the exec happens, so
+	// sampling before the signal would read the wrapper's inherited masks.
 	dir := t.TempDir()
 	target := filepath.Join(dir, "qemu-standin")
-	script := "#!/bin/sh\nexec sleep 30\n"
+	marker := filepath.Join(dir, "execed")
+	script := "#!/bin/sh\necho ready > " + marker + "\nexec sleep 30\n"
 	if err := os.WriteFile(target, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +60,17 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	}()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stand-in never signalled the exec")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	masks, err := procCapabilityMasks(cmd.Process.Pid)
 	if err != nil {

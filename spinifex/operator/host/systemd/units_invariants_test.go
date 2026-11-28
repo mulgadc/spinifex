@@ -611,3 +611,23 @@ func TestDaemonAndVPCDCheckHostnet(t *testing.T) {
 		}
 	}
 }
+
+// Every guest's nbdkit runs as the viperblock user, about 100 threads each, and
+// RLIMIT_NPROC counts every thread of that user: a flat limit stops a host at a
+// volume count and kills the next export on pthread_create. The cgroup bounds it.
+func TestViperblockHasNoPerUserThreadLimit(t *testing.T) {
+	u := readUnit(t, unitsDir(t), "spinifex-viperblock.service")
+	var nproc []string
+	for l := range strings.SplitSeq(u, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "LimitNPROC=") {
+			nproc = append(nproc, strings.TrimPrefix(l, "LimitNPROC="))
+		}
+		if strings.HasPrefix(l, "TasksMax=") {
+			t.Errorf("viperblock sets %s; the service default ceiling is far above its memory limit", l)
+		}
+	}
+	if len(nproc) != 1 || nproc[0] != "infinity" {
+		t.Errorf("viperblock LimitNPROC = %v, want exactly [infinity]", nproc)
+	}
+}

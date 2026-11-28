@@ -115,7 +115,7 @@ func (h *HostIngress) Pass(ctx context.Context) (time.Duration, error) {
 	// Partial intent can drop a VPC or hand its CIDR to another, so the pass
 	// changes no route until it heals.
 	if partial := intent.TopologyIncomplete; partial != nil {
-		return 0, fmt.Errorf("host ingress left every route as it is: %w", partial)
+		return 0, fmt.Errorf("host ingress left every route as it is: %w: %w", ErrPassIncomplete, partial)
 	}
 	have, err := h.Routes.List(ctx)
 	if err != nil {

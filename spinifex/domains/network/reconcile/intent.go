@@ -152,7 +152,10 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	intent.TransitGatewayIntent = loadTransitGateways(ctx, js, intent.VPCs, vpcIDs, subnetAZs)
 	intent.TGWRoutes = loadTGWRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
-	if intent.TopologyIncomplete = skips.err(); intent.TopologyIncomplete != nil {
+	// A failed peering or Transit Gateway read leaves the same gap: their
+	// sweeps would remove live routers, links and routes it did not name.
+	intent.TopologyIncomplete = errors.Join(skips.err(), intent.PeeringIncomplete, intent.TGWIncomplete)
+	if intent.TopologyIncomplete != nil {
 		slog.Warn("reconcile/intent: intent is incomplete; no live state will be removed", "err", intent.TopologyIncomplete)
 	}
 
@@ -247,6 +250,16 @@ func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 func validAddr(s string) bool {
 	_, err := netip.ParseAddr(s)
 	return err == nil
+}
+
+// requireBucket fails when bucket is missing. vpcd opens the peering and
+// Transit Gateway stores at start, so a missing one is lost state, which the
+// projection would otherwise read as no records at all.
+func requireBucket(ctx context.Context, js jetstream.JetStream, bucket string) error {
+	if _, err := js.KeyValue(ctx, bucket); err != nil {
+		return fmt.Errorf("open bucket %s: %w", bucket, err)
+	}
+	return nil
 }
 
 // requiredBuckets are created by their EC2 services at start, so one that is

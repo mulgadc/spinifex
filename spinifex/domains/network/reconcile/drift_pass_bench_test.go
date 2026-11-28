@@ -15,6 +15,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -79,7 +80,10 @@ func seedDriftFixture(b *testing.B, js jetstream.JetStream, vpcs, enis int) {
 	sgKV, eniKV := bucket(ec2vpc.KVBucketSecurityGroups), bucket(ec2vpc.KVBucketENIs)
 	// The EC2 services create every topology bucket at start; a missing one
 	// reads as lost state, and the pass would change nothing.
-	for _, name := range []string{ec2igw.KVBucketIGW, ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways} {
+	for _, name := range []string{
+		ec2igw.KVBucketIGW, ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways,
+		ec2projection.PeeringBucket, ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket,
+	} {
 		bucket(name)
 	}
 	for v := range vpcs {

@@ -14,6 +14,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -384,6 +385,7 @@ func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *test
 	for _, bucket := range []string{
 		ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs,
 		ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways,
+		ec2projection.PeeringBucket, ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket,
 	} {
 		if _, err := kvstore.GetOrCreateBucket(ctx, js, bucket, 1); err != nil {
 			t.Fatalf("create %s: %v", bucket, err)

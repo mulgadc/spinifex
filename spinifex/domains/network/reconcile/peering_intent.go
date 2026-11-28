@@ -62,6 +62,10 @@ func loadPeering(ctx context.Context, js jetstream.JetStream, localVPCs, vpcIDs 
 		out.PeeringIncomplete = errors.New("VPC bucket unavailable")
 		return out
 	}
+	if err := requireBucket(ctx, js, ec2projection.PeeringBucket); err != nil {
+		out.PeeringIncomplete = err
+		return out
+	}
 	conns, err := ec2projection.LoadPeering(ctx, js)
 	if err != nil {
 		out.PeeringIncomplete = err

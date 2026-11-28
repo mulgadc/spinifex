@@ -83,6 +83,12 @@ func loadTransitGateways(ctx context.Context, js jetstream.JetStream, vpcs map[s
 		out.TGWIncomplete = errors.New("VPC bucket unavailable")
 		return out
 	}
+	for _, bucket := range []string{ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket} {
+		if err := requireBucket(ctx, js, bucket); err != nil {
+			out.TGWIncomplete = err
+			return out
+		}
+	}
 	gws, atts, err := ec2projection.LoadTransitGateways(ctx, js)
 	if err != nil {
 		out.TGWIncomplete = err

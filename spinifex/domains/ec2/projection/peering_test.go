@@ -56,7 +56,7 @@ func TestLoadPeering_MapsRecords(t *testing.T) {
 		ID: "pcx-1", RequesterVPC: "vpc-a", AccepterVPC: "vpc-b",
 		RequesterCIDR: netip.MustParsePrefix("10.0.0.0/16"), AccepterCIDR: netip.MustParsePrefix("10.1.0.0/16"),
 		RequesterAddr: netip.MustParseAddr("169.254.192.9"), AccepterAddr: netip.MustParseAddr("169.254.192.10"),
-		Generation: 4, Linked: true,
+		Generation: 4, Linked: true, Status: "provisioning",
 	}
 	if got["pcx-1"] != want {
 		t.Errorf("pcx-1 = %+v, want %+v", got["pcx-1"], want)

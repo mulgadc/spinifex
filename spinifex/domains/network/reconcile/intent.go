@@ -247,19 +247,20 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 
 func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 
+// blankAssociation reports an association that names neither a subnet nor the
+// main table. Ignored, its subnet would fall back to the main table's routes.
+func blankAssociation(assocs []ec2routetable.AssociationRecord) bool {
+	for _, a := range assocs {
+		if a.SubnetId == "" && !a.Main {
+			return true
+		}
+	}
+	return false
+}
+
 func validAddr(s string) bool {
 	_, err := netip.ParseAddr(s)
 	return err == nil
-}
-
-// requireBucket fails when bucket is missing. vpcd opens the peering and
-// Transit Gateway stores at start, so a missing one is lost state, which the
-// projection would otherwise read as no records at all.
-func requireBucket(ctx context.Context, js jetstream.JetStream, bucket string) error {
-	if _, err := js.KeyValue(ctx, bucket); err != nil {
-		return fmt.Errorf("open bucket %s: %w", bucket, err)
-	}
-	return nil
 }
 
 // requiredBuckets are created by their EC2 services at start, so one that is
@@ -493,8 +494,8 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		}
 		// A record that decodes to no identity is present but unusable; the
 		// locality filter below would read it as another AZ's.
-		if rec.NetworkInterfaceId == "" || rec.VpcId == "" {
-			slog.Debug("reconcile/intent: ENI record names no ENI or VPC", "key", key)
+		if rec.NetworkInterfaceId == "" || rec.VpcId == "" || len(rec.SecurityGroupIds) == 0 {
+			slog.Debug("reconcile/intent: ENI record names no ENI, VPC or security group", "key", key)
 			skips.add(key)
 			continue
 		}
@@ -631,7 +632,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		// A record that decodes to no identity is present but unusable; the
 		// filters below would read it as another VPC's or a detached one.
-		if rec.InternetGatewayId == "" {
+		if rec.InternetGatewayId == "" || rec.State == "" {
 			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
@@ -683,7 +684,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		// A record that decodes to no identity is present but unusable; the
 		// filters below would read it as another VPC's or a detached one.
-		if rec.AllocationId == "" {
+		if rec.AllocationId == "" || rec.State == "" {
 			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
@@ -754,7 +755,7 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		}
 		// A record that decodes to no identity is present but unusable; the
 		// filters below would read it as another VPC's or a detached one.
-		if rec.RouteTableId == "" || rec.VpcId == "" {
+		if rec.RouteTableId == "" || rec.VpcId == "" || blankAssociation(rec.Associations) {
 			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
@@ -813,7 +814,7 @@ func loadNATGWs(
 		}
 		// A record that decodes to no identity is present but unusable; the
 		// filters below would read it as another VPC's or a detached one.
-		if rec.NatGatewayId == "" {
+		if rec.NatGatewayId == "" || rec.State == "" {
 			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue

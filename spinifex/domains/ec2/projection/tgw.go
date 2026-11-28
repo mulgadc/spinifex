@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -25,6 +26,8 @@ type TransitGateway struct {
 	// CleanupPending is set for deleting, and for deleted while the record
 	// is still in the live bucket: its router must go.
 	CleanupPending bool
+	// State is the record's AWS state, so a caller can refuse one that has none.
+	State string
 }
 
 // TransitGatewayAttachment is one live VPC attachment as network realises it.
@@ -44,18 +47,22 @@ type TransitGatewayAttachment struct {
 	// CleanupPending is set for deleting, and for deleted or failed while
 	// the record is still in the live bucket: its link must go.
 	CleanupPending bool
+	// State is the record's AWS state, so a caller can refuse one that has none.
+	State string
 }
 
-// LoadTransitGateways reads every live Transit Gateway and attachment. A
-// missing bucket is none; any other read failure is an error, never a partial list.
+// LoadTransitGateways reads every live Transit Gateway and attachment. Any
+// read failure, a missing bucket included, is an error, never a partial list.
 func LoadTransitGateways(ctx context.Context, js jetstream.JetStream) ([]TransitGateway, []TransitGatewayAttachment, error) {
-	tgwKV, err := openBucket(ctx, js, TransitGatewayBucket)
-	if err != nil || tgwKV == nil {
-		return nil, nil, err
+	// vpcd creates both buckets at start, so a missing one is lost state, not
+	// an empty list: read as empty, network would remove every live router.
+	tgwKV, err := js.KeyValue(ctx, TransitGatewayBucket)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s: %w", TransitGatewayBucket, err)
 	}
-	attKV, err := openBucket(ctx, js, TransitGatewayAttachmentBucket)
-	if err != nil || attKV == nil {
-		return nil, nil, err
+	attKV, err := js.KeyValue(ctx, TransitGatewayAttachmentBucket)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s: %w", TransitGatewayAttachmentBucket, err)
 	}
 	gws, atts, err := ec2tgw.ListRecords(ctx, tgwKV, attKV)
 	if err != nil {
@@ -69,6 +76,7 @@ func LoadTransitGateways(ctx context.Context, js jetstream.JetStream) ([]Transit
 			Pending:        rec.State == ec2tgw.StatePending,
 			Available:      rec.State == ec2tgw.StateAvailable,
 			CleanupPending: rec.State == ec2tgw.StateDeleting || rec.State == ec2tgw.StateDeleted,
+			State:          rec.State,
 		})
 	}
 	outAtts := make([]TransitGatewayAttachment, 0, len(atts))
@@ -86,6 +94,7 @@ func attachment(rec *ec2tgw.AttachmentRecord) TransitGatewayAttachment {
 		Available: rec.State == ec2tgw.StateAvailable,
 		CleanupPending: rec.State == ec2tgw.StateDeleting || rec.State == ec2tgw.StateDeleted ||
 			rec.State == ec2tgw.StateFailed,
+		State: rec.State,
 	}
 	if rec.LinkPrefix != "" {
 		a.VPCAddr, a.TGWAddr, _ = ec2tgw.LinkAddresses(rec.LinkPrefix)

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -83,12 +84,6 @@ func loadTransitGateways(ctx context.Context, js jetstream.JetStream, vpcs map[s
 		out.TGWIncomplete = errors.New("VPC bucket unavailable")
 		return out
 	}
-	for _, bucket := range []string{ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket} {
-		if err := requireBucket(ctx, js, bucket); err != nil {
-			out.TGWIncomplete = err
-			return out
-		}
-	}
 	gws, atts, err := ec2projection.LoadTransitGateways(ctx, js)
 	if err != nil {
 		out.TGWIncomplete = err
@@ -97,14 +92,14 @@ func loadTransitGateways(ctx context.Context, js jetstream.JetStream, vpcs map[s
 	// A record with no ID or account is present but unusable; read as live it
 	// would leave the real router or link off the live set for the sweep.
 	for _, gw := range gws {
-		if gw.ID == "" || gw.AccountID == "" {
-			out.TGWIncomplete = errors.New("a Transit Gateway record names no ID or account")
+		if gw.ID == "" || gw.AccountID == "" || gw.State == "" {
+			out.TGWIncomplete = fmt.Errorf("transit gateway record %q names no ID, account or state", gw.ID)
 			return out
 		}
 	}
 	for _, a := range atts {
-		if a.ID == "" || a.AccountID == "" {
-			out.TGWIncomplete = errors.New("a Transit Gateway attachment record names no ID or account")
+		if a.ID == "" || a.AccountID == "" || a.TransitGatewayID == "" || a.VpcID == "" || a.State == "" {
+			out.TGWIncomplete = fmt.Errorf("transit gateway attachment record %q names no ID, account, gateway, VPC or state", a.ID)
 			return out
 		}
 	}

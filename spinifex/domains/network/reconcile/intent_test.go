@@ -140,11 +140,13 @@ func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
 
 	testutil.SeedKV(t, js, ec2vpc.KVBucketENIs, map[string][]byte{
 		"acct/eni-static": mustJSON(t, ec2vpc.ENIRecord{
+			SecurityGroupIds: []string{"sg-a"},
 			NetworkInterfaceId: "eni-static", SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 			SuppressDHCP: true, CreatedAt: time.Now(),
 		}),
 		"acct/eni-dhcp": mustJSON(t, ec2vpc.ENIRecord{
+			SecurityGroupIds: []string{"sg-a"},
 			NetworkInterfaceId: "eni-dhcp", SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: "10.0.1.11", MacAddress: "02:00:00:00:00:02",
 			CreatedAt: time.Now(),
@@ -595,6 +597,7 @@ func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
 	})
 	eni := func(id, ip, publicIP, instanceID string) []byte {
 		return mustJSON(t, ec2vpc.ENIRecord{
+			SecurityGroupIds: []string{"sg-a"},
 			NetworkInterfaceId: id, SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: ip, MacAddress: "02:00:00:00:00:" + ip[len(ip)-2:],
 			PublicIpAddress: publicIP, InstanceId: instanceID, Status: "in-use", CreatedAt: time.Now(),
@@ -725,10 +728,12 @@ func TestLoadIntentFromKV_ENIsFollowTheirVPC(t *testing.T) {
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{"acct/vpc-a": mustJSON(t, vpc)})
 	testutil.SeedKV(t, js, ec2vpc.KVBucketENIs, map[string][]byte{
 		"acct/eni-local": mustJSON(t, ec2vpc.ENIRecord{
+			SecurityGroupIds: []string{"sg-a"},
 			NetworkInterfaceId: "eni-local", VpcId: "vpc-a", SubnetId: "subnet-a",
 			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 		}),
 		"acct/eni-foreign": mustJSON(t, ec2vpc.ENIRecord{
+			SecurityGroupIds: []string{"sg-a"},
 			NetworkInterfaceId: "eni-foreign", VpcId: "vpc-absent", SubnetId: "subnet-z",
 			PrivateIpAddress: "10.9.1.10", MacAddress: "02:00:00:00:00:02",
 		}),

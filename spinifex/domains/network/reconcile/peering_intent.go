@@ -71,6 +71,14 @@ func loadPeering(ctx context.Context, js jetstream.JetStream, localVPCs, vpcIDs 
 		out.PeeringIncomplete = err
 		return out
 	}
+	// A record with no ID is present but unusable; read as live under "", it
+	// would leave the real connection off the live set for the sweep.
+	for _, c := range conns {
+		if c.ID == "" {
+			out.PeeringIncomplete = errors.New("a peering record names no connection ID")
+			return out
+		}
+	}
 	for _, c := range conns {
 		out.PeeringLive[c.ID] = struct{}{}
 		if !c.Linked && !c.CleanupPending {

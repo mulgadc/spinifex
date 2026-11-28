@@ -94,6 +94,20 @@ func loadTransitGateways(ctx context.Context, js jetstream.JetStream, vpcs map[s
 		out.TGWIncomplete = err
 		return out
 	}
+	// A record with no ID or account is present but unusable; read as live it
+	// would leave the real router or link off the live set for the sweep.
+	for _, gw := range gws {
+		if gw.ID == "" || gw.AccountID == "" {
+			out.TGWIncomplete = errors.New("a Transit Gateway record names no ID or account")
+			return out
+		}
+	}
+	for _, a := range atts {
+		if a.ID == "" || a.AccountID == "" {
+			out.TGWIncomplete = errors.New("a Transit Gateway attachment record names no ID or account")
+			return out
+		}
+	}
 	classifyTransitGateways(&out, gws, atts, vpcs, vpcIDs)
 	return out
 }

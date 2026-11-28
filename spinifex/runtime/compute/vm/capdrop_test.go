@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,16 +12,34 @@ import (
 	"time"
 )
 
+const seededCap = "net_raw"
+
 // TestQEMULaunchDropsChildCapabilities measures the capability masks of a
 // process launched the way QEMU is launched, through the same Config.Execute
-// path the daemon uses. The mechanism can only be exercised from a privileged
-// parent: an unprivileged parent has no capabilities to inherit, so both the
-// wrapped and the plain shape measure zero and the test cannot discriminate.
-// CI runs this as root, where the pre-fix shape fails — the child holds the
-// parent's permitted set — and the fixed shape passes with every mask zero.
+// path the daemon uses.
+//
+// The measurement must run as a non-root identity holding a seeded ambient
+// capability: root's permitted set survives exec regardless of the wrapper,
+// and an unprivileged process without an ambient capability has nothing to
+// drop, so neither shape can discriminate the fix. This invocation arranges
+// that identity — directly under setpriv when it is root, under sudo when it
+// is an unprivileged CI runner — and re-execs itself; the re-exec'd process
+// is the real measurement.
 func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("measuring inherited capabilities needs a privileged parent; CI runs this as root")
+	switch {
+	case os.Geteuid() == 0:
+		t.Log("root: re-executing as a non-root identity with a seeded ambient capability")
+		reexecSeeded(t, "setpriv")
+		return
+	case ambientCaps() != 0:
+		t.Log("non-root holding an ambient capability: measuring in place")
+	default:
+		if _, err := exec.LookPath("sudo"); err != nil {
+			t.Skip("needs a seeded ambient capability; neither root nor sudo is available here")
+		}
+		t.Log("unprivileged: re-executing under sudo with a seeded ambient capability")
+		reexecSeeded(t, "sudo", "-n")
+		return
 	}
 
 	// A script stands in for the QEMU binary: it signals that the exec has
@@ -84,6 +103,60 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 			t.Errorf("launched child holds capabilities: %s=%#x (want 0)", field, masks[field])
 		}
 	}
+}
+
+// reexecSeeded runs this test again as a non-root identity holding the seeded
+// ambient capability, via prefix ("setpriv", or "sudo -n" on a CI runner),
+// and fails when the re-exec'd measurement fails. The test binary is copied
+// to a world-readable path first: a build-cache binary is not traversable by
+// the switched identity.
+func reexecSeeded(t *testing.T, prefix ...string) {
+	t.Helper()
+
+	bin := filepath.Join(os.TempDir(), "capdrop-test-bin")
+	data, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(bin) })
+
+	args := append([]string{}, prefix...)
+	args = append(args,
+		"--reuid=65534", "--regid=65534", "--clear-groups",
+		"--ambient-caps=+"+seededCap, "--inh-caps=+"+seededCap, "--no-new-privs", "--",
+		bin, "-test.run=^TestQEMULaunchDropsChildCapabilities$", "-test.v", "-test.timeout=5m",
+	)
+	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("seeded re-exec failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: TestQEMULaunchDropsChildCapabilities") {
+		t.Fatalf("seeded re-exec did not pass:\n%s", out)
+	}
+}
+
+// ambientCaps reads this process's CapAmb from /proc/self/status; 0 when the
+// field is absent or unreadable.
+func ambientCaps() uint64 {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if v, ok := strings.CutPrefix(scanner.Text(), "CapAmb:"); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			if err != nil {
+				return 0
+			}
+			return n
+		}
+	}
+	return 0
 }
 
 // procCapabilityMasks reads the capability fields from /proc/<pid>/status.

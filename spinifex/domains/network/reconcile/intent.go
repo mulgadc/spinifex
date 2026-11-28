@@ -621,7 +621,14 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 			skips.add(key)
 			continue
 		}
-		if !strings.EqualFold(rec.State, "associated") || rec.VpcId == "" || rec.PublicIp == "" || rec.PrivateIp == "" {
+		// A NAT gateway's address has no private IP; its snat comes from the
+		// NAT gateway record. Any other associated EIP must name all three.
+		if !strings.EqualFold(rec.State, "associated") || rec.NatGatewayId != "" {
+			continue
+		}
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: associated EIP names no VPC", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -734,6 +741,11 @@ func loadNATGWs(
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		if !validAddr(rec.PublicIp) {
+			slog.Debug("reconcile/intent: NAT GW public IP parse failed", "key", key, "public_ip", rec.PublicIp)
+			skips.add(key)
 			continue
 		}
 

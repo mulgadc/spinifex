@@ -87,6 +87,10 @@ type NATManager interface {
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
+	// EnsureNATGateway is AddNATGateway that only creates: it returns
+	// ErrNATGatewayWouldReplace when the subnet's snat names another address.
+	EnsureNATGateway(ctx context.Context, gw NATGWSpec) error
+
 	// DeleteNATGateway removes the (snat, SubnetCIDR) rule; idempotent.
 	DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error
 
@@ -160,7 +164,11 @@ func WithNeighPrimer(p NeighPrimer) Option {
 // prune can find bindings whose NAT row has already gone; leaving it nil skips
 // the host sweep.
 type HostEIPBinder struct {
-	Bind   func(eip EIPSpec, gwLrpIP string) error
+	Bind func(eip EIPSpec, gwLrpIP string) error
+	// Add is Bind that keeps an existing route instead of replacing it, for a
+	// caller whose intent may be partial. Nil falls back to Bind for an address
+	// List does not report.
+	Add    func(eip EIPSpec, gwLrpIP string) error
 	Unbind func(externalIP string) error
 	List   func() ([]string, error)
 	// Owns reports whether portName is on this chassis. Bind asks the same
@@ -277,6 +285,9 @@ func (m *natManager) exemptSetUUID(ctx context.Context) (*string, error) {
 // ErrEIPWouldReplace is EnsureEIP refusing to change a live dnat_and_snat row.
 var ErrEIPWouldReplace = errors.New("EIP would replace a live dnat_and_snat row")
 
+// ErrNATGatewayWouldReplace is EnsureNATGateway refusing to change a live snat row.
+var ErrNATGatewayWouldReplace = errors.New("NAT gateway would replace a live snat row")
+
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	return m.addEIP(ctx, eip, true)
 }
@@ -365,12 +376,22 @@ func (m *natManager) addEIP(ctx context.Context, eip EIPSpec, mayReplace bool) e
 		m.primeReachability(ctx, eip, distributed)
 		// Host state (routes, proxy-ARP) is volatile even when the OVN row
 		// survives — reconcile lands here after a reboot, so re-bind.
-		return m.bindHostEIP(ctx, eip)
+		return m.bindHostEIP(ctx, eip, !mayReplace)
 	}
 	if !mayReplace {
+		// Create only: no scrub, so nothing that appears after the checks is
+		// deleted. A duplicate row is the recoverable result.
 		if err := m.refuseReplace(ctx, router, eip, existing, lookupErr); err != nil {
 			return err
 		}
+		if err := m.ovn.AddNAT(ctx, router, natRule); err != nil {
+			return fmt.Errorf("add dnat_and_snat %s -> %s on %s: %w", eip.LogicalIP, eip.ExternalIP, router, err)
+		}
+		if err := m.barrier(); err != nil {
+			slog.Warn("policy: EnsureEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
+		}
+		m.primeReachability(ctx, eip, distributed)
+		return m.bindHostEIP(ctx, eip, true)
 	}
 	if ownerChanged {
 		slog.Info("policy: AddEIP re-pointing dnat_and_snat — owning ENI changed",
@@ -413,7 +434,7 @@ func (m *natManager) addEIP(ctx context.Context, eip EIPSpec, mayReplace bool) e
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	m.primeReachability(ctx, eip, distributed)
-	return m.bindHostEIP(ctx, eip)
+	return m.bindHostEIP(ctx, eip, false)
 }
 
 // distributes reports whether OVN processes this rule on the instance's own
@@ -434,9 +455,9 @@ func (m *natManager) distributes(eip EIPSpec) bool {
 }
 
 // bindHostEIP fires the routed-mode host plumbing hook for an EIP. No-op in
-// other modes or when no binder is configured. Errors are returned so a
-// half-plumbed EIP surfaces to the caller (reconcile retries the bind).
-func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
+// other modes or when no binder is configured. keep leaves a bound address and
+// any existing route alone, for intent that may be partial.
+func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec, keep bool) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
 		return nil
 	}
@@ -459,10 +480,32 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 			return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
 		}
 	}
-	if err := m.hostBinder.Bind(eip, gwLrpIP); err != nil {
+	bind := m.hostBinder.Bind
+	if keep {
+		bound, err := m.hostBound(eip.ExternalIP)
+		if err != nil || bound {
+			return err
+		}
+		if m.hostBinder.Add != nil {
+			bind = m.hostBinder.Add
+		}
+	}
+	if err := bind(eip, gwLrpIP); err != nil {
 		return fmt.Errorf("bind host EIP %s (next hop %q): %w", eip.ExternalIP, gwLrpIP, err)
 	}
 	return nil
+}
+
+// hostBound reports whether List already shows ip bound on this host.
+func (m *natManager) hostBound(ip string) (bool, error) {
+	if m.hostBinder.List == nil {
+		return false, nil
+	}
+	ips, err := m.hostBinder.List()
+	if err != nil {
+		return false, fmt.Errorf("list host EIP bindings: %w", err)
+	}
+	return slices.Contains(ips, ip), nil
 }
 
 // refuseReplace returns ErrEIPWouldReplace when a row already holds the
@@ -506,19 +549,6 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 	// wanted and leaves this node holding a route and proxy-ARP for a guest that
 	// has moved, which on a shared segment answers ARP for someone else's guest.
 	foreign := map[string]struct{}{}
-	// Without a sweep the specs may be partial, so an address already bound
-	// keeps its route as it is; Bind would replace its next hop.
-	var bound map[string]struct{}
-	if !prune && m.hostBinder.List != nil {
-		ips, err := m.hostBinder.List()
-		if err != nil {
-			return fmt.Errorf("list host EIP bindings: %w", err)
-		}
-		bound = make(map[string]struct{}, len(ips))
-		for _, ip := range ips {
-			bound[ip] = struct{}{}
-		}
-	}
 	var errs []error
 	incomplete := false
 	for _, eip := range specs {
@@ -535,10 +565,9 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 		if m.foreignToThisChassis(eip) {
 			foreign[dpIP] = struct{}{}
 		}
-		if _, ok := bound[dpIP]; ok {
-			continue
-		}
-		if err := m.bindHostEIP(ctx, eip); err != nil {
+		// Without a sweep the specs may be partial, so an address already bound
+		// keeps its route as it is; Bind would replace its next hop.
+		if err := m.bindHostEIP(ctx, eip, !prune); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -871,6 +900,15 @@ func (m *natManager) releaseHostEIP(externalIP, reason string) {
 }
 
 func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
+	return m.addNATGateway(ctx, gw, true)
+}
+
+// EnsureNATGateway is documented on the NATManager interface.
+func (m *natManager) EnsureNATGateway(ctx context.Context, gw NATGWSpec) error {
+	return m.addNATGateway(ctx, gw, false)
+}
+
+func (m *natManager) addNATGateway(ctx context.Context, gw NATGWSpec, mayReplace bool) error {
 	router := topology.VPCRouter(gw.VPCID)
 
 	// The SNAT source and the host bind both have to name the address that rides
@@ -899,13 +937,17 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	// Reconcile the existing row, keyed on (router, subnet CIDR) — DeleteNAT's key —
 	// so the reconcile's re-publish is a no-op and a multi-subnet NAT GW dedups per
 	// subnet instead of minting duplicate snat rows that survive teardown.
-	if existing, err := m.ovn.FindNATByLogicalIP(ctx, router, "snat", gw.SubnetCIDR); err != nil {
+	existing, err := m.ovn.FindNATByLogicalIP(ctx, router, "snat", gw.SubnetCIDR)
+	if !mayReplace && (err != nil || (existing != nil && existing.ExternalIP != gw.PublicIP)) {
+		return fmt.Errorf("%w: snat for %s on %s", ErrNATGatewayWouldReplace, gw.SubnetCIDR, router)
+	}
+	if err != nil {
 		slog.Warn("policy: AddNATGateway idempotency lookup failed", "subnet_cidr", gw.SubnetCIDR, "err", err)
 	} else if existing != nil && existing.ExternalIP == gw.PublicIP {
 		slog.Info("policy: AddNATGateway idempotent skip — rule already current",
 			"router", router, "public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
 		// Host state is volatile even when the OVN row survives a reboot.
-		return m.bindNATGatewayHost(ctx, gw)
+		return m.bindNATGatewayHost(ctx, gw, !mayReplace)
 	} else if existing != nil {
 		// Same subnet CIDR, different public IP (e.g. a dropped delete then a recreate
 		// with a new EIP). Scrub the stale row(s) so the new EIP does not leak egress
@@ -925,7 +967,7 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 		slog.Warn("policy: AddNATGateway flows barrier failed",
 			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)
 	}
-	return m.bindNATGatewayHost(ctx, gw)
+	return m.bindNATGatewayHost(ctx, gw, !mayReplace)
 }
 
 // bindNATGatewayHost plumbs the routed-mode host state for a NAT gateway's
@@ -938,11 +980,11 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 // not any one port — so the spec carries no port or MAC and the bind resolves
 // the gateway LRP as its next hop. Fired here as well as from the host EIP
 // pass so a fresh gateway is not dark until the next tick.
-func (m *natManager) bindNATGatewayHost(ctx context.Context, gw NATGWSpec) error {
+func (m *natManager) bindNATGatewayHost(ctx context.Context, gw NATGWSpec, keep bool) error {
 	if gw.PublicIP == "" {
 		return nil
 	}
-	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP, NATGateway: true})
+	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP, NATGateway: true}, keep)
 }
 
 func (m *natManager) DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error {

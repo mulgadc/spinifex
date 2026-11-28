@@ -1209,6 +1209,15 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 // that says which node it has to be delivered to.
 func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
 	for _, spec := range intent.NATGWs {
+		if partial := intent.TopologyIncomplete; partial != nil {
+			// Partial intent may hold a stale address, so it only creates rows.
+			if err := r.nat.EnsureNATGateway(ctx, spec); err != nil {
+				slog.Error("reconcile/apply: not replacing a NAT gateway snat against partial intent",
+					"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err, "partial", partial)
+				res.fail(classNATGW, spec.NATGatewayID, err)
+			}
+			continue
+		}
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
 			slog.Warn("reconcile/apply: AddNATGateway failed (likely already exists)",
 				"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err)

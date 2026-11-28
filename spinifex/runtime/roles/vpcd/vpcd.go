@@ -1186,6 +1186,20 @@ func hostEIPBinder(pool *external.ExternalPoolConfig, sbAddr string) policy.Host
 				UplinkHint:  uplinkHint,
 			})
 		},
+		Add: func(eip policy.EIPSpec, gwLrpIP string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if skip, err := skipForeignEIP(ctx, runner, eip); err != nil || skip {
+				return err
+			}
+			return host.EnsureEIPIngress(ctx, runner, host.EIPIngress{
+				EIP:         eip.ExternalIP,
+				GwLrpIP:     gwLrpIP,
+				PoolGateway: gateway,
+				UplinkHint:  uplinkHint,
+				KeepRoute:   true,
+			})
+		},
 		Unbind: func(externalIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

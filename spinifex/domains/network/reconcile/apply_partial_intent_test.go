@@ -861,14 +861,17 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 	cases := []struct {
 		name  string
 		fault func(t *testing.T, js jetstream.JetStream)
+		// held is true when the pass itself must refuse a replacement; a
+		// record that does not parse is instead dropped by the loader.
+		held bool
 	}{
 		{"nat gateway address does not parse", func(t *testing.T, js jetstream.JetStream) {
 			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.999"))
-		}},
+		}, false},
 		{"another record is bad and the address changed", func(t *testing.T, js jetstream.JetStream) {
 			putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-b", poison)
 			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.6"))
-		}},
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -906,7 +909,10 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 			if findNATByExternal(m, "snat", live) == nil {
 				t.Errorf("NAT gateway pass removed the live snat row for %s", live)
 			}
-			if len(res.failures) == 0 {
+			if intent.TopologyIncomplete == nil {
+				t.Errorf("intent read as complete after the fault")
+			}
+			if tc.held && len(res.failures) == 0 {
 				t.Errorf("held NAT gateway change not recorded on the pass")
 			}
 		})

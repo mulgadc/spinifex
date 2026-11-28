@@ -139,6 +139,10 @@ type EIPIngress struct {
 	// DORA on the uplink itself and name it directly.
 	PoolGateway string
 	UplinkHint  string
+
+	// KeepRoute adds the /32 route only when there is none, so a caller whose
+	// intent may be partial never changes the next hop of a live address.
+	KeepRoute bool
 }
 
 // EnsureEIPIngress makes an EIP reachable from the uplink LAN in routed-NAT
@@ -162,7 +166,11 @@ func EnsureEIPIngress(ctx context.Context, r Runner, in EIPIngress) error {
 	// A distributed rule is answered on this node's transit segment, so the
 	// EIP is on-link and naming a next hop would send it to a gateway LRP that
 	// may be on another chassis entirely. A centralised rule still hops there.
-	routeArgs := []string{"route", "replace", eip + "/32"}
+	routeVerb := "replace"
+	if in.KeepRoute {
+		routeVerb = "add"
+	}
+	routeArgs := []string{"route", routeVerb, eip + "/32"}
 	if in.GwLrpIP != "" {
 		routeArgs = append(routeArgs, "via", in.GwLrpIP)
 	}
@@ -170,7 +178,8 @@ func EnsureEIPIngress(ctx context.Context, r Runner, in EIPIngress) error {
 	if srcIP != "" {
 		routeArgs = append(routeArgs, "src", srcIP)
 	}
-	if out, err := r.Run(ctx, "ip", routeArgs...); err != nil {
+	if out, err := r.Run(ctx, "ip", routeArgs...); err != nil &&
+		(!in.KeepRoute || !strings.Contains(string(out), "File exists")) {
 		return fmt.Errorf("install EIP route %s (next hop %q): %s: %w", eip, in.GwLrpIP, string(out), err)
 	}
 

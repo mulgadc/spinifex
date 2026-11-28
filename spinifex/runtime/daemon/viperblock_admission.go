@@ -203,7 +203,7 @@ func (rm *ResourceManager) sweepBoundExports(now time.Time) {
 	}
 	rm.mu.Lock()
 	for _, id := range dead {
-		if rm.bound[id] == held[id] {
+		if at, ok := rm.bound[id]; ok && at.Equal(held[id]) {
 			delete(rm.bound, id)
 		}
 	}

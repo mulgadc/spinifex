@@ -267,6 +267,12 @@ jobs:
           else
             export SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}"
           fi
+          # IPsec is off by default. The pool cells opt in, so the encrypted path
+          # stays tested, and the NAT and DHCP cells form with the default.
+          if [ "$MATRIX_NET" != "nat" ] && [ "$MATRIX_NET" != "dhcp" ]; then
+            export SPX_IPSEC=true
+            echo "SPX_IPSEC=true" >> "$GITHUB_ENV"
+          fi
 
           ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
             "${RUNNER_TEMP}/setup.sh" \
@@ -382,7 +388,7 @@ jobs:
                echo \"::group::suite \$SUITE\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                TMO=30m; for kv in ${SUITE_TMOS}; do case \$kv in \$SUITE:*) TMO=\${kv#*:} ;; esac; done; \
-               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode SPINIFEX_EXPECT_IPSEC=${SPX_IPSEC:+1} \
                  SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
                  SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \

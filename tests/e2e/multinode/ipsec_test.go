@@ -3,6 +3,7 @@
 package multinode
 
 import (
+	"os"
 	"context"
 	"errors"
 	"fmt"
@@ -41,6 +42,10 @@ func runIPSec(t *testing.T, fix *Fixture) {
 		if ipsecRequested(t, ssh, first) {
 			t.Fatalf("%s requests network.ipsec_enabled but reports ipsec_encapsulation=%q — intra-AZ Geneve is plaintext; check openvswitch-ipsec.service",
 				first.Name, strings.TrimSpace(string(out)))
+		}
+		// A job that formed its cluster with --ipsec=true must test it, not skip.
+		if os.Getenv("SPINIFEX_EXPECT_IPSEC") == "1" {
+			t.Fatalf("SPINIFEX_EXPECT_IPSEC=1 but %s has network.ipsec_enabled=false: the cluster was not formed with --ipsec=true", first.Name)
 		}
 		t.Skipf("IPsec disabled in node config on %s (network.ipsec_enabled=false): skip", first.Name)
 	}
@@ -95,8 +100,8 @@ func runIPSec(t *testing.T, fix *Fixture) {
 const nodeConfigPath = "/etc/spinifex/spinifex.toml"
 
 // ipsecRequested reports whether the node was configured to run IPsec.
-// network.ipsec_enabled defaults to true, so an absent or unreadable key means
-// requested; only an explicit false opts out.
+// A config with no ipsec_enabled key reads as true, so an absent or unreadable
+// key means requested; only an explicit false opts out.
 func ipsecRequested(t *testing.T, ssh *harness.PeerSSH, n harness.Node) bool {
 	t.Helper()
 

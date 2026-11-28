@@ -65,8 +65,9 @@ not as the ceiling.
 On a trusted-fabric configuration (IPsec off, multiqueue on) mean per-client
 throughput went from **1.23 Gbit/s to 6.64 Gbit/s** and aggregate into one guest from
 3.69 to **19.92 Gbit/s**. That 5.4x is *relative to an encrypted baseline* — it is
-mostly the cost of encryption being removed, not tuning headroom being found. The
-default, encrypted configuration is the one most clusters should run.
+mostly the cost of encryption being removed, not tuning headroom being found. A new
+install is unencrypted by default; pass `spx admin init --ipsec=true` on any fabric
+you do not trust.
 
 ## 1. Kernel tunables (sysctl)
 
@@ -98,10 +99,11 @@ journalctl -u spinifex-predastore | grep 'receive buffer size'   # must be silen
 
 ## 2. IPsec on the overlay
 
-Spinifex encrypts the geneve overlay with OVN native IPsec by default
-(ESP transport mode, `rfc4106(gcm(aes))` 128). This is the right default and matches
-the AWS trust model. **On a physically trusted fabric it is also the single largest
-performance cost in the stack.**
+With `spx admin init --ipsec=true`, Spinifex encrypts the geneve overlay with OVN
+native IPsec (ESP transport mode, `rfc4106(gcm(aes))` 128), which matches the AWS
+trust model. A new install leaves it off by default, because on a physically trusted
+fabric it is **the single largest performance cost in the stack**. Turn it on for any
+fabric you do not trust: a shared switch, more than one site, or a provider network.
 
 ### Why it costs so much
 
@@ -138,17 +140,16 @@ across cores while preserving ordering. It requires the SA to be created with a
 
 Measured on the test rig, three clients into one guest, 4 streams each, 60s:
 
-| | IPsec on (default) | IPsec off | |
+| | IPsec on | IPsec off (default) | |
 | --- | --- | --- | --- |
 | aggregate into one guest | 3.58 Gbit/s | **17.6 Gbit/s** | **4.9x** |
 | per client | 1.19 Gbit/s | **5.88 Gbit/s** | |
 | guest MTU | 1408 | 1442 | applied automatically |
-| NIC queue pairs | 1 | 4 | follows `ipsec_enabled` |
+| NIC queue pairs | 1 | 4 | as measured; now one per vCPU in both cases, see §3 |
 | busiest receive core | 97.4% | under 15%, spread over 16 cores | |
 
-The MTU and multiqueue changes are not separate knobs — both follow
-`ipsec_enabled` on their own, because the sign of the multiqueue result flips
-with it (see §3). Turning encryption off is the whole change.
+The MTU change is not a separate knob. It follows `ipsec_enabled` on its own.
+Turning encryption off is the whole change. Multiqueue no longer follows it (see §3).
 
 This is the largest single lever available today, and the trade is explicit: all
 east-west guest traffic goes on the wire unencrypted.
@@ -178,7 +179,7 @@ ovn-nbctl --db="$NBDB" set NB_Global . ipsec=false
 ovs-vsctl remove Open_vSwitch . other_config ipsec_encapsulation
 ```
 
-This is manual today and should move into the reconciler. Note that these commands are a *complement* to the config change, not a substitute for it — setting `NB_Global.ipsec=false` without `ipsec_enabled = false` leaves the daemon reconciling encryption back on, and leaves the guest MTU and queue-pair count on their encrypted values.
+This is manual today and should move into the reconciler. Note that these commands are a *complement* to the config change, not a substitute for it — setting `NB_Global.ipsec=false` without `ipsec_enabled = false` leaves the daemon reconciling encryption back on, and leaves the guest MTU on its encrypted value.
 
 **Restart guests after changing this in either direction.** The guest MTU moves
 with the setting, but a running guest holds its DHCP lease for up to an hour and
@@ -219,9 +220,14 @@ With IPsec off it is worth **+54%**, because the bottleneck moves to the sending
 host's vhost thread, which is exactly what extra queues relieve. At single queue that
 thread sits at 99.9%.
 
-Because the sign flips, multiqueue is not a knob of its own: it follows
-`ipsec_enabled` automatically, off when IPsec is on and on when it is off. There is
-nothing to set.
+These figures were measured in August on `v1.16.0`. At the time multiqueue followed
+`ipsec_enabled`, off when IPsec was on, because of the single-client loss above.
+
+Multiqueue now applies whether IPsec is on or off. Every guest NIC has one queue
+pair per vCPU, up to 8, as ENA sizes its queues by instance. The 3-client aggregate
+with IPsec on was higher with multiqueue (4.35 against 3.69 Gbit/s), and the change
+is measured again on the current build before release. There is nothing to set.
+Load balancer and worker VMs stay at one queue pair.
 
 ## 4. MTU
 

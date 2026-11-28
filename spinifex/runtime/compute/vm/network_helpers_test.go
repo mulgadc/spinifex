@@ -434,11 +434,11 @@ func TestSetupExtraENINICs_AppendsOnePerExtra(t *testing.T) {
 	if len(plumber.setupCalls) != 2 {
 		t.Fatalf("expected 2 SetupTap calls, got %d", len(plumber.setupCalls))
 	}
-	want0 := VPCTapSpec("eni-aaa", "02:00:00:aa:aa:aa", NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs), m.deps.GuestMTU)
+	want0 := VPCTapSpec("eni-aaa", "02:00:00:aa:aa:aa", NICQueues(instance.Config.CPUCount), m.deps.GuestMTU)
 	if !reflect.DeepEqual(plumber.setupCalls[0], want0) {
 		t.Errorf("first setup call = %+v, want %+v", plumber.setupCalls[0], want0)
 	}
-	want1 := VPCTapSpec("eni-bbb", "02:00:00:bb:bb:bb", NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs), m.deps.GuestMTU)
+	want1 := VPCTapSpec("eni-bbb", "02:00:00:bb:bb:bb", NICQueues(instance.Config.CPUCount), m.deps.GuestMTU)
 	if !reflect.DeepEqual(plumber.setupCalls[1], want1) {
 		t.Errorf("second setup call = %+v, want %+v", plumber.setupCalls[1], want1)
 	}
@@ -561,5 +561,32 @@ func TestCleanupExtraENITaps_ErrorsAreLogged(t *testing.T) {
 	m.cleanupExtraENITaps(instance)
 	if len(plumber.cleanupCalls) != 2 {
 		t.Errorf("expected both extras to be attempted, got %d cleanup calls", len(plumber.cleanupCalls))
+	}
+}
+
+// An extra ENI on a cold boot gets one queue pair per vCPU from the default
+// deps, which is what a cluster running IPsec builds.
+func TestSetupExtraENINICs_QueuesFollowVCPUsWithIPsecOn(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	instance := &VM{
+		ID:        "i-mq",
+		ExtraENIs: []ExtraENI{{ENIID: "eni-aaa", ENIMac: "02:00:00:aa:aa:aa", ENIIP: "10.0.1.4", SubnetID: "subnet-a"}},
+	}
+	instance.Config.CPUCount = 4
+	instance.Config.MachineType = "q35"
+
+	if err := m.setupExtraENINICs(instance); err != nil {
+		t.Fatalf("setupExtraENINICs failed: %v", err)
+	}
+
+	if len(plumber.setupCalls) != 1 || plumber.setupCalls[0].Queues != 4 {
+		t.Errorf("SetupTap specs = %+v, want one tap with 4 queues", plumber.setupCalls)
+	}
+	if len(instance.Config.NetDevs) != 1 || !strings.Contains(instance.Config.NetDevs[0].Value, ",queues=4") {
+		t.Errorf("netdevs = %+v, want queues=4", instance.Config.NetDevs)
+	}
+	if len(instance.Config.Devices) != 1 || !strings.Contains(instance.Config.Devices[0].Value, ",mq=on,vectors=10") {
+		t.Errorf("devices = %+v, want mq=on,vectors=10", instance.Config.Devices)
 	}
 }

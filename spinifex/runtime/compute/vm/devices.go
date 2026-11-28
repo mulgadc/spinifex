@@ -29,15 +29,10 @@ func IsMMIO(machineType string) bool {
 const MaxNICQueues = 8
 
 // NICQueues returns the queue-pair count for a NIC on a guest with vcpus
-// vCPUs, clamped to [1, MaxNICQueues]. The guest's virtio_net negotiates
-// min(vcpus, queues), so matching vCPUs lets every core drive its own queue.
-//
-// Whether multiqueue helps depends on what is downstream, and the sign flips.
-// Behind IPsec it costs ~12%: ESP funnels a node pair onto one core, so extra
-// queues only reorder packets, which TCP reads as loss. Without it the sending
-// host's single vhost thread saturates first and queues are worth +54%.
-func NICQueues(vcpus int, multiqueue bool) int {
-	if !multiqueue || vcpus < 1 {
+// vCPUs, clamped to [1, MaxNICQueues]. ENA sizes queues by instance whatever
+// the encryption on the wire, and the guest's virtio_net activates min(vcpus, queues).
+func NICQueues(vcpus int) int {
+	if vcpus < 1 {
 		return 1
 	}
 	return min(vcpus, MaxNICQueues)

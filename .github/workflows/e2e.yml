@@ -816,7 +816,8 @@ jobs:
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
         run: |
-          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
+          # IPsec is off by default; this job keeps the encrypted path tested.
+          SPX_IPSEC=true SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
           ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
             "${RUNNER_TEMP}/setup.sh" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
@@ -971,7 +972,7 @@ jobs:
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                TMO=30m; for kv in ${SUITE_TMOS}; do case \$kv in \$SUITE:*) TMO=\${kv#*:} ;; esac; done; \
-               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode SPINIFEX_EXPECT_IPSEC=1 \
                  SPINIFEX_NODES='${NODES_CSV}' \
                  SPINIFEX_NODE_IPS='${NODES_CSV}' \
                  SPINIFEX_SSH_USER=tf-user \

@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -306,5 +305,10 @@ func TestKVCompareInput(t *testing.T) {
 
 func TestAdminInitDiscardsJetStreamByDefault(t *testing.T) {
 	assert.Equal(t, "true", cli.AdminInitFlagDefault("discard-jetstream"))
-	assert.True(t, strings.HasPrefix(cli.AdminInitFlagDefault("ipsec"), "true"))
+}
+
+// A new install leaves Geneve between nodes unencrypted unless the operator
+// passes --ipsec=true.
+func TestAdminInitIPSecOffByDefault(t *testing.T) {
+	assert.Equal(t, "false", cli.AdminInitFlagDefault("ipsec"))
 }

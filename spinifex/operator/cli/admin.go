@@ -424,7 +424,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
-	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("ipsec", false, "Encrypt intra-AZ Geneve between nodes via OVN native IPsec (cluster-wide). Off by default; pass --ipsec=true on any fabric you do not trust: a shared switch, more than one site, or a provider network")
 	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join
@@ -1659,6 +1659,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Println("  spx admin init --force")
 		os.Exit(0)
 	}
+	keptIPSec, err := resolveInitIPSec(ipsecEnabled, cmd.Flags().Changed("ipsec"), spinifexTomlPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if keptIPSec != ipsecEnabled {
+		fmt.Printf("IPsec: keeping ipsec_enabled = %t from %s (pass --ipsec to change it)\n", keptIPSec, spinifexTomlPath)
+	}
+	ipsecEnabled = keptIPSec
 
 	// Resolved once and written to every node (ADR-0018:S3), before anything
 	// is written, so a refused OCI credential leaves the node untouched.

@@ -146,7 +146,7 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs, skips); err != nil {
 		return IntentState{}, err
 	}
-	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes, skips)
+	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
 	intent.PeeringIntent = loadPeering(ctx, js, localVPCs, vpcIDs)
 	intent.PeeringRoutes = loadPeeringRoutes(intent.VPCs, intent.Subnets, routeTables)
 	intent.TransitGatewayIntent = loadTransitGateways(ctx, js, intent.VPCs, vpcIDs, subnetAZs)
@@ -166,7 +166,6 @@ func loadSubnetEgressRoutes(
 	subnets map[string]topology.SubnetSpec,
 	routeTables []ec2routetable.RouteTableRecord,
 	igwOut, natgwOut map[string]SubnetEgressIntent,
-	skips *skipLog,
 ) {
 	byTable := routeTableSubnets(subnets, routeTables)
 	for _, rt := range routeTables {
@@ -180,9 +179,10 @@ func loadSubnetEgressRoutes(
 			}
 			prefix, err := netip.ParsePrefix(r.DestinationCidrBlock)
 			if err != nil {
-				slog.Debug("reconcile/intent: route CIDR parse failed",
+				// Tenant input, not corruption: a prefix that does not parse
+				// matches nothing, and must not stop reconcile for every tenant.
+				slog.Warn("reconcile/intent: route CIDR parse failed",
 					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
-				skips.add(rt.RouteTableId)
 				continue
 			}
 			var sink map[string]SubnetEgressIntent
@@ -319,6 +319,13 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 			skips.add(key)
 			continue
 		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
 		if !matchesLocalAZ(rec.AZ, localAZ) {
 			continue
 		}
@@ -367,6 +374,13 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 			skips.add(key)
 			continue
 		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.SubnetId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
 			continue
 		}
@@ -412,6 +426,13 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		var rec ec2vpc.SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Debug("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.GroupId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
 		}
@@ -595,6 +616,13 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 			skips.add(key)
 			continue
 		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.InternetGatewayId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
 		if rec.VpcId == "" || !strings.EqualFold(rec.State, "available") {
 			continue
 		}
@@ -637,6 +665,13 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		var rec ec2eip.EIPRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Debug("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.AllocationId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
 		}
@@ -704,6 +739,13 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 			skips.add(key)
 			continue
 		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.RouteTableId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
 			continue
 		}
@@ -753,6 +795,13 @@ func loadNATGWs(
 		var rec ec2natgw.NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Debug("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.NatGatewayId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
 			skips.add(key)
 			continue
 		}

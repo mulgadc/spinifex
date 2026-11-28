@@ -34,8 +34,8 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 	case ambientCaps() != 0:
 		t.Log("non-root holding an ambient capability: measuring in place")
 	default:
-		if _, err := exec.LookPath("sudo"); err != nil {
-			t.Skip("needs a seeded ambient capability; neither root nor sudo is available here")
+		if !passwordlessSudo() {
+			t.Skip("needs a seeded ambient capability; neither root nor passwordless sudo is available here")
 		}
 		t.Log("unprivileged: re-executing under sudo with a seeded ambient capability")
 		reexecSeeded(t, "sudo", "-n", "setpriv")
@@ -49,7 +49,9 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "qemu-standin")
 	marker := filepath.Join(dir, "execed")
-	script := "#!/bin/sh\necho ready > " + marker + "\nexec sleep 30\n"
+	// The marker path is single-quoted into the script: a temporary directory
+	// containing spaces must not break the readiness signal.
+	script := "#!/bin/sh\necho ready > '" + marker + "'\nexec sleep 30\n"
 	if err := os.WriteFile(target, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +105,12 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 			t.Errorf("launched child holds capabilities: %s=%#x (want 0)", field, masks[field])
 		}
 	}
+}
+
+// passwordlessSudo reports whether sudo can run a command without a password
+// prompt, which is what the re-exec needs on a CI runner.
+func passwordlessSudo() bool {
+	return exec.Command("sudo", "-n", "true").Run() == nil
 }
 
 // reexecSeeded runs this test again as a non-root identity holding the seeded

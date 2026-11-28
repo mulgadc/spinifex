@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -752,5 +753,162 @@ func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
 	}
 	if err == nil {
 		t.Errorf("ReconcileHostEIPs = nil, want an error naming the partial intent")
+	}
+}
+
+// The drift pass also binds host state for every EIP it applies. Under partial
+// intent that bind must not replace the route of an address already bound.
+func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	publicIPFixture(t).seed(t, js)
+	b := newRoutedBinder()
+	r, _ := newRoutedReconciler(t, js, b)
+	convergeFromKV(t, r, js)
+	bindsA := b.bindCount(publicA)
+	b.mu.Lock()
+	delete(b.bound, publicB)
+	b.mu.Unlock()
+
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	_ = r.Reconcile(t.Context(), intent)
+
+	if got := b.bindCount(publicA); got != bindsA {
+		t.Errorf("partial drift pass re-bound %s, which replaces its route (%d binds, want %d)", publicA, got, bindsA)
+	}
+	if !b.has(publicB) {
+		t.Errorf("partial drift pass did not restore the missing binding for %s", publicB)
+	}
+}
+
+// An associated EIP must name its addresses and VPC. A record that lacks one is
+// unusable, and its absence must not remove the live row it stands for.
+func TestS7_DriftPassKeepsAnEIPWhoseAssociatedRecordLacksAnAddress(t *testing.T) {
+	t.Parallel()
+	const userEIP = "203.0.113.20"
+	record := func(publicIP, privateIP, vpc string) []byte {
+		return mustJSON(t, ec2eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: publicIP, State: "associated",
+			ENIId: "eni-a", PrivateIp: privateIP, MacAddress: "02:00:00:00:00:0a", VpcId: vpc,
+		})
+	}
+	cases := map[string][]byte{
+		"no public IP":  record("", "10.0.1.10", "vpc-a"),
+		"no private IP": record(userEIP, "", "vpc-a"),
+		"no VPC":        record(userEIP, "10.0.1.10", ""),
+	}
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			f := twoVPCFixture(t)
+			f.set(ec2vpc.KVBucketENIs, "acct.eni-b", mustJSON(t, eniRecord("eni-b", "subnet-b", "vpc-b", "10.1.1.10", "02:00:00:00:00:0b", "sg-b", publicB)))
+			f.set(ec2eip.KVBucketEIPs, "acct.eipalloc-a", record(userEIP, "10.0.1.10", "vpc-a"))
+			f.seed(t, js)
+			b := newRoutedBinder()
+			r, m := newRoutedReconciler(t, js, b)
+			convergeFromKV(t, r, js)
+			requireStampedRow(t, m, userEIP, "eni-a")
+
+			putRaw(t, js, ec2eip.KVBucketEIPs, "acct.eipalloc-a", bad)
+			intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+			if err != nil {
+				t.Fatalf("LoadIntentFromKV: %v", err)
+			}
+			err = r.Reconcile(t.Context(), intent)
+
+			if findNATByExternal(m, "dnat_and_snat", userEIP) == nil {
+				t.Errorf("drift pass deleted the live row for %s", userEIP)
+			}
+			if !b.has(userEIP) {
+				t.Errorf("drift pass removed the host binding for %s (unbinds %v)", userEIP, b.unbinds)
+			}
+			if !errors.Is(err, ErrPassIncomplete) {
+				t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
+			}
+		})
+	}
+}
+
+// natgwFixture is vpc-a with a private subnet routed through nat-1.
+func natgwFixture(t *testing.T, publicIP string) kvFixture {
+	t.Helper()
+	f := twoVPCFixture(t)
+	f.set(ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, publicIP))
+	f.set(ec2routetable.KVBucketRouteTables, "acct.rtb-priv", mustJSON(t, ec2routetable.RouteTableRecord{
+		RouteTableId: "rtb-priv", VpcId: "vpc-a",
+		Routes:       []ec2routetable.RouteRecord{{DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: "nat-1", State: "active"}},
+		Associations: []ec2routetable.AssociationRecord{{AssociationId: "rtbassoc-a", SubnetId: "subnet-a"}},
+	}))
+	return f
+}
+
+func natgwRecord(t *testing.T, publicIP string) []byte {
+	return mustJSON(t, ec2natgw.NatGatewayRecord{
+		NatGatewayId: "nat-1", VpcId: "vpc-a", SubnetId: "subnet-a", PublicIp: publicIP, State: "available",
+	})
+}
+
+// Under partial intent a NAT gateway's subnet SNAT row is created if missing,
+// never replaced: the address intent now holds may be the unusable one.
+func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
+	t.Parallel()
+	const live = "198.51.100.5"
+	cases := []struct {
+		name  string
+		fault func(t *testing.T, js jetstream.JetStream)
+	}{
+		{"nat gateway address does not parse", func(t *testing.T, js jetstream.JetStream) {
+			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.999"))
+		}},
+		{"another record is bad and the address changed", func(t *testing.T, js jetstream.JetStream) {
+			putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-b", poison)
+			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.6"))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			natgwFixture(t, live).seed(t, js)
+			r, m := newTestReconciler(t)
+			ctx := t.Context()
+			intent, err := LoadIntentFromKV(ctx, js, "us-east-1a")
+			if err != nil {
+				t.Fatalf("LoadIntentFromKV: %v", err)
+			}
+			actual, err := scanActual(ctx, r.ovn)
+			if err != nil {
+				t.Fatalf("scanActual: %v", err)
+			}
+			r.applyVPCs(ctx, intent, actual, &passResult{})
+			converge := &passResult{}
+			r.applyNATGWs(ctx, intent, actual, converge)
+			if len(converge.failures) != 0 {
+				t.Fatalf("converging applyNATGWs: %+v", converge.failures)
+			}
+			if findNATByExternal(m, "snat", live) == nil {
+				t.Fatalf("no snat row for %s after converging", live)
+			}
+
+			tc.fault(t, js)
+			intent, err = LoadIntentFromKV(ctx, js, "us-east-1a")
+			if err != nil {
+				t.Fatalf("LoadIntentFromKV: %v", err)
+			}
+			res := &passResult{}
+			r.applyNATGWs(ctx, intent, actual, res)
+
+			if findNATByExternal(m, "snat", live) == nil {
+				t.Errorf("NAT gateway pass removed the live snat row for %s", live)
+			}
+			if len(res.failures) == 0 {
+				t.Errorf("held NAT gateway change not recorded on the pass")
+			}
+		})
 	}
 }

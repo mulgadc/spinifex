@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
 
 // ociDatapath maps each public address to a private one on the wire, as the
@@ -73,4 +75,48 @@ func TestNATManager_EnsureEIPKeepsAMatchingRowAndCreatesAMissingOne(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, row)
 	assert.Equal(t, "10.0.1.5", row.LogicalIP)
+}
+
+// racingOVN inserts a live row for the same external IP on another router
+// right after the last conflict check, as a concurrent writer can.
+type racingOVN struct {
+	*mock.Client
+
+	raced bool
+}
+
+func (r *racingOVN) FindNATByLogicalIP(ctx context.Context, routerName, natType, logicalIP string) (*nbdb.NAT, error) {
+	got, err := r.Client.FindNATByLogicalIP(ctx, routerName, natType, logicalIP)
+	if err == nil && got == nil && !r.raced {
+		r.raced = true
+		if err := r.Client.AddNAT(ctx, topology.VPCRouter("vpc-2"), &nbdb.NAT{
+			Type: "dnat_and_snat", ExternalIP: "10.200.0.20", LogicalIP: "10.9.0.9",
+			ExternalIDs: map[string]string{"spinifex:logical_port": "port-eni-9"},
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return got, err
+}
+
+// EnsureEIP only creates, so it deletes nothing, even a row that appeared
+// after its conflict checks.
+func TestNATManager_EnsureEIPDeletesNoRowThatAppearsAfterItsChecks(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedRouter(t, m, "vpc-2")
+	ovn := &racingOVN{Client: m}
+	mgr, err := NewNATManager(ovn, NATModeDistributed, WithDatapathResolver(ociDatapath))
+	require.NoError(t, err)
+
+	_ = mgr.EnsureEIP(context.Background(), liveEIP())
+
+	require.True(t, ovn.raced, "the concurrent row was never written")
+	var found bool
+	for _, n := range m.NATs {
+		if n.LogicalIP == "10.9.0.9" {
+			found = true
+		}
+	}
+	assert.True(t, found, "EnsureEIP deleted a live row written after its checks")
 }

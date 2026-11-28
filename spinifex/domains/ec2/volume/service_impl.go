@@ -956,6 +956,11 @@ func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs
 		go func(idx int, volID string) {
 			defer wg.Done()
 			defer func() { <-slots }()
+			// The worker can start after the deadline the dispatcher checked.
+			if ctx.Err() != nil {
+				results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
+				return
+			}
 			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil {
 				switch {

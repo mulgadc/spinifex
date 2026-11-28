@@ -9,6 +9,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
@@ -1101,5 +1102,88 @@ func TestS7_DriftPassKeepsAGuestPortWhenItsENIRecordIsEmpty(t *testing.T) {
 				t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
 			}
 		})
+	}
+}
+
+// ovnSnapshot serialises every row the OVN mock holds, so a test can tell
+// whether a pass changed anything at all.
+func ovnSnapshot(t *testing.T, m *mock.Client) string {
+	t.Helper()
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal OVN mock: %v", err)
+	}
+	return string(raw)
+}
+
+// While intent is incomplete, no stage of the drift pass and neither per-node
+// loop may change OVN or the host, not even to apply a healthy record. The
+// first pass after the record is repaired applies what was held.
+func TestS7_PartialIntentChangesNothingUntilRepaired(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	f := publicIPFixture(t)
+	f.set(ec2igw.KVBucketIGW, "acct.igw-a", mustJSON(t, ec2igw.IGWRecord{InternetGatewayId: "igw-a", VpcId: "vpc-a", State: "available"}))
+	f.seed(t, js)
+	b := newRoutedBinder()
+	r, m := newRoutedReconciler(t, js, b)
+	seedGatewayLRP(t, m, "vpc-b", "100.127.0.11")
+	convergeFromKV(t, r, js)
+	if err := r.ReconcileHostEIPs(t.Context()); err != nil {
+		t.Fatalf("converging ReconcileHostEIPs: %v", err)
+	}
+	routes := &hostRouteTable{routes: map[string]string{}}
+	h := &HostIngress{OVN: m, Routes: routes, LoadIntent: kvLoader(js)}
+	_, _ = h.Pass(t.Context())
+
+	ovnBefore := ovnSnapshot(t, m)
+	routesBefore, _ := routes.List(t.Context())
+	b.mu.Lock()
+	bindsBefore, unbindsBefore := maps.Clone(b.binds), len(b.unbinds)
+	b.mu.Unlock()
+	neighBefore := b.neighCalls()
+
+	// The SG record goes bad, and a healthy ENI is added while it is bad.
+	good := f[ec2vpc.KVBucketSecurityGroups]["acct.sg-a"]
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
+	addThirdENI(t, js)
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	passErr := r.Reconcile(t.Context(), intent)
+	hostErr := r.ReconcileHostEIPs(t.Context())
+	_, ingressErr := h.Pass(t.Context())
+
+	if after := ovnSnapshot(t, m); after != ovnBefore {
+		t.Errorf("the partial drift pass changed OVN state")
+	}
+	if after, _ := routes.List(t.Context()); !maps.Equal(after, routesBefore) {
+		t.Errorf("host ingress routes changed on partial intent: before %v, after %v", routesBefore, after)
+	}
+	b.mu.Lock()
+	bindsAfter, unbindsAfter := maps.Clone(b.binds), len(b.unbinds)
+	b.mu.Unlock()
+	if !maps.Equal(bindsAfter, bindsBefore) || unbindsAfter != unbindsBefore {
+		t.Errorf("host EIP bindings changed on partial intent: binds %v -> %v, unbinds %d -> %d",
+			bindsBefore, bindsAfter, unbindsBefore, unbindsAfter)
+	}
+	if got := b.neighCalls(); got != neighBefore {
+		t.Errorf("neighbour state touched %d times on partial intent", got-neighBefore)
+	}
+	if !errors.Is(passErr, ErrPassIncomplete) || hostErr == nil || ingressErr == nil {
+		t.Errorf("partial passes not reported: drift %v, host EIP %v, ingress %v", passErr, hostErr, ingressErr)
+	}
+
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", good)
+	intent, err = LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV after repair: %v", err)
+	}
+	if err := r.Reconcile(t.Context(), intent); err != nil {
+		t.Errorf("Reconcile after repair = %v, want a clean pass", err)
+	}
+	if !hasPort(m, "eni-c") {
+		t.Errorf("the first pass after repair did not apply port-eni-c, held while intent was partial")
 	}
 }

@@ -1115,7 +1115,9 @@ func TestS7_DriftPassKeepsAGuestPortWhenItsENIRecordIsEmpty(t *testing.T) {
 // whether a pass changed anything at all.
 func ovnSnapshot(t *testing.T, m *mock.Client) string {
 	t.Helper()
-	raw, err := json.Marshal(m)
+	// Marshal through a map: encoding/json sorts map keys, so equal state gives
+	// equal bytes, and the mock's field names are the snapshot keys.
+	raw, err := json.Marshal(map[string]any{"ovn": m})
 	if err != nil {
 		t.Fatalf("marshal OVN mock: %v", err)
 	}

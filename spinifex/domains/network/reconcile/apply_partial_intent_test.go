@@ -13,6 +13,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1193,5 +1194,124 @@ func TestS7_PartialIntentChangesNothingUntilRepaired(t *testing.T) {
 	}
 	if !hasPort(m, "eni-c") {
 		t.Errorf("the first pass after repair did not apply port-eni-c, held while intent was partial")
+	}
+}
+
+// A record of any topology kind that decodes to no identity is present but
+// unusable, so intent is partial rather than missing that resource.
+func TestLoadIntentFromKV_AnEmptyRecordOfAnyKindIsPartial(t *testing.T) {
+	t.Parallel()
+	for _, bucket := range []string{
+		ec2vpc.KVBucketVPCs, ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs,
+		ec2igw.KVBucketIGW, ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways,
+	} {
+		for _, raw := range []string{"{}", "null"} {
+			t.Run(bucket+" "+raw, func(t *testing.T) {
+				t.Parallel()
+				js := startKV(t)
+				twoVPCFixture(t).seed(t, js)
+				putRaw(t, js, bucket, "acct.empty", []byte(raw))
+				if _, err := partialLoad(t, js); err == nil {
+					t.Errorf("an empty %s record read as complete intent", bucket)
+				}
+			})
+		}
+	}
+}
+
+// An empty SG record must not let the sweep delete its live port group, which
+// would drop the group's ACLs from every port in it.
+func TestS7_DriftPassKeepsAPortGroupWhenItsSGRecordIsEmpty(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	twoVPCFixture(t).seed(t, js)
+	r, m := newTestReconciler(t)
+	r.reloadIntent = kvLoader(js)
+	r.localPorts = noLocalTaps
+	convergeFromKV(t, r, js)
+
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", []byte("{}"))
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	_ = r.Reconcile(t.Context(), intent)
+
+	if _, ok := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]; !ok {
+		t.Errorf("drift pass deleted the sg-a port group, whose record is present but empty")
+	}
+}
+
+// An empty IGW record must not let the host ingress pass remove its route.
+func TestS7_HostIngressKeepsRoutesWhenAnIGWRecordIsEmpty(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	f := kvFixture{}
+	f.set(ec2vpc.KVBucketVPCs, "acct.vpc-a", mustJSON(t, ec2vpc.VPCRecord{VpcId: "vpc-a", CidrBlock: "10.0.0.0/16"}))
+	f.set(ec2igw.KVBucketIGW, "acct.igw-a", mustJSON(t, ec2igw.IGWRecord{InternetGatewayId: "igw-a", VpcId: "vpc-a", State: "available"}))
+	f.seed(t, js)
+	m := mock.New()
+	seedGatewayLRP(t, m, "vpc-a", "100.127.0.10")
+	routes := &hostRouteTable{routes: map[string]string{}}
+	h := &HostIngress{OVN: m, Routes: routes, LoadIntent: kvLoader(js)}
+	if _, err := h.Pass(t.Context()); err != nil {
+		t.Fatalf("converging pass: %v", err)
+	}
+	before, _ := routes.List(t.Context())
+
+	putRaw(t, js, ec2igw.KVBucketIGW, "acct.igw-a", []byte("null"))
+	_, _ = h.Pass(t.Context())
+
+	if after, _ := routes.List(t.Context()); !maps.Equal(after, before) {
+		t.Errorf("host ingress routes changed after the IGW record went empty: before %v, after %v", before, after)
+	}
+}
+
+// A route whose destination does not parse is tenant input, not corruption:
+// one tenant's bad route must not stop reconcile for every other tenant.
+func TestLoadIntentFromKV_AnUnparsableRouteDoesNotStopReconcile(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	f := twoVPCFixture(t)
+	f.set(ec2routetable.KVBucketRouteTables, "acct.rtb-b", mustJSON(t, ec2routetable.RouteTableRecord{
+		RouteTableId: "rtb-b", VpcId: "vpc-b", IsMain: true,
+		Routes: []ec2routetable.RouteRecord{{DestinationCidrBlock: "not-a-cidr", GatewayId: "igw-b", State: "active"}},
+	}))
+	f.seed(t, js)
+	if _, err := partialLoad(t, js); err != nil {
+		t.Errorf("one tenant's unparsable route made intent partial for every tenant: %v", err)
+	}
+}
+
+// failingScanOVN fails every listing, so a pass that reads OVN at all fails
+// with a scan error instead of the incomplete-intent one.
+type failingScanOVN struct {
+	*mock.Client
+}
+
+func (failingScanOVN) ListLogicalRouters(context.Context) ([]nbdb.LogicalRouter, error) {
+	return nil, errors.New("OVN must not be read while intent is incomplete")
+}
+
+// Both entry points stop at the gate, before any OVN read.
+func TestS7_BothReconcileEntryPointsStopBeforeReadingOVN(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	twoVPCFixture(t).seed(t, js)
+	putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", poison)
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	r, m := newTestReconciler(t)
+	r.ovn = failingScanOVN{Client: m}
+
+	for name, run := range map[string]func(context.Context, IntentState) error{
+		"Reconcile": r.Reconcile, "ReconcileApplyOnly": r.ReconcileApplyOnly,
+	} {
+		err := run(t.Context(), intent)
+		if !errors.Is(err, ErrPassIncomplete) || strings.Contains(err.Error(), "scan actual") {
+			t.Errorf("%s = %v, want ErrPassIncomplete before any OVN read", name, err)
+		}
 	}
 }

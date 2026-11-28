@@ -1054,3 +1054,59 @@ func TestS7_NATGatewayWithABlankAddressKeepsItsHostBinding(t *testing.T) {
 		t.Errorf("the NAT gateway's host binding for %s was removed (unbinds %v)", live, b.unbinds)
 	}
 }
+
+// Every topology bucket is created by its EC2 service at start, so losing any
+// of them later leaves intent partial.
+func TestLoadIntentFromKV_AnyLostTopologyBucketIsPartial(t *testing.T) {
+	t.Parallel()
+	for _, bucket := range []string{
+		ec2vpc.KVBucketVPCs, ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs,
+		ec2igw.KVBucketIGW, ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways,
+	} {
+		t.Run(bucket, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			f := natgwFixture(t, "198.51.100.5")
+			f.set(ec2igw.KVBucketIGW, "acct.igw-a", mustJSON(t, ec2igw.IGWRecord{InternetGatewayId: "igw-a", VpcId: "vpc-a", State: "available"}))
+			f.set(ec2eip.KVBucketEIPs, "acct.eipalloc-x", mustJSON(t, ec2eip.EIPRecord{AllocationId: "eipalloc-x", PublicIp: "203.0.113.30", State: "allocated"}))
+			f.seed(t, js)
+			if err := js.DeleteKeyValue(t.Context(), bucket); err != nil {
+				t.Fatalf("delete %s: %v", bucket, err)
+			}
+			if _, err := partialLoad(t, js); err == nil {
+				t.Errorf("intent read as complete after %s was lost", bucket)
+			}
+		})
+	}
+}
+
+// A keyed ENI record that decodes to zero fields is present but unusable, and
+// must not let the sweep take the port it stands for.
+func TestS7_DriftPassKeepsAGuestPortWhenItsENIRecordIsEmpty(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"{}", "null"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			twoVPCFixture(t).seed(t, js)
+			r, m := newTestReconciler(t)
+			r.reloadIntent = kvLoader(js)
+			r.localPorts = noLocalTaps
+			convergeFromKV(t, r, js)
+
+			putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", []byte(raw))
+			intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+			if err != nil {
+				t.Fatalf("LoadIntentFromKV: %v", err)
+			}
+			err = r.Reconcile(t.Context(), intent)
+
+			if !hasPort(m, "eni-a") {
+				t.Errorf("drift pass deleted port-eni-a, whose record is present but empty")
+			}
+			if !errors.Is(err, ErrPassIncomplete) {
+				t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
+			}
+		})
+	}
+}

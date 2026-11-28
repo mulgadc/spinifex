@@ -621,8 +621,8 @@ func TestViperblockHasNoPerUserThreadLimit(t *testing.T) {
 	var nproc []string
 	for l := range strings.SplitSeq(u, "\n") {
 		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "LimitNPROC=") {
-			nproc = append(nproc, strings.TrimPrefix(l, "LimitNPROC="))
+		if v, ok := strings.CutPrefix(l, "LimitNPROC="); ok {
+			nproc = append(nproc, v)
 		}
 		if strings.HasPrefix(l, "TasksMax=") {
 			t.Errorf("viperblock sets %s; the service default ceiling is far above its memory limit", l)

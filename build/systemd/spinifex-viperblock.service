@@ -1,4 +1,4 @@
-# spinifex-unit-version: 3
+# spinifex-unit-version: 4
 [Unit]
 Description=Spinifex Viperblock (Block Storage)
 PartOf=spinifex.target
@@ -62,7 +62,7 @@ KeyringMode=private
 RemoveIPC=yes
 LimitCORE=0
 LimitNOFILE=65536
-LimitNPROC=4096
+LimitNPROC=infinity
 
 [Install]
 WantedBy=spinifex.target

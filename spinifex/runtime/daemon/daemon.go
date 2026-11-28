@@ -3766,15 +3766,16 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 	return rm.allocateGated(instanceType, true)
 }
 
-// allocateAdopted reserves for a guest restored on startup: its export is already
-// open in viperblock's memory, so it is counted and the viperblock gate is not applied.
+// allocateAdopted reserves for a guest restored on startup that already runs here: it
+// is counted and never refused, by any gate.
 func (rm *ResourceManager) allocateAdopted(instanceType *ec2.InstanceTypeInfo) error {
 	return rm.allocateGated(instanceType, false)
 }
 
 func (rm *ResourceManager) allocateGated(instanceType *ec2.InstanceTypeInfo, exports bool) error {
 	rm.mu.Lock()
-	if n, _ := rm.admitLocked(instanceType, 1, exports); n < 1 {
+	// An adopted guest already runs here, so it is counted and never refused.
+	if n, _ := rm.admitLocked(instanceType, 1, exports); exports && n < 1 {
 		rm.mu.Unlock()
 		instanceTypeName := ""
 		if instanceType.InstanceType != nil {

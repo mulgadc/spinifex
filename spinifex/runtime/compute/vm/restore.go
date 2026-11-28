@@ -169,14 +169,29 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			continue
 		}
 
+		// One probe decides both the allocation and the path below, so a guest cannot
+		// be adopted on one reading and relaunched on another.
+		finishing := instance.Status == StateStopping || instance.Status == StateShuttingDown
+		alive := isInstanceProcessRunning(instance)
+		socketsValid := alive && AreVolumeSocketsValid(instance)
+		reconnects := !finishing && alive && (socketsValid || !m.backingStoreReady())
+
+		// A stale export under a ready store is an orphan: reap it before admission,
+		// so a refusal below never reports stopped while its QEMU still runs.
+		if !finishing && alive && !reconnects {
+			slog.Warn("QEMU alive but NBD sockets are stale, killing orphaned process for relaunch",
+				"instance", instance.ID)
+			if !killOrphanedQEMU(instance) {
+				continue
+			}
+		}
+
 		if typeKnown && m.deps.Resources != nil && instance.InstanceType != "" {
 			slog.Info("Re-allocating resources for instance", "instanceId", instance.ID, "type", instance.InstanceType)
 			// A guest that will be reconnected already holds its export, and a stop or
-			// terminate in flight is finalized below, never relaunched: neither opens a new
-			// export, so neither is refused for it. A relaunch is admitted like a launch.
+			// terminate in flight is finalized below, never relaunched: both are counted
+			// and never refused. A relaunch is admitted like a launch.
 			allocate := m.deps.Resources.Allocate
-			finishing := instance.Status == StateStopping || instance.Status == StateShuttingDown
-			reconnects := isInstanceProcessRunning(instance) && (AreVolumeSocketsValid(instance) || !m.backingStoreReady())
 			if finishing || reconnects {
 				allocate = m.deps.Resources.AllocateAdopted
 			}
@@ -196,8 +211,8 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		// A stop or terminate acknowledged before the restart outranks a
 		// surviving QEMU: finish what the caller asked for rather than
 		// re-advertising the instance as running.
-		if instance.Status == StateStopping || instance.Status == StateShuttingDown {
-			if isInstanceProcessRunning(instance) {
+		if finishing {
+			if alive {
 				slog.Warn("QEMU outlived an in-flight transition, killing it to finish",
 					"instance", instance.ID, "status", instance.Status)
 				if !killOrphanedQEMU(instance) {
@@ -208,34 +223,22 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			continue
 		}
 
-		if isInstanceProcessRunning(instance) {
-			socketsValid := AreVolumeSocketsValid(instance)
-			if !socketsValid && m.backingStoreReady() {
-				// Sockets are genuinely stale under a healthy store: a real
-				// orphan, so reap it and relaunch below.
-				slog.Warn("QEMU alive but NBD sockets are stale, killing orphaned process for relaunch",
-					"instance", instance.ID)
-				if !killOrphanedQEMU(instance) {
-					continue
-				}
+		if reconnects {
+			// Sockets valid, or the backing store is not yet ready. The latter makes
+			// an unreachable socket a transient dependency gap, never grounds to
+			// destroy a running VM: keep it and reconnect QMP.
+			if socketsValid {
+				slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
 			} else {
-				// Sockets valid, or the backing store is not yet ready. The
-				// latter makes an unreachable socket a transient dependency
-				// gap, never grounds to destroy a running VM: keep it and
-				// reconnect QMP, which needs neither predastore nor viperblock.
-				if socketsValid {
-					slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
-				} else {
-					slog.Warn("NBD sockets unreachable but backing store not ready; reconnecting instead of killing running QEMU",
-						"instance", instance.ID)
-				}
-				if err := m.reconnectInstance(instance); err != nil {
-					slog.Error("Failed to reconnect to running instance, marking recovery-failed to preserve user data",
-						"instanceId", instance.ID, "err", err)
-					m.MarkRecoveryFailed(instance, "reconnect_failed")
-				}
-				continue
+				slog.Warn("NBD sockets unreachable but backing store not ready; reconnecting instead of killing running QEMU",
+					"instance", instance.ID)
 			}
+			if err := m.reconnectInstance(instance); err != nil {
+				slog.Error("Failed to reconnect to running instance, marking recovery-failed to preserve user data",
+					"instanceId", instance.ID, "err", err)
+				m.MarkRecoveryFailed(instance, "reconnect_failed")
+			}
+			continue
 		}
 
 		// QEMU is not running -- an instance that was up relaunches from scratch.

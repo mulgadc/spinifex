@@ -11,7 +11,10 @@ import (
 	"time"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
@@ -375,6 +378,16 @@ func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *test
 	igws, err := kvstore.GetOrCreateBucket(ctx, js, ec2igw.KVBucketIGW, 1)
 	if err != nil {
 		t.Fatalf("create IGW bucket: %v", err)
+	}
+	// The EC2 services create every topology bucket at start; a missing one
+	// reads as lost state and the loop would change nothing.
+	for _, bucket := range []string{
+		ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs,
+		ec2eip.KVBucketEIPs, ec2routetable.KVBucketRouteTables, ec2natgw.KVBucketNatGateways,
+	} {
+		if _, err := kvstore.GetOrCreateBucket(ctx, js, bucket, 1); err != nil {
+			t.Fatalf("create %s: %v", bucket, err)
+		}
 	}
 	put(t, vpcs, "acct/vpc-1", ec2vpc.VPCRecord{VpcId: "vpc-1", CidrBlock: "10.1.0.0/16"})
 	release, elected := reconcile.AcquireLeader(ctx, reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), reconcile.KeyVPCDReconcile, "node-elsewhere"))

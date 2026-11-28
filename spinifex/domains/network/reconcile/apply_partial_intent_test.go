@@ -166,8 +166,8 @@ func TestS7_DriftPassKeepsGuestPortsWhenTopologyIntentIsPartial(t *testing.T) {
 			if !hasPort(m, "eni-a") {
 				t.Errorf("drift pass deleted port-eni-a, whose record is present but unreadable")
 			}
-			if !hasPort(m, "eni-c") {
-				t.Errorf("drift pass did not create port-eni-c, a healthy record beside the bad one")
+			if hasPort(m, "eni-c") {
+				t.Errorf("partial drift pass created port-eni-c; it must change nothing until the record is repaired")
 			}
 			if !errors.Is(err, ErrPassIncomplete) {
 				t.Errorf("Reconcile = %v, want ErrPassIncomplete so the refused sweep is visible", err)
@@ -253,13 +253,21 @@ func TestS7_SweepsRefuseWhenEitherReadIsPartial(t *testing.T) {
 						t.Fatalf("LoadIntentFromKV after the fault: %v", err)
 					}
 				}
-				res := &passResult{}
-				sw.run(t, r, snapshot, res)
+				// A partial pass intent is stopped by the pass gate, so that case
+				// goes through Reconcile; a partial re-read reaches the sweep itself.
+				refused := false
+				if freshPartial {
+					res := &passResult{}
+					sw.run(t, r, snapshot, res)
+					refused = len(res.failures) > 0
+				} else {
+					refused = errors.Is(r.Reconcile(t.Context(), snapshot), ErrPassIncomplete)
+				}
 
 				if !sw.alive(m) {
 					t.Errorf("sweep removed the %s against a partial read", sw.name)
 				}
-				if len(res.failures) == 0 {
+				if !refused {
 					t.Errorf("refused sweep not recorded on the pass")
 				}
 			})
@@ -287,8 +295,8 @@ func TestS7_DriftPassKeepsAPortGroupWhenItsSGRecordDoesNotDecode(t *testing.T) {
 	if _, ok := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]; !ok {
 		t.Errorf("drift pass deleted the sg-a port group, whose record is present but unreadable")
 	}
-	if !hasPort(m, "eni-c") {
-		t.Errorf("drift pass did not create port-eni-c, a healthy record beside the bad one")
+	if hasPort(m, "eni-c") {
+		t.Errorf("partial drift pass created port-eni-c; it must change nothing until the record is repaired")
 	}
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
@@ -453,8 +461,8 @@ func TestS7_DriftPassKeepsAPublicIPWhenItsENIIsPartial(t *testing.T) {
 			}
 			err = r.Reconcile(t.Context(), intent)
 
-			if !hasPort(m, "eni-c") {
-				t.Errorf("drift pass did not create port-eni-c, a healthy record beside the bad one")
+			if hasPort(m, "eni-c") {
+				t.Errorf("partial drift pass created port-eni-c; it must change nothing until the record is repaired")
 			}
 			if findNATByExternal(m, "dnat_and_snat", publicA) == nil {
 				t.Errorf("drift pass deleted the dnat_and_snat row for %s", publicA)
@@ -584,11 +592,13 @@ func TestS7_HostIngressKeepsRoutesWhenTopologyIntentIsPartial(t *testing.T) {
 				t.Fatalf("routes after converging = %v, want 10.0.0.0/16 via vpc-a's gateway", before)
 			}
 
-			// A healthy VPC whose route went missing must still get it back.
+			// A healthy VPC whose route went missing stays without it: a partial
+			// pass changes nothing, not even to restore.
 			if tc.vpcB != "10.0.0.0/16" {
 				if err := routes.Remove(t.Context(), tc.vpcB); err != nil {
 					t.Fatalf("remove route: %v", err)
 				}
+				before, _ = routes.List(t.Context())
 			}
 			putRaw(t, js, tc.bucket, tc.key, poison)
 			_, err := h.Pass(t.Context())
@@ -882,17 +892,14 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 	cases := []struct {
 		name  string
 		fault func(t *testing.T, js jetstream.JetStream)
-		// held is true when the pass itself must refuse a replacement; a
-		// record that does not parse is instead dropped by the loader.
-		held bool
 	}{
 		{"nat gateway address does not parse", func(t *testing.T, js jetstream.JetStream) {
 			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.999"))
-		}, false},
+		}},
 		{"another record is bad and the address changed", func(t *testing.T, js jetstream.JetStream) {
 			putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-b", poison)
 			putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", natgwRecord(t, "198.51.100.6"))
-		}, true},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -924,8 +931,7 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadIntentFromKV: %v", err)
 			}
-			res := &passResult{}
-			r.applyNATGWs(ctx, intent, actual, res)
+			err = r.Reconcile(ctx, intent)
 
 			if findNATByExternal(m, "snat", live) == nil {
 				t.Errorf("NAT gateway pass removed the live snat row for %s", live)
@@ -933,8 +939,8 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 			if intent.TopologyIncomplete == nil {
 				t.Errorf("intent read as complete after the fault")
 			}
-			if tc.held && len(res.failures) == 0 {
-				t.Errorf("held NAT gateway change not recorded on the pass")
+			if !errors.Is(err, ErrPassIncomplete) {
+				t.Errorf("Reconcile = %v, want ErrPassIncomplete", err)
 			}
 		})
 	}

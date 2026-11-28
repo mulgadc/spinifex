@@ -377,6 +377,13 @@ func (r *reconciler) ReconcileHostEIPs(ctx context.Context) error {
 // that must repair one — and skipping it leaves a released public address still
 // delivering to a guest until the resync.
 func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTopology bool) error {
+	// Partial intent lacks resources that exist, and every stage can remove or
+	// replace live state from what is missing, so no stage runs until it heals.
+	if partial := intent.TopologyIncomplete; partial != nil {
+		slog.Error("reconcile: intent is incomplete; changing nothing until the record is repaired",
+			"unconverged", 1, "intent", 1, "err", partial)
+		return fmt.Errorf("reconcile: nothing applied: %w: %w", ErrPassIncomplete, partial)
+	}
 	actual, err := scanActual(ctx, r.ovn)
 	if err != nil {
 		return fmt.Errorf("scan actual OVN state: %w", err)

@@ -125,18 +125,6 @@ func (r *reconciler) pluggedPorts(ctx context.Context) (map[string]struct{}, err
 	return r.localPorts(ctx)
 }
 
-// partialIntent returns the first incomplete marker on any of reads. A sweep
-// deletes what intent does not name, so it must not run against a read that
-// skipped records which exist.
-func partialIntent(reads ...IntentState) error {
-	for _, in := range reads {
-		if in.TopologyIncomplete != nil {
-			return in.TopologyIncomplete
-		}
-	}
-	return nil
-}
-
 // reloadForPrune re-reads intent for an orphan sweep to compare against. Every
 // sweep matches live OVN rows against the start-of-pass snapshot, which the apply
 // phase can leave tens of seconds behind KV, so a resource created mid-pass looks
@@ -314,7 +302,8 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		res.fail(classSG, "orphan-prune", err)
 		return
 	}
-	if err := partialIntent(intent, fresh); err != nil {
+	// The pass gate saw complete intent, but this later read may not be.
+	if err := fresh.TopologyIncomplete; err != nil {
 		slog.Error("reconcile/apply: refusing orphan port group sweep against partial intent", "err", err)
 		res.fail(classSG, "orphan-prune", err)
 		return
@@ -492,7 +481,7 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 		res.fail(classPort, "orphan-prune", err)
 		return
 	}
-	if err := partialIntent(intent, fresh); err != nil {
+	if err := fresh.TopologyIncomplete; err != nil {
 		slog.Error("reconcile/apply: refusing orphan ENI port sweep against partial intent", "err", err)
 		res.fail(classPort, "orphan-prune", err)
 		return
@@ -829,13 +818,6 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 // whose port has not converged (e.g. just after a host reboot) stays dark while
 // every other signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
-	// Partial intent can hold a stale or missing address, and AddEIP scrubs
-	// and rebinds as it writes, so the pass changes no EIP state until it heals.
-	if err := intent.TopologyIncomplete; err != nil {
-		slog.Error("reconcile/apply: leaving every EIP as it is against partial intent", "err", err)
-		res.fail(classEIP, "intent", err)
-		return
-	}
 	specs := r.floatingIPSpecs(intent)
 
 	// The DNAT rows go in first and in order: AddEIP mutates NB and is the cheap
@@ -1032,7 +1014,7 @@ func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, re
 		return
 	}
 	// The NAT sweep also removes host bindings, so this guards both.
-	if err := partialIntent(intent, fresh); err != nil {
+	if err := fresh.TopologyIncomplete; err != nil {
 		slog.Error("reconcile/apply: refusing orphan EIP sweep against partial intent", "err", err)
 		res.fail(classEIP, "orphan-prune", err)
 		return
@@ -1206,13 +1188,6 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 // source for a logical router rather than a guest, so this is the only thing
 // that says which node it has to be delivered to.
 func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
-	// AddNATGateway replaces a subnet's snat when the address differs, so the
-	// pass leaves NAT gateways, and their address placement, until intent heals.
-	if err := intent.TopologyIncomplete; err != nil {
-		slog.Error("reconcile/apply: leaving every NAT gateway as it is against partial intent", "err", err)
-		res.fail(classNATGW, "intent", err)
-		return
-	}
 	for _, spec := range intent.NATGWs {
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
 			slog.Warn("reconcile/apply: AddNATGateway failed (likely already exists)",
@@ -1262,13 +1237,6 @@ func (r *reconciler) applyNATGWRoutes(ctx context.Context, intent IntentState, _
 // applyDropGates installs DROP policies for subnets with an attached IGW but
 // no 0.0.0.0/0 route, preventing unintended egress via the VPC default route.
 func (r *reconciler) applyDropGates(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
-	// A skipped route table looks like a subnet with no default route, and a
-	// gate there outranks its live reroute. Existing gates stay as they are.
-	if err := intent.TopologyIncomplete; err != nil {
-		slog.Error("reconcile/apply: adding no drop gate against partial intent", "err", err)
-		res.fail(classDropGate, "intent", err)
-		return
-	}
 	for _, spec := range intent.DropGates {
 		if err := r.igw.EnsureSubnetEgressDrop(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
 			slog.Error("reconcile/apply: EnsureSubnetEgressDrop failed",

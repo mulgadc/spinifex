@@ -330,6 +330,7 @@ func TestVolumeMounterPublishLeavesPendingChargesAlone(t *testing.T) {
 // publishingProvider is an EBS provider that only publishes and unpublishes; any other call panics.
 type publishingProvider struct {
 	ebsprovider.EBSProvider
+
 	hold *holdTestProvider
 }
 

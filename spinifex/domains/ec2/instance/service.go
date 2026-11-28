@@ -85,6 +85,9 @@ type InstanceTypeAllocator interface {
 	ResourceCapacityProvider
 	Allocate(instanceType *ec2.InstanceTypeInfo) error
 	Deallocate(instanceType *ec2.InstanceTypeInfo)
+	// BindExport gives the allocation just made its instance ID, so its pending
+	// viperblock charge ends with that instance and no other.
+	BindExport(id string)
 	CanAllocate(instanceType *ec2.InstanceTypeInfo, count int) int
 	AllocateFromReservation(reservationID, accountID string, instanceType *ec2.InstanceTypeInfo) error
 	ReleaseToReservation(reservationID string, instanceType *ec2.InstanceTypeInfo)

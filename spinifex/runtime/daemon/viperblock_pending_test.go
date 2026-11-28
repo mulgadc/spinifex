@@ -3,6 +3,7 @@ package daemon
 import (
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -10,6 +11,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,6 +79,102 @@ func TestRunInstancesBurstIsNotCountedTwice(t *testing.T) {
 
 // driveOpened is what the node sees when a launched guest's QEMU has opened its drives.
 func driveOpened(rm *ResourceManager, instanceID string) {
-	_ = rm
-	_ = instanceID
+	rm.ExportOpened(instanceID)
+}
+
+// readingRoom sets the reading to leave room for exactly n more root volumes.
+func readingRoom(rm *ResourceManager, n int64) {
+	limit, _, _ := rm.readViperblockMem()
+	budget := limit - limit*exportMarginPct/100
+	rm.readViperblockMem = func() (int64, int64, bool) { return limit, budget - n*768, true }
+}
+
+// A launch whose greeting comes after the 5-minute window must end its own charge
+// only: a later launch's unopened drive stays charged while the reading binds.
+func TestViperblockLateSettleKeepsAnotherLaunchCharged(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	readingRoom(rm, 2)
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-a")
+	rm.mu.Lock()
+	rm.bound["i-a"] = time.Now().Add(-exportPending - time.Minute)
+	rm.mu.Unlock()
+	assert.Equal(t, 1, rm.pendingExports(time.Now()), "a bound charge outlasts the unbound window")
+
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-b")
+	rm.ExportOpened("i-a")
+	rm.ExportOpened("i-a")
+	assert.Equal(t, 1, rm.pendingExports(time.Now()), "i-b is still opening")
+	assert.Equal(t, 1, rm.CanAllocate(micro, 2), "the reading's two slots less i-b's")
+}
+
+// A drive that opens slowly stays charged until its greeting or the backstop.
+func TestViperblockSlowOpenStaysChargedUntilTheBackstop(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-slow")
+	now := time.Now()
+	assert.Equal(t, 1, rm.pendingExports(now.Add(exportPending+time.Minute)))
+	assert.Equal(t, 0, rm.pendingExports(now.Add(exportOpenBound)))
+}
+
+// A start that failed leaves the instance stopped and its old charge bound; the next
+// start's allocation replaces it, so its charge runs from its own admission.
+func TestViperblockSecondStartBindsAFreshCharge(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-s")
+	rm.mu.Lock()
+	rm.bound["i-s"] = time.Now().Add(-exportOpenBound + time.Minute)
+	rm.mu.Unlock()
+	rm.deallocate(micro)
+
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-s")
+	assert.Equal(t, 1, rm.pendingExports(time.Now().Add(2*time.Minute)),
+		"the second start is charged past the first attempt's backstop")
+	assert.Empty(t, rm.pending, "the allocation was bound")
+}
+
+// An instance rolled back after its bind is swept at the next resync, and the node
+// rejoins the queue it left when that launch took its last slot.
+func TestViperblockSweepFreesARolledBackLaunchAndRejoinsTheQueue(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	readingRoom(rm, 1)
+	rm.instanceTypes = map[string]*ec2.InstanceTypeInfo{"t3.micro": micro}
+	_, nc := testutil.StartTestNATS(t)
+	rm.initSubscriptions(nc, func(*nats.Msg) string { return outcomeSuccess }, nil, "vb-node")
+
+	var terminated atomic.Bool
+	rm.exportLive = func(id string) (bool, bool) { return !terminated.Load(), true }
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-r")
+	queueSubs, _ := countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	require.Equal(t, 0, queueSubs, "the launch took the last slot")
+
+	rm.resyncExports(time.Now())
+	queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	require.Equal(t, 0, queueSubs, "a launching instance keeps its charge")
+
+	terminated.Store(true)
+	rm.deallocate(micro)
+	rm.resyncExports(time.Now())
+	queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
+	assert.Equal(t, 1, queueSubs, "the rolled-back launch's slot reopens the queue")
+	assert.Zero(t, rm.pendingExports(time.Now()))
+}
+
+// A launch binds before the handler inserts the instance, so an instance the VM
+// manager does not know keeps its charge for exportBindGrace.
+func TestViperblockSweepGivesAnUninsertedLaunchItsGrace(t *testing.T) {
+	rm, micro := gatedRM(t, 20)
+	rm.exportLive = func(string) (bool, bool) { return false, false }
+	require.NoError(t, rm.allocate(micro))
+	rm.BindExport("i-new")
+	now := time.Now()
+	rm.sweepBoundExports(now)
+	assert.Equal(t, 1, rm.pendingExports(now))
+	rm.sweepBoundExports(now.Add(exportBindGrace))
+	assert.Zero(t, rm.pendingExports(now))
 }

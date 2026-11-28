@@ -188,6 +188,9 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 				m.MigrateStoppedToSharedKV(instance)
 				continue
 			}
+			if !finishing && !reconnects {
+				m.deps.Resources.BindExport(instance.ID)
+			}
 		}
 
 		// A stop or terminate acknowledged before the restart outranks a

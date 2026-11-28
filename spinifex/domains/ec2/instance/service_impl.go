@@ -818,6 +818,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			}
 			continue
 		}
+		s.resourceMgr.BindExport(instance.ID)
 		instance.BootMode = amiMeta.BootMode
 
 		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
@@ -1304,6 +1305,7 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 			slog.ErrorContext(ctx, "StartInstance: failed to allocate resources", "id", command.ID, "err", err)
 			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
+		s.resourceMgr.BindExport(instance.ID)
 	}
 
 	// Clear the stop intent before launch; a stale DesiredStopped would cause
@@ -2923,6 +2925,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 		undo()
 		return s.capacityRefusal(ctx, instance)
 	}
+	s.resourceMgr.BindExport(instance.ID)
 
 	// Add to local map + clear the stop intent before launch.
 	instance.DesiredState = vm.DesiredRunning

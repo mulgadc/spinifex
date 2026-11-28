@@ -622,6 +622,9 @@ func (a *resourceControllerAdapter) AllocateAdopted(instanceType string) error {
 	return a.rm.allocateAdopted(it)
 }
 
+func (a *resourceControllerAdapter) BindExport(id string)   { a.rm.BindExport(id) }
+func (a *resourceControllerAdapter) ExportOpened(id string) { a.rm.ExportOpened(id) }
+
 func (a *resourceControllerAdapter) Deallocate(instanceType string) {
 	it := a.rm.instanceTypes[instanceType]
 	if it == nil {

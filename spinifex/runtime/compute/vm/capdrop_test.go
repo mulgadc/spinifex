@@ -38,7 +38,7 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 			t.Skip("needs a seeded ambient capability; neither root nor sudo is available here")
 		}
 		t.Log("unprivileged: re-executing under sudo with a seeded ambient capability")
-		reexecSeeded(t, "sudo", "-n")
+		reexecSeeded(t, "sudo", "-n", "setpriv")
 		return
 	}
 
@@ -106,14 +106,24 @@ func TestQEMULaunchDropsChildCapabilities(t *testing.T) {
 }
 
 // reexecSeeded runs this test again as a non-root identity holding the seeded
-// ambient capability, via prefix ("setpriv", or "sudo -n" on a CI runner),
-// and fails when the re-exec'd measurement fails. The test binary is copied
-// to a world-readable path first: a build-cache binary is not traversable by
-// the switched identity.
+// ambient capability, via prefix ("setpriv", or "sudo -n setpriv" on a CI
+// runner), and fails when the re-exec'd measurement fails. The test binary is
+// copied into a unique directory first: a build-cache binary is not traversable
+// by the switched identity, and a shared path would collide between concurrent
+// runs. The directory is traversable without being listable, and only the
+// parent writes to it.
 func reexecSeeded(t *testing.T, prefix ...string) {
 	t.Helper()
 
-	bin := filepath.Join(os.TempDir(), "capdrop-test-bin")
+	dir, err := os.MkdirTemp("", "capdrop-reexec-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "test-bin")
 	data, err := os.ReadFile(os.Args[0])
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +131,6 @@ func reexecSeeded(t *testing.T, prefix ...string) {
 	if err := os.WriteFile(bin, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Remove(bin) })
 
 	args := append([]string{}, prefix...)
 	args = append(args,

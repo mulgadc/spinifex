@@ -870,13 +870,16 @@ func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
 	// one is the unrestricted form, which is what lets bootstrap reach the
 	// northstar bucket on every node. A policy here would be binding under
 	// enforcement and break cross-account work.
-	_, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
-	assert.False(t, ok, "the system key must not carry a policy: without one it is the unrestricted form bootstrap needs")
+	found := false
 	for _, auth := range cfg.Auth {
 		if auth.AccessKeyID == "AK" {
+			found = true
 			assert.Nil(t, auth.Policy, "the system key must render without a policy list")
 		}
 	}
+	require.True(t, found, "the rendered config must contain the system key entry")
+	_, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	assert.False(t, ok, "the system key must not carry a policy: without one it is the unrestricted form bootstrap needs")
 
 	// The resolver's key stays read-only and scoped to the zone bucket alone.
 	nsActions, ok := cfg.policyFor("NSAK", admin.NorthstarBucketName)

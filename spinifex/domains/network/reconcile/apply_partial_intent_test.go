@@ -1013,7 +1013,6 @@ func partialLoad(t *testing.T, js jetstream.JetStream) (IntentState, error) {
 	return intent, intent.TopologyIncomplete
 }
 
-
 // natRows summarises every NAT row as type, addresses and owner, so a test can
 // tell whether a pass changed any of them.
 func natRows(m *mock.Client) map[string]string {

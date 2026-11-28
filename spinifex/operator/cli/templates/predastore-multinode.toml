@@ -78,12 +78,8 @@ account_id = "000000000000"
 access_key_id = "{{.AccessKey}}"
 secret_access_key = "{{.SecretKey}}"
 account_id = "000000000000"
-policy = [
-  { bucket = "predastore", actions = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListAllMyBuckets"] },
-{{- if .NorthstarAccessKey}}
-  { bucket = "{{.NorthstarBucket}}", actions = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"] },
-{{- end}}
-]
+# No policy list: the system key must reach every account's buckets, and an
+# entry without a policy is the documented unrestricted form.
 {{- if .NorthstarAccessKey}}
 
 # Bucket-scoped, read-only credentials for the northstar service (isolation

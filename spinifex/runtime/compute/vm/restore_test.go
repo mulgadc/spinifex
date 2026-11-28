@@ -195,6 +195,42 @@ func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
 	assert.Nil(t, store.stopped[v.ID], "drain-stopped instance must not be migrated to the stopped bucket")
 	assert.Equal(t, 1, rc.allocateCount("t3.micro"),
 		"resources must be re-allocated before queuing for relaunch")
+	assert.Zero(t, rc.adoptedCount("t3.micro"),
+		"a relaunch opens a new export, so it is admitted like a launch, not adopted")
+	bound, _ := rc.exportCalls()
+	assert.Equal(t, []string{v.ID}, bound, "the relaunch's charge is bound to it once, before any retry")
+}
+
+// A terminate acknowledged before the restart is finalized whatever the node's capacity:
+// on a full node its QEMU-less record must not be refused and moved to the stopped store.
+func TestClassifyRestoredInstances_ShuttingDownIsNeverRefused(t *testing.T) {
+	m, store, rc := classifyTestManager(t)
+	rc.allocateErr = errors.New("InsufficientInstanceCapacity")
+	v := &VM{ID: "i-shutdown-full", Status: StateShuttingDown, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	m.Replace(map[string]*VM{v.ID: v})
+
+	m.classifyRestoredInstances()
+
+	assert.Equal(t, StateTerminated, v.Status, "the acknowledged terminate finishes")
+	assert.NotNil(t, store.terminated[v.ID])
+	assert.Nil(t, store.stopped[v.ID], "it is never moved to the stopped store for capacity")
+}
+
+// A guest whose QEMU survived the restart already holds its export: it is adopted,
+// so a node at its viperblock limit never refuses a guest it is serving.
+func TestClassifyRestoredInstances_SurvivingQEMUIsAdopted(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	m, _, rc := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	v := &VM{ID: "i-survived", Status: StateRunning, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	m.classifyRestoredInstances()
+
+	assert.Equal(t, 1, rc.adoptedCount("t3.micro"), "a surviving guest must be adopted")
+	bound, _ := rc.exportCalls()
+	assert.Empty(t, bound, "an adopted export is open, so it has no pending charge to bind")
 }
 
 // TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched covers the
@@ -329,7 +365,7 @@ func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
 // store is still reaped and relaunched with the local provider not answering.
 func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testing.T) {
 	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
-	m, _, _ := classifyTestManager(t)
+	m, _, rc := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	m.deps.BackingStoreReady = func() bool { return true }
 	m.deps.EBSProviderReady = func() bool { return false }
@@ -346,6 +382,31 @@ func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testin
 	require.Len(t, toLaunch, 1, "a stale export under a ready store is an orphan, provider or not")
 	assert.Same(t, v, toLaunch[0])
 	assert.False(t, isInstanceProcessRunning(v), "the orphaned QEMU must be killed before its relaunch")
+	assert.Zero(t, rc.adoptedCount("t3.micro"),
+		"a live QEMU that is killed and relaunched opens a new export, so it is admitted, not adopted")
+}
+
+// A stale export under a ready store is reaped before admission: when the node then
+// refuses the relaunch, the instance is published stopped with no QEMU left running.
+func TestClassifyRestoredInstances_RefusedOrphanIsKilledBeforeStopped(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	m, store, rc := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	m.deps.BackingStoreReady = func() bool { return true }
+	rc.allocateErr = errors.New("InsufficientInstanceCapacity")
+
+	dead := filepath.Join(t.TempDir(), "dead.sock")
+	v := withNBDRequests("i-refused", StateRunning, "nbd:unix:"+dead)
+	v.InstanceType = "t3.micro"
+	v.Instance = &ec2.Instance{}
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "a refused relaunch is not queued")
+	assert.NotNil(t, store.stopped[v.ID], "it is published stopped")
+	assert.False(t, isInstanceProcessRunning(v), "and its orphaned QEMU was killed first")
 }
 
 // Belt and braces for the same invariant at its last enforcement point: even if a

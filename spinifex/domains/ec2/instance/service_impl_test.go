@@ -140,6 +140,32 @@ func TestPrepareRunInstances_StampsPlatformDetailsAndUsageOperation(t *testing.T
 	assert.Equal(t, aws.TimeValue(got.LaunchTime), aws.TimeValue(got.UsageOperationUpdateTime))
 }
 
+// Each launched instance takes its allocation's pending viperblock charge under its own ID.
+func TestPrepareRunInstances_BindsEachExportToItsInstance(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader:     &fakeAMILoader{byID: map[string]ebsmetadata.AMI{"ami-1": {ImageOwnerAlias: "acc"}}},
+		resourceMgr:   prov,
+	}
+
+	reservation, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, reservation.Instances, 2)
+	want := []string{aws.StringValue(reservation.Instances[0].InstanceId), aws.StringValue(reservation.Instances[1].InstanceId)}
+	assert.ElementsMatch(t, want, prov.boundExports)
+}
+
 func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
@@ -754,6 +780,7 @@ type fakeResourceCapacityProvider struct {
 	// call Allocate/Deallocate from multiple goroutines race-free.
 	mu             sync.Mutex
 	types          []*ec2.InstanceTypeInfo
+	boundExports   []string
 	supportedTypes []*ec2.InstanceTypeInfo
 	gotShowCap     bool
 	calls          int
@@ -826,6 +853,12 @@ func (f *fakeResourceCapacityProvider) AllocateFromReservation(_, _ string, it *
 	}
 	f.reservationAllocated = append(f.reservationAllocated, it)
 	return nil
+}
+
+func (f *fakeResourceCapacityProvider) BindExport(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boundExports = append(f.boundExports, id)
 }
 
 func (f *fakeResourceCapacityProvider) ReleaseToReservation(_ string, it *ec2.InstanceTypeInfo) {
@@ -3814,6 +3847,35 @@ func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorReservationCapacityExceeded, err.Error())
 	assert.Empty(t, prov.reservationAllocated, "nothing allocated when below MinCount")
+}
+
+// A reservation with free slots on a node with no room for the root volume is the
+// node's capacity: the caller gets InsufficientInstanceCapacity, not
+// ReservationCapacityExceeded, and nothing stays consumed.
+func TestPrepareRunInstances_ReservationOnAFullNodeIsInsufficientCapacity(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:       types,
+		reservationAvailFn:  func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+		reservationAllocErr: errors.New(awserrors.ErrorInsufficientInstanceCapacity),
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.Empty(t, prov.reservationAllocated)
 }
 
 // Invariant guardrail: a mid-launch failure on the reservation path must return

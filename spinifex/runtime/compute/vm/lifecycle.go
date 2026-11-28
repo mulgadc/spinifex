@@ -251,6 +251,10 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	}
 	instance.QMPClient = qmpClient
 	go m.qmpHeartbeat(instance)
+	// QEMU answers its monitor only after opening every drive.
+	if m.deps.Resources != nil {
+		m.deps.Resources.ExportOpened(instance.ID)
+	}
 
 	m.Insert(instance)
 

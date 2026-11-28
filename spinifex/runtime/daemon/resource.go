@@ -213,42 +213,20 @@ func parseMemAvailableKB(data []byte) (int64, bool) {
 	return 0, false
 }
 
-// Default per-volume nbdkit memory charges: main ~0.75 GB under I/O, aux ~96 MiB.
-// Env-tunable via SPINIFEX_NBDKIT_{MAIN,AUX}_MIB.
-const (
-	defaultNbdkitMainMiB = 768
-	defaultNbdkitAuxMiB  = 96
-)
+// defaultNbdkitMainMiB is the nbdkit memory charged for a guest's root volume: about
+// 1 GiB, measured at deploy on dev-prod. Env-tunable via SPINIFEX_NBDKIT_MAIN_MIB. The
+// UEFI store is an object, so a guest has no second nbdkit to charge.
+const defaultNbdkitMainMiB = 1024
 
-// Default volume layout: one main root volume + one aux volume (efi).
-const (
-	defaultMainVolumes = 1
-	defaultAuxVolumes  = 1
-)
-
-// resolveNbdkitCharge returns per-volume nbdkit charges, overridable via env.
-func resolveNbdkitCharge(getenv func(string) string) (mainMiB, auxMiB int) {
-	mainMiB, auxMiB = defaultNbdkitMainMiB, defaultNbdkitAuxMiB
+// resolveNbdkitCharge returns the per-guest nbdkit charge, overridable via env.
+func resolveNbdkitCharge(getenv func(string) string) int {
 	if v := getenv("SPINIFEX_NBDKIT_MAIN_MIB"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			mainMiB = n
-		} else {
-			slog.Warn("ignoring SPINIFEX_NBDKIT_MAIN_MIB", "value", v, "err", err)
+			return n
 		}
+		slog.Warn("ignoring SPINIFEX_NBDKIT_MAIN_MIB", "value", v)
 	}
-	if v := getenv("SPINIFEX_NBDKIT_AUX_MIB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			auxMiB = n
-		} else {
-			slog.Warn("ignoring SPINIFEX_NBDKIT_AUX_MIB", "value", v, "err", err)
-		}
-	}
-	return mainMiB, auxMiB
-}
-
-// nbdkitChargeMiB returns the total nbdkit memory charge for mainVols + auxVols.
-func nbdkitChargeMiB(mainVols, auxVols, mainMiB, auxMiB int) int64 {
-	return int64(mainVols*mainMiB + auxVols*auxMiB)
+	return defaultNbdkitMainMiB
 }
 
 // resourceStatsForType computes the InstanceTypeCap for a single type given

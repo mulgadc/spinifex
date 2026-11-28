@@ -8,14 +8,17 @@ import "sync"
 type fakeResourceController struct {
 	mu             sync.Mutex
 	allocated      map[string]int
+	adopted        map[string]int // the AllocateAdopted subset of allocated
 	deallocated    []string
 	released       []string // "<reservationID>/<type>" per ReleaseToReservation call
 	allocateErr    error
 	canAllocateRet int
+	bound          []string
+	opened         []string
 }
 
 func newFakeResourceController() *fakeResourceController {
-	return &fakeResourceController{allocated: map[string]int{}, canAllocateRet: 100}
+	return &fakeResourceController{allocated: map[string]int{}, adopted: map[string]int{}, canAllocateRet: 100}
 }
 
 func (f *fakeResourceController) Allocate(typeName string) error {
@@ -26,6 +29,41 @@ func (f *fakeResourceController) Allocate(typeName string) error {
 	}
 	f.allocated[typeName]++
 	return nil
+}
+
+// AllocateAdopted counts apart from Allocate. allocateErr stands for the viperblock refusal,
+// which adoption never meets, so it does not apply here.
+func (f *fakeResourceController) AllocateAdopted(typeName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.allocated[typeName]++
+	f.adopted[typeName]++
+	return nil
+}
+
+// BindExport and ExportOpened record the instance IDs a charge was bound to and settled for.
+func (f *fakeResourceController) BindExport(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bound = append(f.bound, id)
+}
+
+func (f *fakeResourceController) ExportOpened(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened = append(f.opened, id)
+}
+
+func (f *fakeResourceController) exportCalls() (bound, opened []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.bound...), append([]string(nil), f.opened...)
+}
+
+func (f *fakeResourceController) adoptedCount(typeName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.adopted[typeName]
 }
 
 func (f *fakeResourceController) Deallocate(typeName string) {

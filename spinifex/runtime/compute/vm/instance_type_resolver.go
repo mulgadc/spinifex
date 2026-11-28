@@ -20,7 +20,15 @@ type InstanceTypeResolver interface {
 // SDK type. The real implementation is the daemon's ResourceManager.
 type ResourceController interface {
 	Allocate(instanceType string) error
+	// AllocateAdopted reserves for a guest restored on startup, whose volume is
+	// already open on this node, so it is not refused for viperblock memory.
+	AllocateAdopted(instanceType string) error
 	Deallocate(instanceType string)
+	// BindExport gives the allocation just made its owner's instance ID, so its
+	// pending viperblock charge ends with that instance and no other.
+	BindExport(id string)
+	// ExportOpened ends instance id's pending charge once QEMU has opened its drives.
+	ExportOpened(id string)
 	// ReleaseToReservation returns instanceType's compute to the capacity
 	// reservation reservationID instead of the general pool — the net-zero
 	// inverse of the launch-time swap, used when a reservation-bound instance

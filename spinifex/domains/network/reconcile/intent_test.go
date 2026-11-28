@@ -12,6 +12,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
@@ -26,6 +27,11 @@ func startKV(t *testing.T) jetstream.JetStream {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 	for bucket := range requiredBuckets {
+		testutil.SeedKV(t, js, bucket, nil)
+	}
+	// vpcd opens the peering and Transit Gateway stores at start, which
+	// creates their buckets.
+	for _, bucket := range []string{ec2projection.PeeringBucket, ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket} {
 		testutil.SeedKV(t, js, bucket, nil)
 	}
 	return js

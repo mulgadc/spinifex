@@ -21,6 +21,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -1313,5 +1314,43 @@ func TestS7_BothReconcileEntryPointsStopBeforeReadingOVN(t *testing.T) {
 		if !errors.Is(err, ErrPassIncomplete) || strings.Contains(err.Error(), "scan actual") {
 			t.Errorf("%s = %v, want ErrPassIncomplete before any OVN read", name, err)
 		}
+	}
+}
+
+// vpcd creates the peering and Transit Gateway buckets at start, so losing one
+// is lost state. Read as empty, it would let the sweeps remove live routers,
+// links and routes.
+func TestLoadIntentFromKV_LostPeeringOrTransitGatewayBucketIsPartial(t *testing.T) {
+	t.Parallel()
+	for _, bucket := range []string{ec2projection.PeeringBucket, ec2projection.TransitGatewayBucket, ec2projection.TransitGatewayAttachmentBucket} {
+		t.Run(bucket, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			twoVPCFixture(t).seed(t, js)
+			if err := js.DeleteKeyValue(t.Context(), bucket); err != nil {
+				t.Fatalf("delete %s: %v", bucket, err)
+			}
+			if _, err := partialLoad(t, js); err == nil {
+				t.Errorf("intent read as complete after %s was lost", bucket)
+			}
+		})
+	}
+}
+
+// The per-node passes report partial intent the same way the drift pass does,
+// so callers can tell a held pass from a failed one.
+func TestS7_HostPassesReportErrPassIncomplete(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	publicIPFixture(t).seed(t, js)
+	r, m := newRoutedReconciler(t, js, newRoutedBinder())
+	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
+
+	if err := r.ReconcileHostEIPs(t.Context()); !errors.Is(err, ErrPassIncomplete) {
+		t.Errorf("ReconcileHostEIPs = %v, want ErrPassIncomplete", err)
+	}
+	h := &HostIngress{OVN: m, Routes: &hostRouteTable{routes: map[string]string{}}, LoadIntent: kvLoader(js)}
+	if _, err := h.Pass(t.Context()); !errors.Is(err, ErrPassIncomplete) {
+		t.Errorf("HostIngress.Pass = %v, want ErrPassIncomplete", err)
 	}
 }

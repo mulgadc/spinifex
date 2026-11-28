@@ -133,6 +133,12 @@ type ResourceManager struct {
 	// times of those too recent to show in the cgroup's reading.
 	exports int
 	pending []time.Time
+	// bound holds the pending charges bound to an instance ID, by admission time,
+	// until that instance's drive opens or it can no longer open one.
+	bound map[string]time.Time
+	// exportLive reports whether instance id can still open a drive here, and whether
+	// the VM manager knows it at all. nil disables the sweep of bound charges.
+	exportLive func(id string) (live, known bool)
 	// readViperblockMem reads viperblock's cgroup limit and use; nil or a failed
 	// read leaves the export gate open.
 	readViperblockMem func() (limitMiB, currentMiB int64, ok bool)
@@ -2746,6 +2752,9 @@ func (d *Daemon) startCluster() error {
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 	if d.ctx != nil && d.resourceMgr.readViperblockMem != nil {
+		d.resourceMgr.mu.Lock()
+		d.resourceMgr.exportLive = d.instanceCanOpenExport
+		d.resourceMgr.mu.Unlock()
 		go d.resourceMgr.resyncSubscriptions(d.ctx, exportResync)
 	}
 

@@ -197,6 +197,8 @@ func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
 		"resources must be re-allocated before queuing for relaunch")
 	assert.Zero(t, rc.adoptedCount("t3.micro"),
 		"a relaunch opens a new export, so it is admitted like a launch, not adopted")
+	bound, _ := rc.exportCalls()
+	assert.Equal(t, []string{v.ID}, bound, "the relaunch's charge is bound to it once, before any retry")
 }
 
 // A terminate acknowledged before the restart is finalized whatever the node's capacity:
@@ -227,6 +229,8 @@ func TestClassifyRestoredInstances_SurvivingQEMUIsAdopted(t *testing.T) {
 	m.classifyRestoredInstances()
 
 	assert.Equal(t, 1, rc.adoptedCount("t3.micro"), "a surviving guest must be adopted")
+	bound, _ := rc.exportCalls()
+	assert.Empty(t, bound, "an adopted export is open, so it has no pending charge to bind")
 }
 
 // TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched covers the

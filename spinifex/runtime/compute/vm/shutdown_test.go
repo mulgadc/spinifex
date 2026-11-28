@@ -1380,6 +1380,8 @@ func (c *countingResourceController) ReleaseToReservation(crID, _ string) {
 	c.releasedToCRID = append(c.releasedToCRID, crID)
 }
 func (c *countingResourceController) CanAllocate(_ string, n int) int { return n }
+func (c *countingResourceController) BindExport(_ string)             {}
+func (c *countingResourceController) ExportOpened(_ string)           {}
 
 func (c *countingResourceController) AllocateAdopted(_ string) error {
 	c.allocations++

@@ -140,6 +140,32 @@ func TestPrepareRunInstances_StampsPlatformDetailsAndUsageOperation(t *testing.T
 	assert.Equal(t, aws.TimeValue(got.LaunchTime), aws.TimeValue(got.UsageOperationUpdateTime))
 }
 
+// Each launched instance takes its allocation's pending viperblock charge under its own ID.
+func TestPrepareRunInstances_BindsEachExportToItsInstance(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader:     &fakeAMILoader{byID: map[string]ebsmetadata.AMI{"ami-1": {ImageOwnerAlias: "acc"}}},
+		resourceMgr:   prov,
+	}
+
+	reservation, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, reservation.Instances, 2)
+	want := []string{aws.StringValue(reservation.Instances[0].InstanceId), aws.StringValue(reservation.Instances[1].InstanceId)}
+	assert.ElementsMatch(t, want, prov.boundExports)
+}
+
 func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
@@ -754,6 +780,7 @@ type fakeResourceCapacityProvider struct {
 	// call Allocate/Deallocate from multiple goroutines race-free.
 	mu             sync.Mutex
 	types          []*ec2.InstanceTypeInfo
+	boundExports   []string
 	supportedTypes []*ec2.InstanceTypeInfo
 	gotShowCap     bool
 	calls          int
@@ -826,6 +853,12 @@ func (f *fakeResourceCapacityProvider) AllocateFromReservation(_, _ string, it *
 	}
 	f.reservationAllocated = append(f.reservationAllocated, it)
 	return nil
+}
+
+func (f *fakeResourceCapacityProvider) BindExport(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boundExports = append(f.boundExports, id)
 }
 
 func (f *fakeResourceCapacityProvider) ReleaseToReservation(_ string, it *ec2.InstanceTypeInfo) {

@@ -275,6 +275,7 @@ func (m *Manager) RestartCrashedInstance(instance *VM) {
 			"instance", instance.ID, "type", instance.InstanceType, "err", err)
 		return
 	}
+	m.deps.Resources.BindExport(instance.ID)
 
 	if m.deps.TransitionState != nil {
 		if err := m.deps.TransitionState(instance, StatePending); err != nil {

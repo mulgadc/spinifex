@@ -39,8 +39,8 @@
 #   --hosts-file FILE        One host per line; blank lines and # comments ignored
 #   --token-ttl D            Join token validity (default: 30m)
 #   --ipsec on|off           Encrypt Geneve between nodes with OVN IPsec
-#                            (default: on). Joining nodes take it from the first
-#                            host; off is for nodes on a trusted private link.
+#                            (default: off). Joining nodes take it from the first
+#                            host; pass on for any fabric you do not trust.
 #   --wipe                   Reset every host to its pre-install state first.
 #                            Destroys all data on ALL hosts, including the first.
 #                            Confirmed separately from --yes; unattended runs
@@ -105,7 +105,7 @@ AZ=""
 EMAIL=""
 PORT=4432
 TOKEN_TTL="30m"
-IPSEC="on"
+IPSEC="off"
 RUN_SMOKE=false
 WIPE=false
 MANAGE_FIREWALL=true

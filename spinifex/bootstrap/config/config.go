@@ -734,7 +734,8 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	viper.SetEnvPrefix("SPINIFEX")
 	viper.AutomaticEnv()
 
-	// Default ipsec_enabled to true; operators must explicitly set false to disable.
+	// A config with no ipsec_enabled key predates the key, so it keeps the
+	// encrypted reading. spx admin init always writes the key, off by default.
 	viper.SetDefault("network.ipsec_enabled", true)
 	viper.SetDefault("network.underlay_mtu", DefaultUnderlayMTU)
 

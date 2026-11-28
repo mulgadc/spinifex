@@ -441,7 +441,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 				slog.Error("Failed to ensure IMDS bridge", "eni", instance.ENIId, "err", err)
 				return fmt.Errorf("ensure IMDS bridge: %w", err)
 			}
-			queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
+			queues := NICQueues(instance.Config.CPUCount)
 			spec := IMDSPrimaryTapSpec(instance.ENIId, queues, m.deps.GuestMTU)
 			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)

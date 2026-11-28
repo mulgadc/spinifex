@@ -138,7 +138,7 @@ func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config
 
 // ipsecRequested reports the cluster's intent. Single-node clusters have no Geneve
 // tunnels to protect, so charon must not be left listening on 500/4500 there
-// even though ipsec_enabled defaults to true.
+// even when ipsec_enabled is true.
 func ipsecRequested(clusterConfig *config.ClusterConfig) bool {
 	return clusterConfig != nil && clusterConfig.Network.IPSecEnabled && len(clusterConfig.Nodes) > 1
 }

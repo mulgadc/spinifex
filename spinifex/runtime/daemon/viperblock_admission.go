@@ -28,9 +28,6 @@ const (
 	// exportOpenBound ends a bound charge the sweep cannot settle. It outlasts the longest
 	// greeting wait (900 s) plus a cold mount.
 	exportOpenBound = 20 * time.Minute
-	// exportBindGrace is how long a bound instance may be absent from the VM manager
-	// before the sweep drops its charge: a launch binds before the handler inserts it.
-	exportBindGrace = time.Minute
 )
 
 // readViperblockMemMiB returns viperblock's cgroup memory limit and use in MiB. It is
@@ -181,8 +178,8 @@ func (rm *ResourceManager) ExportOpened(id string) {
 }
 
 // sweepBoundExports ends the charges of instances that can no longer open a drive here.
-// The VM manager is read outside rm.mu. A missing instance is dropped only after
-// exportBindGrace, since a launch binds before the handler inserts it.
+// The VM manager is read outside rm.mu. An instance it does not know yet keeps its
+// charge: a launch binds before the handler inserts it.
 func (rm *ResourceManager) sweepBoundExports(now time.Time) {
 	if rm.exportLive == nil {
 		return
@@ -192,9 +189,8 @@ func (rm *ResourceManager) sweepBoundExports(now time.Time) {
 	maps.Copy(held, rm.bound)
 	rm.mu.RUnlock()
 	var dead []string
-	for id, at := range held {
-		live, known := rm.exportLive(id)
-		if !live && (known || now.Sub(at) >= exportBindGrace) {
+	for id := range held {
+		if live, known := rm.exportLive(id); known && !live {
 			dead = append(dead, id)
 		}
 	}
@@ -231,17 +227,17 @@ func (rm *ResourceManager) resyncSubscriptions(ctx context.Context, every time.D
 	}
 }
 
-// instanceCanOpenExport is the sweep's view of a bound instance: it can still open a
-// drive while it is launching, or stopped with a start in flight.
+// instanceCanOpenExport is the sweep's view of a bound instance. Running follows the
+// greeting; the others end a launch. Error and stopped can be retried, so they keep it.
 func (d *Daemon) instanceCanOpenExport(id string) (live, known bool) {
 	v, ok := d.vmMgr.Get(id)
 	if !ok {
 		return false, false
 	}
 	switch d.vmMgr.Status(v) {
-	case vm.StateProvisioning, vm.StatePending, vm.StateStopped:
-		return true, true
-	default:
+	case vm.StateRunning, vm.StateStopping, vm.StateShuttingDown, vm.StateTerminated:
 		return false, true
+	default:
+		return true, true
 	}
 }

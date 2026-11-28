@@ -166,15 +166,13 @@ func TestViperblockSweepFreesARolledBackLaunchAndRejoinsTheQueue(t *testing.T) {
 }
 
 // A launch binds before the handler inserts the instance, so an instance the VM
-// manager does not know keeps its charge for exportBindGrace.
-func TestViperblockSweepGivesAnUninsertedLaunchItsGrace(t *testing.T) {
+// manager does not know keeps its charge until the backstop.
+func TestViperblockSweepKeepsAnUninsertedLaunchCharged(t *testing.T) {
 	rm, micro := gatedRM(t, 20)
 	rm.exportLive = func(string) (bool, bool) { return false, false }
 	require.NoError(t, rm.allocate(micro))
 	rm.BindExport("i-new")
 	now := time.Now()
-	rm.sweepBoundExports(now)
+	rm.sweepBoundExports(now.Add(10 * time.Minute))
 	assert.Equal(t, 1, rm.pendingExports(now))
-	rm.sweepBoundExports(now.Add(exportBindGrace))
-	assert.Zero(t, rm.pendingExports(now))
 }

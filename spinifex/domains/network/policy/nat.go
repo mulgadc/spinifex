@@ -76,10 +76,6 @@ type NATManager interface {
 	// mode.
 	BindHostEIPs(ctx context.Context, specs []EIPSpec) error
 
-	// EnsureHostEIPs plumbs only the addresses with no host binding yet, and
-	// removes and replaces nothing, for specs that may be missing live addresses.
-	EnsureHostEIPs(ctx context.Context, specs []EIPSpec) error
-
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
@@ -452,16 +448,6 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 // run left a node that never won the reconcile lease with no route to its own
 // guests.
 func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
-	return m.bindHostEIPs(ctx, specs, true)
-}
-
-// EnsureHostEIPs is documented on the NATManager interface.
-func (m *natManager) EnsureHostEIPs(ctx context.Context, specs []EIPSpec) error {
-	return m.bindHostEIPs(ctx, specs, false)
-}
-
-// bindHostEIPs is the one bind loop; prune adds the sweep of everything else.
-func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bool) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
 		return nil
 	}
@@ -471,19 +457,6 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 	// wanted and leaves this node holding a route and proxy-ARP for a guest that
 	// has moved, which on a shared segment answers ARP for someone else's guest.
 	foreign := map[string]struct{}{}
-	// Without a sweep the specs may be partial, so an address already bound
-	// keeps its route as it is; Bind would replace its next hop.
-	var bound map[string]struct{}
-	if !prune && m.hostBinder.List != nil {
-		ips, err := m.hostBinder.List()
-		if err != nil {
-			return fmt.Errorf("list host EIP bindings: %w", err)
-		}
-		bound = make(map[string]struct{}, len(ips))
-		for _, ip := range ips {
-			bound[ip] = struct{}{}
-		}
-	}
 	var errs []error
 	incomplete := false
 	for _, eip := range specs {
@@ -500,14 +473,11 @@ func (m *natManager) bindHostEIPs(ctx context.Context, specs []EIPSpec, prune bo
 		if m.foreignToThisChassis(eip) {
 			foreign[dpIP] = struct{}{}
 		}
-		if _, ok := bound[dpIP]; ok {
-			continue
-		}
 		if err := m.bindHostEIP(ctx, eip); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if prune && !incomplete {
+	if !incomplete {
 		if err := m.pruneHostEIPs(live, foreign); err != nil {
 			errs = append(errs, err)
 		}

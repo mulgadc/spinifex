@@ -718,8 +718,8 @@ func TestResolveNbdkitCharge(t *testing.T) {
 		assert.Equal(t, defaultNbdkitMainMiB, resolveNbdkitCharge(func(string) string { return "" }))
 	})
 	t.Run("env overrides", func(t *testing.T) {
-		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "1024"}
-		assert.Equal(t, 1024, resolveNbdkitCharge(func(k string) string { return env[k] }))
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "2048"}
+		assert.Equal(t, 2048, resolveNbdkitCharge(func(k string) string { return env[k] }))
 	})
 	t.Run("invalid and negative values ignored", func(t *testing.T) {
 		for _, v := range []string{"nope", "-50"} {

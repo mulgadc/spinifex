@@ -341,3 +341,15 @@ func (p publishingProvider) PublishVolume(ctx context.Context, req ebsprovider.P
 func (p publishingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
 	return p.hold.UnpublishVolume(ctx, req)
 }
+
+// A guest restored on startup already holds its CPU, memory and export here: a node
+// whose budget is full must count it, never refuse it.
+func TestAdoptedGuestIsCountedWhenTheBudgetIsFull(t *testing.T) {
+	rm, micro := gatedRM(t, 0)
+	rm.hostVCPU = rm.allocatedVCPU + rm.reservedVCPU
+	rm.readMemAvailableGB = func() (float64, bool) { return 0, true }
+	require.Error(t, rm.allocate(micro), "a launch is refused on the full node")
+	vcpu := rm.allocatedVCPU
+	require.NoError(t, rm.allocateAdopted(micro))
+	assert.Equal(t, vcpu+2, rm.allocatedVCPU, "the adopted guest is counted")
+}

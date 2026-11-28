@@ -386,6 +386,29 @@ func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testin
 		"a live QEMU that is killed and relaunched opens a new export, so it is admitted, not adopted")
 }
 
+// A stale export under a ready store is reaped before admission: when the node then
+// refuses the relaunch, the instance is published stopped with no QEMU left running.
+func TestClassifyRestoredInstances_RefusedOrphanIsKilledBeforeStopped(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	m, store, rc := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	m.deps.BackingStoreReady = func() bool { return true }
+	rc.allocateErr = errors.New("InsufficientInstanceCapacity")
+
+	dead := filepath.Join(t.TempDir(), "dead.sock")
+	v := withNBDRequests("i-refused", StateRunning, "nbd:unix:"+dead)
+	v.InstanceType = "t3.micro"
+	v.Instance = &ec2.Instance{}
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "a refused relaunch is not queued")
+	assert.NotNil(t, store.stopped[v.ID], "it is published stopped")
+	assert.False(t, isInstanceProcessRunning(v), "and its orphaned QEMU was killed first")
+}
+
 // Belt and braces for the same invariant at its last enforcement point: even if a
 // future caller reaches reconnectInstance with a transitional instance, it must
 // refuse rather than promote it to Running.

@@ -156,7 +156,11 @@ spx version
 `spinifex-viperblock.service`. It tells systemd to signal only the unit's
 main process and leave everything else in its cgroup alone, so guest QEMU
 processes and any nbdkit backend still serving a guest survive a restart of
-the service that spawned them. This is deliberate: a control-plane restart or
+the service that spawned them. An nbdkit backend whose idle check does not
+finish within the stop's 5-second budget is also left running, because the
+stop never kills a backend it could not prove idle. The next start adopts it
+as it adopts any surviving backend, and the unmount or drain path reaps it
+when no guest uses it. This is deliberate: a control-plane restart or
 upgrade must never interrupt a customer workload just because the daemon that
 launched it needed to bounce.
 

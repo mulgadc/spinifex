@@ -869,8 +869,18 @@ func (cfg *Config) Shutdown() {
 	cfg.MountedVolumes = nil
 	cfg.mu.Unlock()
 
-	shutdownVolumes(volumes, nbdkitInUse)
+	// One deadline bounds every idle check, so N volumes cannot cost N timeouts.
+	ctx, cancel := context.WithTimeout(context.Background(), idleCheckTimeout)
+	defer cancel()
+	shutdownVolumes(volumes, func(v MountedVolume) bool { return nbdkitInUse(ctx, v) })
 }
+
+// idleCheckTimeout bounds all the shutdown idle checks together, and
+// idleCheckCleanup bounds the pipe cleanup of an ss that the deadline killed.
+// Var so tests can shorten it.
+var idleCheckTimeout = 5 * time.Second
+
+const idleCheckCleanup = 500 * time.Millisecond
 
 // shutdownVolumes flushes each mounted volume's WAL on SIGTERM but only reaps
 // nbdkit for volumes with no attached guest (inUse false). Killing an nbdkit a
@@ -907,18 +917,27 @@ func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 // nbdkitInUse best-effort reports whether nbdkit's NBD endpoint still has a
 // connected client (a guest). On any uncertainty it returns true so the
 // shutdown path never tears a backing store out from under a running guest.
-func nbdkitInUse(vol MountedVolume) bool {
+func nbdkitInUse(ctx context.Context, vol MountedVolume) bool {
 	if vol.Socket == "" {
 		// TCP transport: cannot cheaply confirm idle — assume in use.
 		return true
 	}
-	out, err := exec.Command("ss", "-H", "-x", "-a").Output()
-	if err != nil {
+	if ctx.Err() != nil {
+		return true
+	}
+	cmd := exec.CommandContext(ctx, "ss", "-H", "-x", "-a")
+	cmd.WaitDelay = idleCheckCleanup
+	out, err := cmd.Output()
+	// ss can exit cleanly while the deadline cancels it, so check both.
+	if err != nil || ctx.Err() != nil {
 		return true
 	}
 	// ss -H rows are: <netid> <state> <recvq> <sendq> <local-addr> ...
 	// LISTEN is the idle server socket; ESTAB means a client is attached.
 	for line := range strings.SplitSeq(string(out), "\n") {
+		if ctx.Err() != nil {
+			return true
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -927,5 +946,6 @@ func nbdkitInUse(vol MountedVolume) bool {
 			return true
 		}
 	}
-	return false
+	// An idle answer reached after the deadline is not a checked answer.
+	return ctx.Err() != nil
 }

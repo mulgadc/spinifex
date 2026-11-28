@@ -806,8 +806,8 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 				continue
 			}
 			if results[i].err != nil {
-				slog.ErrorContext(ctx, "DescribeVolumesModifications volume not found", "volumeId", *vid, "err", results[i].err)
-				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+				slog.ErrorContext(ctx, "DescribeVolumesModifications volume read failed", "volumeId", *vid, "err", results[i].err)
+				return nil, results[i].err
 			}
 		}
 		seen := make(map[string]bool, len(results))
@@ -858,36 +858,30 @@ func pageVolumeModifications(ctx context.Context, mods []*ec2.VolumeModification
 }
 
 // volumeModificationResult bundles a per-ID lookup result so the fast path
-// can preserve input ordering and surface errors after the parallel fan-out.
+// can preserve input ordering and surface errors after the bounded fan-out.
 type volumeModificationResult struct {
 	modification *ec2.VolumeModification
 	err          error
 }
 
-// fetchVolumeModificationsByIDs reads each requested volume's document in
-// parallel, returning results positionally aligned with volumeIDs.
-// Cross-tenant volumes surface as InvalidVolume.NotFound.
+// fetchVolumeModificationsByIDs reads each requested volume's document through
+// fetchVolumeMetasByIDs, returning results positionally aligned with volumeIDs.
+// A read the deadline stopped is ServerInternal; every other failure, including
+// a cross-tenant volume, is InvalidVolume.NotFound.
 func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeModificationResult {
-	results := make([]volumeModificationResult, len(volumeIDs))
-	var wg sync.WaitGroup
-
-	for i, volumeID := range volumeIDs {
-		if volumeID == nil {
-			continue
+	metas := s.fetchVolumeMetasByIDs(ctx, volumeIDs, accountID)
+	results := make([]volumeModificationResult, len(metas))
+	for i, r := range metas {
+		switch {
+		case r.absent:
+		case r.unread:
+			results[i] = volumeModificationResult{err: r.err}
+		case r.err != nil:
+			results[i] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+		default:
+			results[i] = volumeModificationResult{modification: ebsModificationToEC2(r.meta.VolumeID, r.meta.Modification)}
 		}
-		wg.Add(1)
-		go func(idx int, volID string) {
-			defer wg.Done()
-			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
-			if err != nil || meta.TenantID != accountID {
-				results[idx] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
-				return
-			}
-			results[idx] = volumeModificationResult{modification: ebsModificationToEC2(meta.VolumeID, meta.Modification)}
-		}(i, *volumeID)
 	}
-
-	wg.Wait()
 	return results
 }
 
@@ -917,19 +911,31 @@ func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*
 }
 
 // volumeMetaResult bundles a per-ID document lookup. absent marks a nil entry
-// in the requested IDs, which is neither a document nor an error.
+// in the requested IDs, which is neither a document nor an error. unread marks
+// an ID the deadline stopped, which says nothing about whether it exists.
 type volumeMetaResult struct {
 	meta   ebsmetadata.Volume
 	absent bool
+	unread bool
 	err    error
 }
 
-// fetchVolumeMetasByIDs reads each requested volume's document in parallel,
-// returning results positionally aligned with volumeIDs. A missing document or
-// a cross-tenant volume both surface as InvalidVolume.NotFound; any other store
-// error surfaces as ErrorServerInternal.
+// describeByIDsBudget bounds the reads of one explicit-ID describe. It ends
+// inside the gateway's 30-second reply timeout, so a request that cannot finish
+// fails here and stops loading the store instead of reading on for no one.
+const describeByIDsBudget = 25 * time.Second
+
+// fetchVolumeMetasByIDs reads each requested volume's document, at most
+// FetchConcurrency at once, returning results positionally aligned with
+// volumeIDs. A missing document or a cross-tenant volume both surface as
+// InvalidVolume.NotFound; any other store error, and every ID left unread when
+// the deadline passes, surfaces as ErrorServerInternal.
 func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeMetaResult {
+	ctx, cancel := context.WithTimeout(ctx, describeByIDsBudget)
+	defer cancel()
+
 	results := make([]volumeMetaResult, len(volumeIDs))
+	slots := make(chan struct{}, ebsmetadata.FetchConcurrency)
 	var wg sync.WaitGroup
 
 	for i, id := range volumeIDs {
@@ -937,14 +943,32 @@ func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs
 			results[i] = volumeMetaResult{absent: true}
 			continue
 		}
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+		}
+		// select picks either ready case, so the deadline is checked again.
+		if ctx.Err() != nil {
+			results[i] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
+			continue
+		}
 		wg.Add(1)
 		go func(idx int, volID string) {
 			defer wg.Done()
+			defer func() { <-slots }()
+			// The worker can start after the deadline the dispatcher checked.
+			if ctx.Err() != nil {
+				results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
+				return
+			}
 			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil {
-				if objectstore.IsNoSuchKeyError(err) {
+				switch {
+				case objectstore.IsNoSuchKeyError(err):
 					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
-				} else {
+				case ctx.Err() != nil:
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal), unread: true}
+				default:
 					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal)}
 				}
 				return

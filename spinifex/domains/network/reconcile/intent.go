@@ -43,6 +43,34 @@ type IntentState struct {
 	// IdlePorts maps a public-IP guest LSP to its instance when that instance is
 	// stopped or terminated. Its port has no tap, so the datapath probe skips it.
 	IdlePorts map[string]string
+	// TopologyIncomplete is non-nil when a topology record was skipped because
+	// it did not decode or a field did not parse. Intent then lacks a resource
+	// that exists, so no path may remove or replace live state against it.
+	TopologyIncomplete error
+}
+
+// skipLog collects the keys of records a topology loader could not use.
+type skipLog struct {
+	count int
+	keys  []string
+}
+
+// maxSkipKeys bounds the keys named in TopologyIncomplete, so a bucket of bad
+// records still makes one short log line.
+const maxSkipKeys = 3
+
+func (l *skipLog) add(key string) {
+	l.count++
+	if len(l.keys) < maxSkipKeys {
+		l.keys = append(l.keys, key)
+	}
+}
+
+func (l *skipLog) err() error {
+	if l.count == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d topology record(s) or bucket(s) unusable, first %s", l.count, strings.Join(l.keys, ", "))
 }
 
 // The instance record space the daemon owns. Duplicated rather than imported
@@ -88,33 +116,34 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		IdlePorts:   make(map[string]string),
 	}
 
-	localVPCs, vpcIDs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
+	skips := &skipLog{}
+	localVPCs, vpcIDs, err := loadVPCs(ctx, js, localAZ, intent.VPCs, skips)
 	if err != nil {
 		return IntentState{}, err
 	}
 	subnetAZs := map[string]string{}
-	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets, subnetAZs); err != nil {
+	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets, subnetAZs, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
+	if err := loadSGs(ctx, js, localVPCs, intent.SGs, skips); err != nil {
 		return IntentState{}, err
 	}
 	portInstances := make(map[string]string)
-	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances); err != nil {
+	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs); err != nil {
+	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs, skips); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs); err != nil {
+	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs, skips); err != nil {
 		return IntentState{}, err
 	}
 	loadIdlePorts(ctx, js, intent, portInstances)
-	routeTables, err := loadRouteTables(ctx, js, localVPCs)
+	routeTables, err := loadRouteTables(ctx, js, localVPCs, skips)
 	if err != nil {
 		return IntentState{}, err
 	}
-	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
+	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs, skips); err != nil {
 		return IntentState{}, err
 	}
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
@@ -123,6 +152,12 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	intent.TransitGatewayIntent = loadTransitGateways(ctx, js, intent.VPCs, vpcIDs, subnetAZs)
 	intent.TGWRoutes = loadTGWRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
+	// A failed peering or Transit Gateway read leaves the same gap: their
+	// sweeps would remove live routers, links and routes it did not name.
+	intent.TopologyIncomplete = errors.Join(skips.err(), intent.PeeringIncomplete, intent.TGWIncomplete)
+	if intent.TopologyIncomplete != nil {
+		slog.Warn("reconcile/intent: intent is incomplete; no live state will be removed", "err", intent.TopologyIncomplete)
+	}
 
 	return intent, nil
 }
@@ -147,6 +182,8 @@ func loadSubnetEgressRoutes(
 			}
 			prefix, err := netip.ParsePrefix(r.DestinationCidrBlock)
 			if err != nil {
+				// Tenant input, not corruption: a prefix that does not parse
+				// matches nothing, and must not stop reconcile for every tenant.
 				slog.Warn("reconcile/intent: route CIDR parse failed",
 					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
 				continue
@@ -210,14 +247,59 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 
 func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 
+// blankAssociation reports an association that names neither a subnet nor the
+// main table. Ignored, its subnet would fall back to the main table's routes.
+func blankAssociation(assocs []ec2routetable.AssociationRecord) bool {
+	for _, a := range assocs {
+		if a.SubnetId == "" && !a.Main {
+			return true
+		}
+	}
+	return false
+}
+
+func validAddr(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
+}
+
+// requiredBuckets are created by their EC2 services at start, so one that is
+// missing later is lost state, and intent without it is partial.
+var requiredBuckets = map[string]bool{
+	ec2vpc.KVBucketVPCs: true, ec2vpc.KVBucketSubnets: true,
+	ec2vpc.KVBucketSecurityGroups: true, ec2vpc.KVBucketENIs: true,
+	ec2igw.KVBucketIGW: true, ec2eip.KVBucketEIPs: true,
+	ec2routetable.KVBucketRouteTables: true, ec2natgw.KVBucketNatGateways: true,
+}
+
+// openBucket opens a topology bucket. Only an optional bucket that does not
+// exist reads as empty; any other failure fails the read, since an empty
+// answer would let the sweeps remove everything the bucket holds.
+func openBucket(ctx context.Context, js jetstream.JetStream, bucket string, skips *skipLog) (jetstream.KeyValue, bool, error) {
+	kv, err := js.KeyValue(ctx, bucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		slog.Debug("reconcile/intent: bucket not available, skipping", "bucket", bucket)
+		if requiredBuckets[bucket] {
+			skips.add("bucket " + bucket)
+		}
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("open bucket %s: %w", bucket, err)
+	}
+	return kv, true, nil
+}
+
 // loadVPCs fills out with this AZ's VPCs and returns their IDs, and the ID of
 // every VPC with a key in any AZ, readable or not; nil if the bucket is absent.
-func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, map[string]struct{}, error) {
+func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec, skips *skipLog) (map[string]struct{}, map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
-	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketVPCs)
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketVPCs, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: VPC bucket not available, skipping", "err", err)
+		return nil, nil, err
+	}
+	if !ok {
 		return localVPCs, nil, nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -247,7 +329,15 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		}
 		var rec ec2vpc.VPCRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: VPC unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: VPC unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
 			continue
 		}
 		if !matchesLocalAZ(rec.AZ, localAZ) {
@@ -255,7 +345,8 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		}
 		prefix, err := netip.ParsePrefix(rec.CidrBlock)
 		if err != nil {
-			slog.Warn("reconcile/intent: VPC CIDR parse failed", "vpc_id", rec.VpcId, "cidr", rec.CidrBlock, "err", err)
+			slog.Debug("reconcile/intent: VPC CIDR parse failed", "vpc_id", rec.VpcId, "cidr", rec.CidrBlock, "err", err)
+			skips.add(key)
 			continue
 		}
 		out[rec.VpcId] = topology.VPCSpec{
@@ -268,10 +359,12 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 	return localVPCs, vpcIDs, nil
 }
 
-func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string) error {
-	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSubnets)
+func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string, skips *skipLog) error {
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSubnets, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -291,7 +384,15 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		}
 		var rec ec2vpc.SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: subnet unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: subnet unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.SubnetId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -299,7 +400,8 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		}
 		prefix, err := netip.ParsePrefix(rec.CidrBlock)
 		if err != nil {
-			slog.Warn("reconcile/intent: subnet CIDR parse failed", "subnet_id", rec.SubnetId, "cidr", rec.CidrBlock, "err", err)
+			slog.Debug("reconcile/intent: subnet CIDR parse failed", "subnet_id", rec.SubnetId, "cidr", rec.CidrBlock, "err", err)
+			skips.add(key)
 			continue
 		}
 		out[rec.SubnetId] = topology.SubnetSpec{
@@ -312,10 +414,12 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 	return nil
 }
 
-func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
-	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSecurityGroups)
+func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec, skips *skipLog) error {
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSecurityGroups, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: SG bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -335,7 +439,15 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		}
 		var rec ec2vpc.SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.GroupId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -351,10 +463,12 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 	return nil
 }
 
-func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string) error {
-	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketENIs)
+func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string, skips *skipLog) error {
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketENIs, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -374,7 +488,15 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		}
 		var rec ec2vpc.ENIRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// locality filter below would read it as another AZ's.
+		if rec.NetworkInterfaceId == "" || rec.VpcId == "" || len(rec.SecurityGroupIds) == 0 {
+			slog.Debug("reconcile/intent: ENI record names no ENI, VPC or security group", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -382,17 +504,26 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		}
 		addr, err := netip.ParseAddr(rec.PrivateIpAddress)
 		if err != nil {
-			slog.Warn("reconcile/intent: ENI IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PrivateIpAddress, "err", err)
+			slog.Debug("reconcile/intent: ENI IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PrivateIpAddress, "err", err)
+			skips.add(key)
 			continue
 		}
 		mac, err := net.ParseMAC(rec.MacAddress)
 		if err != nil {
-			slog.Warn("reconcile/intent: ENI MAC parse failed", "eni", rec.NetworkInterfaceId, "mac", rec.MacAddress, "err", err)
+			slog.Debug("reconcile/intent: ENI MAC parse failed", "eni", rec.NetworkInterfaceId, "mac", rec.MacAddress, "err", err)
+			skips.add(key)
 			continue
 		}
 		// PublicIP (auto-assigned or ELB) marks the ENI for drop-gate exemption;
-		// zero/invalid when absent. User EIPs come from the EIP bucket instead.
-		publicIP, _ := netip.ParseAddr(rec.PublicIpAddress)
+		// zero when absent. User EIPs come from the EIP bucket instead. A bad
+		// address keeps the ENI, so its private port is still repaired.
+		var publicIP netip.Addr
+		if rec.PublicIpAddress != "" {
+			if publicIP, err = netip.ParseAddr(rec.PublicIpAddress); err != nil {
+				slog.Debug("reconcile/intent: ENI public IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PublicIpAddress, "err", err)
+				skips.add(key)
+			}
+		}
 		out[rec.NetworkInterfaceId] = topology.PortSpec{
 			PortID:       rec.NetworkInterfaceId,
 			SubnetID:     rec.SubnetId,
@@ -470,10 +601,12 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 	return false
 }
 
-func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
-	kv, err := js.KeyValue(ctx, ec2igw.KVBucketIGW)
+func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec, skips *skipLog) error {
+	kv, ok, err := openBucket(ctx, js, ec2igw.KVBucketIGW, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: IGW bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -493,7 +626,15 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		var rec ec2igw.IGWRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.InternetGatewayId == "" || rec.State == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
 			continue
 		}
 		if rec.VpcId == "" || !strings.EqualFold(rec.State, "available") {
@@ -512,10 +653,12 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 	return nil
 }
 
-func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
-	kv, err := js.KeyValue(ctx, ec2eip.KVBucketEIPs)
+func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec, skips *skipLog) error {
+	kv, ok, err := openBucket(ctx, js, ec2eip.KVBucketEIPs, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: EIP bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -535,13 +678,33 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		var rec ec2eip.EIPRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
-		if !strings.EqualFold(rec.State, "associated") || rec.VpcId == "" || rec.PublicIp == "" || rec.PrivateIp == "" {
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.AllocationId == "" || rec.State == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
+		// A NAT gateway's address has no private IP; its snat comes from the
+		// NAT gateway record. Any other associated EIP must name all three.
+		if !strings.EqualFold(rec.State, "associated") || rec.NatGatewayId != "" {
+			continue
+		}
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: associated EIP names no VPC", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		if !validAddr(rec.PublicIp) || !validAddr(rec.PrivateIp) {
+			slog.Debug("reconcile/intent: EIP address parse failed", "key", key, "public_ip", rec.PublicIp, "private_ip", rec.PrivateIp)
+			skips.add(key)
 			continue
 		}
 		spec := policy.EIPSpec{
@@ -560,10 +723,12 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 }
 
 // loadRouteTables snapshots every local-VPC route table.
-func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]ec2routetable.RouteTableRecord, error) {
-	kv, err := js.KeyValue(ctx, ec2routetable.KVBucketRouteTables)
+func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, skips *skipLog) ([]ec2routetable.RouteTableRecord, error) {
+	kv, ok, err := openBucket(ctx, js, ec2routetable.KVBucketRouteTables, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
+		return nil, err
+	}
+	if !ok {
 		return nil, nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -584,7 +749,15 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		}
 		var rec ec2routetable.RouteTableRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.RouteTableId == "" || rec.VpcId == "" || blankAssociation(rec.Associations) {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
@@ -609,10 +782,13 @@ func loadNATGWs(
 	subnets map[string]topology.SubnetSpec,
 	routeTables []ec2routetable.RouteTableRecord,
 	out map[string]policy.NATGWSpec,
+	skips *skipLog,
 ) error {
-	kv, err := js.KeyValue(ctx, ec2natgw.KVBucketNatGateways)
+	kv, ok, err := openBucket(ctx, js, ec2natgw.KVBucketNatGateways, skips)
 	if err != nil {
-		slog.Debug("reconcile/intent: NAT GW bucket not available, skipping", "err", err)
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	keys, err := kv.Keys(ctx)
@@ -632,13 +808,31 @@ func loadNATGWs(
 		}
 		var rec ec2natgw.NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			slog.Warn("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
+			slog.Debug("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
+			skips.add(key)
 			continue
 		}
-		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" {
+		// A record that decodes to no identity is present but unusable; the
+		// filters below would read it as another VPC's or a detached one.
+		if rec.NatGatewayId == "" || rec.State == "" {
+			slog.Debug("reconcile/intent: record names no identity", "key", key)
+			skips.add(key)
+			continue
+		}
+		if !strings.EqualFold(rec.State, "available") {
+			continue
+		}
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: available NAT GW names no VPC", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		if !validAddr(rec.PublicIp) {
+			slog.Debug("reconcile/intent: NAT GW public IP parse failed", "key", key, "public_ip", rec.PublicIp)
+			skips.add(key)
 			continue
 		}
 

@@ -4,7 +4,6 @@ package projection
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 
@@ -29,15 +28,16 @@ type PeeringConnection struct {
 	Linked         bool // provisioning or active: the link should exist
 	Active         bool
 	CleanupPending bool // deleted, and its link not yet confirmed gone
+	// Status is the record's AWS state, so a caller can refuse one that has none.
+	Status string
 }
 
-// LoadPeering reads every live connection. A missing peering bucket is none;
-// any other read failure is an error, never a partial list.
+// LoadPeering reads every live connection. Any read failure, a missing bucket
+// included, is an error, never a partial list.
 func LoadPeering(ctx context.Context, js jetstream.JetStream) ([]PeeringConnection, error) {
+	// vpcd creates the bucket at start, so a missing one is lost state, not
+	// an empty list: read as empty, network would remove every live link.
 	kv, err := js.KeyValue(ctx, PeeringBucket)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("open peering bucket: %w", err)
 	}
@@ -59,6 +59,7 @@ func connection(rec *ec2vpcpeering.PeeringRecord) PeeringConnection {
 		Linked:         rec.Status == ec2vpcpeering.StateProvisioning || rec.Status == ec2vpcpeering.StateActive,
 		Active:         rec.Status == ec2vpcpeering.StateActive,
 		CleanupPending: rec.CleanupPending,
+		Status:         rec.Status,
 	}
 	c.RequesterCIDR, _ = netip.ParsePrefix(rec.RequesterCIDR)
 	c.AccepterCIDR, _ = netip.ParsePrefix(rec.AccepterCIDR)

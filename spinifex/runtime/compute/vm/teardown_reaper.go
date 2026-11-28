@@ -165,13 +165,9 @@ func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 	return reaped, nil
 }
 
-// retryOutstanding re-drives every not-`done` dependent through the idempotent
-// cleaner and returns the dep→result map for whatever was retried. The cleaner
-// calls are idempotent (absent → success), so a successful re-drive confirms
-// the Spinifex-side teardown; the dataplane object (OVN LSP, NAT rule) is
-// pruned by the cluster reconciler. Pure w.r.t. KV/local state — callers merge
-// the results atomically via StateStore.UpdateTerminatedInstance so the cleaner
-// calls (which have real side effects) never run twice for a single CAS retry.
+// retryOutstanding runs each not-`done` dependent's idempotent cleaner and the
+// local UEFI removal, which have side effects (KV writes included), before any
+// CAS. Sweep's CAS callback only merges the returned marks, so a retry reruns none.
 func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownState {
 	c := r.m.deps.InstanceCleaner
 	if c == nil {
@@ -193,9 +189,14 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 	// An outstanding QEMU teardown is judged only on the node that ran it: a
 	// missing PID file elsewhere proves nothing.
 	home := v.LastNode == r.m.deps.NodeID
-	if qemuProvenGone(v.ID) && (home || !outstanding(v, TeardownQEMU)) {
-		if outstanding(v, TeardownQEMU) && r.removeLocalUEFIStore(v) {
-			results[TeardownQEMU] = TeardownDone
+	qemuOutstanding := outstanding(v, TeardownQEMU)
+	mayJudgeQEMU := home || !qemuOutstanding
+	if qemuProvenGone(v.ID) && mayJudgeQEMU {
+		if qemuOutstanding {
+			uefiRemoved := r.removeLocalUEFIStore(v)
+			if uefiRemoved {
+				results[TeardownQEMU] = TeardownDone
+			}
 		}
 		retry(TeardownVolumes, func() error { return c.DeleteVolumes(v) })
 	}

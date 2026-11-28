@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 
@@ -66,6 +67,14 @@ func loadPeering(ctx context.Context, js jetstream.JetStream, localVPCs, vpcIDs 
 	if err != nil {
 		out.PeeringIncomplete = err
 		return out
+	}
+	// A record with no ID is present but unusable; read as live under "", it
+	// would leave the real connection off the live set for the sweep.
+	for _, c := range conns {
+		if c.ID == "" || c.RequesterVPC == "" || c.AccepterVPC == "" || c.Status == "" {
+			out.PeeringIncomplete = fmt.Errorf("peering record %q names no ID, endpoint VPC or status", c.ID)
+			return out
+		}
 	}
 	for _, c := range conns {
 		out.PeeringLive[c.ID] = struct{}{}

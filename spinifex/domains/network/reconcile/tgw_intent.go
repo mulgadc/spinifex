@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -87,6 +88,20 @@ func loadTransitGateways(ctx context.Context, js jetstream.JetStream, vpcs map[s
 	if err != nil {
 		out.TGWIncomplete = err
 		return out
+	}
+	// A record with no ID or account is present but unusable; read as live it
+	// would leave the real router or link off the live set for the sweep.
+	for _, gw := range gws {
+		if gw.ID == "" || gw.AccountID == "" || gw.State == "" {
+			out.TGWIncomplete = fmt.Errorf("transit gateway record %q names no ID, account or state", gw.ID)
+			return out
+		}
+	}
+	for _, a := range atts {
+		if a.ID == "" || a.AccountID == "" || a.TransitGatewayID == "" || a.VpcID == "" || a.State == "" {
+			out.TGWIncomplete = fmt.Errorf("transit gateway attachment record %q names no ID, account, gateway, VPC or state", a.ID)
+			return out
+		}
 	}
 	classifyTransitGateways(&out, gws, atts, vpcs, vpcIDs)
 	return out

@@ -302,6 +302,12 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		res.fail(classSG, "orphan-prune", err)
 		return
 	}
+	// The pass gate saw complete intent, but this later read may not be.
+	if err := fresh.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: refusing orphan port group sweep against partial intent", "err", err)
+		res.fail(classSG, "orphan-prune", err)
+		return
+	}
 
 	wantPGs := make(map[string]struct{}, len(intent.SGs)+len(fresh.SGs))
 	for groupID := range intent.SGs {
@@ -472,6 +478,11 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 	fresh, err := r.reloadForPrune(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan ENI port prune", "err", err)
+		res.fail(classPort, "orphan-prune", err)
+		return
+	}
+	if err := fresh.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: refusing orphan ENI port sweep against partial intent", "err", err)
 		res.fail(classPort, "orphan-prune", err)
 		return
 	}
@@ -999,6 +1010,12 @@ func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, re
 	fresh, err := r.reloadForPrune(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan EIP prune", "err", err)
+		res.fail(classEIP, "orphan-prune", err)
+		return
+	}
+	// The NAT sweep also removes host bindings, so this guards both.
+	if err := fresh.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: refusing orphan EIP sweep against partial intent", "err", err)
 		res.fail(classEIP, "orphan-prune", err)
 		return
 	}

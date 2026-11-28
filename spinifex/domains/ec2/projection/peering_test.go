@@ -19,12 +19,13 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// With no peering bucket there is nothing to realise, and no error.
-func TestLoadPeering_NoBucket(t *testing.T) {
+// vpcd creates the peering bucket at start, so a missing one is lost state.
+// Read as empty, it would let network remove every live link.
+func TestLoadPeering_NoBucketIsAnError(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	conns, err := LoadPeering(context.Background(), js)
-	if err != nil || len(conns) != 0 {
-		t.Fatalf("LoadPeering = %+v, %v; want empty, nil", conns, err)
+	if err == nil {
+		t.Fatalf("LoadPeering = %+v, nil; want an error for the missing bucket", conns)
 	}
 }
 
@@ -55,7 +56,7 @@ func TestLoadPeering_MapsRecords(t *testing.T) {
 		ID: "pcx-1", RequesterVPC: "vpc-a", AccepterVPC: "vpc-b",
 		RequesterCIDR: netip.MustParsePrefix("10.0.0.0/16"), AccepterCIDR: netip.MustParsePrefix("10.1.0.0/16"),
 		RequesterAddr: netip.MustParseAddr("169.254.192.9"), AccepterAddr: netip.MustParseAddr("169.254.192.10"),
-		Generation: 4, Linked: true,
+		Generation: 4, Linked: true, Status: "provisioning",
 	}
 	if got["pcx-1"] != want {
 		t.Errorf("pcx-1 = %+v, want %+v", got["pcx-1"], want)

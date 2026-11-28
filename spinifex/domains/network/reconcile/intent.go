@@ -70,7 +70,7 @@ func (l *skipLog) err() error {
 	if l.count == 0 {
 		return nil
 	}
-	return fmt.Errorf("%d topology record(s) did not decode or parse, first %s", l.count, strings.Join(l.keys, ", "))
+	return fmt.Errorf("%d topology record(s) or bucket(s) unusable, first %s", l.count, strings.Join(l.keys, ", "))
 }
 
 // The instance record space the daemon owns. Duplicated rather than imported
@@ -249,13 +249,23 @@ func validAddr(s string) bool {
 	return err == nil
 }
 
-// openBucket opens a topology bucket. Only a bucket that does not exist reads
-// as empty; any other failure fails the read, since an empty answer would let
-// the sweeps remove everything the bucket holds.
-func openBucket(ctx context.Context, js jetstream.JetStream, bucket string) (jetstream.KeyValue, bool, error) {
+// requiredBuckets are created by the VPC service at start, so one that is
+// missing later is lost state, and intent without it is partial.
+var requiredBuckets = map[string]bool{
+	ec2vpc.KVBucketVPCs: true, ec2vpc.KVBucketSubnets: true,
+	ec2vpc.KVBucketSecurityGroups: true, ec2vpc.KVBucketENIs: true,
+}
+
+// openBucket opens a topology bucket. Only an optional bucket that does not
+// exist reads as empty; any other failure fails the read, since an empty
+// answer would let the sweeps remove everything the bucket holds.
+func openBucket(ctx context.Context, js jetstream.JetStream, bucket string, skips *skipLog) (jetstream.KeyValue, bool, error) {
 	kv, err := js.KeyValue(ctx, bucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
 		slog.Debug("reconcile/intent: bucket not available, skipping", "bucket", bucket)
+		if requiredBuckets[bucket] {
+			skips.add("bucket " + bucket)
+		}
 		return nil, false, nil
 	}
 	if err != nil {
@@ -269,7 +279,7 @@ func openBucket(ctx context.Context, js jetstream.JetStream, bucket string) (jet
 func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec, skips *skipLog) (map[string]struct{}, map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
-	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketVPCs)
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketVPCs, skips)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -327,7 +337,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 }
 
 func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec, azs map[string]string, skips *skipLog) error {
-	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSubnets)
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSubnets, skips)
 	if err != nil {
 		return err
 	}
@@ -375,7 +385,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 }
 
 func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec, skips *skipLog) error {
-	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSecurityGroups)
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketSecurityGroups, skips)
 	if err != nil {
 		return err
 	}
@@ -417,7 +427,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 }
 
 func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string, skips *skipLog) error {
-	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketENIs)
+	kv, ok, err := openBucket(ctx, js, ec2vpc.KVBucketENIs, skips)
 	if err != nil {
 		return err
 	}
@@ -548,7 +558,7 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 }
 
 func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec, skips *skipLog) error {
-	kv, ok, err := openBucket(ctx, js, ec2igw.KVBucketIGW)
+	kv, ok, err := openBucket(ctx, js, ec2igw.KVBucketIGW, skips)
 	if err != nil {
 		return err
 	}
@@ -593,7 +603,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 }
 
 func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec, skips *skipLog) error {
-	kv, ok, err := openBucket(ctx, js, ec2eip.KVBucketEIPs)
+	kv, ok, err := openBucket(ctx, js, ec2eip.KVBucketEIPs, skips)
 	if err != nil {
 		return err
 	}
@@ -656,7 +666,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 
 // loadRouteTables snapshots every local-VPC route table.
 func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, skips *skipLog) ([]ec2routetable.RouteTableRecord, error) {
-	kv, ok, err := openBucket(ctx, js, ec2routetable.KVBucketRouteTables)
+	kv, ok, err := openBucket(ctx, js, ec2routetable.KVBucketRouteTables, skips)
 	if err != nil {
 		return nil, err
 	}
@@ -709,7 +719,7 @@ func loadNATGWs(
 	out map[string]policy.NATGWSpec,
 	skips *skipLog,
 ) error {
-	kv, ok, err := openBucket(ctx, js, ec2natgw.KVBucketNatGateways)
+	kv, ok, err := openBucket(ctx, js, ec2natgw.KVBucketNatGateways, skips)
 	if err != nil {
 		return err
 	}
@@ -737,7 +747,12 @@ func loadNATGWs(
 			skips.add(key)
 			continue
 		}
-		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" {
+		if !strings.EqualFold(rec.State, "available") {
+			continue
+		}
+		if rec.VpcId == "" {
+			slog.Debug("reconcile/intent: available NAT GW names no VPC", "key", key)
+			skips.add(key)
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {

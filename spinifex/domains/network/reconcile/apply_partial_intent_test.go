@@ -41,8 +41,15 @@ func (f kvFixture) set(bucket, key string, v []byte) {
 	f[bucket][key] = v
 }
 
+// seed writes the fixture, and creates every bucket the VPC service creates
+// at start, since a missing one reads as lost state.
 func (f kvFixture) seed(t *testing.T, js jetstream.JetStream) {
 	t.Helper()
+	for _, bucket := range []string{ec2vpc.KVBucketVPCs, ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs} {
+		if _, ok := f[bucket]; !ok {
+			testutil.SeedKV(t, js, bucket, nil)
+		}
+	}
 	for bucket, entries := range f {
 		testutil.SeedKV(t, js, bucket, entries)
 	}
@@ -756,8 +763,9 @@ func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
 	}
 }
 
-// The drift pass also binds host state for every EIP it applies. Under partial
-// intent that bind must not replace the route of an address already bound.
+// The drift pass also binds host state for every EIP it applies, and a bind
+// replaces the route. Under partial intent it binds nothing; the per-node
+// host EIP pass restores missing bindings.
 func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
 	t.Parallel()
 	js := startKV(t)
@@ -765,10 +773,7 @@ func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
 	b := newRoutedBinder()
 	r, _ := newRoutedReconciler(t, js, b)
 	convergeFromKV(t, r, js)
-	bindsA := b.bindCount(publicA)
-	b.mu.Lock()
-	delete(b.bound, publicB)
-	b.mu.Unlock()
+	bindsA, bindsB := b.bindCount(publicA), b.bindCount(publicB)
 
 	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
 	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
@@ -780,8 +785,8 @@ func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
 	if got := b.bindCount(publicA); got != bindsA {
 		t.Errorf("partial drift pass re-bound %s, which replaces its route (%d binds, want %d)", publicA, got, bindsA)
 	}
-	if !b.has(publicB) {
-		t.Errorf("partial drift pass did not restore the missing binding for %s", publicB)
+	if got := b.bindCount(publicB); got != bindsB {
+		t.Errorf("partial drift pass re-bound %s (%d binds, want %d)", publicB, got, bindsB)
 	}
 }
 

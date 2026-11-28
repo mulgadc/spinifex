@@ -829,20 +829,18 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 // whose port has not converged (e.g. just after a host reboot) stays dark while
 // every other signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
+	// Partial intent can hold a stale or missing address, and AddEIP scrubs
+	// and rebinds as it writes, so the pass changes no EIP state until it heals.
+	if err := intent.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: leaving every EIP as it is against partial intent", "err", err)
+		res.fail(classEIP, "intent", err)
+		return
+	}
 	specs := r.floatingIPSpecs(intent)
 
 	// The DNAT rows go in first and in order: AddEIP mutates NB and is the cheap
 	// half, so serialising it costs nothing and keeps NB writes single-threaded.
 	for _, spec := range specs {
-		if partial := intent.TopologyIncomplete; partial != nil {
-			// Partial intent may hold a stale address, so it only creates rows.
-			if err := r.nat.EnsureEIP(ctx, spec); err != nil {
-				slog.Error("reconcile/apply: not replacing a live EIP against partial intent",
-					"external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err, "partial", partial)
-				res.fail(classEIP, spec.ExternalIP, err)
-			}
-			continue
-		}
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 			res.fail(classEIP, spec.ExternalIP, err)
@@ -1208,16 +1206,14 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 // source for a logical router rather than a guest, so this is the only thing
 // that says which node it has to be delivered to.
 func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
+	// AddNATGateway replaces a subnet's snat when the address differs, so the
+	// pass leaves NAT gateways, and their address placement, until intent heals.
+	if err := intent.TopologyIncomplete; err != nil {
+		slog.Error("reconcile/apply: leaving every NAT gateway as it is against partial intent", "err", err)
+		res.fail(classNATGW, "intent", err)
+		return
+	}
 	for _, spec := range intent.NATGWs {
-		if partial := intent.TopologyIncomplete; partial != nil {
-			// Partial intent may hold a stale address, so it only creates rows.
-			if err := r.nat.EnsureNATGateway(ctx, spec); err != nil {
-				slog.Error("reconcile/apply: not replacing a NAT gateway snat against partial intent",
-					"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err, "partial", partial)
-				res.fail(classNATGW, spec.NATGatewayID, err)
-			}
-			continue
-		}
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
 			slog.Warn("reconcile/apply: AddNATGateway failed (likely already exists)",
 				"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err)

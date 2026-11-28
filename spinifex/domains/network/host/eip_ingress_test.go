@@ -345,24 +345,3 @@ func TestRemoveEIPIngress_RemovesHairpinSNAT(t *testing.T) {
 		t.Errorf("hairpin SNAT not removed with the EIP: %v", r.calls)
 	}
 }
-
-// KeepRoute adds the route only when there is none: an existing route keeps
-// its next hop, which is what a pass with partial intent needs.
-func TestEnsureEIPIngress_KeepRouteLeavesAnExistingRoute(t *testing.T) {
-	r := newEIPStubRunner(wiredRouteGet)
-	r.expect("ip route add", []byte("RTNETLINK answers: File exists"), fmt.Errorf("exit 2"))
-	err := EnsureEIPIngress(context.Background(), r, EIPIngress{
-		EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1", KeepRoute: true,
-	})
-	if err != nil {
-		t.Fatalf("EnsureEIPIngress: %v", err)
-	}
-	for _, c := range r.calls {
-		if strings.HasPrefix(c, "ip route replace 192.168.1.200/32") {
-			t.Errorf("KeepRoute replaced the existing route: %q", c)
-		}
-	}
-	if !r.called("ip route add 192.168.1.200/32 via 100.127.0.10 dev " + NATTransitHostEnd + " src 192.168.1.42") {
-		t.Errorf("missing create-only route add: %v", r.calls)
-	}
-}

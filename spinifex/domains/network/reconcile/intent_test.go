@@ -20,10 +20,14 @@ import (
 )
 
 // startKV returns a jetstream handle onto an embedded server, used both to seed
-// the control-plane buckets and to load intent through them.
+// the control-plane buckets and to load intent through them. It creates every
+// topology bucket, as the EC2 services do at start.
 func startKV(t *testing.T) jetstream.JetStream {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
+	for bucket := range requiredBuckets {
+		testutil.SeedKV(t, js, bucket, nil)
+	}
 	return js
 }
 

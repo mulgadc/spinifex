@@ -41,15 +41,8 @@ func (f kvFixture) set(bucket, key string, v []byte) {
 	f[bucket][key] = v
 }
 
-// seed writes the fixture, and creates every bucket the VPC service creates
-// at start, since a missing one reads as lost state.
 func (f kvFixture) seed(t *testing.T, js jetstream.JetStream) {
 	t.Helper()
-	for _, bucket := range []string{ec2vpc.KVBucketVPCs, ec2vpc.KVBucketSubnets, ec2vpc.KVBucketSecurityGroups, ec2vpc.KVBucketENIs} {
-		if _, ok := f[bucket]; !ok {
-			testutil.SeedKV(t, js, bucket, nil)
-		}
-	}
 	for bucket, entries := range f {
 		testutil.SeedKV(t, js, bucket, entries)
 	}

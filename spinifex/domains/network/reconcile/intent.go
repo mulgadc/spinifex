@@ -249,11 +249,13 @@ func validAddr(s string) bool {
 	return err == nil
 }
 
-// requiredBuckets are created by the VPC service at start, so one that is
+// requiredBuckets are created by their EC2 services at start, so one that is
 // missing later is lost state, and intent without it is partial.
 var requiredBuckets = map[string]bool{
 	ec2vpc.KVBucketVPCs: true, ec2vpc.KVBucketSubnets: true,
 	ec2vpc.KVBucketSecurityGroups: true, ec2vpc.KVBucketENIs: true,
+	ec2igw.KVBucketIGW: true, ec2eip.KVBucketEIPs: true,
+	ec2routetable.KVBucketRouteTables: true, ec2natgw.KVBucketNatGateways: true,
 }
 
 // openBucket opens a topology bucket. Only an optional bucket that does not
@@ -452,6 +454,13 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		var rec ec2vpc.ENIRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Debug("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
+			skips.add(key)
+			continue
+		}
+		// A record that decodes to no identity is present but unusable; the
+		// locality filter below would read it as another AZ's.
+		if rec.NetworkInterfaceId == "" || rec.VpcId == "" {
+			slog.Debug("reconcile/intent: ENI record names no ENI or VPC", "key", key)
 			skips.add(key)
 			continue
 		}

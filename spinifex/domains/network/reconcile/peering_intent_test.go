@@ -103,7 +103,7 @@ func TestLoadIntentFromKV_PeeringUnreadableVPCIsPresent(t *testing.T) {
 // intent is incomplete and no linked connection is marked for teardown.
 func TestLoadIntentFromKV_PeeringWithoutVPCBucketTearsNothingDown(t *testing.T) {
 	t.Parallel()
-	js := startKV(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	testutil.SeedKV(t, js, ec2vpcpeering.KVBucketPeeringConnections, map[string][]byte{
 		"pcx.pcx-1": mustJSON(t, peeringRec("pcx-1", ec2vpcpeering.StateActive, "vpc-a", "10.0.0.0/16", "vpc-b", "10.1.0.0/16")),
 	})

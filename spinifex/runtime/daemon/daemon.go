@@ -74,6 +74,8 @@ import (
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	lambdafunction "github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
+	migrationtermination "github.com/mulgadc/spinifex/spinifex/domains/migration/accounttermination"
+	migrationexecutor "github.com/mulgadc/spinifex/spinifex/domains/migration/executor"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
@@ -221,6 +223,12 @@ type Daemon struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	shutdownWg    sync.WaitGroup
+
+	// The migration executor and termination participant. migrationReady is
+	// set once both run, and gates the advertised feature level.
+	migrationExecutor    *migrationexecutor.Executor
+	migrationParticipant *migrationtermination.Participant
+	migrationReady       atomic.Bool
 
 	// recoveryRetryWg tracks the post-restore retry loop, which writes the
 	// local state file when it finishes. Tests wait on it before cleanup.
@@ -1436,6 +1444,7 @@ func (d *Daemon) subscribeAll() error {
 		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
 	}
 	subs = append(subs, d.featureLevelStatusSubs()...)
+	subs = append(subs, d.migrationSubs()...)
 
 	return d.registerNatsSubs(subs)
 }
@@ -2411,6 +2420,9 @@ func (d *Daemon) startCluster() error {
 	}
 	var _ ec2account.AccountTerminationChecker = (*iamdomain.AccountStatusReader)(nil)
 	d.accountService.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(accountStatusJS))
+	if err := d.initMigration(accountStatusJS, iamdomain.NewAccountStatusReader(accountStatusJS)); err != nil {
+		return err
+	}
 
 	// ELBv2 resolves listener certificate private keys through its own ACM
 	// Store over the same JetStream bucket the ACM service writes, so it needs
@@ -2681,6 +2693,7 @@ func (d *Daemon) startCluster() error {
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
+	d.startMigrationExecutor()
 	d.startLambdaTestLink()
 
 	// Ochre vector store platform appliance + VectorService, backgrounded:

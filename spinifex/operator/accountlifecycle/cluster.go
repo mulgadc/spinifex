@@ -93,6 +93,9 @@ func NewClusterEngine(
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 
 	engine := NewEngine(NewIAMAccounts(svc), reapers...)
+	if engine.Participants, err = composeParticipants(nc, participantDeclarations()); err != nil {
+		return nil, fmt.Errorf("compose account-termination participants: %w", err)
+	}
 	engine.ec2Inventory = newEC2PlatformInventoryClient(nc)
 	// May be nil: a dry run needs no cleanup, and Teardown and Exercise refuse
 	// to start without it.

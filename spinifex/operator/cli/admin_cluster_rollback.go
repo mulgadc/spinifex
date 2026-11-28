@@ -50,7 +50,10 @@ var registerDrainsOnce = sync.OnceValue(func() error {
 	if err := featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check); err != nil {
 		return err
 	}
-	return featurelevel.RegisterDrain(featurelevel.TransitGateways, tgwDrain.check)
+	if err := featurelevel.RegisterDrain(featurelevel.TransitGateways, tgwDrain.check); err != nil {
+		return err
+	}
+	return featurelevel.RegisterDrain(featurelevel.Migration, migDrain.check)
 })
 
 // registerDrainChecks is the composition root for drain checks: every declared
@@ -111,6 +114,7 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 	}
 	endpointDrain.connect(store, nodes, probe.Probe, nc, js, os.Stdout)
 	tgwDrain.connect(js, os.Stdout)
+	migDrain.connect(js, os.Stdout)
 	rec, err := featurelevel.RunRollback(ctx, rollbackTo, featurelevel.RollbackDeps{
 		Store:      store,
 		Probe:      probe.Probe,

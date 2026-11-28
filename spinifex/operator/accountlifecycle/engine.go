@@ -64,6 +64,13 @@ type Engine struct {
 
 	// ec2PlatformBudget overrides ec2PlatformInventoryBudget when positive.
 	ec2PlatformBudget time.Duration
+
+	// Participants run, in order, after the account is TERMINATING and before
+	// every legacy stage. Force is never forwarded to them.
+	Participants []Participant
+
+	// now replaces the clock of the participant drain budget in tests.
+	now func() time.Time
 }
 
 // NewEngine builds an engine with the default timeouts.
@@ -130,6 +137,7 @@ func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, erro
 		}
 		result.Stages = append(result.Stages, stageResult)
 	}
+	result.Participants = e.inventoryParticipants(ctx, accountID)
 	return result, nil
 }
 
@@ -199,6 +207,9 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		AccountName: account.AccountName,
 		Forced:      req.Force,
 	}
+	if err := e.runParticipants(ctx, req, result); err != nil {
+		return result, err
+	}
 	var platform *platformRun
 	for _, stage := range Stages() {
 		if stage == StageAttachments || stage == StageStorage {
@@ -247,6 +258,11 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return result, fmt.Errorf("%d resources left: %w", stuck, ErrResourcesStuck)
 	}
 
+	if err := e.rereadParticipants(ctx, req.AccountID); err != nil {
+		e.logger().ErrorContext(ctx, "Account teardown: participant not clean on final read, account record kept",
+			"accountID", account.AccountID, "err", err)
+		return result, err
+	}
 	if err := e.Accounts.DeleteAccount(req.AccountID, req.OperationID, req.Fence); err != nil {
 		return result, fmt.Errorf("delete account record: %w", err)
 	}

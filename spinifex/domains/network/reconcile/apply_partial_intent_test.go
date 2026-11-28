@@ -308,6 +308,19 @@ type routedBinder struct {
 	bound   map[string]struct{}
 	binds   map[string]int
 	unbinds []string
+	neigh   int
+}
+
+func (b *routedBinder) neighCalls() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.neigh
+}
+
+func (b *routedBinder) countNeigh() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.neigh++
 }
 
 func newRoutedBinder() *routedBinder {
@@ -356,7 +369,9 @@ func (b *routedBinder) has(ip string) bool {
 func newRoutedReconciler(t *testing.T, js jetstream.JetStream, b *routedBinder) (*reconciler, *mock.Client) {
 	t.Helper()
 	m := mock.New()
-	nat, err := policy.NewNATManager(m, policy.NATModeRouted, policy.WithHostEIPBinder(b.hooks()))
+	nat, err := policy.NewNATManager(m, policy.NATModeRouted, policy.WithHostEIPBinder(b.hooks()),
+		policy.WithNeighFlusher(func(string) error { b.countNeigh(); return nil }),
+		policy.WithNeighPrimer(func(policy.EIPSpec) error { b.countNeigh(); return nil }))
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)
 	}
@@ -481,11 +496,6 @@ func TestS7_HostEIPPassKeepsABindingWhenItsENIIsPartial(t *testing.T) {
 				t.Fatalf("host bindings after converging = %v, want both addresses", b.bound)
 			}
 
-			// A rebooted node has lost the survivor's binding; the partial pass
-			// must still restore it.
-			b.mu.Lock()
-			delete(b.bound, publicB)
-			b.mu.Unlock()
 			putRaw(t, js, ec2vpc.KVBucketENIs, "acct.eni-a", tc.value(t))
 			err := r.ReconcileHostEIPs(t.Context())
 
@@ -493,7 +503,7 @@ func TestS7_HostEIPPassKeepsABindingWhenItsENIIsPartial(t *testing.T) {
 				t.Errorf("host EIP pass removed the binding for %s (unbinds %v)", publicA, b.unbinds)
 			}
 			if !b.has(publicB) {
-				t.Errorf("host EIP pass did not restore the survivor's binding for %s", publicB)
+				t.Errorf("host EIP pass removed the survivor's binding for %s", publicB)
 			}
 
 			if err == nil {
@@ -733,9 +743,9 @@ func TestLoadIntentFromKV_FailsWhenABucketCannotBeOpened(t *testing.T) {
 	}
 }
 
-// Bind replaces an address's route, and partial intent can hold a stale
-// address, so a partial pass binds only what has no binding at all.
-func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
+// Bind replaces an address's route and the rules beside it, and partial
+// intent can hold a stale address, so a partial pass binds nothing at all.
+func TestS7_HostEIPPassBindsNothingWhenPartial(t *testing.T) {
 	t.Parallel()
 	js := startKV(t)
 	publicIPFixture(t).seed(t, js)
@@ -747,16 +757,19 @@ func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
 	b.mu.Lock()
 	delete(b.bound, publicB)
 	b.mu.Unlock()
-	bindsA := b.bindCount(publicA)
+	bindsA, bindsB := b.bindCount(publicA), b.bindCount(publicB)
 
 	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
 	err := r.ReconcileHostEIPs(t.Context())
 
 	if got := b.bindCount(publicA); got != bindsA {
-		t.Errorf("partial pass re-bound %s, which replaces its route (%d binds, want %d)", publicA, got, bindsA)
+		t.Errorf("partial pass re-bound %s (%d binds, want %d)", publicA, got, bindsA)
 	}
-	if !b.has(publicB) {
-		t.Errorf("partial pass did not restore the missing binding for %s", publicB)
+	if got := b.bindCount(publicB); got != bindsB {
+		t.Errorf("partial pass bound %s (%d binds, want %d)", publicB, got, bindsB)
+	}
+	if !b.has(publicA) {
+		t.Errorf("partial pass removed the binding for %s (unbinds %v)", publicA, b.unbinds)
 	}
 	if err == nil {
 		t.Errorf("ReconcileHostEIPs = nil, want an error naming the partial intent")
@@ -764,16 +777,18 @@ func TestS7_HostEIPPassBindsOnlyMissingAddressesWhenPartial(t *testing.T) {
 }
 
 // The drift pass also binds host state for every EIP it applies, and a bind
-// replaces the route. Under partial intent it binds nothing; the per-node
-// host EIP pass restores missing bindings.
+// replaces the route. Under partial intent it changes no NAT row, binding or
+// neighbour entry.
 func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
 	t.Parallel()
 	js := startKV(t)
 	publicIPFixture(t).seed(t, js)
 	b := newRoutedBinder()
-	r, _ := newRoutedReconciler(t, js, b)
+	r, m := newRoutedReconciler(t, js, b)
 	convergeFromKV(t, r, js)
 	bindsA, bindsB := b.bindCount(publicA), b.bindCount(publicB)
+	rowsBefore := natRows(m)
+	neighBefore := b.neighCalls()
 
 	putRaw(t, js, ec2vpc.KVBucketSecurityGroups, "acct.sg-a", poison)
 	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
@@ -781,6 +796,13 @@ func TestS7_DriftPassDoesNotRebindABoundEIPWhenPartial(t *testing.T) {
 		t.Fatalf("LoadIntentFromKV: %v", err)
 	}
 	_ = r.Reconcile(t.Context(), intent)
+
+	if after := natRows(m); !maps.Equal(after, rowsBefore) {
+		t.Errorf("partial drift pass changed NAT rows: before %v, after %v", rowsBefore, after)
+	}
+	if got := b.neighCalls(); got != neighBefore {
+		t.Errorf("partial drift pass touched neighbour state %d times", got-neighBefore)
+	}
 
 	if got := b.bindCount(publicA); got != bindsA {
 		t.Errorf("partial drift pass re-bound %s, which replaces its route (%d binds, want %d)", publicA, got, bindsA)
@@ -989,4 +1011,47 @@ func partialLoad(t *testing.T, js jetstream.JetStream) (IntentState, error) {
 		t.Fatalf("LoadIntentFromKV: %v", err)
 	}
 	return intent, intent.TopologyIncomplete
+}
+
+
+// natRows summarises every NAT row as type, addresses and owner, so a test can
+// tell whether a pass changed any of them.
+func natRows(m *mock.Client) map[string]string {
+	out := map[string]string{}
+	for _, n := range m.NATs {
+		out[n.Type+"|"+n.ExternalIP+"|"+n.LogicalIP] = n.ExternalIDs["spinifex:logical_port"] + "|" + n.ExternalIDs["spinifex:vpc_id"]
+	}
+	return out
+}
+
+// A NAT gateway record with a blank address leaves intent partial, so neither
+// the per-node pass nor the EIP sweep removes the gateway's live host binding.
+func TestS7_NATGatewayWithABlankAddressKeepsItsHostBinding(t *testing.T) {
+	t.Parallel()
+	const live = "198.51.100.5"
+	js := startKV(t)
+	natgwFixture(t, live).seed(t, js)
+	b := newRoutedBinder()
+	r, m := newRoutedReconciler(t, js, b)
+	seedGatewayLRP(t, m, "vpc-a", "100.127.0.10")
+	if err := r.ReconcileHostEIPs(t.Context()); err != nil {
+		t.Fatalf("converging ReconcileHostEIPs: %v", err)
+	}
+	if !b.has(live) {
+		t.Fatalf("host bindings after converging = %v, want %s", b.bound, live)
+	}
+
+	putRaw(t, js, ec2natgw.KVBucketNatGateways, "acct.nat-1", mustJSON(t, ec2natgw.NatGatewayRecord{
+		NatGatewayId: "nat-1", VpcId: "vpc-a", SubnetId: "subnet-a", State: "available",
+	}))
+	_ = r.ReconcileHostEIPs(t.Context())
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	r.pruneOrphanEIPs(t.Context(), intent, &passResult{})
+
+	if !b.has(live) {
+		t.Errorf("the NAT gateway's host binding for %s was removed (unbinds %v)", live, b.unbinds)
+	}
 }

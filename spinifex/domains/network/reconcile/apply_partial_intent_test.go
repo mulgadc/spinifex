@@ -1354,3 +1354,28 @@ func TestS7_HostPassesReportErrPassIncomplete(t *testing.T) {
 		t.Errorf("HostIngress.Pass = %v, want ErrPassIncomplete", err)
 	}
 }
+
+// A peering or Transit Gateway record that decodes to no ID is present but
+// unusable. Read as live under an empty ID, it would leave the real link off
+// the live set, and the orphan sweep would remove it.
+func TestLoadIntentFromKV_AnEmptyPeeringOrTransitGatewayRecordIsPartial(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ bucket, key string }{
+		{ec2projection.PeeringBucket, "pcx.pcx-0123"},
+		{ec2projection.TransitGatewayBucket, "000000000001.tgw-0123"},
+		{ec2projection.TransitGatewayAttachmentBucket, "000000000001.tgw-attach-0123"},
+	}
+	for _, tc := range cases {
+		for _, raw := range []string{"{}", "null"} {
+			t.Run(tc.bucket+" "+raw, func(t *testing.T) {
+				t.Parallel()
+				js := startKV(t)
+				twoVPCFixture(t).seed(t, js)
+				putRaw(t, js, tc.bucket, tc.key, []byte(raw))
+				if _, err := partialLoad(t, js); err == nil {
+					t.Errorf("an empty record in %s read as complete intent", tc.bucket)
+				}
+			})
+		}
+	}
+}

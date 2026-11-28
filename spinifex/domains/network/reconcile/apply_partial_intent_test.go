@@ -918,3 +918,70 @@ func TestS7_NATGatewayPassKeepsTheLiveSNATRowWhenPartial(t *testing.T) {
 		})
 	}
 }
+
+// The VPC service creates the topology buckets at start, so one that is gone
+// later is lost state, not an empty cluster, and must not authorize cleanup.
+func TestS7_HostIngressKeepsRoutesWhenARequiredBucketIsGone(t *testing.T) {
+	t.Parallel()
+	js := startKV(t)
+	f := kvFixture{}
+	f.set(ec2vpc.KVBucketVPCs, "acct.vpc-a", mustJSON(t, ec2vpc.VPCRecord{VpcId: "vpc-a", CidrBlock: "10.0.0.0/16"}))
+	f.set(ec2igw.KVBucketIGW, "acct.igw-a", mustJSON(t, ec2igw.IGWRecord{InternetGatewayId: "igw-a", VpcId: "vpc-a", State: "available"}))
+	f.seed(t, js)
+	m := mock.New()
+	seedGatewayLRP(t, m, "vpc-a", "100.127.0.10")
+	routes := &hostRouteTable{routes: map[string]string{}}
+	h := &HostIngress{OVN: m, Routes: routes, LoadIntent: kvLoader(js)}
+	if _, err := h.Pass(t.Context()); err != nil {
+		t.Fatalf("converging pass: %v", err)
+	}
+	before, _ := routes.List(t.Context())
+
+	if err := js.DeleteKeyValue(t.Context(), ec2vpc.KVBucketVPCs); err != nil {
+		t.Fatalf("delete VPC bucket: %v", err)
+	}
+	_, err := h.Pass(t.Context())
+
+	after, _ := routes.List(t.Context())
+	if !maps.Equal(after, before) {
+		t.Errorf("host ingress routes changed after the VPC bucket was lost: before %v, after %v", before, after)
+	}
+	if err == nil {
+		t.Errorf("Pass = nil, want an error naming the lost bucket")
+	}
+}
+
+// An available NAT gateway must name its VPC and address. A record that lacks
+// one is unusable, so intent is incomplete and its live state stays.
+func TestLoadIntentFromKV_AvailableNATGatewayWithABlankFieldIsPartial(t *testing.T) {
+	t.Parallel()
+	cases := map[string][]byte{
+		"no public IP": mustJSON(t, ec2natgw.NatGatewayRecord{NatGatewayId: "nat-1", VpcId: "vpc-a", SubnetId: "subnet-a", State: "available"}),
+		"no VPC":       mustJSON(t, ec2natgw.NatGatewayRecord{NatGatewayId: "nat-1", SubnetId: "subnet-a", PublicIp: "198.51.100.5", State: "available"}),
+	}
+	for name, rec := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			js := startKV(t)
+			f := natgwFixture(t, "198.51.100.5")
+			f.set(ec2natgw.KVBucketNatGateways, "acct.nat-1", rec)
+			f.seed(t, js)
+
+			_, err := partialLoad(t, js)
+			if err == nil {
+				t.Errorf("an available NAT gateway with a blank field read as complete intent")
+			}
+		})
+	}
+}
+
+// partialLoad returns the partial-intent marker as an error, so a test can assert it
+// without naming the field.
+func partialLoad(t *testing.T, js jetstream.JetStream) (IntentState, error) {
+	t.Helper()
+	intent, err := LoadIntentFromKV(t.Context(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	return intent, intent.TopologyIncomplete
+}

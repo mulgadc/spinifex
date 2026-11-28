@@ -227,17 +227,13 @@ func (rm *ResourceManager) resyncSubscriptions(ctx context.Context, every time.D
 	}
 }
 
-// instanceCanOpenExport is the sweep's view of a bound instance. Running follows the
-// greeting; the others end a launch. Error and stopped can be retried, so they keep it.
+// instanceCanOpenExport is the sweep's view of a bound instance. Only running proves
+// the drive opened: it follows the greeting. A terminate can still race a launch to
+// QEMU start, so every other state keeps the charge until its greeting or the backstop.
 func (d *Daemon) instanceCanOpenExport(id string) (live, known bool) {
 	v, ok := d.vmMgr.Get(id)
 	if !ok {
 		return false, false
 	}
-	switch d.vmMgr.Status(v) {
-	case vm.StateRunning, vm.StateStopping, vm.StateShuttingDown, vm.StateTerminated:
-		return false, true
-	default:
-		return true, true
-	}
+	return d.vmMgr.Status(v) != vm.StateRunning, true
 }

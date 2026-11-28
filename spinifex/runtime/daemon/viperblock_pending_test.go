@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,31 +138,36 @@ func TestViperblockSecondStartBindsAFreshCharge(t *testing.T) {
 	assert.Empty(t, rm.pending, "the allocation was bound")
 }
 
-// An instance rolled back after its bind is swept at the next resync, and the node
-// rejoins the queue it left when that launch took its last slot.
-func TestViperblockSweepFreesARolledBackLaunchAndRejoinsTheQueue(t *testing.T) {
+// Only running proves a drive opened: a launch that reached it without its greeting call
+// is swept and its slot reopens the queue, while a launch being terminated keeps its
+// charge, since it can still race to QEMU start. Read through the daemon's VM state.
+func TestViperblockSweepEndsOnlyARunningLaunchsCharge(t *testing.T) {
 	rm, micro := gatedRM(t, 20)
 	readingRoom(rm, 1)
 	rm.instanceTypes = map[string]*ec2.InstanceTypeInfo{"t3.micro": micro}
 	_, nc := testutil.StartTestNATS(t)
 	rm.initSubscriptions(nc, func(*nats.Msg) string { return outcomeSuccess }, nil, "vb-node")
+	d := &Daemon{vmMgr: vm.NewManager()}
+	rm.exportLive = d.instanceCanOpenExport
 
-	var terminated atomic.Bool
-	rm.exportLive = func(id string) (bool, bool) { return !terminated.Load(), true }
+	inst := &vm.VM{ID: "i-r", Status: vm.StatePending, InstanceType: "t3.micro"}
+	d.vmMgr.Insert(inst)
 	require.NoError(t, rm.allocate(micro))
-	rm.BindExport("i-r")
+	rm.BindExport(inst.ID)
 	queueSubs, _ := countSubsBySuffix(rm.instanceSubs, ".vb-node")
 	require.Equal(t, 0, queueSubs, "the launch took the last slot")
 
-	rm.resyncExports(time.Now())
-	queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
-	require.Equal(t, 0, queueSubs, "a launching instance keeps its charge")
+	for _, st := range []vm.InstanceState{vm.StatePending, vm.StateError, vm.StateShuttingDown} {
+		d.vmMgr.UpdateState(inst.ID, func(v *vm.VM) { v.Status = st })
+		rm.resyncExports(time.Now())
+		queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
+		require.Equal(t, 0, queueSubs, "a launch in %s keeps its charge", st)
+	}
 
-	terminated.Store(true)
-	rm.deallocate(micro)
+	d.vmMgr.UpdateState(inst.ID, func(v *vm.VM) { v.Status = vm.StateRunning })
 	rm.resyncExports(time.Now())
 	queueSubs, _ = countSubsBySuffix(rm.instanceSubs, ".vb-node")
-	assert.Equal(t, 1, queueSubs, "the rolled-back launch's slot reopens the queue")
+	assert.Equal(t, 1, queueSubs, "a running launch's slot reopens the queue")
 	assert.Zero(t, rm.pendingExports(time.Now()))
 }
 
